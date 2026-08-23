@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadConfig, configuredMembers, ConfigError } from '../src/config.ts';
+import { loadConfig, connection, configuredMembers, ConfigError } from '../src/config.ts';
 
 function withConfig(yaml: string) {
   const dir = mkdtempSync(join(tmpdir(), 'crew-cfg-'));
@@ -12,66 +12,110 @@ function withConfig(yaml: string) {
   return { dir, file };
 }
 
-const MINIMAL = `
-project: { dir: /tmp/proj, worktreePrefix: proj-issue- }
-tracker:
-  baseUrl: https://example.test/
-  workspaceId: ws
-  models: { issues: i, comments: c, crew: m }
-crew:
-  seats: { dev: dev-1, qa: qa-1 }
-  operator: op-1
-  holds: [{ id: pair-1, role: live session }]
+const RESOLVED = `
+    resolved:
+      workspaceId: ws-1
+      models: { issues: i, comments: c, crew: m }
+      seats: { dev: dev-1, qa: qa-1 }
+      operator: op-1
+      holds: [{ id: pair-1, role: live session }]`;
+
+const ONE = `
+ship:
+  agent: { bin: /bin/true }
+connections:
+  - name: synthesis
+    workspace: issues
+    project: Dev Crew
+    dir: /tmp/proj
+    worktreePrefix: proj-issue-
+    baseUrl: https://example.test/
+${RESOLVED}
 `;
 
-test('loads a minimal config and normalises it', () => {
-  const { dir, file } = withConfig(MINIMAL);
+const TWO = `${ONE}  - name: tablation-js
+    enabled: true
+    workspace: issues
+    dir: /tmp/other
+    worktreePrefix: js-issue-
+    baseUrl: https://example.test
+${RESOLVED}
+`;
+
+test('a ship holds many connections', () => {
+  const { dir, file } = withConfig(TWO);
   const cfg = loadConfig(dir, file);
-  assert.equal(cfg.enabled, false);                       // interlock defaults closed
-  assert.equal(cfg.tracker.baseUrl, 'https://example.test'); // trailing slash trimmed
-  assert.equal(cfg.agent.model, 'claude-sonnet-5');
-  assert.deepEqual(cfg.release.versionFiles, ['package.json']);
-  assert.equal(cfg.release.changelog, 'CHANGELOG.md');
-  assert.equal(cfg.runtime.useNvm, true);
+  assert.equal(cfg.connections.length, 2);
+  assert.deepEqual(cfg.connections.map((c) => c.name), ['synthesis', 'tablation-js']);
 });
 
-test('the interlock is opt-in: anything but true is false', () => {
-  for (const v of ['false', '"true"', 'yes', '1']) {
-    const { dir, file } = withConfig(`enabled: ${v}\n${MINIMAL}`);
-    assert.equal(loadConfig(dir, file).enabled, v === '1' ? false : false);
-  }
-  const { dir, file } = withConfig(`enabled: true\n${MINIMAL}`);
-  assert.equal(loadConfig(dir, file).enabled, true);
+test('ship-level settings are shared; connection settings are not', () => {
+  const { dir, file } = withConfig(TWO);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.ship.agent.model, 'claude-sonnet-5');
+  assert.equal(cfg.connections[0]!.worktreePrefix, 'proj-issue-');
+  assert.equal(cfg.connections[1]!.worktreePrefix, 'js-issue-');
 });
 
-test('every missing setting is reported at once, not one per run', () => {
-  const { dir, file } = withConfig('project: { dir: /tmp/p, worktreePrefix: x- }\n');
+test('the platform this ship IS is detected; what a project NEEDS defaults to any', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.ok(['macos', 'linux', 'windows'].includes(cfg.ship.platform));
+  assert.equal(cfg.connections[0]!.platform, 'any');
+});
+
+test('connections are addressed by name', () => {
+  const { dir, file } = withConfig(TWO);
+  const cfg = loadConfig(dir, file);
+  assert.equal(connection(cfg, 'tablation-js').dir, '/tmp/other');
+  assert.throws(() => connection(cfg, 'nope'), /no connection named "nope"/);
+});
+
+test('with several connections and no name, the single enabled one is implied', () => {
+  const { dir, file } = withConfig(TWO);
+  const cfg = loadConfig(dir, file);
+  assert.equal(connection(cfg).name, 'tablation-js'); // the only one enabled
+});
+
+test('ambiguity is refused rather than guessed', () => {
+  const both = TWO.replace('  - name: synthesis\n', '  - name: synthesis\n    enabled: true\n');
+  const { dir, file } = withConfig(both);
+  assert.throws(() => connection(loadConfig(dir, file)), /name one: synthesis, tablation-js/);
+});
+
+test('duplicate connection names are refused — a name is an address', () => {
+  const dup = TWO.replace('name: tablation-js', 'name: synthesis');
+  const { dir, file } = withConfig(dup);
+  assert.throws(() => loadConfig(dir, file), /duplicate name "synthesis"/);
+});
+
+test('the interlock is per connection and opt-in', () => {
+  const { dir, file } = withConfig(TWO);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.connections[0]!.enabled, false);
+  assert.equal(cfg.connections[1]!.enabled, true);
+});
+
+test('every missing setting is reported at once, named by connection index', () => {
+  const { dir, file } = withConfig('ship: {}\nconnections:\n  - name: x\n');
   assert.throws(() => loadConfig(dir, file), (e: Error) => {
     assert.ok(e instanceof ConfigError);
-    for (const p of [
-      'tracker.baseUrl', 'tracker.workspaceId', 'tracker.models.issues',
-      'tracker.models.comments', 'tracker.models.crew', 'crew.operator', 'crew.seats',
-    ]) assert.match(e.message, new RegExp(p.replace(/\./g, '\\.')));
+    for (const p of ['connections[0].workspace', 'connections[0].dir', 'connections[0].worktreePrefix']) {
+      assert.match(e.message, new RegExp(p.replace(/[.[\]]/g, '\\$&')));
+    }
     return true;
   });
 });
 
-test('a single missing setting reads as one line', () => {
-  const one = MINIMAL.replace('workspaceId: ws', 'workspaceId: ""');
-  const { dir, file } = withConfig(one);
-  assert.throws(() => loadConfig(dir, file), /workspaceId is required$/m);
+test('a config with no connections is refused', () => {
+  const { dir, file } = withConfig('ship: {}\n');
+  assert.throws(() => loadConfig(dir, file), /connections \(at least one\)/);
 });
 
-test('a config with no seats is refused', () => {
-  const bad = MINIMAL.replace('seats: { dev: dev-1, qa: qa-1 }', 'seats: {}');
-  const { dir, file } = withConfig(bad);
-  assert.throws(() => loadConfig(dir, file), /crew\.seats/);
-});
-
-test('configuredMembers maps seats and holds for the roster', () => {
-  const { dir, file } = withConfig(MINIMAL);
-  const members = configuredMembers(loadConfig(dir, file));
-  assert.deepEqual(members, [
+test('configuredMembers reads the resolved ids, not authored ones', () => {
+  const { dir, file } = withConfig(ONE);
+  const conn = connection(loadConfig(dir, file), 'synthesis');
+  assert.deepEqual(configuredMembers(conn), [
     { id: 'dev-1', role: 'Dev', kind: 'seat' },
     { id: 'qa-1', role: 'QA', kind: 'seat' },
     { id: 'op-1', role: 'Operator', kind: 'hold' },
@@ -79,9 +123,24 @@ test('configuredMembers maps seats and holds for the roster', () => {
   ]);
 });
 
-test('an omitted seat means this ship does not crew that role', () => {
-  const { dir, file } = withConfig(MINIMAL);
-  const cfg = loadConfig(dir, file);
-  assert.equal(cfg.crew.seats.design, undefined);
-  assert.ok(!configuredMembers(cfg).some((m) => m.role === 'Design'));
+test('an unresolved connection says to run crew connect', () => {
+  const noIds = ONE.slice(0, ONE.indexOf('    resolved:'));
+  const { dir, file } = withConfig(noIds);
+  const conn = connection(loadConfig(dir, file), 'synthesis');
+  assert.throws(() => configuredMembers(conn), /run `crew connect`/);
+});
+
+test('a connection names one area of development, distinct from the Tablation project', () => {
+  const withArea = ONE.replace('    project: Dev Crew\n', '    project: Issues\n    area: Tablation\n');
+  const { dir, file } = withConfig(withArea);
+  const c = connection(loadConfig(dir, file), 'synthesis');
+  assert.equal(c.project, 'Issues');    // the container holding the tracker's tables
+  assert.equal(c.area, 'Tablation');    // a row of the Projects table inside it
+});
+
+test('an unsliced tracker needs no area, and gets the whole queue', () => {
+  const { dir, file } = withConfig(ONE);
+  const c = connection(loadConfig(dir, file), 'synthesis');
+  assert.equal(c.area, undefined);
+  assert.equal(c.resolved?.areaId, undefined);
 });

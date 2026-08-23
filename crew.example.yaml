@@ -1,103 +1,118 @@
-# crew.yaml — everything this ship knows that is not code.
+# crew.yaml — what this ship is, and what it is connected to.
 #
-# Copy to crew.yaml and fill in. crew.yaml is gitignored: it carries ids,
-# absolute paths and possibly a key, all of which describe THIS machine.
+# Copy to crew.yaml and fill in. crew.yaml is gitignored: it carries absolute
+# paths, machine facts and possibly a key.
+#
+# Two levels, because a ship is not a project:
+#   ship         facts about THIS MACHINE. One per file.
+#   connections  one per project this ship works. A machine may hold many.
 
-# Safety interlock. Nothing polls, runs an agent, merges or deploys until
-# this is true. Arming is a deliberate, one-place act.
-enabled: false
-
-project:
-  # The checkout the crew works in — never this directory.
-  dir: ~/src/my-project
-  # Worktrees are created beside it as <prefix><issue number>.
-  worktreePrefix: my-project-issue-
-  # What this project needs of a host: any | unix | macos | linux | windows.
-  # "unix" suits POSIX-shell hooks on either macOS or Linux; name a single
-  # host when the project genuinely requires it (an Xcode build needs macos).
-  # doctor refuses to arm a ship that cannot satisfy it.
-  platform: any
-
-tracker:
-  baseUrl: https://app.tablation.com
-  workspaceId: ""
-  models:
-    issues: ""     # the Issues data model
-    comments: ""   # the Comments data model
-    crew: ""       # the Crew data model — supplies each member's Name
-  # Either set the key directly, or point at a file with a KEY=value line
-  # (an existing .env is the usual answer, so the key lives in one place).
-  # apiKey: "sk_..."
-  apiKeyFile: .env
-  apiKeyVar: TABLATION_API_KEY
-
-crew:
-  # Seats — the agents this ship runs. Omit one and this ship does not crew
-  # that role. Names are NOT here: they are read from the Crew table at run
-  # time, so renaming a member is a data edit, never a config or prompt edit.
-  # A member may be called anything — name the dev seat "Trevor" and the crew
-  # will call it Trevor, adding the role parenthetically ("Trevor (Dev)")
-  # only where a ticket or comment needs the role to be unambiguous.
-  seats:
-    dev: ""
-    design: ""
-    qa: ""
-    triage: ""
-  # This ship's owner: final say on approval, and the one whose machine, dev
-  # stack and credentials the prompts refer to. Always a hold.
-  operator: ""
-  # Any further rows that mean hands off — other people aboard, and the
-  # interactive-session rows they work through. A ticket assigned to any of
-  # these, or to the operator, is excluded from every count and pick.
-  holds: []
-  #  - id: ""
-  #    role: live session
-
-agent:
-  bin: ~/.local/bin/claude
-  model: claude-sonnet-5
-
-# What the crew cannot know about your project. Each is a command run in
-# project.dir. Omit `notify` and release state just goes to the log.
-hooks:
-  # A hook is a shell script, not just a command: use a YAML block scalar for
-  # anything with more than one step. Exit status decides pass/fail.
-  test: |
-    ok=0
-    pnpm --filter backend test || ok=1
-    pnpm --filter frontend test || ok=1
-    exit "$ok"
-  build: pnpm build
-  deploy: ./deploy.sh
-  # notify receives CREW_NOTIFY_LEVEL (ok|warn|fail), CREW_NOTIFY_HEADLINE
-  # and CREW_NOTIFY_DETAIL in its environment.
-  # notify: ~/bin/my-notifier
-
-# Shown in log lines and in automatically-filed tickets, where the raw
-# command would read badly. Defaults to the command itself.
-labels:
-  test: pnpm test
-  build: pnpm build
-  deploy: ./deploy.sh
-
-release:
-  # Every file the version is written into. The first is also read from.
-  versionFiles: [package.json]
-  changelog: CHANGELOG.md
-
-runtime:
+ship:
+  # Becomes the Ship record's name once ships exist (ISSUE-328).
+  name: my-laptop
+  # Detected from the host (macos | linux | windows). Set only to override.
+  # platform: macos
+  agent:
+    bin: ~/.local/bin/claude
+    model: claude-sonnet-5
   # The interpreter your hooks are written for. Defaults to bash on macOS and
-  # Linux, PowerShell on Windows — set it if you want something else. The crew
-  # never parses a hook, so the language is entirely yours.
+  # Linux, PowerShell on Windows. The crew never parses a hook, so the
+  # language is entirely yours.
   # shell: bash
   # launchd/systemd hand a script a minimal PATH with no node or package
   # manager on it. Anything the hooks need goes here.
   extraPath: ""
-  # Node from nvm, pinned by the project's .nvmrc. Set false if the project
-  # does not use nvm (or does not use node at all).
+  # Node from each project's .nvmrc. Set false if you do not use nvm.
   useNvm: true
-  # nvmSh: /opt/homebrew/opt/nvm/nvm.sh
-
-paths:
   stateDir: .state
   logFile: /tmp/tablation-crew.log
+
+connections:
+  - # A short local handle. `crew run <name>` addresses this connection, and
+    # its state files are namespaced by it, so it must be unique.
+    name: my-project
+
+    # Per-connection safety interlock. Nothing polls, runs an agent, merges
+    # or deploys for this connection until true. One project can be armed
+    # while another stays parked.
+    enabled: false
+
+    # The work source, named rather than numbered. `crew connect` resolves
+    # these to ids (see `resolved:` below).
+    workspace: my-workspace
+    # The Tablation project holding the tracker's tables.
+    project: Issues
+    # Which row of that project's `Projects` table this checkout works — one
+    # area of development. Two connections on one tracker stay out of each
+    # other's queue because of this. Omit it to see every ticket, which is
+    # right for a tracker nobody has sliced.
+    area: My Area
+
+    # The checkout this connection works in — never the crew's own directory.
+    dir: ~/src/my-project
+    # Worktrees are created beside it as <prefix><issue number>.
+    worktreePrefix: my-project-issue-
+
+    # What THIS project needs of a host: any | unix | macos | linux | windows.
+    # "unix" suits POSIX-shell hooks on either macOS or Linux; name a single
+    # host when the project requires it (an Xcode build needs macos). A ship
+    # that cannot satisfy it will not take work from this connection.
+    platform: unix
+
+    baseUrl: https://app.tablation.com
+    # Either set apiKey directly, or point at a file with a KEY=value line.
+    # apiKey: "sk_..."
+    apiKeyFile: .env
+    apiKeyVar: TABLATION_API_KEY
+
+    # A repo the crew works. Most repos should carry their own `.crew.yaml`
+    # (see docs/REPO_SPEC.md) declaring their platform, hooks and release
+    # settings — a hook is code and belongs beside what it builds.
+    #
+    # What follows is the FALLBACK for a repo that has no such file, and it
+    # is merged per field: the repo wins wherever it speaks, the ship fills
+    # the gaps, and `crew doctor` reports anything the repo shadowed.
+    hooks:
+      test: |
+        ok=0
+        pnpm --filter backend test || ok=1
+        pnpm --filter frontend test || ok=1
+        exit "$ok"
+      build: pnpm build
+      deploy: ./deploy.sh
+      # notify receives CREW_NOTIFY_LEVEL (ok|warn|fail), CREW_NOTIFY_HEADLINE
+      # and CREW_NOTIFY_DETAIL in its environment. Omit it and release state
+      # just goes to the log. Unlike the others this one is the SHIP's, not
+      # the repo's: where release state gets seen is a fact about the machine.
+      # notify: ~/bin/my-notifier
+
+    labels:
+      test: pnpm test
+      build: pnpm build
+      deploy: ./deploy.sh
+
+    release:
+      # Every file the version is written into. The first is also read from.
+      versionFiles: [package.json]
+      changelog: CHANGELOG.md
+
+    # DISCOVERED, NOT AUTHORED. `crew connect` writes this block by resolving
+    # the workspace/project names above against the live project. Nothing here
+    # should be edited to change behaviour — it is a cache, and regenerable.
+    # Hand-fill it only until `crew connect` exists (ISSUE-285).
+    resolved:
+      workspaceId: ""
+      projectId: ""
+      areaModelId: ""   # the Projects table
+      areaId: ""        # the row `area` names
+      models:
+        issues: ""
+        comments: ""
+        crew: ""
+      seats:
+        dev: ""
+        design: ""
+        qa: ""
+        triage: ""
+      operator: ""
+      holds: []

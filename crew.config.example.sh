@@ -88,6 +88,24 @@ CREW_CLAUDE_BIN="$HOME/.local/bin/claude"
 CREW_AGENT_MODEL="claude-sonnet-5"
 # CREW_USER_AGENT="Mozilla/5.0 TablationCrewAgent/1.0"
 
+# --- Release detection (optional, but required for CI-driven releases) ------
+# What the deploy target reports it is actually running — one line, a commit
+# sha or a version. The release phase compares it against what it just shipped,
+# so a restarted-but-stale service is caught rather than reported as success.
+#
+# Essential when the crew does NOT perform the deploy itself (a CI-driven
+# release): without it the crew would call a release successful merely for
+# having pushed. "What is live" is answered very differently per project — an
+# HTTP health endpoint, `npm view <pkg> version`, a registry or cluster query —
+# which is why it is a hook and not a URL.
+#
+# Prefer putting this in the repo's own .crew.yaml as `hooks.released`
+# (docs/REPO_SPEC.md); this is the fallback for a repo that has no such file.
+#
+# crew_hook_released() {
+#   curl -sf --max-time 10 https://example.com/api/health-check | jq -r '.commit // empty'
+# }
+
 # --- Notifications (optional) ----------------------------------------------
 # Where release state gets seen. The crew reports SEMANTICS — a level, a
 # headline and a detail line — and this hook decides everything about how (or

@@ -23,6 +23,6 @@ have work.
 the worktree you left behind and either passes it to `verified` (the
 release phase merges and ships it) or hands it back to you as `in_progress`
 with a comment saying what still fails. Take that bounce seriously — it is
-the only reading your work gets before beta.
+the only reading your work gets before it is deployed.
 
 **No extra steps.** Follow the shared policy as written.

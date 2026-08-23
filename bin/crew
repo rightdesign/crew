@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tablation ticket-implementation loop — local (launchd) headless agent that
-# picks up accepted tickets from the beta tracker and implements them on
+# picks up accepted tickets from the tracker and implements them on
 # their own issue-<number> branch (see prompts/common.md
 # for the full policy). Runs on this Mac because the dev/test toolchain and
-# git worktree live here, not on the beta server.
+# git worktree live here, not on the deploy target.
 #
 # Split into two tiers so a full agent session doesn't spin up every timer
 # fire just to find nothing to do:
@@ -115,7 +115,7 @@ cd "$CREW_PROJECT_DIR"
 # (exit 127) even though the same deploy works by hand in a terminal.
 #
 # Node comes from nvm, and `.nvmrc` is the single source of truth for which
-# one (it matches the beta server). Rather than resolve a "close enough"
+# one (it matches the deploy target). Rather than resolve a "close enough"
 # version here, source nvm and let `nvm use` read that file — nvm is a shell
 # function, not a binary, so it has to be sourced rather than exec'd.
 # Guessing is what this replaces: the previous version globbed for the
@@ -660,7 +660,7 @@ This restores the status it was approved at before being parked; it is back in t
 
 # Release gate: the backend and frontend test suites must both pass against
 # what's about to ship. Releases are unattended, so without this the only
-# thing standing between a red suite and beta is an agent's self-report —
+# thing standing between a red suite and the deploy target is an agent's self-report —
 # and agents have reported "full suite clean" while 48 frontend tests were
 # failing (ISSUE-105), because they ran the suite in a worktree branched
 # before the breakage. This runs in the primary checkout, against exactly
@@ -676,7 +676,7 @@ This restores the status it was approved at before being parked; it is back in t
 #   - It compiles the standalone backfill/migration scripts, which are only
 #     ever run by hand against real data. A break in one is otherwise
 #     invisible until the moment it matters — as happened with the ISSUE-049
-#     migration, which failed on beta *after* a green release.
+#     migration, which failed on the target *after* a green release.
 #   - tsconfig.scripts.json is the only config that includes `src/**/*.ts`,
 #     so it is the one place spec files get typechecked at all. `build` uses
 #     tsconfig.build.json, which excludes them, and jest does not typecheck.
@@ -720,12 +720,12 @@ file_deploy_failure_ticket() {
   local sha="$1" output_file="$2" kind="${3:-deploy}"
   local api_key payload response title body repro
   if [[ "$kind" == "blocked" ]]; then
-    title="Release blocked $RELEASE_BLOCK_ALARM_AFTER+ cycles — beta is not receiving merged work"
-    body="The dev loop's release phase has refused to deploy for $RELEASE_BLOCK_ALARM_AFTER consecutive cycles, so **commits merged to \`main\` are sitting undeployed on beta**. The guard itself is working as intended — a dirty tree or a non-main checkout must never be released, since the deploy builds from the working tree. This ticket exists because the refusal used to be silent (ISSUE-174).\n\nClearing the condition named below lets the very next cycle deploy on its own; nothing needs to be retried by hand."
+    title="Release blocked $RELEASE_BLOCK_ALARM_AFTER+ cycles — the deploy target is not receiving merged work"
+    body="The dev loop's release phase has refused to deploy for $RELEASE_BLOCK_ALARM_AFTER consecutive cycles, so **commits merged to \`main\` are sitting undeployed**. The guard itself is working as intended — a dirty tree or a non-main checkout must never be released, since the deploy builds from the working tree. This ticket exists because the refusal used to be silent (ISSUE-174).\n\nClearing the condition named below lets the very next cycle deploy on its own; nothing needs to be retried by hand."
     repro="1. Read the detail line at the top of the output below.\n2. Commit, stash, or remove what it names (or return the primary checkout to \`main\`).\n3. The next release cycle deploys with no further action."
   elif [[ "$kind" == "tests" ]]; then
     title="Test suite red on $(git log -1 --format=%h "$sha") — release blocked"
-    body="The dev loop's release phase ran the project test hook against \`main\` at commit \`$sha\` and something failed, so **the deploy was skipped and beta still runs the previous release**. Filed automatically. The loop will not retry this commit — it retries once a new commit lands on \`main\`, or when \`crew deploy\` is run by hand (\`crew deploy --skip-tests\` releases without the gate, for a hotfix that can't wait on a red suite)."
+    body="The dev loop's release phase ran the project test hook against \`main\` at commit \`$sha\` and something failed, so **the deploy was skipped and the target still runs the previous release**. Filed automatically. The loop will not retry this commit — it retries once a new commit lands on \`main\`, or when \`crew deploy\` is run by hand (\`crew deploy --skip-tests\` releases without the gate, for a hotfix that can't wait on a red suite)."
     repro="1. \`git checkout main && git reset --hard $sha\`\n2. Run ${CREW_TEST_LABEL:-the crew_hook_test command}\n3. Observe the failure above."
   else
     title="Deploy failed on $(git log -1 --format=%h "$sha")"
@@ -771,13 +771,21 @@ file_deploy_failure_ticket() {
   log "release: filed deploy-failure ticket ${FILED_TICKET_ID:-(id not returned)}"
 }
 
-# The commit the beta backend reports it is actually running. Written by
-# scripts/deploy-backend.sh into a COMMIT_SHA file (the deploy rsync excludes
-# .git, so the server can't derive it itself) and served from the public
-# /api/health-check. Empty if beta is unreachable or the endpoint is down.
-beta_running_commit() {
-  curl -sf --max-time 10 -A "$USER_AGENT" "$BASE_URL/api/health-check" 2>/dev/null \
-    | jq -r '.commit // empty' 2>/dev/null || true
+# What the deploy target reports it is actually running — a commit sha or a
+# version, on one line. Empty when the target is unreachable, the hook is
+# undefined, or it fails.
+#
+# This is `crew_hook_released` in crew.config.sh, because "what is live" is a
+# fact about the PROJECT, not about the crew. An earlier version hardcoded one
+# project's `/api/health-check` and reached it through $BASE_URL — the
+# *tracker's* host — which worked only because that project's app and its
+# tracker happen to share a hostname. Nothing about that generalises.
+#
+# The Node runner reads the same thing from the repo's own `.crew.yaml`
+# (`hooks.released`, see docs/REPO_SPEC.md); this is the bash equivalent.
+released_commit() {
+  declare -F crew_hook_released >/dev/null || return 0
+  ( crew_hook_released 2>/dev/null | head -1 | tr -d ' \n' ) || true
 }
 
 # Announces one piece of release state to wherever this installation wants it
@@ -788,7 +796,7 @@ beta_running_commit() {
 #
 #   crew_hook_notify <level> <headline> <detail>
 #     level    ok | warn | fail   — what happened, not how to draw it
-#     headline one short line, e.g. "v0.56.2 live on beta"
+#     headline one short line, e.g. "v0.56.2 live"
 #     detail   one shorter line, e.g. "8d11925 · 3 commit(s) released"
 #
 # Icons, colours, brand marks and the name of the target device are the
@@ -883,7 +891,7 @@ note_release_block() {
 # Stamps `released_version` / `released_at` on every ticket the commits in
 # this release name, and closes out the ones QA had verified: `verified` ->
 # `closed_deployed` ("Deployed"), which is the status that means the fix is
-# running on beta rather than merely finished. This is the only place that
+# running on the deploy target rather than merely finished. This is the only place that
 # status is ever set — the release is the fact it records, so nothing before
 # a successful deploy may claim it.
 #
@@ -1260,21 +1268,21 @@ release_if_unreleased() {
   if [[ -z "$last" ]]; then
     # First run after installing this: seed the ref rather than deploying an
     # unbounded backlog of history nobody asked to release. Prefer the commit
-    # beta says it is actually running (truthful — if beta is genuinely behind
-    # main, the next cycle releases the difference, which is the point) and
+    # the target says it is actually running (truthful — if it is genuinely
+    # behind main, the next cycle releases the difference, which is the point) and
     # fall back to HEAD only when that can't be resolved to a local commit.
     local seed seed_src
-    seed=$(beta_running_commit)
+    seed=$(released_commit)
     if [[ -n "$seed" ]] && git rev-parse -q --verify "$seed^{commit}" >/dev/null; then
-      seed_src="beta's reported running commit"
+      seed_src="the deploy target's reported running commit"
     else
       seed="$head"
-      seed_src="local HEAD (beta unreachable or running an unknown commit)"
+      seed_src="local HEAD (target unreachable or running an unknown commit)"
     fi
     git update-ref "$LAST_RELEASE_REF" "$seed"
     last="$seed"
     log "release: no $LAST_RELEASE_REF yet — seeded at $(git log -1 --format=%h "$seed") from $seed_src"
-    # Deliberately no early return: a seed taken from beta's own reported
+    # Deliberately no early return: a seed taken from the target's own reported
     # commit is a fact, so anything past it is genuinely unreleased and can
     # go out this cycle. The HEAD fallback needs no special case — it makes
     # head == last, so the check below returns anyway.
@@ -1306,7 +1314,7 @@ release_if_unreleased() {
   if [[ -z "$skip_tests" ]]; then
     if ! run_release_tests "$output_file"; then
       local tshort; tshort=$(git log -1 --format=%h "$head")
-      log "release: test suites FAILED — not deploying $tshort, beta stays on the previous release"
+      log "release: test suites FAILED — not deploying $tshort, the target stays on the previous release"
       echo "$head" > "$DEPLOY_FAILED_SHA_FILE"
       local tticket=""
       if [[ "$prev_failed" == "$head" ]]; then
@@ -1343,20 +1351,20 @@ release_if_unreleased() {
 
     stamp_release_tickets "$last" "$head" "$version" || true
 
-    # Ask beta what it is actually running rather than assuming the deploy
+    # Ask the target what it is actually running rather than assuming the deploy
     # landed — a restarted-but-stale backend is exactly the failure the
     # status widget exists to surface. This also confirms the backend came
     # back up at all.
     local running
-    running=$(beta_running_commit)
+    running=$(released_commit)
     if [[ -z "$running" ]]; then
-      notify warn "v$version · $short deployed" "beta not responding"
-      log "release: deployed, but beta /api/health-check did not respond"
+      notify warn "v$version · $short deployed" "target not responding"
+      log "release: deployed, but the released hook returned nothing"
     elif [[ "$running" == "$head" ]]; then
-      notify ok "v$version live on beta" "$short · $count commit(s) released"
+      notify ok "v$version live" "$short · $count commit(s) released"
     else
-      notify warn "v$version · $short deployed" "beta running $(echo "$running" | cut -c1-7)"
-      log "release: deployed $short but beta reports running $running"
+      notify warn "v$version · $short deployed" "target running $(echo "$running" | cut -c1-7)"
+      log "release: deployed $short but the target reports running $running"
     fi
   else
     log "release: deploy FAILED (exit $status) — leaving $LAST_RELEASE_REF unchanged"
@@ -1852,6 +1860,19 @@ crew_doctor() {
     printf 'OK   hooks            crew_hook_test / crew_hook_build / crew_hook_deploy defined\n'
   else
     printf 'FAIL hooks            crew.config.sh must define crew_hook_test, crew_hook_build and crew_hook_deploy\n'; ok=1
+  fi
+  # A missing released hook is not fatal, but it silently downgrades every
+  # deploy verification to "we ran the deploy and it exited 0", so it is
+  # called out rather than left to be discovered.
+  if declare -F crew_hook_released >/dev/null; then
+    local live; live=$(released_commit)
+    if [[ -n "$live" ]]; then
+      printf 'OK   released hook    reports %s\n' "$(echo "$live" | cut -c1-12)"
+    else
+      printf 'note released hook    defined, but returned nothing (target unreachable?)\n'
+    fi
+  else
+    printf 'note released hook    none — deploys cannot be verified, only run\n'
   fi
   # Optional by design: no notifier just means release state goes to the log.
   if declare -F crew_hook_notify >/dev/null; then

@@ -29,7 +29,7 @@ built it believes it is done — that belief is exactly what you are testing.
 Your job is not to confirm it. It is to try, in good faith and with some
 imagination, to make the fix fail: the stated repro, the obvious variation
 on it, the adjacent thing the change could plausibly have broken. A pass
-from you queues the branch for merge and deploy to beta with no further
+from you queues the branch for merge and deploy with no further
 human review, so "probably fine" is not a pass.
 
 ### Your run
@@ -75,7 +75,7 @@ human review, so "probably fine" is not a pass.
 
    - **It holds up** → `status` = `verified`, and clear `assignee_id`. That
      is the merge trigger: the release phase will squash-merge the branch,
-     bump the version, and deploy to beta this cycle or the next. Say in
+     bump the version, and deploy this cycle or the next. Say in
      the comment what you exercised, so the record shows what "verified"
      covered.
    - **It doesn't** → `status` = `in_progress`, `assignee_id` = the lane

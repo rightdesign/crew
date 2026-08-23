@@ -1,83 +1,107 @@
 /**
- * crew.yaml — everything this ship knows that is not code.
+ * crew.yaml — what this ship is, and what it is connected to.
  *
- * Replaces the sourced `crew.config.sh` of the bash runner. The shape follows
- * CREW_PRD §14 (R14: "briefs name hooks rather than commands"), so a hook is a
- * command string rather than a shell function: Node cannot source bash, and a
- * command string is the part that was ever portable anyway.
+ * Two levels, because a ship is not a project (CREW_PRD §1.1, §15):
  *
- * Ids live here for now. ISSUE-285 (`crew connect`) moves them into
- * `.tablation/connection.json`, resolved by name — `loadConfig` is the seam
- * that will read from there instead, which is why nothing else in the runner
- * touches the file.
+ *   ship:        facts about this machine — the agent binary, the shell its
+ *                hooks are written for, where state and logs go. One per file.
+ *   connections: one entry per project this ship works. A **connection** binds
+ *                one slice of one work source to one local directory, and a
+ *                machine may hold many at once.
+ *
+ * IDS ARE RESOLVED, NOT AUTHORED. A connection names its workspace and project
+ * in words; the uuids for the tracker's data models and the crew's rows are
+ * discovered from the project and cached under `resolved:`. `crew connect`
+ * (ISSUE-285) is what writes that cache. Until it exists the cache may be
+ * filled in by hand, which is why it is a distinct block rather than mixed in
+ * with the settings a person actually authors — everything under `resolved:`
+ * is derivable and regenerable, and nothing under it should be edited to
+ * change behaviour.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { parse } from 'yaml';
-import { isPlatformRequirement, type PlatformRequirement } from './platform.ts';
+import {
+  isPlatformRequirement, hostPlatform, isShipPlatform,
+  type PlatformRequirement, type ShipPlatform,
+} from './platform.ts';
 
 export type RoleName = 'dev' | 'design' | 'qa' | 'triage';
-export const BUILDING_ROLES = ['dev', 'design'] as const;
+export const ROLE_NAMES: RoleName[] = ['dev', 'design', 'qa', 'triage'];
+export const ROLE_LABEL: Record<RoleName, string> = {
+  dev: 'Dev', design: 'Design', qa: 'QA', triage: 'Triage',
+};
 
-export interface HoldConfig {
-  id: string;
-  /** Shown in parentheses after the name, when the name does not carry it. */
-  role?: string;
+export interface HoldConfig { id: string; role?: string }
+
+/** The ids a connection discovers from its project. Regenerable; never authored. */
+export interface ResolvedIds {
+  workspaceId: string;
+  projectId?: string;
+  /** The `Projects` table, and the row this connection's `area` names. */
+  areaModelId?: string;
+  areaId?: string;
+  models: { issues: string; comments: string; crew: string };
+  seats: Partial<Record<RoleName, string>>;
+  operator: string;
+  holds: HoldConfig[];
+}
+
+export interface Connection {
+  /** Short local handle, used in logs, state file names and `crew run <name>`. */
+  name: string;
+  /**
+   * Which row of the work source's `Projects` table this connection works —
+   * one *area of development*, named rather than numbered.
+   *
+   * Note the deliberate word: `project` below is the **Tablation project**
+   * that contains the tracker's tables, while `area` is a **row in the
+   * Projects table inside it**. Both are called "project" in conversation and
+   * they are not the same thing; a connection binds one area to one checkout,
+   * and a ship holds many such connections.
+   *
+   * Omit it and the connection sees every ticket, whatever its area — which
+   * is right for a tracker that has not been sliced.
+   */
+  area?: string;
+  /** Per-connection interlock: this one connection polls and runs. */
+  enabled: boolean;
+  workspace: string;
+  project?: string;
+  dir: string;
+  worktreePrefix: string;
+  /** What this project needs of a host. Checked against the ship's platform. */
+  platform: PlatformRequirement;
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyFile?: string;
+  apiKeyVar?: string;
+  hooks: { test?: string; build?: string; deploy?: string; notify?: string };
+  labels: { test?: string; build?: string; deploy?: string };
+  release: { versionFiles: string[]; changelog: string };
+  resolved?: ResolvedIds;
+}
+
+export interface Ship {
+  name: string;
+  platform: ShipPlatform;
+  agent: { bin: string; model: string };
+  shell?: string;
+  extraPath?: string;
+  useNvm: boolean;
+  nvmSh?: string;
+  stateDir: string;
+  logFile: string;
+  userAgent: string;
 }
 
 export interface CrewConfig {
-  /** Safety interlock: nothing polls, runs, merges or deploys until true. */
-  enabled: boolean;
-  project: {
-    dir: string;
-    worktreePrefix: string;
-    /**
-     * What this project needs of a host — 'any' | 'unix' | 'macos' | 'linux' |
-     * 'windows'. Broader than a host ("unix" for POSIX-shell hooks) or
-     * narrower than a family ("macos" for an Xcode build). Checked by
-     * `doctor` against the running host; the same predicate is what
-     * cross-ship dispatch will filter on once Ships exist (ISSUE-328).
-     */
-    platform: PlatformRequirement;
-  };
-  tracker: {
-    baseUrl: string;
-    workspaceId: string;
-    models: { issues: string; comments: string; crew: string };
-    apiKey?: string;
-    apiKeyFile?: string;
-    apiKeyVar?: string;
-    userAgent: string;
-  };
-  crew: {
-    seats: Partial<Record<RoleName, string>>;
-    operator: string;
-    holds: HoldConfig[];
-  };
-  agent: { bin: string; model: string };
-  hooks: { test?: string; build?: string; deploy?: string; notify?: string };
-  /** Human-readable names for the hooks, used in log lines and filed tickets. */
-  labels: { test?: string; build?: string; deploy?: string };
-  release: { versionFiles: string[]; changelog: string };
-  runtime: {
-    extraPath?: string;
-    useNvm: boolean;
-    nvmSh?: string;
-    /**
-     * The interpreter hooks are written for. Defaults per platform (bash on
-     * POSIX, PowerShell on Windows) — a setting, never an assumption, so a
-     * Windows ship needs no change to the hook contract.
-     *
-     * This is the ship-local stand-in for what belongs on the **Ship record**
-     * (CREW_PRD §15): a ship's host platform is a fact the project needs, not
-     * just this process, because hooks are written per-platform and a role
-     * cannot be handed to a ship that cannot run its hooks. See ISSUE-328.
-     */
-    shell?: string;
-  };
-  paths: { stateDir: string; logFile: string; crewHome: string; configFile: string };
+  ship: Ship;
+  connections: Connection[];
+  crewHome: string;
+  configFile: string;
 }
 
 export class ConfigError extends Error {}
@@ -88,17 +112,10 @@ function expand(p: string, base: string): string {
   return isAbsolute(out) ? out : resolve(base, out);
 }
 
-/**
- * Collects every missing setting instead of throwing on the first, so filling
- * in a fresh crew.yaml takes one pass rather than one run per field.
- */
 class Missing {
   private readonly paths: string[] = [];
   req<T>(v: T | undefined | null, path: string): T {
-    if (v === undefined || v === null || v === '') {
-      this.paths.push(path);
-      return '' as unknown as T;
-    }
+    if (v === undefined || v === null || v === '') { this.paths.push(path); return '' as unknown as T; }
     return v;
   }
   add(path: string) { this.paths.push(path); }
@@ -113,134 +130,155 @@ class Missing {
   }
 }
 
-/** Locate crew.yaml: $CREW_CONFIG, else alongside the installation. */
 export function findConfigFile(crewHome: string): string {
-  const explicit = process.env.CREW_CONFIG;
-  if (explicit) return resolve(explicit);
-  return resolve(crewHome, 'crew.yaml');
+  return process.env.CREW_CONFIG ? resolve(process.env.CREW_CONFIG) : resolve(crewHome, 'crew.yaml');
+}
+
+function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undefined {
+  if (!raw) return undefined;
+  const seats: Partial<Record<RoleName, string>> = {};
+  for (const role of ROLE_NAMES) if (raw.seats?.[role]) seats[role] = raw.seats[role];
+  const holds: HoldConfig[] = Array.isArray(raw.holds)
+    ? raw.holds.map((h: any) => (typeof h === 'string' ? { id: h } : { id: h?.id, role: h?.role ?? '' }))
+    : [];
+  return {
+    workspaceId: m.req(raw.workspaceId, `${where}.resolved.workspaceId`),
+    projectId: raw.projectId,
+    areaModelId: raw.areaModelId,
+    areaId: raw.areaId,
+    models: {
+      issues: m.req(raw.models?.issues, `${where}.resolved.models.issues`),
+      comments: m.req(raw.models?.comments, `${where}.resolved.models.comments`),
+      crew: m.req(raw.models?.crew, `${where}.resolved.models.crew`),
+    },
+    seats,
+    operator: m.req(raw.operator, `${where}.resolved.operator`),
+    holds,
+  };
 }
 
 export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   const file = configFile ?? findConfigFile(crewHome);
   if (!existsSync(file)) {
-    throw new ConfigError(
-      `no config at ${file} — copy crew.example.yaml to crew.yaml and fill it in`,
-    );
+    throw new ConfigError(`no config at ${file} — copy crew.example.yaml to crew.yaml and fill it in`);
   }
   const raw = parse(readFileSync(file, 'utf8')) as Record<string, any> | null;
   if (!raw || typeof raw !== 'object') throw new ConfigError(`${file} is empty or not a mapping`);
   const base = dirname(file);
-
   const missing = new Missing();
-  const req = <T,>(v: T | undefined | null, path: string): T => missing.req(v, path);
 
-  const projectDir = expand(req(raw.project?.dir, 'project.dir'), base) as string;
-  const holds: HoldConfig[] = Array.isArray(raw.crew?.holds)
-    ? raw.crew.holds.map((h: any, i: number) =>
-        typeof h === 'string'
-          ? { id: h }
-          : { id: req(h?.id, `crew.holds[${i}].id`), role: h?.role ?? '' },
-      )
-    : [];
-
-  const seats: Partial<Record<RoleName, string>> = {};
-  for (const role of ['dev', 'design', 'qa', 'triage'] as RoleName[]) {
-    const id = raw.crew?.seats?.[role];
-    if (id) seats[role] = id;
+  const shipRaw = raw.ship ?? {};
+  const declaredPlatform = shipRaw.platform ? String(shipRaw.platform) : undefined;
+  if (declaredPlatform && !isShipPlatform(declaredPlatform)) {
+    missing.add(`ship.platform must be one of macos|linux|windows (got "${declaredPlatform}")`);
   }
-  if (Object.keys(seats).length === 0) missing.add('crew.seats (at least one of dev/design/qa/triage)');
 
-  const tracker = {
-    baseUrl: (req(raw.tracker?.baseUrl, 'tracker.baseUrl') as string).replace(/\/+$/, ''),
-    workspaceId: req(raw.tracker?.workspaceId, 'tracker.workspaceId') as string,
-    models: {
-      issues: req(raw.tracker?.models?.issues, 'tracker.models.issues') as string,
-      comments: req(raw.tracker?.models?.comments, 'tracker.models.comments') as string,
-      crew: req(raw.tracker?.models?.crew, 'tracker.models.crew') as string,
-    },
-  };
-  const operator = req(raw.crew?.operator, 'crew.operator') as string;
-  const worktreePrefix = req(raw.project?.worktreePrefix, 'project.worktreePrefix') as string;
-  const platformRaw = String(raw.project?.platform ?? 'any');
-  if (!isPlatformRequirement(platformRaw)) {
-    missing.add(`project.platform must be one of any|unix|macos|linux|windows (got "${platformRaw}")`);
+  const connRaw = raw.connections;
+  if (!Array.isArray(connRaw) || connRaw.length === 0) {
+    missing.add('connections (at least one)');
   }
+
+  const connections: Connection[] = (Array.isArray(connRaw) ? connRaw : []).map((c: any, i: number) => {
+    const where = `connections[${i}]`;
+    const name = missing.req(c?.name, `${where}.name`) as string;
+    const dir = expand(missing.req(c?.dir, `${where}.dir`) as string, base);
+    const platformRaw = String(c?.platform ?? 'any');
+    if (!isPlatformRequirement(platformRaw)) {
+      missing.add(`${where}.platform must be one of any|unix|macos|linux|windows (got "${platformRaw}")`);
+    }
+    const versionFiles: string[] = Array.isArray(c?.release?.versionFiles)
+      ? c.release.versionFiles
+      : c?.release?.versionFile ? [c.release.versionFile] : ['package.json'];
+    return {
+      name,
+      enabled: c?.enabled === true,
+      workspace: missing.req(c?.workspace, `${where}.workspace`) as string,
+      project: c?.project,
+      area: c?.area,
+      dir,
+      worktreePrefix: missing.req(c?.worktreePrefix, `${where}.worktreePrefix`) as string,
+      platform: platformRaw as PlatformRequirement,
+      baseUrl: (missing.req(c?.baseUrl ?? raw.ship?.baseUrl, `${where}.baseUrl`) as string).replace(/\/+$/, ''),
+      apiKey: c?.apiKey,
+      apiKeyFile: c?.apiKeyFile ? expand(c.apiKeyFile, dir) : undefined,
+      apiKeyVar: c?.apiKeyVar,
+      hooks: { test: c?.hooks?.test, build: c?.hooks?.build, deploy: c?.hooks?.deploy, notify: c?.hooks?.notify },
+      labels: {
+        test: c?.labels?.test ?? c?.hooks?.test,
+        build: c?.labels?.build ?? c?.hooks?.build,
+        deploy: c?.labels?.deploy ?? c?.hooks?.deploy,
+      },
+      release: { versionFiles, changelog: c?.release?.changelog ?? 'CHANGELOG.md' },
+      resolved: parseResolved(c?.resolved, missing, where),
+    };
+  });
+
+  const names = connections.map((c) => c.name);
+  const dupe = names.find((n, i) => n && names.indexOf(n) !== i);
+  if (dupe) missing.add(`connections: duplicate name "${dupe}" — names address a connection, so they must be unique`);
+
   missing.throwIfAny(file);
 
-  const versionFiles: string[] = Array.isArray(raw.release?.versionFiles)
-    ? raw.release.versionFiles
-    : raw.release?.versionFile
-      ? [raw.release.versionFile]
-      : ['package.json'];
-
   return {
-    enabled: raw.enabled === true,
-    project: { dir: projectDir, worktreePrefix, platform: platformRaw as PlatformRequirement },
-    tracker: {
-      ...tracker,
-      apiKey: raw.tracker?.apiKey,
-      apiKeyFile: raw.tracker?.apiKeyFile ? expand(raw.tracker.apiKeyFile, projectDir) : undefined,
-      apiKeyVar: raw.tracker?.apiKeyVar,
-      // Cloudflare 403s default curl/python agents on this host; keep a real-ish one.
-      userAgent: raw.tracker?.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+    ship: {
+      name: shipRaw.name ?? 'this ship',
+      platform: (declaredPlatform as ShipPlatform) ?? hostPlatform(),
+      agent: { bin: expand(shipRaw.agent?.bin ?? 'claude', base), model: shipRaw.agent?.model ?? 'claude-sonnet-5' },
+      shell: shipRaw.shell,
+      extraPath: shipRaw.extraPath,
+      useNvm: shipRaw.useNvm !== false,
+      nvmSh: shipRaw.nvmSh,
+      stateDir: expand(shipRaw.stateDir ?? '.state', crewHome),
+      logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'tablation-crew.log'), crewHome),
+      userAgent: shipRaw.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
     },
-    crew: { seats, operator, holds },
-    agent: {
-      bin: expand(raw.agent?.bin ?? 'claude', base),
-      model: raw.agent?.model ?? 'claude-sonnet-5',
-    },
-    hooks: {
-      test: raw.hooks?.test,
-      build: raw.hooks?.build,
-      deploy: raw.hooks?.deploy,
-      notify: raw.hooks?.notify,
-    },
-    labels: {
-      test: raw.labels?.test ?? raw.hooks?.test,
-      build: raw.labels?.build ?? raw.hooks?.build,
-      deploy: raw.labels?.deploy ?? raw.hooks?.deploy,
-    },
-    release: { versionFiles, changelog: raw.release?.changelog ?? 'CHANGELOG.md' },
-    runtime: {
-      extraPath: raw.runtime?.extraPath,
-      useNvm: raw.runtime?.useNvm !== false,
-      nvmSh: raw.runtime?.nvmSh,
-      shell: raw.runtime?.shell,
-    },
-    paths: {
-      crewHome,
-      configFile: file,
-      stateDir: expand(raw.paths?.stateDir ?? '.state', crewHome),
-      logFile: expand(raw.paths?.logFile ?? join(tmpdir(), 'tablation-crew.log'), crewHome),
-    },
+    connections,
+    crewHome,
+    configFile: file,
   };
 }
 
-/** The API key, from the config or from a KEY=value file. Never logged. */
-export function resolveApiKey(cfg: CrewConfig): string {
-  if (cfg.tracker.apiKey) return cfg.tracker.apiKey;
-  const { apiKeyFile, apiKeyVar } = cfg.tracker;
-  if (apiKeyFile && apiKeyVar && existsSync(apiKeyFile)) {
-    for (const line of readFileSync(apiKeyFile, 'utf8').split('\n')) {
-      const m = line.match(new RegExp(`^${apiKeyVar}=(.*)$`));
+/** Look a connection up by name — how `crew run <name>` addresses one. */
+export function connection(cfg: CrewConfig, name?: string): Connection {
+  if (!name) {
+    const enabled = cfg.connections.filter((c) => c.enabled);
+    if (enabled.length === 1) return enabled[0] as Connection;
+    if (cfg.connections.length === 1) return cfg.connections[0] as Connection;
+    throw new ConfigError(
+      `this ship has ${cfg.connections.length} connections — name one: ${cfg.connections.map((c) => c.name).join(', ')}`,
+    );
+  }
+  const found = cfg.connections.find((c) => c.name === name);
+  if (!found) {
+    throw new ConfigError(`no connection named "${name}" (have: ${cfg.connections.map((c) => c.name).join(', ')})`);
+  }
+  return found;
+}
+
+/** The API key for one connection. Never logged. */
+export function resolveApiKey(c: Connection): string {
+  if (c.apiKey) return c.apiKey;
+  if (c.apiKeyFile && c.apiKeyVar && existsSync(c.apiKeyFile)) {
+    for (const line of readFileSync(c.apiKeyFile, 'utf8').split('\n')) {
+      const m = line.match(new RegExp(`^${c.apiKeyVar}=(.*)$`));
       if (m) return (m[1] ?? '').trim().replace(/^["']|["']$/g, '');
     }
   }
   throw new ConfigError(
-    `no tracker API key (tracker.apiKey, or ${apiKeyVar ?? 'VAR'} in ${apiKeyFile ?? '<unset>'})`,
+    `connection "${c.name}": no API key (apiKey, or ${c.apiKeyVar ?? 'VAR'} in ${c.apiKeyFile ?? '<unset>'})`,
   );
 }
 
-/** Seats and holds as the roster builder wants them. */
-export function configuredMembers(cfg: CrewConfig) {
-  const ROLE_LABEL: Record<RoleName, string> = {
-    dev: 'Dev', design: 'Design', qa: 'QA', triage: 'Triage',
-  };
+/** Seats and holds as the roster builder wants them. Requires resolved ids. */
+export function configuredMembers(c: Connection) {
+  const r = c.resolved;
+  if (!r) throw new ConfigError(`connection "${c.name}" has no resolved ids — run \`crew connect\``);
   const out: Array<{ id: string; role: string; kind: 'seat' | 'hold' }> = [];
-  for (const [role, id] of Object.entries(cfg.crew.seats)) {
-    if (id) out.push({ id, role: ROLE_LABEL[role as RoleName], kind: 'seat' });
+  for (const role of ROLE_NAMES) {
+    const id = r.seats[role];
+    if (id) out.push({ id, role: ROLE_LABEL[role], kind: 'seat' });
   }
-  out.push({ id: cfg.crew.operator, role: 'Operator', kind: 'hold' });
-  for (const h of cfg.crew.holds) out.push({ id: h.id, role: h.role ?? '', kind: 'hold' });
+  if (r.operator) out.push({ id: r.operator, role: 'Operator', kind: 'hold' });
+  for (const h of r.holds) if (h.id) out.push({ id: h.id, role: h.role ?? '', kind: 'hold' });
   return out;
 }
