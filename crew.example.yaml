@@ -1,0 +1,103 @@
+# crew.yaml — everything this ship knows that is not code.
+#
+# Copy to crew.yaml and fill in. crew.yaml is gitignored: it carries ids,
+# absolute paths and possibly a key, all of which describe THIS machine.
+
+# Safety interlock. Nothing polls, runs an agent, merges or deploys until
+# this is true. Arming is a deliberate, one-place act.
+enabled: false
+
+project:
+  # The checkout the crew works in — never this directory.
+  dir: ~/src/my-project
+  # Worktrees are created beside it as <prefix><issue number>.
+  worktreePrefix: my-project-issue-
+  # What this project needs of a host: any | unix | macos | linux | windows.
+  # "unix" suits POSIX-shell hooks on either macOS or Linux; name a single
+  # host when the project genuinely requires it (an Xcode build needs macos).
+  # doctor refuses to arm a ship that cannot satisfy it.
+  platform: any
+
+tracker:
+  baseUrl: https://app.tablation.com
+  workspaceId: ""
+  models:
+    issues: ""     # the Issues data model
+    comments: ""   # the Comments data model
+    crew: ""       # the Crew data model — supplies each member's Name
+  # Either set the key directly, or point at a file with a KEY=value line
+  # (an existing .env is the usual answer, so the key lives in one place).
+  # apiKey: "sk_..."
+  apiKeyFile: .env
+  apiKeyVar: TABLATION_API_KEY
+
+crew:
+  # Seats — the agents this ship runs. Omit one and this ship does not crew
+  # that role. Names are NOT here: they are read from the Crew table at run
+  # time, so renaming a member is a data edit, never a config or prompt edit.
+  # A member may be called anything — name the dev seat "Trevor" and the crew
+  # will call it Trevor, adding the role parenthetically ("Trevor (Dev)")
+  # only where a ticket or comment needs the role to be unambiguous.
+  seats:
+    dev: ""
+    design: ""
+    qa: ""
+    triage: ""
+  # This ship's owner: final say on approval, and the one whose machine, dev
+  # stack and credentials the prompts refer to. Always a hold.
+  operator: ""
+  # Any further rows that mean hands off — other people aboard, and the
+  # interactive-session rows they work through. A ticket assigned to any of
+  # these, or to the operator, is excluded from every count and pick.
+  holds: []
+  #  - id: ""
+  #    role: live session
+
+agent:
+  bin: ~/.local/bin/claude
+  model: claude-sonnet-5
+
+# What the crew cannot know about your project. Each is a command run in
+# project.dir. Omit `notify` and release state just goes to the log.
+hooks:
+  # A hook is a shell script, not just a command: use a YAML block scalar for
+  # anything with more than one step. Exit status decides pass/fail.
+  test: |
+    ok=0
+    pnpm --filter backend test || ok=1
+    pnpm --filter frontend test || ok=1
+    exit "$ok"
+  build: pnpm build
+  deploy: ./deploy.sh
+  # notify receives CREW_NOTIFY_LEVEL (ok|warn|fail), CREW_NOTIFY_HEADLINE
+  # and CREW_NOTIFY_DETAIL in its environment.
+  # notify: ~/bin/my-notifier
+
+# Shown in log lines and in automatically-filed tickets, where the raw
+# command would read badly. Defaults to the command itself.
+labels:
+  test: pnpm test
+  build: pnpm build
+  deploy: ./deploy.sh
+
+release:
+  # Every file the version is written into. The first is also read from.
+  versionFiles: [package.json]
+  changelog: CHANGELOG.md
+
+runtime:
+  # The interpreter your hooks are written for. Defaults to bash on macOS and
+  # Linux, PowerShell on Windows — set it if you want something else. The crew
+  # never parses a hook, so the language is entirely yours.
+  # shell: bash
+  # launchd/systemd hand a script a minimal PATH with no node or package
+  # manager on it. Anything the hooks need goes here.
+  extraPath: ""
+  # Node from nvm, pinned by the project's .nvmrc. Set false if the project
+  # does not use nvm (or does not use node at all).
+  useNvm: true
+  # nvmSh: /opt/homebrew/opt/nvm/nvm.sh
+
+paths:
+  stateDir: .state
+  logFile: /tmp/tablation-crew.log

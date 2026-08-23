@@ -5,3 +5,8 @@ crew.config.sh
 # Runtime state — locks, poll watermark, rendered queue digests, pause
 # sentinels. Belongs to the installation, not to the code.
 .state/
+
+# Node
+node_modules/
+dist/
+crew.yaml

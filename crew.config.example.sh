@@ -139,14 +139,6 @@ CREW_VERSION_FILE="package.json"
 CREW_VERSION_FILES=(package.json)
 CREW_CHANGELOG="CHANGELOG.md"
 
-# --- Status widget (optional) ---------------------------------------------
-# Leave CREW_WIDGET_BIN empty to skip it entirely.
-CREW_WIDGET_BIN=""
-CREW_WIDGET_TARGET=""
-CREW_WIDGET_ICON=""
-# CREW_WIDGET_INK="1B1A1F"
-# CREW_WIDGET_ACCENT="E8B923"
-
 # --- Project hooks ---------------------------------------------------------
 # The three things the crew cannot know about your project. Each is a shell
 # function; each must return non-zero on failure. These are what ISSUE-293

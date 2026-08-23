@@ -1,0 +1,26 @@
+{
+  "name": "crew",
+  "version": "0.1.0",
+  "description": "A standing team of headless agents that picks work off a Tablation board, does it on a machine you control, and reports back.",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "crew": "./dist/cli.js" },
+  "engines": { "node": ">=22" },
+  "files": ["dist", "prompts", "README.md"],
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --clean",
+    "dev": "tsx src/cli.ts",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tablation/client": "link:../tablation-js/packages/client",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.23.12",
+    "typescript": "^5.7.3"
+  }
+}
