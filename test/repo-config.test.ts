@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   parseRepoConfig, loadRepoConfig, findRepoConfig, resolveRepoConfig,
-  validateEffective, hookLabel, RepoConfigError,
+  validateEffective, hookLabel, RepoConfigError, renderBranchName, slugify,
 } from '../src/repo-config.ts';
 
 const MIN = 'version: 1\nhooks:\n  test: pnpm test\n  build: pnpm build\n  deploy: ./ship.sh\n';
@@ -36,7 +36,7 @@ test('an unknown key is an error — a mistyped hook must never silently not run
     (e: Error) => {
       assert.ok(e instanceof RepoConfigError);
       assert.match(e.message, /unknown hooks key: tests/);
-      assert.match(e.message, /allowed: build, bump, deploy, ports, released, setup, test, version/);
+      assert.match(e.message, /allowed: build, bump, deploy, merged, ports, released, setup, test, version/);
       return true;
     });
   assert.throws(() => parseRepoConfig('version: 1\nplatfrom: unix\n', 'f'), /unknown top-level key: platfrom/);
@@ -251,4 +251,43 @@ test('a repo with no changelog is expressed, not faked', () => {
   assert.equal(c.release.changelog, 'CHANGELOG.md');   // default
   const none = parseRepoConfig(MIN + 'release: { changelog: false }\n', 'f');
   assert.equal(none.release.changelog, null);
+});
+
+test('branch naming is a convention, not a constant', () => {
+  const c = parseRepoConfig(MIN + 'branch:\n  name: "feature/{key}-{slug}"\n  remote: upstream\n', 'f');
+  assert.equal(c.branch.name, 'feature/{key}-{slug}');
+  assert.equal(c.branch.push, 'feature/{key}-{slug}');   // defaults to name
+  assert.equal(c.branch.remote, 'upstream');
+});
+
+test('the default naming is what the crew has always used', () => {
+  const c = parseRepoConfig(MIN, 'f');
+  assert.deepEqual(c.branch, { base: 'main', name: 'issue-{number}', push: 'issue-{number}', remote: 'origin' });
+});
+
+test('a pushed branch may be named differently from the local one', () => {
+  const c = parseRepoConfig(MIN + 'branch:\n  name: "issue-{number}"\n  push: "crew/{key}"\n', 'f');
+  assert.equal(c.branch.name, 'issue-{number}');
+  assert.equal(c.branch.push, 'crew/{key}');
+});
+
+test('a template naming no placeholder is refused — every ticket would collide', () => {
+  assert.throws(() => parseRepoConfig(MIN + 'branch: { name: "work" }\n', 'f'), (e: Error) => {
+    assert.match(e.message, /names no placeholder/);
+    assert.match(e.message, /every ticket would get the same branch/);
+    return true;
+  });
+});
+
+test('placeholders render, and titles are slugified safely for a git ref', () => {
+  assert.equal(renderBranchName('issue-{number}', { key: 'ISSUE-326' }), 'issue-326');
+  assert.equal(renderBranchName('feature/{key}', { key: 'ISSUE-326' }), 'feature/ISSUE-326');
+  assert.equal(
+    renderBranchName('{role}/{number}-{slug}', { key: 'ISSUE-7', title: 'Fix the "widget" — now!', role: 'dev' }),
+    'dev/7-fix-the-widget-now',
+  );
+  assert.equal(slugify(''), 'work');                       // never an empty ref component
+  assert.equal(slugify('---'), 'work');
+  assert.ok(!slugify('A'.repeat(200)).includes(' '));
+  assert.ok(slugify('A'.repeat(200)).length <= 40);
 });

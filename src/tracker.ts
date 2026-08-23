@@ -11,6 +11,7 @@
 import { TablationClient } from '@tablation/client';
 import type { Connection, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
+import { DEFAULT_CONTRACT, resolveContract, type Contract } from './contract.ts';
 
 export interface Ticket {
   id: string;
@@ -47,17 +48,12 @@ export interface CrewRow {
 }
 
 /**
- * A blocker stops counting at these. NOT `fixed`: that is an unmerged branch
- * awaiting QA, so a ticket blocked on it is still genuinely blocked.
+ * Kept as the DEFAULT workspace's sets, for callers that have no contract to
+ * hand. Anything serving a real connection must use that connection's
+ * contract instead — a ship follows each workspace's own rules.
  */
-export const RESOLVED_STATUSES = new Set([
-  'verified', 'closed_deployed', 'closed_wont_fix', 'closed_duplicate',
-]);
-
-/** Everything the poll considers live. Mirrors OPEN_TICKETS_FILTER in bash. */
-export const OPEN_STATUSES = [
-  'new', 'accepted', 'blocked', 'in_progress', 'needs_info', 'fixed', 'qa', 'verified',
-];
+export const RESOLVED_STATUSES = new Set(DEFAULT_CONTRACT.statuses.resolved);
+export const OPEN_STATUSES = DEFAULT_CONTRACT.statuses.open;
 
 type Filter = { columnName: string; operator: string; value: unknown };
 const encodeFilters = (f: Filter[]): string => JSON.stringify(f);
@@ -71,6 +67,8 @@ export class Tracker {
   // --experimental-strip-types cannot transform those, and the test runner
   // uses it. The same rule applies everywhere in src/.
   readonly conn: Connection;
+  /** This workspace's rules. A ship holds several, one per connection. */
+  readonly contract: Contract;
   private readonly client: TablationClient;
   private readonly models: { issues: string; comments: string; crew: string };
 
@@ -82,6 +80,7 @@ export class Tracker {
       );
     }
     this.models = conn.resolved.models;
+    this.contract = resolveContract(conn.contract);
     this.client = new TablationClient({
       baseUrl: `${conn.baseUrl}/api`,
       apiKey: resolveApiKey(conn),
@@ -100,9 +99,12 @@ export class Tracker {
    * nobody has sliced yet.
    */
   async openTickets(): Promise<Ticket[]> {
-    const filters: Filter[] = [{ columnName: 'status', operator: 'IN', value: OPEN_STATUSES }];
+    const c = this.contract;
+    const filters: Filter[] = [
+      { columnName: c.columns.status, operator: 'IN', value: c.statuses.open },
+    ];
     const areaId = this.conn.resolved?.areaId;
-    if (areaId) filters.push({ columnName: 'project_id', operator: 'EQ', value: areaId });
+    if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
     return this.client.records.list<Ticket>(this.models.issues, {
       filters: encodeFilters(filters),
       limit: 500,

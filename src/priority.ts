@@ -17,21 +17,28 @@ export interface Rankable {
   priority?: string | null;
 }
 
-const SEVERITY_TO_PRIORITY: Record<string, number> = { s1: 0, s2: 1, s3: 2, s4: 3 };
-const EXPLICIT_PRIORITY: Record<string, number> = { p0: 0, p1: 1, p2: 2, p3: 3 };
+import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
+
+/**
+ * A workspace's own ordering, as a lookup. Built per contract rather than
+ * hardcoded: a ship serving several workspaces must rank each by its own
+ * rules, and nothing about "p0" says it beats "p3".
+ */
+const indexOf = (order: string[]): Record<string, number> =>
+  Object.fromEntries(order.map((v, i) => [v, i]));
 
 /**
  * Priority implied by severity, using triage's own mapping. An unrecognised
  * or absent severity lands mid-pack (2) rather than last, matching the jq:
  * an unclassified ticket should not outrank an S1, nor sink below an S4.
  */
-export function derivedPriority(t: Rankable): number {
-  return SEVERITY_TO_PRIORITY[t.severity ?? ''] ?? 2;
+export function derivedPriority(t: Rankable, c: Contract = DEFAULT_CONTRACT): number {
+  return indexOf(c.severityOrder)[t.severity ?? ''] ?? c.unknownPriorityRank;
 }
 
 /** The explicitly-set Priority, or null when nobody has set one. */
-export function explicitPriority(t: Rankable): number | null {
-  return EXPLICIT_PRIORITY[t.priority ?? ''] ?? null;
+export function explicitPriority(t: Rankable, c: Contract = DEFAULT_CONTRACT): number | null {
+  return indexOf(c.priorityOrder)[t.priority ?? ''] ?? null;
 }
 
 /**
@@ -43,9 +50,9 @@ export function explicitPriority(t: Rankable): number | null {
  * flagging a ticket for attention pushed it backwards (ISSUE-159 vs
  * ISSUE-142). To rank something down, lower its Severity.
  */
-export function effectivePriority(t: Rankable): number {
-  const explicit = explicitPriority(t);
-  const derived = derivedPriority(t);
+export function effectivePriority(t: Rankable, c: Contract = DEFAULT_CONTRACT): number {
+  const explicit = explicitPriority(t, c);
+  const derived = derivedPriority(t, c);
   return explicit === null ? derived : Math.min(explicit, derived);
 }
 
@@ -55,8 +62,8 @@ export function effectivePriority(t: Rankable): number {
  * last, while as a priority it sorts mid-pack. The jq draws the same
  * distinction and it is load-bearing, not a typo.
  */
-export function severityRank(t: Rankable): number {
-  return SEVERITY_TO_PRIORITY[t.severity ?? ''] ?? 4;
+export function severityRank(t: Rankable, c: Contract = DEFAULT_CONTRACT): number {
+  return indexOf(c.severityOrder)[t.severity ?? ''] ?? c.severityOrder.length;
 }
 
 /** The numeric half of ISSUE-nnn, for oldest-first ordering. */
@@ -67,14 +74,14 @@ export function issueNumber(t: Rankable): number {
 }
 
 /** Full sort key: effective priority, then severity, then oldest first. */
-export function rank(t: Rankable): [number, number, number] {
-  return [effectivePriority(t), severityRank(t), issueNumber(t)];
+export function rank(t: Rankable, c: Contract = DEFAULT_CONTRACT): [number, number, number] {
+  return [effectivePriority(t, c), severityRank(t, c), issueNumber(t)];
 }
 
 /** Compare two rank keys lexicographically; lower sorts first. */
-export function compareRank(a: Rankable, b: Rankable): number {
-  const ra = rank(a);
-  const rb = rank(b);
+export function compareRank(a: Rankable, b: Rankable, c: Contract = DEFAULT_CONTRACT): number {
+  const ra = rank(a, c);
+  const rb = rank(b, c);
   for (let i = 0; i < ra.length; i++) {
     const d = (ra[i] as number) - (rb[i] as number);
     if (d !== 0) return d;
@@ -87,8 +94,8 @@ export function compareRank(a: Rankable, b: Rankable): number {
  * arithmetic in bash's `lane_top_rank`. Kept identical so a Node runner and
  * a bash runner would pick the same role from the same queue.
  */
-export function rankScalar(t: Rankable): number {
-  const [p, s, n] = rank(t);
+export function rankScalar(t: Rankable, c: Contract = DEFAULT_CONTRACT): number {
+  const [p, s, n] = rank(t, c);
   return p * 1_000_000_000 + s * 10_000_000 + n;
 }
 

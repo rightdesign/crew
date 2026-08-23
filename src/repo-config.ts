@@ -47,6 +47,24 @@ export interface RepoHooks {
    */
   bump?: string;
   /**
+   * Answers "did this ticket's work land?" — exit 0 for yes, non-zero for no.
+   *
+   * Receives CREW_TICKET (ISSUE-326), CREW_BRANCH (the pushed branch) and
+   * CREW_BASE in its environment.
+   *
+   * This exists because the crew's own detection is a heuristic and the repo
+   * usually knows better. On a forge-based process one line is definitive:
+   *
+   *   gh pr list --head "$CREW_BRANCH" --state merged --json number \
+   *     | grep -q number
+   *
+   * Without it the crew falls back to searching the base branch for the
+   * ticket key, which a squash merge preserves only if whoever merged left
+   * the PR title alone. That is good enough to be useful and too fragile to
+   * be authoritative — so where closure matters, define this.
+   */
+  merged?: string;
+  /**
    * Prints, on one line, what is live right now — a commit sha or a version.
    *
    * This is how the crew learns the outcome of a release it did not perform,
@@ -85,8 +103,36 @@ export interface ReleaseVerify {
   intervalSeconds: number;
 }
 
+/**
+ * How this repo names the branches the crew creates, and what it is called
+ * when pushed for review.
+ *
+ * A convention, not a constant: `issue-326` suits one org, `feature/ISSUE-326`
+ * or `bc/issue-326-add-widget` another, and a repo with branch protection may
+ * require a prefix to be pushable at all.
+ *
+ * Placeholders: {key} (ISSUE-326), {number} (326), {slug} (title, slugified),
+ * {role} (dev/design/qa).
+ */
+export interface BranchNaming {
+  /**
+   * The branch work is cut from and merged back into. NOT assumed to be
+   * `main`: an established repo may integrate on `master`, `develop`, or a
+   * release train, and the crew has to fit an existing process rather than
+   * require one.
+   */
+  base: string;
+  /** The local working branch. */
+  name: string;
+  /** What it is called on the remote, if different. Defaults to `name`. */
+  push: string;
+  /** Where a review branch is pushed. */
+  remote: string;
+}
+
 export interface RepoConfig {
   version: number;
+  branch: BranchNaming;
   platform: PlatformRequirement;
   shell?: string;
   hooks: RepoHooks;
@@ -107,12 +153,14 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'version', 'bump', 'released',
+  'test', 'build', 'setup', 'deploy', 'ports', 'version', 'bump', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
 export type BumpSize = (typeof BUMP_SIZES)[number];
-const TOP_LEVEL = new Set(['version', 'platform', 'shell', 'hooks', 'labels', 'release']);
+const TOP_LEVEL = new Set(['version', 'platform', 'shell', 'branch', 'hooks', 'labels', 'release']);
+const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
+const PLACEHOLDER = /\{(key|number|slug|role)\}/g;
 const RELEASE_KEYS = new Set(['mode', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog']);
 const VERSIONINGS: Versioning[] = ['auto', 'none'];
 const CI_KEYS = new Set(['provider', 'ref']);
@@ -161,6 +209,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.release, RELEASE_KEYS, 'release', file);
   rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file);
   rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file);
+  rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
   if (raw.version !== SPEC_VERSION) {
@@ -168,6 +217,24 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       `${file}: version ${raw.version} is not supported by this crew (understands ${SPEC_VERSION})`,
     );
   }
+
+  const branchName = String(raw.branch?.name ?? 'issue-{number}');
+  // A template naming none of the placeholders would give every ticket the
+  // same branch, and the second one would fail to be created.
+  if (!PLACEHOLDER.test(branchName)) {
+    PLACEHOLDER.lastIndex = 0;
+    throw new RepoConfigError(
+      `${file}: branch.name ("${branchName}") names no placeholder — every ticket ` +
+        'would get the same branch. Use at least one of {key} {number} {slug} {role}.',
+    );
+  }
+  PLACEHOLDER.lastIndex = 0;
+  const branch: BranchNaming = {
+    base: String(raw.branch?.base ?? 'main'),
+    name: branchName,
+    push: String(raw.branch?.push ?? branchName),
+    remote: String(raw.branch?.remote ?? 'origin'),
+  };
 
   const platform = String(raw.platform ?? 'any');
   if (!isPlatformRequirement(platform)) {
@@ -271,6 +338,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
 
   return {
     version: SPEC_VERSION,
+    branch,
     platform: platform as PlatformRequirement,
     shell: raw.shell ? String(raw.shell) : undefined,
     hooks,
@@ -307,6 +375,36 @@ export function hookLabel(cfg: RepoConfig, hook: keyof RepoHooks): string {
   return cfg.labels[hook] ?? cfg.hooks[hook] ?? hook;
 }
 
+/** Lowercase, hyphenated, trimmed — safe in a git ref and readable in a PR list. */
+export function slugify(title: string, maxLength = 40): string {
+  const s = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLength)
+    .replace(/-+$/, '');
+  return s || 'work';
+}
+
+export interface BranchContext {
+  key: string;
+  title?: string;
+  role?: string;
+}
+
+export function renderBranchName(template: string, ctx: BranchContext): string {
+  const number = ctx.key.replace(/^\D+/, '');
+  return template.replace(PLACEHOLDER, (_m, name: string) => {
+    switch (name) {
+      case 'key': return ctx.key;
+      case 'number': return number;
+      case 'slug': return slugify(ctx.title ?? '');
+      case 'role': return ctx.role ?? '';
+      default: return '';
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Effective config: the repo contract, or the ship's own settings for a repo
 // that has not adopted one.
@@ -319,6 +417,7 @@ export function hookLabel(cfg: RepoConfig, hook: keyof RepoHooks): string {
  * silently disagreeing with it.
  */
 export interface ShipRepoSettings {
+  branch?: Partial<BranchNaming>;
   platform?: PlatformRequirement;
   shell?: string;
   hooks?: RepoHooks;
@@ -401,6 +500,16 @@ export function resolveRepoConfig(
 
   return {
     version: SPEC_VERSION,
+    branch: {
+      base: pick('branch.base', repo?.branch.base === 'main' ? undefined : repo?.branch.base,
+        ship?.branch?.base, 'main'),
+      name: pick('branch.name', repo?.branch.name === 'issue-{number}' ? undefined : repo?.branch.name,
+        ship?.branch?.name, 'issue-{number}'),
+      push: pick('branch.push', repo?.branch.push === repo?.branch.name ? undefined : repo?.branch.push,
+        ship?.branch?.push, repo?.branch.name ?? 'issue-{number}'),
+      remote: pick('branch.remote', repo?.branch.remote === 'origin' ? undefined : repo?.branch.remote,
+        ship?.branch?.remote, 'origin'),
+    },
     platform: pick('platform', repo?.platform === 'any' ? undefined : repo?.platform, ship?.platform, DEFAULTS.platform),
     shell: pick('shell', repo?.shell, ship?.shell, undefined as string | undefined),
     hooks,

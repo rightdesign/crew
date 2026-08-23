@@ -81,6 +81,13 @@ export interface Connection {
   hooks: { test?: string; build?: string; deploy?: string; notify?: string };
   labels: { test?: string; build?: string; deploy?: string };
   release: { versionFiles: string[]; changelog: string };
+  /**
+   * This workspace's own rules, where they differ from the default (see
+   * docs/CONTRACT.md). Absent means the workspace means what the unmodified
+   * Issue Tracker template means. Belongs per connection, not per ship: one
+   * machine may serve several workspaces with different conventions.
+   */
+  contract?: Partial<import('./contract.ts').Contract> | null;
   resolved?: ResolvedIds;
 }
 
@@ -209,6 +216,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
         deploy: c?.labels?.deploy ?? c?.hooks?.deploy,
       },
       release: { versionFiles, changelog: c?.release?.changelog ?? 'CHANGELOG.md' },
+      contract: c?.contract ?? null,
       resolved: parseResolved(c?.resolved, missing, where),
     };
   });

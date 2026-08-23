@@ -1,0 +1,193 @@
+/**
+ * The contract: what a workspace's own choices MEAN.
+ *
+ * A ship connects to several workspaces at once and must follow the rules
+ * each one supplies. So none of this can be a constant in the runner — the
+ * values below are only the DEFAULT, which is what an unmodified Issue
+ * Tracker template ships with. A workspace that renames its statuses, adds
+ * one, or orders priority differently supplies its own, and every connection
+ * carries its own resolved contract.
+ *
+ * See docs/CONTRACT.md for the documented default and how to override it.
+ *
+ * Three kinds of thing live here, and only the first is guessable:
+ *   1. which column plays which part;
+ *   2. the ORDER of choice values — nothing about "p0" says it beats "p3";
+ *   3. what each status MEANS — and `fixed` being open but not resolved is
+ *      load-bearing, since a ticket blocked by unmerged work is still blocked.
+ */
+
+export interface ContractColumns {
+  key: string;
+  title: string;
+  status: string;
+  assignee: string;
+  priority: string;
+  severity: string;
+  /** Where the work source is partitioned — the area. */
+  slice: string;
+  repo: string;
+  parent: string;
+  blockedBy: string;
+  updatedAt: string;
+  needsDesign: string;
+}
+
+export interface ContractComments {
+  parent: string;
+  body: string;
+  author: string;
+  /** Marks a comment as the runner's own audit trail rather than prose. */
+  kind: string;
+  /** The value of `kind` that means "audit trail" — never wakes a role. */
+  eventKind: string;
+  createdAt: string;
+}
+
+export interface ContractStatuses {
+  /** Everything a poll considers live. */
+  open: string[];
+  /** A blocker stops counting only at these. */
+  resolved: string[];
+  /** The one a human sets to authorise work. The runner may never set it. */
+  approved: string;
+  /** The sub-state of approved that the runner parks into and out of. */
+  parked: string;
+  building: string;
+  /** Built, not yet checked. Open but NOT resolved. */
+  handoff: string;
+  verifying: string;
+  verified: string;
+  deployed: string;
+  /** A person owes an answer. The runner surfaces these, never moves them. */
+  needsHuman: string;
+}
+
+export interface Contract {
+  columns: ContractColumns;
+  comments: ContractComments;
+  statuses: ContractStatuses;
+  /** Most urgent first. Cannot be inferred from the values themselves. */
+  priorityOrder: string[];
+  severityOrder: string[];
+  /**
+   * Where an unrecognised value sorts, as an index into the orders above.
+   * Mid-pack as a priority, last as a tiebreaker — see priority.ts, where
+   * that asymmetry is deliberate and load-bearing.
+   */
+  unknownPriorityRank: number;
+}
+
+/**
+ * What an unmodified Issue Tracker template means by its own choices. Any
+ * workspace that has not said otherwise is assumed to mean this.
+ */
+export const DEFAULT_CONTRACT: Contract = {
+  columns: {
+    key: 'issue_id',
+    title: 'title',
+    status: 'status',
+    assignee: 'assignee_id',
+    priority: 'priority',
+    severity: 'severity',
+    slice: 'project_id',
+    repo: 'repo_id',
+    parent: 'parent_id',
+    blockedBy: 'blocked_by',
+    updatedAt: 'updated_at',
+    needsDesign: 'needs_design',
+  },
+  comments: {
+    parent: 'ticket_id',
+    body: 'body',
+    author: 'team_member_id',
+    kind: 'kind',
+    eventKind: 'event',
+    createdAt: 'created_at',
+  },
+  statuses: {
+    open: ['new', 'accepted', 'blocked', 'in_progress', 'needs_info', 'fixed', 'qa', 'verified'],
+    resolved: ['verified', 'closed_deployed', 'closed_wont_fix', 'closed_duplicate'],
+    approved: 'accepted',
+    parked: 'blocked',
+    building: 'in_progress',
+    handoff: 'fixed',
+    verifying: 'qa',
+    verified: 'verified',
+    deployed: 'closed_deployed',
+    needsHuman: 'needs_info',
+  },
+  priorityOrder: ['p0', 'p1', 'p2', 'p3'],
+  severityOrder: ['s1', 's2', 's3', 's4'],
+  unknownPriorityRank: 2,
+};
+
+export class ContractError extends Error {}
+
+/** Deep-merge an override onto the default. Absent keys keep the default. */
+export function resolveContract(override?: Partial<Contract> | null): Contract {
+  if (!override) return DEFAULT_CONTRACT;
+  return {
+    columns: { ...DEFAULT_CONTRACT.columns, ...override.columns },
+    comments: { ...DEFAULT_CONTRACT.comments, ...override.comments },
+    statuses: { ...DEFAULT_CONTRACT.statuses, ...override.statuses },
+    priorityOrder: override.priorityOrder ?? DEFAULT_CONTRACT.priorityOrder,
+    severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
+    unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
+  };
+}
+
+/**
+ * Every problem with a contract, rather than the first — the same reasoning
+ * as crew.yaml's loader: someone correcting a workspace's contract should see
+ * the whole list, not discover it one run at a time.
+ *
+ * These are consistency checks a workspace can genuinely fail. A `handoff`
+ * status listed as resolved, for instance, would tell the runner that a
+ * ticket blocked by unmerged work is free to build on.
+ */
+export function validateContract(c: Contract): string[] {
+  const problems: string[] = [];
+  const open = new Set(c.statuses.open);
+  const resolved = new Set(c.statuses.resolved);
+
+  for (const role of ['approved', 'parked', 'building', 'handoff', 'verifying', 'needsHuman'] as const) {
+    const v = c.statuses[role];
+    if (!open.has(v)) problems.push(`statuses.${role} ("${v}") is not listed in statuses.open`);
+  }
+  if (!resolved.has(c.statuses.deployed)) {
+    problems.push(`statuses.deployed ("${c.statuses.deployed}") is not listed in statuses.resolved`);
+  }
+  if (resolved.has(c.statuses.handoff)) {
+    problems.push(
+      `statuses.handoff ("${c.statuses.handoff}") is listed as resolved — it means built-but-unchecked, ` +
+        'so a ticket blocked by it is still blocked; calling it resolved would build on unverified work',
+    );
+  }
+  if (resolved.has(c.statuses.approved)) {
+    problems.push(`statuses.approved ("${c.statuses.approved}") is listed as resolved`);
+  }
+  if (c.statuses.parked === c.statuses.approved) {
+    problems.push('statuses.parked and statuses.approved are the same value — parking would be a no-op');
+  }
+  if (c.priorityOrder.length === 0) problems.push('priorityOrder is empty');
+  if (c.severityOrder.length === 0) problems.push('severityOrder is empty');
+  for (const [name, order] of [['priorityOrder', c.priorityOrder], ['severityOrder', c.severityOrder]] as const) {
+    if (new Set(order).size !== order.length) problems.push(`${name} contains duplicates`);
+  }
+  return problems;
+}
+
+/**
+ * Order read from the tracker's own CHOICE options, which carry a `position`.
+ *
+ * This is the half a workspace never has to configure: if someone reorders
+ * priority in the UI, the crew follows. Only the MEANINGS below need stating.
+ */
+export function orderFromChoiceOptions(
+  options: Array<{ value: string; position?: number | null }>,
+): string[] {
+  return [...options]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((o) => o.value);
+}

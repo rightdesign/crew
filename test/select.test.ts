@@ -1,0 +1,129 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { selectRole, roleHasWork, roleTopRank, sliceFor, qaSlice, buildingSlice } from '../src/select.ts';
+import type { SelectionInput } from '../src/select.ts';
+import type { Ticket } from '../src/tracker.ts';
+
+const T = (o: Partial<Ticket> & { id: string; issue_id: string; status: string }): Ticket =>
+  ({ updated_at: '2026-08-23T00:00:00.000Z', ...o }) as Ticket;
+
+const input = (over: Partial<SelectionInput> = {}): SelectionInput => ({
+  tickets: [], comments: [], watermark: '2026-01-01T00:00:00Z',
+  blocked: new Set(), holds: new Set(['hold-1']),
+  seats: { dev: 'dev-1', design: 'design-1', qa: 'qa-1' }, ...over,
+});
+
+test('the slices partition by status first, then needs_design', () => {
+  const ts = [
+    T({ id: 'a', issue_id: 'ISSUE-1', status: 'fixed', needs_design: true }),
+    T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted', needs_design: true }),
+    T({ id: 'c', issue_id: 'ISSUE-3', status: 'accepted' }),
+    T({ id: 'd', issue_id: 'ISSUE-4', status: 'accepted', needs_design: null }),
+  ];
+  assert.deepEqual(qaSlice(ts).map((t) => t.id), ['a']);
+  assert.deepEqual(buildingSlice(ts, 'design').map((t) => t.id), ['a', 'b']);
+  // null needs_design reads as false — dev's, same as the prompt tells agents
+  assert.deepEqual(buildingSlice(ts, 'dev').map((t) => t.id), ['c', 'd']);
+});
+
+test('QA wins any cycle it has work — a tie falls to verifying, not building', () => {
+  const sel = selectRole(input({
+    tickets: [
+      T({ id: 'q', issue_id: 'ISSUE-1', status: 'fixed' }),
+      T({ id: 'd', issue_id: 'ISSUE-2', status: 'accepted', severity: 's1' }),  // most urgent possible
+    ],
+  }));
+  assert.deepEqual(sel.pending, ['qa', 'dev']);
+  assert.equal(sel.selected, 'qa');
+  assert.equal(sel.ranks.qa, -1);
+});
+
+test('between building roles, the most urgent ticket wins', () => {
+  const sel = selectRole(input({
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-9', status: 'accepted', severity: 's3' }),
+      T({ id: 'b', issue_id: 'ISSUE-8', status: 'accepted', severity: 's1', needs_design: true }),
+    ],
+  }));
+  assert.equal(sel.selected, 'design');
+  assert.ok(sel.ranks.design! < sel.ranks.dev!);
+});
+
+test('a held ticket cannot be the sole reason a cycle wakes', () => {
+  const held = input({ tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', assignee_id: 'hold-1' })] });
+  assert.equal(roleHasWork('dev', held).hasWork, false);
+  assert.equal(roleTopRank('dev', held), 999_999_999_999);
+  const free = input({ tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' })] });
+  assert.equal(roleHasWork('dev', free).hasWork, true);
+});
+
+test('a dependency-blocked ticket cannot either — membership decides, not status', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' });
+  assert.equal(roleHasWork('dev', input({ tickets: [t], blocked: new Set(['a']) })).hasWork, false);
+  // a ticket still LABELLED blocked whose blockers cleared is startable again
+  const stale = T({ id: 'b', issue_id: 'ISSUE-2', status: 'blocked' });
+  assert.equal(roleHasWork('dev', input({ tickets: [stale] })).hasWork, true);
+});
+
+test('fixed never wakes a building role — it is QA\'s', () => {
+  const i = input({ tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'fixed' })] });
+  assert.equal(roleHasWork('dev', i).hasWork, false);
+  assert.equal(roleHasWork('qa', i).hasWork, true);
+});
+
+test('a new comment from someone else wakes a role; our own does not', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
+  const at = '2026-06-01T00:00:00Z';
+  const mine = input({ tickets: [t], comments: [{ ticket_id: 'a', team_member_id: 'dev-1', created_at: at }] as any });
+  assert.equal(roleHasWork('dev', mine).hasWork, false);
+  const theirs = input({ tickets: [t], comments: [{ ticket_id: 'a', team_member_id: 'qa-1', created_at: at }] as any });
+  assert.equal(roleHasWork('dev', theirs).hasWork, true);
+  // an `event` comment is the loop's own audit trail and must not wake anyone
+  const ev = input({ tickets: [t], comments: [{ ticket_id: 'a', team_member_id: 'qa-1', kind: 'event', created_at: at }] as any });
+  assert.equal(roleHasWork('dev', ev).hasWork, false);
+});
+
+test('a comment older than the watermark does not wake anyone', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
+  const c = [{ ticket_id: 'a', team_member_id: 'qa-1', created_at: '2025-01-01T00:00:00Z' }] as any;
+  assert.equal(roleHasWork('dev', input({ tickets: [t], comments: c })).hasWork, false);
+});
+
+test('an unassigned in_progress ticket is back up for grabs', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: null });
+  assert.equal(roleHasWork('dev', input({ tickets: [t] })).hasWork, true);
+});
+
+test('a paused role is not selected, whatever its queue', () => {
+  const i = input({
+    tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', severity: 's1' })],
+    paused: new Set(['dev' as const]),
+  });
+  assert.equal(roleHasWork('dev', i).hasWork, false);
+  assert.equal(roleHasWork('dev', i).reason, 'paused');
+  assert.equal(selectRole(i).selected, null);
+});
+
+test('a role this ship does not crew is never selected', () => {
+  const i = input({ seats: { dev: 'dev-1' }, tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'fixed' })] });
+  assert.equal(roleHasWork('qa', i).hasWork, false);
+  assert.match(roleHasWork('qa', i).reason, /does not crew/);
+});
+
+test('every pending role stays pending — only one runs', () => {
+  const sel = selectRole(input({
+    tickets: [
+      T({ id: 'q', issue_id: 'ISSUE-1', status: 'fixed' }),
+      T({ id: 'd', issue_id: 'ISSUE-2', status: 'accepted' }),
+      T({ id: 's', issue_id: 'ISSUE-3', status: 'accepted', needs_design: true }),
+    ],
+  }));
+  assert.deepEqual(sel.pending, ['qa', 'dev', 'design']);
+  assert.equal(sel.selected, 'qa');   // the other two are still pending next cycle
+});
+
+test('nothing to do is expressed as nothing, not as a default role', () => {
+  const sel = selectRole(input());
+  assert.deepEqual(sel.pending, []);
+  assert.equal(sel.selected, null);
+});

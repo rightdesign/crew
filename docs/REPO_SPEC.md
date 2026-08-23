@@ -45,6 +45,19 @@ version: 1
 # satisfy this will not be given work from this repo.
 platform: unix
 
+# How this repo names the branches the crew creates. A convention, not a
+# constant: `issue-326` suits one org, `feature/ISSUE-326-add-widget`
+# another, and a repo with branch protection may require a prefix to be
+# pushable at all.
+#
+# Placeholders: {key} (ISSUE-326), {number} (326), {slug} (the title,
+# slugified and safe in a git ref), {role} (dev/design/qa).
+branch:
+  base: main                 # what work is cut from and merged back into
+  name: "issue-{number}"     # the local working branch
+  push: "crew/{key}"         # what it is called on the remote, if different
+  remote: origin
+
 # The interpreter the hooks are written for. Defaults to bash on macOS and
 # Linux, PowerShell on Windows. The crew never parses a hook — it hands the
 # script to this interpreter and reads the exit status — so the language is
@@ -82,6 +95,15 @@ hooks:
   bump: |
     npm version "$CREW_BUMP" --no-git-tag-version >/dev/null
     node -p "require('./package.json').version"
+
+  # Did this ticket's work land? Exit 0 for yes, non-zero for no.
+  # Receives CREW_TICKET, CREW_BRANCH and CREW_BASE in its environment.
+  #
+  # Define this wherever closure matters. Without it the crew falls back to
+  # searching the base branch for the ticket key, which a squash merge keeps
+  # only if whoever merged left the PR title alone — useful, but not something
+  # to close a ticket on. One line is usually enough:
+  merged: gh pr list --head "$CREW_BRANCH" --state merged --json number | grep -q number
 
   # Prints, on one line, WHAT IS LIVE RIGHT NOW — a commit sha or a version.
   # This is how the crew learns the outcome of a release it did not perform,
@@ -144,6 +166,10 @@ release:
 | --- | --- | --- | --- |
 | `version` | yes | — | Spec version this file targets. Currently `1`. |
 | `platform` | no | `any` | `any` / `unix` / `macos` / `linux` / `windows` |
+| `branch.base` | no | `main` | The integration branch — `master`, `develop`, a release train. Never assumed. |
+| `branch.name` | no | `issue-{number}` | Local working branch. Must name at least one placeholder. |
+| `branch.push` | no | `branch.name` | Name on the remote — useful to namespace crew branches in a PR list. |
+| `branch.remote` | no | `origin` | Where a review branch is pushed. |
 | `shell` | no | per platform | Interpreter for the hooks. |
 | `hooks.test` | for building | — | Test suite. Non-zero blocks a release. |
 | `hooks.build` | for building | — | Build. |
@@ -152,6 +178,7 @@ release:
 | `hooks.ports` | no | — | Prints `KEY=value` lines assigning ports, so parallel worktrees do not collide. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
+| `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
 | `release.mode` | no | `local` | `local` / `ci_manual` / `ci_auto` |
@@ -207,6 +234,14 @@ release:
   printed rather than recomputing. A hook that bumps differently from the
   crew's arithmetic (a calendar version, a build counter, a pre-release
   suffix) is then correct by construction rather than a disagreement.
+- **Closure is repo-specific too, and the fallback is a guess.** When work is
+  merged on a forge rather than by the crew, the only durable trace in git is
+  the ticket key in a commit subject — and a squash merge keeps that only if
+  the person merging left the PR title alone. The crew will use it, and will
+  label the conclusion `heuristic`; a heuristic answer should prompt a human
+  rather than close a ticket, because silently mis-closing one is worse than
+  not closing it. `hooks.merged` is how a repo replaces the guess with an
+  answer.
 - **Detecting the release is repo-specific, not runner-specific.** The bash
   runner this replaces hardcoded one project's `/api/health-check` and reached
   it through the *tracker's* base URL, which worked only because that project's

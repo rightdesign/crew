@@ -51,14 +51,14 @@ test('matches lib/priority.jq across the full matrix', () => {
       tickets.push({ issue_id: `ISSUE-${n++}`, severity, priority });
     }
   }
-  assert.deepEqual(tickets.map(rank), jqRank(tickets));
+  assert.deepEqual(tickets.map((t) => rank(t)), jqRank(tickets));
 });
 
 test('matches lib/priority.jq on the live open queue', () => {
   const raw = process.env.CREW_TEST_TICKETS;
   if (!raw) return; // fixture-free run; the matrix test above still covers the logic
   const tickets = JSON.parse(raw) as { issue_id: string }[];
-  assert.deepEqual(tickets.map(rank), jqRank(tickets));
+  assert.deepEqual(tickets.map((t) => rank(t)), jqRank(tickets));
   // and the derived ordering itself agrees, not just the keys
   const mine = [...tickets].sort(compareRank).map((t) => t.issue_id);
   const theirs = JSON.parse(
