@@ -1,0 +1,7 @@
+# The one file that describes this machine and this project. Never committed:
+# it carries ids, absolute paths, and possibly an API key.
+crew.config.sh
+
+# Runtime state — locks, poll watermark, rendered queue digests, pause
+# sentinels. Belongs to the installation, not to the code.
+.state/
