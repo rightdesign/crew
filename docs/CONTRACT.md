@@ -31,6 +31,7 @@ to mean exactly this, and needs no configuration at all.
 | blocked by | `blocked_by` | |
 | updated at | `updated_at` | |
 | needs design | `needs_design` | |
+| epic | `epic_id` | only rendered when the workspace has an `Epics` table (ISSUE-384) |
 | comment parent | `ticket_id` | Comments |
 | comment body / author | `body` / `team_member_id` | |
 | comment kind | `kind`, with `event` meaning the runner's own audit trail | |

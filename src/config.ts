@@ -52,6 +52,8 @@ export interface ResolvedIds {
    * an operator recognises on the board, and it is stable enough in practice.
    */
   shipsModelId?: string;
+  /** The `Epics` table, when this workspace has one (ISSUE-384). */
+  epicsModelId?: string;
   models: { issues: string; comments: string; crew: string };
   seats: Partial<Record<RoleName, string>>;
   operator: string;
@@ -242,6 +244,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     areaModelId: raw.areaModelId,
     areaId: raw.areaId,
     shipsModelId: raw.shipsModelId,
+    epicsModelId: raw.epicsModelId,
     reposModelId: raw.reposModelId,
     repoNames: raw.repoNames,
     models: {

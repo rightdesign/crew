@@ -31,6 +31,13 @@ export interface ContractColumns {
   blockedBy: string;
   updatedAt: string;
   needsDesign: string;
+  /**
+   * Which body of work a ticket belongs to, on a workspace that has an
+   * Epics table (ISSUE-384). Meaningless — and never rendered — on one that
+   * doesn't; `environment.ts` gates this on `resolved.epicsModelId`, not on
+   * the column merely having a default here.
+   */
+  epic: string;
 }
 
 export interface ContractComments {
@@ -118,6 +125,7 @@ export const DEFAULT_CONTRACT: Contract = {
     blockedBy: 'blocked_by',
     updatedAt: 'updated_at',
     needsDesign: 'needs_design',
+    epic: 'epic_id',
   },
   comments: {
     parent: 'ticket_id',

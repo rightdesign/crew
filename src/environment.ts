@@ -172,6 +172,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
   const repos = i.repos;
   const only = repos.length === 1 ? repos[0]! : undefined;
   const models = conn.resolved?.models;
+  const epicsModelId = conn.resolved?.epicsModelId;
   const key = 'ISSUE-000';
 
   const lines: string[] = [
@@ -198,6 +199,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
       `- Issues: \`${models.issues}\``,
       `- Comments: \`${models.comments}\``,
       `- Crew: \`${models.crew}\``,
+      ...(epicsModelId ? [`- Epics: \`${epicsModelId}\``] : []),
     );
   }
 
@@ -217,7 +219,16 @@ export function renderEnvironment(i: EnvironmentInput): string {
     `| priority | \`${contract.columns.priority}\` |`,
     `| blocked by | \`${contract.columns.blockedBy}\` |`,
     `| needs design | \`${contract.columns.needsDesign}\` |`,
+    ...(epicsModelId ? [`| epic | \`${contract.columns.epic}\` |`] : []),
     '',
+    ...(epicsModelId
+      ? [
+          'An epic is a body of work a ticket belongs to. Set it when a ticket clearly',
+          'fits an existing epic; proposing a new one is a taxonomy decision — leave it',
+          'to a person rather than inventing one yourself.',
+          '',
+        ]
+      : []),
     'Statuses that matter to you:',
     '',
     `- Work you may pick up: \`${contract.statuses.approved}\``,

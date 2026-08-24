@@ -55,3 +55,29 @@ test('several repos each get their own worktree name, branch and hooks', () => {
   // The queue is what says which section applies.
   assert.match(out, /`repo` column of your queue/);
 });
+
+// ISSUE-384. A workspace with no Epics table renders exactly as it does
+// today — no mention of epics, no error — since `resolved.epicsModelId` is
+// simply absent for it.
+test('a workspace with no Epics table says nothing about epics', () => {
+  const out = render([repo('synthesis', '/w/synthesis', SYN)]);
+  assert.doesNotMatch(out, /epic/i);
+});
+
+test('a workspace with an Epics table lists it by id and names the column', () => {
+  const withEpics = {
+    ...conn,
+    resolved: {
+      models: { issues: 'i', comments: 'c', crew: 'w' },
+      epicsModelId: 'epics-model-id',
+      seats: {}, operator: 'op', holds: [],
+    },
+  } as unknown as Connection;
+  const out = renderEnvironment({
+    conn: withEpics, userAgent: 'crew/1',
+    repos: [repo('synthesis', '/w/synthesis', SYN)], contract: DEFAULT_CONTRACT,
+  });
+  assert.match(out, /- Epics: `epics-model-id`/);
+  assert.match(out, /\| epic \| `epic_id` \|/);
+  assert.match(out, /An epic is a body of work a ticket belongs to/);
+});
