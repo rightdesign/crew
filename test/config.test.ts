@@ -215,5 +215,41 @@ test('tickets are partitioned by repo, and unplaceable ones are surfaced', () =>
   assert.deepEqual(byRepo.get('beta')!.map((t) => t.issue_id), ['B']);
   // Not silently dropped and not guessed into a repo: merging a branch into
   // the wrong repository is worse than refusing to place the ticket.
-  assert.deepEqual(unplaceable.map((t) => t.issue_id), ['C', 'D']);
+  assert.deepEqual(unplaceable.map((u) => u.ticket.issue_id), ['C', 'D']);
+});
+
+// ISSUE-351. These were one undifferentiated list, reported with one sentence
+// — "names no repository" — true of only the first of them. A ticket for a
+// repository another ship serves is not a problem at all, and warning about
+// it every cycle is how the release phase's real warnings get ignored.
+test('an unplaceable ticket says WHY it could not be placed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-cfg-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: ship', '  agent:', '    bin: /bin/true',
+    'connections:',
+    '  - name: multi', '    enabled: true', '    workspace: w',
+    '    repos:', `      alpha: ${dir}`,
+    '    worktreePrefix: wt-', '    baseUrl: https://b.example',
+    '    apiKey: k',
+    '    resolved:',
+    '      workspaceId: ws', '      operator: op-1',
+    '      models:',
+    '        issues: m-i', '        comments: m-c', '        crew: m-w',
+    '      repoNames:',
+    '        "r-a": alpha', '        "r-b": beta',
+  ].join('\n'));
+  const c = connection(loadConfig(dir, join(dir, 'crew.yaml')), 'multi');
+
+  const { unplaceable } = ticketsByRepo(c, [
+    { issue_id: 'C', repo_id: null },       // names none — a board problem
+    { issue_id: 'D', repo_id: 'r-gone' },   // not in repoNames — stale config
+    { issue_id: 'E', repo_id: 'r-b' },      // known repo, no checkout here
+  ]);
+  assert.deepEqual(
+    unplaceable.map((u) => [u.ticket.issue_id, u.reason]),
+    [['C', 'no-repo'], ['D', 'unknown-repo'], ['E', 'not-served-here']],
+  );
+  // The repo's name comes back with it, so the report can name what is
+  // waiting rather than only how many.
+  assert.equal(unplaceable.find((u) => u.ticket.issue_id === 'E')!.repo, 'beta');
 });

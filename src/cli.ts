@@ -11,6 +11,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadConfig, connection, resolveApiKey, reposOf, ticketsByRepo,
+  type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
 import { State } from './state.ts';
@@ -21,10 +22,11 @@ import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
 import { runRelease } from './release-run.ts';
+import { describeUnplaceable } from './release.ts';
 import { planStamp, applyStamp } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
-import { Tracker } from './tracker.ts';
+import { Tracker, type Ticket } from './tracker.ts';
 import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
@@ -246,6 +248,32 @@ function environmentFor(c: typeof conn): string {
 }
 
 /**
+ * Connections whose unplaceable tickets have already been reported this run.
+ *
+ * `releasePhase` runs once per REPOSITORY, and every one of them computes the
+ * same connection-wide unplaceable set — so without this the same message is
+ * emitted once per repo, three times over for an area with three checkouts.
+ * A process is one cycle, so a Set that lives as long as it is exactly the
+ * right lifetime.
+ */
+const unplaceableReported = new Set<string>();
+
+/** Emit what `describeUnplaceable` decided, once per connection per run. */
+function reportUnplaceable(
+  c: typeof conn,
+  unplaceable: Array<Unplaceable<Ticket>>,
+  verified: string,
+  emit: Emitter,
+): void {
+  if (unplaceableReported.has(c.name)) return;
+  unplaceableReported.add(c.name);
+  for (const note of describeUnplaceable(unplaceable, verified)) {
+    if (note.level === 'warn') emit.warn(note.message, { step: 'release' });
+    else emit.emit(note.message, { step: 'release' });
+  }
+}
+
+/**
  * The release phase, callable on its own (`crew release`) or as the tail of a
  * cycle (`crew run`).
  *
@@ -288,14 +316,7 @@ async function releasePhase(
     // near-miss (a branch of the same name in two repos) merge the wrong work.
     const { byRepo, unplaceable } = ticketsByRepo(c, all);
     const tickets = byRepo.get(target.name) ?? [];
-    const strandedVerified = unplaceable.filter((t) => t.status === tracker.contract.statuses.verified);
-    if (strandedVerified.length) {
-      emit.warn(
-        `${strandedVerified.length} verified ticket(s) name no repository and cannot be released: ` +
-          strandedVerified.map((t) => t.issue_id).join(', '),
-        { step: 'release' },
-      );
-    }
+    reportUnplaceable(c, unplaceable, tracker.contract.statuses.verified, emit);
 
     const outcome = await runRelease({
       cwd: target.dir, repo, contract: tracker.contract, tickets, emit,

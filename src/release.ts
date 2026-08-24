@@ -17,6 +17,69 @@ import {
 import type { Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 
+/**
+ * What to say about tickets the release could not place in any checkout.
+ *
+ * Pure, and separate from emitting, for the reason the rest of this module is:
+ * which of these is a WARNING is a decision worth testing, and it used to be
+ * wrong. One `unplaceable` list was reported with one sentence — "name no
+ * repository" — of which only `no-repo` was ever true (ISSUE-351).
+ *
+ * `not-served-here` is deliberately NOT a warning. This ship declining a
+ * repository it has no checkout for is correct behaviour, another ship
+ * serves it, and warning about it every cycle is how an operator learns to
+ * ignore the release phase's real warnings.
+ */
+export interface UnplaceableNote { level: 'warn' | 'info'; message: string }
+
+export function describeUnplaceable(
+  unplaceable: Array<{ ticket: Ticket; reason: string; repo?: string }>,
+  verifiedStatus: string,
+): UnplaceableNote[] {
+  const stranded = unplaceable.filter((u) => u.ticket.status === verifiedStatus);
+  if (stranded.length === 0) return [];
+  const notes: UnplaceableNote[] = [];
+  const keysFor = (r: string) =>
+    stranded.filter((u) => u.reason === r).map((u) => u.ticket.issue_id);
+
+  const noRepo = keysFor('no-repo');
+  if (noRepo.length) {
+    notes.push({
+      level: 'warn',
+      message:
+        `${noRepo.length} verified ticket(s) name no repository and cannot be released: ` +
+        noRepo.join(', '),
+    });
+  }
+
+  const unknown = keysFor('unknown-repo');
+  if (unknown.length) {
+    notes.push({
+      level: 'warn',
+      message:
+        `${unknown.length} verified ticket(s) name a repository this ship does not recognise — ` +
+        `run \`crew connect\` to refresh its repo list: ${unknown.join(', ')}`,
+    });
+  }
+
+  const elsewhere = stranded.filter((u) => u.reason === 'not-served-here');
+  if (elsewhere.length) {
+    const byRepoName = new Map<string, string[]>();
+    for (const u of elsewhere) {
+      const name = u.repo ?? '?';
+      byRepoName.set(name, [...(byRepoName.get(name) ?? []), u.ticket.issue_id]);
+    }
+    notes.push({
+      level: 'info',
+      message:
+        `${elsewhere.length} verified ticket(s) belong to a repository this ship has no ` +
+        `checkout for — another ship releases them: ` +
+        [...byRepoName].map(([n, ids]) => `${n} (${ids.join(', ')})`).join('; '),
+    });
+  }
+  return notes;
+}
+
 /** A refusal to release, and why. Never an error: refusing is usually correct. */
 export interface ReleaseBlock { kind: 'branch' | 'dirty'; detail: string }
 

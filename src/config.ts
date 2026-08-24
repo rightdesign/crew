@@ -456,6 +456,30 @@ export function reposOf(c: Connection): RepoTarget[] {
 }
 
 /**
+ * Why a ticket could not be placed in one of this ship's checkouts.
+ *
+ * Three states that were one list until ISSUE-351, reported with a sentence
+ * true of only the first — so a perfectly well-formed ticket for another
+ * ship's repository warned, every cycle, that it "names no repository".
+ *
+ * - `no-repo`         the ticket names none. A board problem; someone must fix it.
+ * - `unknown-repo`    it names one this ship's `repoNames` has never heard of.
+ *                     A stale cache, fixed by `crew connect` — not by editing
+ *                     the ticket.
+ * - `not-served-here` it names one this ship has no checkout for. NOTHING IS
+ *                     WRONG: another ship serves it, and this one is right to
+ *                     decline. Never a warning.
+ */
+export type UnplaceableReason = 'no-repo' | 'unknown-repo' | 'not-served-here';
+
+export interface Unplaceable<T> {
+  ticket: T;
+  reason: UnplaceableReason;
+  /** The repository's name, when it is known — `not-served-here` only. */
+  repo?: string;
+}
+
+/**
  * Split a connection's tickets by which repository they belong to.
  *
  * A ticket with no repo set cannot be placed once a connection has more than
@@ -465,10 +489,10 @@ export function reposOf(c: Connection): RepoTarget[] {
  */
 export function ticketsByRepo<T extends { repo_id?: string | null | undefined }>(
   c: Connection, tickets: T[],
-): { byRepo: Map<string, T[]>; unplaceable: T[] } {
+): { byRepo: Map<string, T[]>; unplaceable: Array<Unplaceable<T>> } {
   const targets = reposOf(c);
   const byRepo = new Map<string, T[]>(targets.map((t) => [t.name, []]));
-  const unplaceable: T[] = [];
+  const unplaceable: Array<Unplaceable<T>> = [];
   const single = Object.keys(c.repos).length === 0;
   const names = c.resolved?.repoNames ?? {};
 
@@ -476,7 +500,9 @@ export function ticketsByRepo<T extends { repo_id?: string | null | undefined }>
     if (single) { byRepo.get(targets[0]!.name)!.push(t); continue; }
     const name = t.repo_id ? names[t.repo_id] : undefined;
     if (name && byRepo.has(name)) byRepo.get(name)!.push(t);
-    else unplaceable.push(t);
+    else if (!t.repo_id) unplaceable.push({ ticket: t, reason: 'no-repo' });
+    else if (!name) unplaceable.push({ ticket: t, reason: 'unknown-repo' });
+    else unplaceable.push({ ticket: t, reason: 'not-served-here', repo: name });
   }
   return { byRepo, unplaceable };
 }

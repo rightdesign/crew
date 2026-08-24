@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   checkGuards, planMerge, requestedBump, renderChangelogSection,
-  insertChangelogSection, decideRelease, renderTag,
+  insertChangelogSection, decideRelease, renderTag, describeUnplaceable,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { branchForIssue } from '../src/git.ts';
@@ -233,4 +233,49 @@ test('changelog lines are read against the configured base, not main', () => {
   const [c] = planMerge(dir, [T('ISSUE-3')], DEFAULT_CONTRACT, null,
     (t) => branchForIssue(dir, t.issue_id), 'master');
   assert.deepEqual(c!.entries, ['Did a thing']);   // would be empty against a nonexistent `main`
+});
+
+// ISSUE-351. Three states were one list, reported with a sentence true of
+// only the first — so a well-formed ticket for another ship's repository
+// warned, every cycle, that it "names no repository".
+const stranded = (issue_id: string, reason: string, repo?: string) =>
+  ({ ticket: { issue_id, status: 'verified' } as never, reason, repo });
+
+test('each unplaceable state is reported in words that are true of it', () => {
+  const notes = describeUnplaceable(
+    [
+      stranded('ISSUE-1', 'no-repo'),
+      stranded('ISSUE-2', 'unknown-repo'),
+      stranded('ISSUE-3', 'not-served-here', 'crew'),
+      stranded('ISSUE-4', 'not-served-here', 'crew'),
+    ],
+    'verified',
+  );
+  const warn = notes.filter((n) => n.level === 'warn');
+  assert.equal(warn.length, 2);
+  assert.match(warn[0]!.message, /ISSUE-1/);
+  assert.match(warn[0]!.message, /name no repository/);
+  // A stale repo list is a config problem with its own fix, not a board problem.
+  assert.match(warn[1]!.message, /ISSUE-2/);
+  assert.match(warn[1]!.message, /crew connect/);
+
+  // The correct state is reported once, plainly, and never as a warning.
+  const info = notes.filter((n) => n.level === 'info');
+  assert.equal(info.length, 1);
+  assert.match(info[0]!.message, /another ship releases them/);
+  assert.match(info[0]!.message, /crew \(ISSUE-3, ISSUE-4\)/);
+  assert.doesNotMatch(info[0]!.message, /ISSUE-1|ISSUE-2/);
+});
+
+test('a repository this ship does not serve produces no warning at all', () => {
+  const notes = describeUnplaceable([stranded('ISSUE-9', 'not-served-here', 'crew')], 'verified');
+  assert.deepEqual(notes.filter((n) => n.level === 'warn'), []);
+});
+
+test('only verified tickets are reported — an open one is nobody\'s release problem', () => {
+  const notes = describeUnplaceable(
+    [{ ticket: { issue_id: 'ISSUE-5', status: 'accepted' } as never, reason: 'no-repo' }],
+    'verified',
+  );
+  assert.deepEqual(notes, []);
 });
