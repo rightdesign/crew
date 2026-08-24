@@ -96,7 +96,14 @@ export interface Connection {
    * verifying a repo's remote against the local origin.
    */
   repos: Record<string, string>;
-  worktreePrefix: string;
+  /**
+   * A ship-level fallback for repos on this connection that declare no
+   * `worktrees.prefix` of their own (ISSUE-350). Optional: a connection that
+   * says nothing lets every repo fall through to its own derived default
+   * instead of this one value overriding all of them regardless of which
+   * repo it actually fits (ISSUE-400).
+   */
+  worktreePrefix?: string;
   /** What this project needs of a host. Checked against the ship's platform. */
   platform: PlatformRequirement;
   baseUrl: string;
@@ -325,7 +332,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       area: c?.area,
       dir,
       repos: repoDirs,
-      worktreePrefix: missing.req(c?.worktreePrefix, `${where}.worktreePrefix`) as string,
+      worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
       platform: platformRaw as PlatformRequirement,
       baseUrl: (missing.req(c?.baseUrl ?? raw.ship?.baseUrl, `${where}.baseUrl`) as string).replace(/\/+$/, ''),
       apiKey: c?.apiKey,

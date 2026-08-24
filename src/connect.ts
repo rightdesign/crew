@@ -131,7 +131,10 @@ export function renderConnection(d: Discovered, name: string, dir: string, opts:
     enabled: false          # arm it deliberately, once doctor is green
     workspace: ${d.workspaceName ?? d.workspaceId}
 ${d.projectName ? `    project: "${d.projectName}"\n` : ''}${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
-    worktreePrefix: "${name}-issue-"
+    # worktreePrefix: omitted — each repo derives its own from its checkout's
+    # directory name (ISSUE-400). Only set this if every repo this connection
+    # serves genuinely wants the SAME prefix, which is rare once an area has
+    # more than one repo.
     platform: unix
     baseUrl: "REPLACE — the same baseUrl as your other connections"
     apiKeyFile: "REPLACE — a file holding this workspace's key"

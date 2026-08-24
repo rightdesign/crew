@@ -100,11 +100,18 @@ test('every missing setting is reported at once, named by connection index', () 
   const { dir, file } = withConfig('ship: {}\nconnections:\n  - name: x\n');
   assert.throws(() => loadConfig(dir, file), (e: Error) => {
     assert.ok(e instanceof ConfigError);
-    for (const p of ['connections[0].workspace', 'connections[0].dir', 'connections[0].worktreePrefix']) {
+    for (const p of ['connections[0].workspace', 'connections[0].dir']) {
       assert.match(e.message, new RegExp(p.replace(/[.[\]]/g, '\\$&')));
     }
     return true;
   });
+});
+
+test('worktreePrefix is optional — a connection that says nothing gets no ship-level override', () => {
+  const noPrefix = TWO.replace(/^\s*worktreePrefix:.*\n/m, '');
+  const { dir, file } = withConfig(noPrefix);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.connections[0]!.worktreePrefix, undefined);
 });
 
 test('a config with no connections is refused', () => {
