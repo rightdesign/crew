@@ -14,6 +14,11 @@ import { join } from 'node:path';
  *
  * If this fails, the fix is to move the specific thing out, not to widen the
  * pattern.
+ *
+ * Known gap: a bare repo-relative directory name (e.g. `apps/frontend`) is
+ * NOT caught here — a pattern general enough to catch "any path that looks
+ * project-shaped" would also fire on ordinary prose. Catching that class
+ * currently relies on a human noticing (see ISSUE-375).
  */
 const PROMPTS = join(import.meta.dirname, '..', 'prompts');
 

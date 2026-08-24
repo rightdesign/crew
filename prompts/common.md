@@ -375,7 +375,7 @@ work around it. The loop never parks an `in_progress` ticket.
 
    If you need to verify UI behavior, write any throwaway
    Playwright/verification scripts to `/tmp` or a scratch dir, never inside
-   `apps/frontend` or `apps/backend`.
+   the repository — not in the worktree root either.
 7. This worktree is a fully separate checkout, so — unlike the old
    shared-directory setup — starting your own backend/frontend dev servers
    here does NOT race the operator's own dev stack. **Get your ports from the

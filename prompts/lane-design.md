@@ -67,7 +67,7 @@ ticket to `fixed`, capture the built result with Playwright — **light and
 dark, and the narrow width** — and attach them to a closing comment
 alongside the mockup you posted in 3.4b, so the operator can compare intent against
 outcome in one place. Call out any deliberate divergence. Throwaway scripts
-go to a scratch dir, never inside `apps/frontend` or `apps/backend`.
+go to a scratch dir outside the repository — not the worktree root either.
 
 The full backend and frontend test suites and typechecks still have to be
 clean. A design ticket is not exempt.

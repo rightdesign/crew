@@ -103,7 +103,7 @@ human review, so "probably fine" is not a pass.
   while you run.
 - **You only ever enter the worktree of the ticket you are verifying.**
 - Throwaway Playwright/verification scripts go in a scratch dir outside the
-  repo, never inside `apps/frontend` or `apps/backend`.
+  repo — not the worktree root either.
 - If a ticket at `fixed` has no worktree left, say so on the ticket and set
   it back to `in_progress` assigned to its building lane rather than
   guessing — there is nothing for you to test.
