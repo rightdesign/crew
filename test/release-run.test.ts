@@ -339,6 +339,37 @@ test('a verified branch already contained in main merges as a no-op', async () =
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).trim(), '');
 });
 
+test('a verified ticket with no branch and no commit on the base is carried out as unbuildable', async () => {
+  // ISSUE-379: nobody ever built ISSUE-345, and nothing named its key on
+  // main either — the `never-built` shape the release cannot place.
+  const { dir, repo } = project(LOCAL);
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-345')],
+    emit: emitter(), dryRun: false, skipTests: true,
+  });
+
+  assert.equal(out.merged.length, 0);
+  assert.equal(out.unbuildable?.length, 1);
+  assert.equal(out.unbuildable![0]!.ticket.issue_id, 'ISSUE-345');
+  assert.ok(lines.some((l) => /nothing to merge/.test(l)));
+});
+
+test('a verified ticket already merged under a commit that names it is NOT unbuildable', async () => {
+  // The `already-merged` sibling: it resolves itself once a release stamps
+  // it, and must not be reported the same way as a genuinely stranded one.
+  const { dir, repo, g } = project(LOCAL);
+  g('commit', '--allow-empty', '-qm', 'landed by hand, mentions ISSUE-345 in the body');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-345')],
+    emit: emitter(), dryRun: false, skipTests: true,
+  });
+
+  assert.equal(out.unbuildable?.length ?? 0, 0);
+  assert.ok(lines.some((l) => /already merged/.test(l)));
+});
+
 test('a conflicting branch is reported and rewound, not thrown', async () => {
   const { dir, repo, g } = project(LOCAL);
   g('checkout', '-qb', 'issue-9');

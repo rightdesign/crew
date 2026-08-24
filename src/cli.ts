@@ -19,6 +19,7 @@ import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor } from './poll.ts';
 import { applySweep } from './blocked.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
+import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
@@ -353,30 +354,49 @@ async function releasePhase(
     const news = describeRelease(outcome, scope);
     if (news) await notify(c, cfg.ship, news, emit, dryRun);
 
-    // A verified branch that would not merge. Non-fatal like everything else
-    // down here — the release has already shipped whatever could ship — but
-    // unlike the old behaviour it does not evaporate: the ticket goes back to
-    // a lane that can fix it, so the same merge is not retried identically
-    // every cycle forever (ISSUE-346 failed six times in an hour that way).
-    for (const f of outcome.conflicts ?? []) {
-      try {
-        // Comments are fetched only when a conflict actually happens, which is
-        // almost never — it costs a request on the rare cycle that needs one,
-        // and none at all on the rest.
-        const comments = await tracker.comments();
-        const bounce = planConflictBounce(
-          target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, comments,
-        );
-        const seat = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
-        const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, emit, dryRun);
-        if (r.kind === 'failed') {
-          emit.warn(`could not hand back ${f.candidate.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+    // A verified branch that would not merge, or a verified ticket with
+    // nothing to merge at all. Non-fatal like everything else down here —
+    // the release has already shipped whatever could ship — but unlike the
+    // old behaviour neither evaporates: a conflict goes back to a lane that
+    // can fix it (ISSUE-346 failed six times in an hour that way), and a
+    // ticket the release cannot place at all is flagged and, if it repeats,
+    // escalated to a person (ISSUE-379).
+    if ((outcome.conflicts?.length || outcome.unbuildable?.length)) {
+      // Comments are fetched only when one of these actually happens, which
+      // is almost never — it costs a request on the rare cycle that needs
+      // one, and none at all on the rest. Shared between both loops below.
+      const comments = await tracker.comments();
+      const seat = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+
+      for (const f of outcome.conflicts ?? []) {
+        try {
+          const bounce = planConflictBounce(
+            target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, comments,
+          );
+          const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, emit, dryRun);
+          if (r.kind === 'failed') {
+            emit.warn(`could not hand back ${f.candidate.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+          }
+        } catch (e) {
+          emit.warn(
+            `could not hand back ${f.candidate.ticket.issue_id}: ${(e as Error).message}`,
+            { step: 'merge' },
+          );
         }
-      } catch (e) {
-        emit.warn(
-          `could not hand back ${f.candidate.ticket.issue_id}: ${(e as Error).message}`,
-          { step: 'merge' },
-        );
+      }
+
+      for (const cand of outcome.unbuildable ?? []) {
+        try {
+          const stranded = planStrandedVerified(cand, repo.branch.base, repo.branch.remote, comments);
+          const r = await applyStrandedVerified(
+            tracker, stranded, tracker.contract, c.resolved?.operator, seat, emit, dryRun,
+          );
+          if (r.kind === 'failed') {
+            emit.warn(`could not flag ${cand.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+          }
+        } catch (e) {
+          emit.warn(`could not flag ${cand.ticket.issue_id}: ${(e as Error).message}`, { step: 'merge' });
+        }
       }
     }
 

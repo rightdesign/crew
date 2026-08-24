@@ -94,6 +94,17 @@ export interface ReleaseOutcome {
    * board instead.
    */
   conflicts?: ConflictFailure[];
+  /**
+   * Verified tickets with no branch here AND no commit on the base naming
+   * their key — `planMerge`'s `never-built` skip reason. Empty on almost
+   * every cycle.
+   *
+   * Not acted on here for the same reason `conflicts` isn't: the release has
+   * already shipped everything else, and this is a call for a person, not
+   * something to decide while holding the release lock. The caller turns
+   * this into work on the board — see stranded-verified.ts.
+   */
+  unbuildable?: MergeCandidate[];
   decision: ReleaseDecision;
 }
 
@@ -403,15 +414,20 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   o.emit.enter('merge');
   const merged: MergeCandidate[] = [];
   const conflicts: ConflictFailure[] = [];
+  // `never-built` candidates: no branch here, and the key names no commit on
+  // the base either. Carried out rather than only logged, same reasoning as
+  // `conflicts` — reported once per cycle forever otherwise (ISSUE-379). The
+  // caller turns this into work on the board; see stranded-verified.ts.
+  const unbuildable: MergeCandidate[] = [];
   let applied = 0;
   for (const c of decision.merges) {
     if (!c.branch) {
-      o.emit.emit(
-        c.skipReason === 'already-merged'
-          ? 'verified and already merged, waiting on a successful release'
-          : 'verified but has no branch and nothing on the base names it — nothing to merge',
-        { ticket: c.ticket.issue_id },
-      );
+      if (c.skipReason === 'already-merged') {
+        o.emit.emit('verified and already merged, waiting on a successful release', { ticket: c.ticket.issue_id });
+      } else {
+        o.emit.emit('verified but has no branch and nothing on the base names it — nothing to merge', { ticket: c.ticket.issue_id });
+        unbuildable.push(c);
+      }
       continue;
     }
     const r = mergeOne(o, c);
@@ -422,14 +438,14 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
 
   if (o.mergeOnly) {
     o.emit.emit(`merge only: ${merged.length} branch(es) merged, not releasing`);
-    return { merged, conflicts, deployed: false, stopped: 'merge only', decision };
+    return { merged, conflicts, unbuildable, deployed: false, stopped: 'merge only', decision };
   }
 
   o.emit.enter('release');
   const head = o.dryRun ? decision.head : headSha(o.cwd);
   if (merged.length === 0 && decision.upToDate && !o.force) {
     o.emit.emit('nothing to release');
-    return { merged, conflicts, deployed: false, stopped: 'nothing to release', decision };
+    return { merged, conflicts, unbuildable, deployed: false, stopped: 'nothing to release', decision };
   }
 
   // Nothing merged, and no tag to measure against.
@@ -450,7 +466,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       `nothing merged, and ${o.repo.branch.base} carries no release tag to compare against — ` +
         'nothing to release',
     );
-    return { merged, conflicts, deployed: false, stopped: 'nothing merged and no release marker', decision };
+    return { merged, conflicts, unbuildable, deployed: false, stopped: 'nothing merged and no release marker', decision };
   }
 
   // Branches were merged, but none of them wrote a commit and nothing else was
@@ -468,7 +484,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
         `${o.repo.branch.base}; stamping without cutting a version`,
     );
     return {
-      merged, conflicts, deployed: false, alreadyLive: true,
+      merged, conflicts, unbuildable, deployed: false, alreadyLive: true,
       version: decision.lastTag?.replace(/^v/, ''),
       stopped: 'already contained in the base branch', decision,
     };
@@ -483,7 +499,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       const r = await hook(o, 'test');
       if (r && r.code !== 0) {
         o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
-        return { merged, conflicts, deployed: false, stopped: 'tests failed', decision };
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision };
       }
     }
   }
@@ -515,7 +531,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       const r = await hook(o, 'build');
       if (r && r.code !== 0) {
         o.emit.error('build failed — not deploying');
-        return { merged, conflicts, version, deployed: false, stopped: 'build failed', decision };
+        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision };
       }
     }
   }
@@ -535,7 +551,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       if (r && r.code !== 0) {
         o.emit.error(`deploy FAILED (exit ${r.code}) — the target may be partially deployed`);
         o.state?.noteDeployFailed(headSha(o.cwd));
-        return { merged, conflicts, version, deployed: false, stopped: 'deploy failed', decision };
+        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'deploy failed', decision };
       }
       deployed = true;
       o.state?.clearDeployFailed();
@@ -579,7 +595,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
         o.emit.emit(`pushed tag ${tag} to ${o.repo.branch.remote}`);
       } catch (e) {
         o.emit.error(`failed to push tag ${tag} to ${o.repo.branch.remote} — ${(e as GitError).message}`);
-        return { merged, conflicts, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
+        return { merged, conflicts, unbuildable, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
       }
     }
   }
@@ -590,5 +606,5 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       `${version ? `, ${version}` : ''}${tag ? `, tagged ${tag}` : ''}`,
     { data: { merged: merged.length, version, tag, deployed, integrated, confirmed } },
   );
-  return { merged, conflicts, version, tag, deployed, integrated, confirmed, decision };
+  return { merged, conflicts, unbuildable, version, tag, deployed, integrated, confirmed, decision };
 }
