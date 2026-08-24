@@ -61,6 +61,28 @@ export interface ContractStatuses {
   deployed: string;
   /** A person owes an answer. The runner surfaces these, never moves them. */
   needsHuman: string;
+  /**
+   * Under human review, off this machine — a pull request is open.
+   *
+   * **Null when this workspace has no review step**, which is the default: an
+   * unmodified Issue Tracker has no such status, and inventing one the board
+   * does not contain would be worse than admitting the gap. A workspace that
+   * adopts review adds the status and names it here.
+   *
+   * Where present it is open but NOT resolved: unmerged work, so a ticket
+   * blocked by one is still blocked. Deliberately not a hold — the QA seat
+   * keeps watching, because a reviewer's own commits change what was verified.
+   */
+  reviewing: string | null;
+  /**
+   * Where a ticket goes when its review was closed WITHOUT merging.
+   *
+   * The crew may only write this on a DEFINITIVE signal (the repo's `merged`
+   * hook), never on the commit-subject heuristic: a squash whose subject was
+   * rewritten is indistinguishable from an abandoned branch, and closing a
+   * ticket wrongly is worse than leaving it open.
+   */
+  wontFix: string;
 }
 
 export interface Contract {
@@ -116,6 +138,8 @@ export const DEFAULT_CONTRACT: Contract = {
     verified: 'verified',
     deployed: 'closed_deployed',
     needsHuman: 'needs_info',
+    reviewing: null,
+    wontFix: 'closed_wont_fix',
   },
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
@@ -155,6 +179,10 @@ export function validateContract(c: Contract): string[] {
     const v = c.statuses[role];
     if (!open.has(v)) problems.push(`statuses.${role} ("${v}") is not listed in statuses.open`);
   }
+  // Only checked when this workspace actually has a review step.
+  if (c.statuses.reviewing && !open.has(c.statuses.reviewing)) {
+    problems.push(`statuses.reviewing ("${c.statuses.reviewing}") is not listed in statuses.open`);
+  }
   if (!resolved.has(c.statuses.deployed)) {
     problems.push(`statuses.deployed ("${c.statuses.deployed}") is not listed in statuses.resolved`);
   }
@@ -162,6 +190,15 @@ export function validateContract(c: Contract): string[] {
     problems.push(
       `statuses.handoff ("${c.statuses.handoff}") is listed as resolved — it means built-but-unchecked, ` +
         'so a ticket blocked by it is still blocked; calling it resolved would build on unverified work',
+    );
+  }
+  if (!resolved.has(c.statuses.wontFix)) {
+    problems.push(`statuses.wontFix ("${c.statuses.wontFix}") is not listed in statuses.resolved`);
+  }
+  if (c.statuses.reviewing && resolved.has(c.statuses.reviewing)) {
+    problems.push(
+      `statuses.reviewing ("${c.statuses.reviewing}") is listed as resolved — it is unmerged work ` +
+        'under review, so a ticket blocked by it is still blocked',
     );
   }
   if (resolved.has(c.statuses.approved)) {

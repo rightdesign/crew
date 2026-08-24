@@ -27,9 +27,9 @@ test('two connections can disagree about everything and both be right', () => {
     statuses: {
       ...DEFAULT_CONTRACT.statuses,
       approved: 'triaged', building: 'doing', handoff: 'built', verifying: 'checking',
-      needsHuman: 'waiting', verified: 'done', deployed: 'shipped',
+      needsHuman: 'waiting', verified: 'done', deployed: 'shipped', wontFix: 'rejected',
       open: ['new', 'triaged', 'blocked', 'doing', 'waiting', 'built', 'checking', 'done'],
-      resolved: ['done', 'shipped'],
+      resolved: ['done', 'shipped', 'rejected'],
     },
     priorityOrder: ['urgent', 'high', 'normal', 'low'],
   });
@@ -91,4 +91,42 @@ test('ranking under the default is unchanged by all of this', () => {
   const t = { issue_id: 'ISSUE-42', severity: 's2', priority: 'p1' };
   assert.deepEqual(rank(t), [1, 1, 42]);
   assert.deepEqual(rank(t, DEFAULT_CONTRACT), [1, 1, 42]);
+});
+
+test('a workspace with no review step says so, rather than inventing a status', () => {
+  assert.equal(DEFAULT_CONTRACT.statuses.reviewing, null);
+  assert.deepEqual(validateContract(DEFAULT_CONTRACT), []);
+});
+
+test('a workspace that adopts review must actually have the status', () => {
+  const missing = resolveContract({ statuses: { ...DEFAULT_CONTRACT.statuses, reviewing: 'in_review' } });
+  assert.ok(validateContract(missing).some((p) => /reviewing \("in_review"\) is not listed in statuses\.open/.test(p)));
+
+  const proper = resolveContract({
+    statuses: {
+      ...DEFAULT_CONTRACT.statuses,
+      reviewing: 'in_review',
+      open: [...DEFAULT_CONTRACT.statuses.open, 'in_review'],
+    },
+  });
+  assert.deepEqual(validateContract(proper), []);
+});
+
+test('a review state counted as resolved is refused — it is unmerged work', () => {
+  const bad = resolveContract({
+    statuses: {
+      ...DEFAULT_CONTRACT.statuses,
+      reviewing: 'in_review',
+      open: [...DEFAULT_CONTRACT.statuses.open, 'in_review'],
+      resolved: [...DEFAULT_CONTRACT.statuses.resolved, 'in_review'],
+    },
+  });
+  assert.ok(validateContract(bad).some((p) => /reviewing .* listed as resolved/.test(p)));
+});
+
+test('a closed-without-merging PR has somewhere to go', () => {
+  assert.equal(DEFAULT_CONTRACT.statuses.wontFix, 'closed_wont_fix');
+  assert.ok(DEFAULT_CONTRACT.statuses.resolved.includes(DEFAULT_CONTRACT.statuses.wontFix));
+  const bad = resolveContract({ statuses: { ...DEFAULT_CONTRACT.statuses, wontFix: 'nowhere' } });
+  assert.ok(validateContract(bad).some((p) => /wontFix \("nowhere"\) is not listed in statuses\.resolved/.test(p)));
 });

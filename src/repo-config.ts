@@ -20,7 +20,23 @@ import { isPlatformRequirement, type PlatformRequirement } from './platform.ts';
 export const SPEC_VERSION = 1;
 export const REPO_CONFIG_FILENAMES = ['.crew.yaml', '.crew.yml', '.crew.json'] as const;
 
-export type ReleaseMode = 'local' | 'ci_manual' | 'ci_auto';
+/**
+ * Who releases this repo.
+ *
+ *   local      the crew merges, versions and runs the deploy hook itself
+ *   ci_manual  the crew merges, then triggers CI and waits
+ *   ci_auto    the crew merges; CI releases on its own and the crew watches
+ *   external   the crew does NOT release at all. It pushes a branch and
+ *              stops — a human merges the PR and someone else's pipeline
+ *              takes it from there. No merge, no version, no changelog, no
+ *              tag, no deploy. The crew's only remaining interest is whether
+ *              the work landed (`hooks.merged`).
+ *
+ * `external` exists because the alternative was composing three settings
+ * (review + ci_auto + versioning:none) that had to agree, and a wrong
+ * combination read as contradictory rather than merely unusual.
+ */
+export type ReleaseMode = 'local' | 'ci_manual' | 'ci_auto' | 'external';
 export type CiProvider = 'github' | 'buildkite' | 'other' | 'none';
 
 export interface RepoHooks {
@@ -46,6 +62,19 @@ export interface RepoHooks {
    * build counter is correct by construction instead of a disagreement.
    */
   bump?: string;
+  /**
+   * Opens a pull request for the pushed branch. Optional: without it the crew
+   * pushes and prints where to open one by hand.
+   *
+   * Receives CREW_TICKET, CREW_BRANCH, CREW_BASE and CREW_TITLE. Typically:
+   *
+   *   gh pr create --head "$CREW_BRANCH" --base "$CREW_BASE" \
+   *     --title "$CREW_TITLE" --body "Worked by the crew for $CREW_TICKET."
+   *
+   * A hook rather than built-in forge support, for the same reason as the
+   * rest: the repo knows its forge and the crew must not.
+   */
+  pr?: string;
   /**
    * Answers "did this ticket's work land?" — exit 0 for yes, non-zero for no.
    *
@@ -145,6 +174,18 @@ export interface RepoConfig {
     versionFiles: string[];
     /** null when this repo keeps no changelog — not every project does. */
     changelog: string | null;
+    /**
+     * The tag written when a release ships, e.g. "v{version}". **null** for a
+     * repo that does not tag.
+     *
+     * Tags rather than a private ref because a ref is local-only — a second
+     * ship would have no idea what was released — and does not survive a
+     * fresh clone. A tag is durable, shareable and already meaningful to
+     * anyone else looking at the repository.
+     */
+    tag: string | null;
+    /** How to FIND those tags. Derived from `tag` unless stated. */
+    tagPattern: string;
   };
   /** Where this was read from, for error messages and `doctor`. */
   file: string;
@@ -153,7 +194,7 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'version', 'bump', 'merged', 'released',
+  'test', 'build', 'setup', 'deploy', 'ports', 'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
@@ -161,12 +202,14 @@ export type BumpSize = (typeof BUMP_SIZES)[number];
 const TOP_LEVEL = new Set(['version', 'platform', 'shell', 'branch', 'hooks', 'labels', 'release']);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
 const PLACEHOLDER = /\{(key|number|slug|role)\}/g;
-const RELEASE_KEYS = new Set(['mode', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog']);
+const RELEASE_KEYS = new Set([
+  'mode', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
+]);
 const VERSIONINGS: Versioning[] = ['auto', 'none'];
 const CI_KEYS = new Set(['provider', 'ref']);
 const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
 const MATCHES: VerifyMatch[] = ['commit', 'version'];
-const MODES: ReleaseMode[] = ['local', 'ci_manual', 'ci_auto'];
+const MODES: ReleaseMode[] = ['local', 'ci_manual', 'ci_auto', 'external'];
 const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
 
 /** The path of the repo contract in `dir`, or null if it has none. */
@@ -267,12 +310,20 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   }
   // A CI release with nothing to trigger or watch cannot work, and failing
   // here is far better than discovering it mid-release.
-  if (mode !== 'local' && provider === 'none') {
+  // `external` needs no CI provider: the crew is not watching a pipeline it
+  // triggered, it has simply handed the work over.
+  if (mode !== 'local' && mode !== 'external' && provider === 'none') {
     throw new RepoConfigError(`${file}: release.mode "${mode}" needs release.ci.provider`);
+  }
+  if (mode === 'external' && hooks.deploy) {
+    throw new RepoConfigError(
+      `${file}: release.mode "external" means the crew does not release, but hooks.deploy is defined — ` +
+        'remove one, or use ci_manual/ci_auto if the crew should be involved',
+    );
   }
   // Without this the crew would report a CI release as successful purely on
   // the basis of having pushed. Refuse at load, not at release time.
-  if (mode !== 'local' && !hooks.released) {
+  if (mode !== 'local' && mode !== 'external' && !hooks.released) {
     throw new RepoConfigError(
       `${file}: release.mode "${mode}" needs a hooks.released — the crew cannot ` +
         'observe a release it did not perform without one',
@@ -318,6 +369,33 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
         'the crew would never call it. Remove one.',
     );
   }
+  const tagGiven = raw.release?.tag !== undefined;
+  // A repo that does not version has nothing to tag WITH, so the default tag
+  // simply does not apply — only an explicit one is a contradiction worth
+  // refusing. Erroring on the default would make `versioning: none` require a
+  // second, unrelated setting to be turned off.
+  const tag = raw.release?.tag === false || raw.release?.tag === null
+    ? null
+    : versioning === 'none' && !tagGiven
+      ? null
+      : String(raw.release?.tag ?? 'v{version}');
+  if (tag !== null && !tag.includes('{version}')) {
+    throw new RepoConfigError(
+      `${file}: release.tag ("${tag}") does not include {version} — every release would ` +
+        'try to create the same tag, and the second would fail',
+    );
+  }
+  if (tag !== null && versioning === 'none') {
+    throw new RepoConfigError(
+      `${file}: release.versioning is "none" but release.tag is set — there is no version to tag with. ` +
+        'Set release.tag: false, or turn versioning on.',
+    );
+  }
+  // "v{version}" -> "v*": what `git describe --match` needs to find them again.
+  const tagPattern = String(
+    raw.release?.tagPattern ?? (tag ? tag.replace(/\{version\}/g, '*') : 'v*'),
+  );
+
   const versionFilesGiven = Array.isArray(raw.release?.versionFiles);
   if (versioning === 'none' && versionFilesGiven) {
     throw new RepoConfigError(
@@ -349,6 +427,8 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       verify,
       versioning,
       versionFiles,
+      tag,
+      tagPattern,
       // `changelog: false` (or null) means this repo keeps none.
       changelog:
         raw.release?.changelog === false || raw.release?.changelog === null
@@ -537,6 +617,10 @@ export function resolveRepoConfig(
       versionFiles: pick(
         'release.versionFiles', repo?.release.versionFiles, ship?.release?.versionFiles, DEFAULTS.versionFiles,
       ),
+      tag: pick('release.tag', repo?.release.tag === 'v{version}' ? undefined : repo?.release.tag,
+        ship?.release?.tag, 'v{version}'),
+      tagPattern: pick('release.tagPattern', repo?.release.tagPattern === 'v*' ? undefined : repo?.release.tagPattern,
+        ship?.release?.tagPattern, 'v*'),
       changelog: pick('release.changelog', repo?.release.changelog, ship?.release?.changelog, DEFAULTS.changelog),
     },
     file: repo?.file ?? `${dir} (no .crew.yaml — configured by this ship)`,
@@ -558,7 +642,13 @@ export function validateEffective(cfg: EffectiveRepoConfig): string[] {
   if (cfg.release.mode === 'local' && !cfg.hooks.deploy) {
     problems.push('release.mode "local" needs a deploy hook');
   }
-  if (cfg.release.mode !== 'local' && !cfg.hooks.released) {
+  if (cfg.release.mode === 'external' && !cfg.hooks.merged) {
+    problems.push(
+      'release.mode "external" without a merged hook — the crew hands work off and then ' +
+        'has no reliable way to learn whether it landed',
+    );
+  }
+  if (cfg.release.mode !== 'local' && cfg.release.mode !== 'external' && !cfg.hooks.released) {
     problems.push(
       `release.mode "${cfg.release.mode}" needs a released hook — without one a CI release ` +
         'would be reported as successful merely for having been pushed',

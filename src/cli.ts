@@ -15,6 +15,11 @@ import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor } from './poll.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
+import { loadRepoConfig, resolveRepoConfig, validateEffective } from './repo-config.ts';
+import { runRelease } from './release-run.ts';
+import { planStamp, applyStamp } from './stamp.ts';
+import { Tracker } from './tracker.ts';
+import { startWatch } from './watch.ts';
 
 const CREW_HOME = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -23,12 +28,21 @@ function usage(): never {
 
   crew poll [conn]              decide a cycle and report it; writes nothing
   crew run [conn] [--role R]    run the winning role's session
+  crew release [conn]           merge what QA verified, version it, ship it
+  crew watch [conn]             live view of what the crew is doing
   crew status [conn]            paused/running state
   crew doctor [conn]            read-only preflight
 
 Options:
-  --dry-run     decide everything, perform nothing
-  --role NAME   force a role instead of the poll's choice
+  --dry-run      decide everything, perform nothing
+  --role NAME    force a role instead of the poll's choice
+  --skip-tests   release without the test gate (a hotfix over a red suite)
+  --role NAME    (watch) show only this role
+  --ticket KEY   (watch) show only this ticket
+  --level warn   (watch) show only warnings and errors
+  --tail N       (watch) lines of history on start (default 20)
+
+In watch: space pauses the stream, q quits.
 `);
   process.exit(2);
 }
@@ -110,6 +124,56 @@ switch (command) {
     emit.enter('agent', role);
     emit.emit('starting agent run');
     await spawnAgent(plan, emit);
+    break;
+  }
+
+  case 'release': {
+    const repoFile = loadRepoConfig(conn.dir);
+    const repo = resolveRepoConfig(repoFile, {
+      hooks: conn.hooks, labels: conn.labels,
+      release: { versionFiles: conn.release.versionFiles, changelog: conn.release.changelog },
+      platform: conn.platform,
+    }, conn.dir);
+    const problems = validateEffective(repo);
+    for (const p of problems) emit.warn(p);
+
+    requireArmed('release');
+    const tracker = new Tracker(conn, cfg.ship);
+    const tickets = await tracker.openTickets();
+    const outcome = await runRelease({
+      cwd: conn.dir, repo, contract: tracker.contract, tickets, emit,
+      dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
+    });
+
+    // Stamping is deliberately last and deliberately non-fatal: the work is
+    // already live, and a tracker blip must not turn a good release into a
+    // failed one. Untouched tickets are still `verified` and still named in
+    // the released range, so the next cycle picks them up.
+    if (outcome.deployed || outcome.confirmed) {
+      emit.enter('reconcile');
+      const plan = planStamp(
+        conn.dir, tickets, tracker.contract,
+        outcome.decision.lastReleased, outcome.decision.head,
+      );
+      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
+    } else if (outcome.stopped) {
+      emit.emit(`nothing stamped — ${outcome.stopped}`);
+    }
+    break;
+  }
+
+  case 'watch': {
+    const stop = startWatch({
+      file: eventFileFor(cfg.ship.stateDir),
+      tail: value('tail') ? Number(value('tail')) : undefined,
+      filter: {
+        role: value('role'),
+        ticket: value('ticket'),
+        level: value('level') as 'warn' | 'error' | undefined,
+        connection: positional[1] ? conn.name : undefined,
+      },
+    });
+    process.on('SIGINT', () => { stop(); process.exit(0); });
     break;
   }
 

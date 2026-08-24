@@ -121,18 +121,54 @@ test('the strongest bump across several branches wins', () => {
   assert.equal(requestedBump('Bump: patch\n---\nBump: minor').size, 'minor');
 });
 
-test('a changelog section goes in newest-first, under the title', () => {
+test('a changelog section is Keep-a-Changelog style, newest first', () => {
   const section = renderChangelogSection('0.58.0', '2026-08-23', ['Thing one', 'Thing two']);
-  assert.match(section, /^## 0\.58\.0 — 2026-08-23\n\n- Thing one\n- Thing two\n$/);
-  const existing = '# Changelog\n\nSome preamble.\n\n## 0.57.1 — 2026-08-22\n\n- Older\n';
+  assert.match(section, /^## \[0\.58\.0\] — 2026-08-23\n\n- Thing one\n- Thing two\n$/);
+  const existing = '# Changelog\n\nSome preamble.\n\n## [0.57.1] — 2026-08-22\n\n- Older\n';
   const out = insertChangelogSection(existing, section);
-  assert.ok(out.indexOf('## 0.58.0') < out.indexOf('## 0.57.1'));
+  assert.ok(out.indexOf('## [0.58.0]') < out.indexOf('## [0.57.1]'));
   assert.ok(out.startsWith('# Changelog'));
 });
 
 test('a changelog with no releases yet is appended to, not corrupted', () => {
   const out = insertChangelogSection('# Changelog\n', renderChangelogSection('0.1.0', 'd', ['First']));
-  assert.match(out, /^# Changelog\n\n## 0\.1\.0/);
+  assert.match(out, /^# Changelog\n\n## \[0\.1\.0\]/);
+});
+
+test('a prose section above the releases is not split open', () => {
+  // The project's real CHANGELOG.md has "## How this file is maintained"
+  // before any release. Anchoring on the first `##` inserted the new release
+  // between that heading and its body.
+  const existing = [
+    '# Changelog', '', 'Preamble.', '',
+    '## How this file is maintained', '', 'Some rules.', '',
+    '## [1.0.0] — 2026-01-01', '', '- Old', '',
+  ].join('\n');
+  const out = insertChangelogSection(existing, renderChangelogSection('1.1.0', 'd', ['New']));
+  assert.ok(out.indexOf('## How this file is maintained') < out.indexOf('## [1.1.0]'));
+  assert.ok(out.indexOf('Some rules.') < out.indexOf('## [1.1.0]'));
+  assert.ok(out.indexOf('## [1.1.0]') < out.indexOf('## [1.0.0]'));
+});
+
+test('an Unreleased section at the top keeps its place, and the release goes below', () => {
+  const existing = ['# Changelog', '', '## [Unreleased]', '', '- Pending thing', '',
+    '## [1.0.0] — 2026-01-01', '', '- Old', ''].join('\n');
+  const out = insertChangelogSection(existing, renderChangelogSection('1.1.0', 'd', ['New']));
+  assert.ok(out.indexOf('## [Unreleased]') < out.indexOf('## [1.1.0]'));
+  assert.ok(out.indexOf('- Pending thing') < out.indexOf('## [1.1.0]'));
+  assert.ok(out.indexOf('## [1.1.0]') < out.indexOf('## [1.0.0]'));
+});
+
+test('a STALE Unreleased section buried below the releases is ignored', () => {
+  // The project's real file has one 600 lines down. Preferring it would put
+  // every new release in the middle of the history.
+  const existing = ['# Changelog', '',
+    '## [2.0.0] — 2026-02-01', '', '- Recent', '',
+    '## [Unreleased]', '', '- ancient note', '',
+    '## [1.0.0] — 2026-01-01', '', '- Old', ''].join('\n');
+  const out = insertChangelogSection(existing, renderChangelogSection('2.1.0', 'd', ['New']));
+  assert.ok(out.indexOf('## [2.1.0]') < out.indexOf('## [2.0.0]'), 'must go to the top');
+  assert.ok(out.indexOf('## [2.1.0]') < out.indexOf('## [Unreleased]'));
 });
 
 test('the whole decision is made without touching the checkout', () => {

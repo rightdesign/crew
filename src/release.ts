@@ -56,9 +56,22 @@ export interface MergeCandidate {
   /** Changelog: lines from the branch's commits, or a fallback. */
   entries: string[];
   usedFallback: boolean;
+  /**
+   * The bump this branch asked for, read from its own commits.
+   *
+   * Read HERE, with the changelog lines, because the squash is about to
+   * flatten the branch and the crew writes its own subject — so a `Bump:`
+   * line left on the branch would be gone by the time anything looked for it
+   * in the merged history. That was a real bug: a branch asking for `minor`
+   * silently shipped as `patch`.
+   */
+  bump: BumpSize;
+  majorRequested: boolean;
   /** Why it is not mergeable, when branch is null. */
   skipReason?: 'already-merged' | 'never-built';
 }
+
+export type BumpSize = 'major' | 'minor' | 'patch';
 
 const CHANGELOG_LINE = /^Changelog:[ \t]*(.*)$/gm;
 const BUMP_LINE = /^Bump:[ \t]*(major|minor|patch)\b/gim;
@@ -91,6 +104,7 @@ export function planMerge(
         : false;
       return {
         ticket, branch: null, entries: [], usedFallback: false,
+        bump: 'patch', majorRequested: false,
         skipReason: onMain ? 'already-merged' : 'never-built',
       };
     }
@@ -99,15 +113,16 @@ export function planMerge(
     const bodies = commitBodies(cwd, `${base}..${branch}`);
     const entries = [...bodies.matchAll(CHANGELOG_LINE)].map((m) => m[1]!.trim()).filter(Boolean);
     const usedFallback = entries.length === 0;
+    const { size, majorRequested } = requestedBump(bodies);
     return {
       ticket, branch,
       entries: usedFallback ? [`${ticket.title || ticket.issue_id} (${ticket.issue_id})`] : entries,
       usedFallback,
+      bump: size,
+      majorRequested,
     };
   });
 }
-
-export type BumpSize = 'major' | 'minor' | 'patch';
 
 /**
  * The bump the merged branches asked for.
@@ -124,18 +139,54 @@ export function requestedBump(bodies: string): { size: BumpSize; majorRequested:
   return { size, majorRequested };
 }
 
-/** Newest first, directly under the heading — matching CHANGELOG conventions. */
+/**
+ * Keep a Changelog style — `## [1.2.3] — 2026-08-24` — because that is what
+ * real changelogs in this shape use, including the one this replaced. An
+ * unbracketed heading would read as a different document convention halfway
+ * down the file.
+ */
 export function renderChangelogSection(version: string, date: string, entries: string[]): string {
   const body = entries.map((e) => `- ${e}`).join('\n');
-  return `## ${version} — ${date}\n\n${body}\n`;
+  return `## [${version}] — ${date}\n\n${body}\n`;
 }
+
+/**
+ * Anchors on the first heading that looks like a RELEASE, not merely the
+ * first `##`.
+ *
+ * A real changelog often carries prose sections of its own — "How this file
+ * is maintained", "Unreleased", a format note — above the releases. Inserting
+ * before the first `##` put a new release between such a section's heading
+ * and its body, silently corrupting the document. Fixtures never showed this;
+ * the project's actual CHANGELOG.md did, immediately.
+ *
+ * A release heading is one whose text starts with something version-shaped:
+ * `## 1.2.3`, `## v1.2.3 — 2026-08-24`, `## [1.2.3]`.
+ */
+const RELEASE_HEADING = /^##\s+\[?v?\d+\./;
+const UNRELEASED_HEADING = /^##\s+\[?Unreleased\]?/i;
 
 export function insertChangelogSection(existing: string, section: string): string {
   const lines = existing.split('\n');
-  // After the file's title and any preamble, before the first existing release.
-  const firstRelease = lines.findIndex((l) => /^## /.test(l));
-  if (firstRelease === -1) return `${existing.trimEnd()}\n\n${section}`;
-  return [...lines.slice(0, firstRelease), section, ...lines.slice(firstRelease)].join('\n');
+
+  // Whichever comes FIRST decides — an "Unreleased" section only means
+  // anything if it sits above the releases. A real changelog can carry a
+  // stale one buried mid-file (the project's own does, 600 lines down); the
+  // new release still belongs at the top, not next to that.
+  const anchor = lines.findIndex((l) => UNRELEASED_HEADING.test(l) || RELEASE_HEADING.test(l));
+
+  // No releases yet: append after everything, so a preamble stays intact.
+  if (anchor === -1) return `${existing.trimEnd()}\n\n${section}`;
+
+  if (UNRELEASED_HEADING.test(lines[anchor]!)) {
+    // The new release goes BELOW it: Unreleased is a running list of what has
+    // not shipped, not a release. Inserting above would push it down the file
+    // one version at a time.
+    let j = anchor + 1;
+    while (j < lines.length && !/^## /.test(lines[j]!)) j++;
+    return [...lines.slice(0, j), section, ...lines.slice(j)].join('\n');
+  }
+  return [...lines.slice(0, anchor), section, ...lines.slice(anchor)].join('\n');
 }
 
 export interface ReleaseDecision {

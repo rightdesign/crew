@@ -65,13 +65,15 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const blocked = computeBlockedIds(tickets, info);
 
   emit.enter('sweep');
+  const roster = buildRoster(configuredMembers(conn), crewRows);
+  const holds = new Set(holdIds(roster));
   const diag = sweepDiagnostics(tickets, info);
   for (const d of diag.dangling) emit.warn(`dangling blocked_by reference, ignored: ${d}`);
   if (diag.selfBlocked.length) {
     emit.warn(`ticket(s) blocking themselves, parked permanently: ${diag.selfBlocked.join(', ')}`);
   }
   const sweep = planSweep(tickets, info, blocked);
-  const stranded = strandedNeedsInfo(tickets, blocked);
+  const stranded = strandedNeedsInfo(tickets, blocked, holds);
   for (const t of stranded) {
     emit.emit('needs_info with all blockers resolved — the operator\'s call, not the crew\'s', {
       ticket: t.issue_id,
@@ -84,11 +86,10 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   }
 
   emit.enter('select');
-  const roster = buildRoster(configuredMembers(conn), crewRows);
   const watermark = state.watermark();
   const selection = selectRole({
     tickets, comments, watermark, blocked,
-    holds: new Set(holdIds(roster)),
+    holds,
     seats: conn.resolved!.seats,
     paused: state.pausedRoles(['dev', 'design', 'qa']),
     contract: tracker.contract,

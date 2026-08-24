@@ -268,3 +268,99 @@ export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
   }
   return detectClosureHeuristically(o.cwd, o.key, o.pushedBranch, remote, base, o.since);
 }
+
+// ---------------------------------------------------------------------------
+// Worktree sync: keeping local work level with what reviewers pushed
+// ---------------------------------------------------------------------------
+
+/** The remote a branch tracks, per .git/config, or null if it tracks nothing. */
+export function trackedRemote(cwd: string, branch: string): string | null {
+  return gitOk(cwd, ['config', '--get', `branch.${branch}.remote`]);
+}
+
+/** The upstream ref for a branch, e.g. "origin/issue-326". */
+export function upstreamOf(cwd: string, branch: string): string | null {
+  return gitOk(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`]);
+}
+
+export interface SyncState {
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+  /**
+   * Safe to fast-forward: there is something to take, nothing of our own to
+   * lose, and no uncommitted work to disturb.
+   */
+  canFastForward: boolean;
+  detail: string;
+}
+
+/**
+ * Is this worktree level with the branch reviewers are pushing to?
+ *
+ * A reviewer's own commits, or a pull from a shared branch carrying other
+ * people's work, land on the remote — and until the worktree takes them, the
+ * dev seat would build on stale code and the QA seat would verify something
+ * nobody is reviewing.
+ *
+ * Fast-forward ONLY, and only from a clean tree. Diverged or dirty is
+ * reported for a human: merging or rebasing on someone's behalf risks losing
+ * work, and the crew has no standing to resolve a conflict nobody asked it to.
+ */
+export function syncState(cwd: string, branch: string): SyncState {
+  const upstream = upstreamOf(cwd, branch);
+  if (!upstream) {
+    return {
+      branch, upstream: null, ahead: 0, behind: 0,
+      dirty: status(cwd).length > 0, canFastForward: false,
+      detail: `${branch} tracks no remote branch`,
+    };
+  }
+  const counts = gitOk(cwd, ['rev-list', '--left-right', '--count', `${upstream}...${branch}`]) ?? '0\t0';
+  const [behindStr, aheadStr] = counts.split(/\s+/);
+  const behind = Number.parseInt(behindStr ?? '0', 10);
+  const ahead = Number.parseInt(aheadStr ?? '0', 10);
+  const dirty = status(cwd).length > 0;
+
+  let detail: string;
+  if (behind === 0 && ahead === 0) detail = `level with ${upstream}`;
+  else if (dirty) detail = `${behind} behind ${upstream}, but the worktree is dirty — not touching it`;
+  else if (ahead > 0 && behind > 0) detail = `diverged from ${upstream} (${ahead} ahead, ${behind} behind) — needs a human`;
+  else if (behind > 0) detail = `${behind} behind ${upstream} — fast-forwardable`;
+  else detail = `${ahead} ahead of ${upstream}, nothing to take`;
+
+  return {
+    branch, upstream, ahead, behind, dirty,
+    canFastForward: behind > 0 && ahead === 0 && !dirty,
+    detail,
+  };
+}
+
+/** Takes what the remote has. Refuses anything that is not a fast-forward. */
+export function fastForward(cwd: string, branch: string): boolean {
+  const s = syncState(cwd, branch);
+  if (!s.canFastForward) return false;
+  return gitOk(cwd, ['merge', '--ff-only', s.upstream!]) !== null;
+}
+
+export interface WorktreeInfo { path: string; branch: string | null }
+
+export function worktrees(cwd: string): WorktreeInfo[] {
+  const out = gitOk(cwd, ['worktree', 'list', '--porcelain']) ?? '';
+  const list: WorktreeInfo[] = [];
+  let current: Partial<WorktreeInfo> = {};
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      if (current.path) list.push({ path: current.path, branch: current.branch ?? null });
+      current = { path: line.slice('worktree '.length) };
+    } else if (line.startsWith('branch ')) {
+      current.branch = line.slice('branch refs/heads/'.length);
+    } else if (line === 'detached') {
+      current.branch = null;
+    }
+  }
+  if (current.path) list.push({ path: current.path, branch: current.branch ?? null });
+  return list;
+}

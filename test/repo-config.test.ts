@@ -36,7 +36,7 @@ test('an unknown key is an error — a mistyped hook must never silently not run
     (e: Error) => {
       assert.ok(e instanceof RepoConfigError);
       assert.match(e.message, /unknown hooks key: tests/);
-      assert.match(e.message, /allowed: build, bump, deploy, merged, ports, released, setup, test, version/);
+      assert.match(e.message, /allowed: build, bump, deploy, merged, ports, pr, released, setup, test, version/);
       return true;
     });
   assert.throws(() => parseRepoConfig('version: 1\nplatfrom: unix\n', 'f'), /unknown top-level key: platfrom/);
@@ -290,4 +290,28 @@ test('placeholders render, and titles are slugified safely for a git ref', () =>
   assert.equal(slugify('---'), 'work');
   assert.ok(!slugify('A'.repeat(200)).includes(' '));
   assert.ok(slugify('A'.repeat(200)).length <= 40);
+});
+
+test('opting out of versioning does not require also disabling the default tag', () => {
+  const c = parseRepoConfig(
+    'version: 1\nhooks: { test: t, build: b, deploy: d }\nrelease: { versioning: none }\n', 'f');
+  assert.equal(c.release.versioning, 'none');
+  assert.equal(c.release.tag, null);      // the default simply does not apply
+});
+
+test('but an EXPLICIT tag alongside versioning: none is a contradiction', () => {
+  assert.throws(() => parseRepoConfig(
+    'version: 1\nhooks: { test: t, build: b, deploy: d }\nrelease: { versioning: none, tag: "v{version}" }\n', 'f'),
+    /there is no version to tag with/);
+});
+
+test('a tag template without {version} is refused', () => {
+  assert.throws(() => parseRepoConfig(MIN + 'release: { tag: "release" }\n', 'f'),
+    /does not include \{version\}/);
+});
+
+test('the tag pattern is derived from the template unless stated', () => {
+  assert.equal(parseRepoConfig(MIN, 'f').release.tagPattern, 'v*');
+  assert.equal(parseRepoConfig(MIN + 'release: { tag: "release-{version}" }\n', 'f').release.tagPattern, 'release-*');
+  assert.equal(parseRepoConfig(MIN + 'release: { tagPattern: "rel/*" }\n', 'f').release.tagPattern, 'rel/*');
 });

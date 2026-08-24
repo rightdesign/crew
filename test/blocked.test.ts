@@ -108,3 +108,25 @@ test('a ticket with a repo is actionable, so it never rolls up even with childre
   const kid = { ...T({ id: 'k', issue_id: 'ISSUE-2', status: 'verified' }), parent_id: 'p' };
   assert.deepEqual(rollUpParents([withRepo as Ticket, kid as Ticket]), []);
 });
+
+test('a stranded ticket assigned to a human is NOT reported — the ball is in their court', () => {
+  const done = T({ id: 'x', issue_id: 'ISSUE-9', status: 'closed_deployed' });
+  const held = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', blocked_by: ['x'], assignee_id: 'op-1' });
+  const orphan = T({ id: 'b', issue_id: 'ISSUE-2', status: 'needs_info', blocked_by: ['x'] });
+  const tickets = [done, held, orphan];
+  const info = blockerInfoMap(tickets);
+  const blocked = computeBlockedIds(tickets, info);
+  const holds = new Set(['op-1']);
+
+  assert.deepEqual(strandedNeedsInfo(tickets, blocked, holds).map((t) => t.issue_id), ['ISSUE-2']);
+  // without the holds set, both look identical — which is why it is passed in
+  assert.equal(strandedNeedsInfo(tickets, blocked).length, 2);
+});
+
+test('a ticket assigned to a SEAT is still reported — a seat is not a person', () => {
+  const done = T({ id: 'x', issue_id: 'ISSUE-9', status: 'verified' });
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', blocked_by: ['x'], assignee_id: 'dev-1' });
+  const tickets = [done, t];
+  const blocked = computeBlockedIds(tickets, blockerInfoMap(tickets));
+  assert.equal(strandedNeedsInfo(tickets, blocked, new Set(['op-1'])).length, 1);
+});

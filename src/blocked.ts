@@ -122,14 +122,26 @@ export function planSweep(tickets: Ticket[], info: BlockerInfo, blocked: Set<str
 
 /**
  * The other half of ISSUE-187's problem, in its second form: a ticket parked
- * in `needs_info` whose blockers have all resolved. The loop does not move
+ * in `needs_info` whose blockers have all resolved. The crew does not move
  * these — `needs_info` means a human owes an answer, and that is not the
- * loop's to decide — but it surfaces them, because otherwise nothing but a
+ * crew's to decide — but it surfaces them, because otherwise nothing but a
  * human comment ever wakes them. This is what stranded ISSUE-138 and 134.
+ *
+ * **A ticket assigned to a hold row is excluded**: the ball is in that
+ * person's court, and repeating it every cycle is noise, not a reminder. That
+ * is the same rule the rest of the crew already applies to a hold, and it is
+ * what distinguishes "someone is sitting on this" from the case this check
+ * exists for — nobody owns it and nothing will ever wake it.
  */
-export function strandedNeedsInfo(tickets: Ticket[], blocked: Set<string>): Ticket[] {
+export function strandedNeedsInfo(
+  tickets: Ticket[], blocked: Set<string>, holds: Set<string> = new Set(),
+): Ticket[] {
   return tickets.filter(
-    (t) => t.status === 'needs_info' && (t.blocked_by ?? []).length > 0 && !blocked.has(t.id),
+    (t) =>
+      t.status === 'needs_info' &&
+      (t.blocked_by ?? []).length > 0 &&
+      !blocked.has(t.id) &&
+      !(t.assignee_id && holds.has(t.assignee_id)),
   );
 }
 
