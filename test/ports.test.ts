@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ticketForPort, worktreeExists, DEFAULT_PORTS, listeners } from '../src/ports.ts';
+import { ticketForPort, worktreeExists, worktreeExistsIn, DEFAULT_PORTS, listeners } from '../src/ports.ts';
 
 test('a port maps back to its ticket and role', () => {
   assert.deepEqual(ticketForPort(30042), { n: 42, role: 'backend' });
@@ -44,4 +44,20 @@ test('a custom port scheme is honoured', () => {
   assert.deepEqual(ticketForPort(8005, s), { n: 5, role: 'backend' });
   assert.equal(ticketForPort(8500, s), null);
   assert.deepEqual(ticketForPort(9005, s), { n: 5, role: 'frontend' });
+});
+
+// ISSUE-350. Each repo names its worktrees after itself, so asking only the
+// connection's first directory answers "gone" for a worktree that is alive
+// next door — and `reap` kills the processes of what it thinks is gone.
+test('a worktree counts as present when any of the connection\'s repos has it', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'crew-wt-'));
+  mkdirSync(join(parent, 'crew-issue-350'), { recursive: true });
+  writeFileSync(join(parent, 'crew-issue-350', '.git'), 'gitdir: elsewhere');
+  const where = [
+    { parent, prefix: 'synthesis-issue-' },
+    { parent, prefix: 'crew-issue-' },
+  ];
+  assert.equal(worktreeExistsIn(where, 350), true);
+  assert.equal(worktreeExistsIn([where[0]!], 350), false);   // the pre-ISSUE-350 answer
+  assert.equal(worktreeExistsIn(where, 351), false);
 });

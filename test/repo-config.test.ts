@@ -381,3 +381,42 @@ test('the mode list is closed, and names itself in the error', () => {
     /must be one of local\|integrate\|ci_manual\|ci_auto\|external/,
   );
 });
+
+// ISSUE-350. `worktreePrefix` lived on the connection, which spans several
+// repos — so a session working the area's second repo was told to cut its
+// worktree under the first repo's name.
+test('a repo\'s worktree prefix defaults to its own directory name', () => {
+  const c = resolveRepoConfig(null, undefined, '/w/tablation-js');
+  assert.equal(c.worktrees.prefix, 'tablation-js-issue-');
+  assert.equal(c.provenance['worktrees.prefix'], 'default');
+  // A trailing separator must not eat the name.
+  assert.equal(resolveRepoConfig(null, undefined, '/w/crew/').worktrees.prefix, 'crew-issue-');
+});
+
+test('the ship supplies a worktree prefix, and the repo overrides it', () => {
+  const shipOnly = resolveRepoConfig(null, { worktrees: { prefix: 'synthesis-issue-' } }, '/w/crew');
+  assert.equal(shipOnly.worktrees.prefix, 'synthesis-issue-');
+  assert.equal(shipOnly.provenance['worktrees.prefix'], 'ship');
+
+  const repo = parseRepoConfig(`${MIN}worktrees:\n  prefix: wt-\n`, '.crew.yaml');
+  const both = resolveRepoConfig(repo, { worktrees: { prefix: 'synthesis-issue-' } }, '/w/crew');
+  assert.equal(both.worktrees.prefix, 'wt-');
+  assert.equal(both.provenance['worktrees.prefix'], 'repo');
+  // Reported rather than swallowed: a ship setting the repo overrides reads as
+  // if it were in use, which is how this went unnoticed on the connection.
+  assert.ok(both.shadowed.includes('worktrees.prefix'));
+});
+
+test('a worktree prefix may not contain a path separator', () => {
+  // A worktree is cut beside the checkout; a prefix with a slash puts it
+  // somewhere nothing else looks — including `reap`, which kills what it
+  // cannot find.
+  assert.throws(
+    () => parseRepoConfig(`${MIN}worktrees:\n  prefix: wt/issue-\n`, '.crew.yaml'),
+    /must not contain a path separator/,
+  );
+  assert.throws(
+    () => parseRepoConfig(`${MIN}worktrees:\n  prefix: ""\n`, '.crew.yaml'),
+    /non-empty string/,
+  );
+});

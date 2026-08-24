@@ -91,14 +91,32 @@ export function worktreeExists(parent: string, prefix: string, n: number): boole
   return false;
 }
 
+/**
+ * The same question across every repository a connection serves.
+ *
+ * A connection spans several repos (ISSUE-331) and each names its worktrees
+ * after itself (ISSUE-350), so asking one directory whether ISSUE-346's
+ * worktree exists answers "no" for a ticket whose worktree is alive next
+ * door — and `reap` acts on that answer by killing processes.
+ */
+export interface WorktreeLocation { parent: string; prefix: string }
+
+export const worktreeExistsIn = (where: WorktreeLocation[], n: number): boolean =>
+  where.some((w) => worktreeExists(w.parent, w.prefix, n));
+
 export interface Orphan extends Listener { n: number; role: string }
 
 export function findOrphans(parent: string, prefix: string, s: PortScheme = DEFAULT_PORTS): Orphan[] {
+  return findOrphansIn([{ parent, prefix }], s);
+}
+
+/** Orphans across every repository — see `worktreeExistsIn`. */
+export function findOrphansIn(where: WorktreeLocation[], s: PortScheme = DEFAULT_PORTS): Orphan[] {
   const orphans: Orphan[] = [];
   for (const l of listeners()) {
     const t = ticketForPort(l.port, s);
     if (!t) continue;
-    if (worktreeExists(parent, prefix, t.n)) continue;
+    if (worktreeExistsIn(where, t.n)) continue;
     orphans.push({ ...l, ...t });
   }
   return orphans;

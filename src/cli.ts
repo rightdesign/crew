@@ -19,7 +19,7 @@ import { decideCycle, rosterFor } from './poll.ts';
 import { applySweep } from './blocked.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
-import { loadRepoConfig, resolveRepoConfig, validateEffective } from './repo-config.ts';
+import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
 import { runRelease } from './release-run.ts';
 import { planStamp, applyStamp } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
@@ -27,12 +27,12 @@ import { notify, describeRelease } from './notify.ts';
 import { Tracker } from './tracker.ts';
 import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
-import { findOrphans, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExists } from './ports.ts';
+import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles } from './fleet.ts';
 import { discover, renderConnection } from './connect.ts';
-import { worktrees, git, gitOk, syncState, fastForward, fetchRemote } from './git.ts';
-import { readFileSync } from 'node:fs';
+import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 
 const CREW_HOME = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -205,15 +205,44 @@ async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {
  * own `.crew.yaml` and the connection's contract, and reading those is the
  * cycle's job, not the prompt builder's.
  */
+/**
+ * Every repository a connection serves, with its own contract resolved.
+ *
+ * One place, because three commands need it and each got it wrong its own way
+ * before ISSUE-350: they read the connection's `dir` and `worktreePrefix` and
+ * so saw only the first repo of an area that has several.
+ */
+function resolvedRepos(c: typeof conn) {
+  return reposOf(c).map((t) => ({
+    name: t.name,
+    dir: t.dir,
+    config: resolveRepoConfig(loadRepoConfig(t.dir), {
+      hooks: c.hooks, labels: c.labels,
+      release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
+      platform: c.platform,
+      // The connection's prefix is a SHIP-level default for a repo that
+      // declares none. A repo that declares its own shadows it, and `doctor`
+      // reports that the way it reports every other shadowed setting.
+      worktrees: { prefix: c.worktreePrefix },
+    }, t.dir),
+  }));
+}
+
+/** Where this connection's worktrees live, per repository. */
+const worktreeLocations = (c: typeof conn) =>
+  resolvedRepos(c).map((r) => ({
+    parent: resolvePath(r.dir, '..'),
+    prefix: r.config.worktrees.prefix,
+  }));
+
 function environmentFor(c: typeof conn): string {
   const contract = new Tracker(c, cfg.ship).contract;
-  const dir = c.dir;
-  const repo = resolveRepoConfig(loadRepoConfig(dir), {
-    hooks: c.hooks, labels: c.labels,
-    release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
-    platform: c.platform,
-  }, dir);
-  return renderEnvironment({ conn: c, userAgent: cfg.ship.userAgent, repo, contract });
+  // Every repository the connection serves, not just the first. The session
+  // has not picked its ticket yet, so which one it will work is unknowable
+  // here — the brief describes them all (ISSUE-350).
+  return renderEnvironment({
+    conn: c, userAgent: cfg.ship.userAgent, repos: resolvedRepos(c), contract,
+  });
 }
 
 /**
@@ -549,14 +578,14 @@ switch (command) {
   }
 
   case 'ports': {
-    const parent = resolvePath(conn.dir, '..');
+    const where = worktreeLocations(conn);
     const rows = listeners()
       .map((l) => ({ ...l, t: ticketForPort(l.port) }))
       .filter((r) => r.t)
       .sort((a, b) => a.port - b.port);
     if (!rows.length) { process.stdout.write('nothing of ours is listening\n'); break; }
     for (const r of rows) {
-      const live = worktreeExists(parent, conn.worktreePrefix, r.t!.n);
+      const live = worktreeExistsIn(where, r.t!.n);
       process.stdout.write(
         `${String(r.port).padEnd(6)} ${r.t!.role.padEnd(9)} ISSUE-${String(r.t!.n).padEnd(5)} ` +
           `pid ${String(r.pid).padEnd(7)} ${live ? 'worktree present' : 'ORPHAN — worktree gone'}\n`,
@@ -567,8 +596,9 @@ switch (command) {
 
   case 'reap': {
     emit.enter('worktree');
-    const parent = resolvePath(conn.dir, '..');
-    const orphans = findOrphans(parent, conn.worktreePrefix);
+    // Every repository, not just the connection's first: a worktree alive in
+    // the second one used to read as an orphan, and reap kills orphans.
+    const orphans = findOrphansIn(worktreeLocations(conn));
     if (!orphans.length) { emit.emit('nothing to clean up'); break; }
     for (const o of orphans) {
       emit.emit(
@@ -585,20 +615,48 @@ switch (command) {
     const n = positional[2] ?? positional[1];
     if (!n || !/^\d+$/.test(n)) { process.stderr.write('drop: need a ticket number\n'); process.exit(2); }
     const num = Number(n);
-    const parent = resolvePath(conn.dir, '..');
-    const wt = `${parent}/${conn.worktreePrefix}${n}`;
+    // Which repository's worktree? Each names them after itself (ISSUE-350),
+    // so the number alone does not say — look for it in all of them. Removing
+    // one is destructive, so an ambiguous answer stops rather than picks.
+    const candidates = resolvedRepos(conn)
+      .map((r) => ({
+        repo: r,
+        path: `${resolvePath(r.dir, '..')}/${r.config.worktrees.prefix}${n}`,
+      }))
+      .filter((c) => existsSync(`${c.path}/.git`));
+    if (candidates.length === 0) {
+      process.stderr.write(
+        `drop: no worktree for ISSUE-${n} in any of this connection's repositories ` +
+          `(looked in: ${resolvedRepos(conn).map((r) => `${r.config.worktrees.prefix}${n}`).join(', ')})\n`,
+      );
+      process.exit(2);
+    }
+    if (candidates.length > 1) {
+      process.stderr.write(
+        `drop: ISSUE-${n} has a worktree in more than one repository ` +
+          `(${candidates.map((c) => c.repo.name).join(', ')}) — remove them one at a time by path\n`,
+      );
+      process.exit(2);
+    }
+    const { repo: target, path: wt } = candidates[0]!;
+    // The repo's own branch convention, not `issue-<n>`: deleting by a name
+    // this repository never uses silently deletes nothing.
+    const branch = branchForIssue(target.dir, `ISSUE-${n}`, {
+      name: target.config.branch.name, push: target.config.branch.push,
+    }, (t) => renderBranchName(t, { key: `ISSUE-${n}` }));
     const pids = pidsInWorktree(wt, num);
     if (pids.length) {
       emit.emit(`${dryRun ? 'would kill' : 'killing'} processes still inside ${wt}: ${pids.join(' ')}`);
       if (!dryRun) await killGently(pids);
     }
     if (dryRun) {
-      emit.emit(`would remove worktree ${wt} and branch issue-${n}`);
+      emit.emit(`would remove worktree ${wt} and branch ${branch ?? '(none found)'}`);
       break;
     }
-    gitOk(conn.dir, ['worktree', 'remove', '--force', wt]);
-    gitOk(conn.dir, ['branch', '-D', `issue-${n}`]);
-    emit.emit(`dropped ISSUE-${n}`);
+    gitOk(target.dir, ['worktree', 'remove', '--force', wt]);
+    if (branch) gitOk(target.dir, ['branch', '-D', branch]);
+    else emit.warn(`no branch found for ISSUE-${n} in ${target.name} — worktree removed, nothing to delete`);
+    emit.emit(`dropped ISSUE-${n} from ${target.name}`);
     break;
   }
 
@@ -606,21 +664,25 @@ switch (command) {
     // A reviewer's commits land on the remote; until a worktree takes them the
     // dev seat builds on stale code and QA verifies something nobody reviewed.
     emit.enter('worktree');
-    fetchRemote(conn.dir);
     let tracked = 0;
     let acted = 0;
-    for (const w of worktrees(conn.dir)) {
-      if (!w.branch) continue;
-      const s2 = syncState(w.path, w.branch);
-      if (!s2.upstream) continue;
-      tracked++;
-      if (s2.canFastForward) {
-        acted++;
-        if (dryRun) emit.emit(`would fast-forward ${w.branch}: ${s2.detail}`);
-        else emit.emit(fastForward(w.path, w.branch) ? `fast-forwarded ${w.branch}` : `could not fast-forward ${w.branch}`);
-      } else if (s2.behind > 0 || s2.ahead > 0) {
-        acted++;
-        emit.warn(`${w.branch}: ${s2.detail}`);
+    // Every repository of the connection: a reviewer's commits on the second
+    // repo's branch are no less stale for being next door (ISSUE-350).
+    for (const r of reposOf(conn)) {
+      fetchRemote(r.dir);
+      for (const w of worktrees(r.dir)) {
+        if (!w.branch) continue;
+        const s2 = syncState(w.path, w.branch);
+        if (!s2.upstream) continue;
+        tracked++;
+        if (s2.canFastForward) {
+          acted++;
+          if (dryRun) emit.emit(`would fast-forward ${w.branch}: ${s2.detail}`);
+          else emit.emit(fastForward(w.path, w.branch) ? `fast-forwarded ${w.branch}` : `could not fast-forward ${w.branch}`);
+        } else if (s2.behind > 0 || s2.ahead > 0) {
+          acted++;
+          emit.warn(`${w.branch}: ${s2.detail}`);
+        }
       }
     }
     // Silence would read as "checked and fine"; say which it was.
@@ -684,6 +746,29 @@ switch (command) {
           contractProblems.map((p) => `                   - ${p}\n`).join('')
         : 'contract:          consistent\n',
     );
+
+    // Per repository, because a connection serves several and each carries its
+    // own contract. `shadowed` was computed and never read by anything until
+    // ISSUE-350 — a setting the ship declares and the repo overrides is
+    // otherwise invisible, and reads as though it were in use.
+    for (const r of resolvedRepos(conn)) {
+      const { config } = r;
+      process.stdout.write(
+        `${`repo ${r.name}:`.padEnd(19)}${r.dir}\n` +
+          `                   worktrees at ../${config.worktrees.prefix}<number> ` +
+          `(${config.provenance['worktrees.prefix'] ?? 'default'}), ` +
+          `branch ${config.branch.name}\n`,
+      );
+      if (config.shadowed.length) {
+        process.stdout.write(
+          `                   this ship declares ${config.shadowed.join(', ')}, ` +
+            `and ${r.name} overrides it — the repo wins\n`,
+        );
+      }
+      for (const p2 of validateEffective(config)) {
+        process.stdout.write(`                   - ${p2}\n`);
+      }
+    }
 
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
     if (ships.length === 0) {

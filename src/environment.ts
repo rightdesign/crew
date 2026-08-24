@@ -20,11 +20,29 @@ import { renderBranchName } from './repo-config.ts';
 /** The environment variable the crew hands the session its tracker key in. */
 export const API_KEY_VAR = 'CREW_API_KEY';
 
+/** One repository this connection serves, as the brief must describe it. */
+export interface EnvironmentRepo {
+  /** The name the tracker's `Repos` table uses — the digest's `repo` column. */
+  name: string;
+  /** The checkout on this machine. */
+  dir: string;
+  config: EffectiveRepoConfig;
+}
+
 export interface EnvironmentInput {
   conn: Connection;
   /** From the ship: one identity for everything this machine sends. */
   userAgent: string;
-  repo: EffectiveRepoConfig;
+  /**
+   * Every repository this connection serves, not just the first.
+   *
+   * An area spans several repos (ISSUE-331) and they do not share a branch
+   * convention, a worktree name, or a test command. The environment is built
+   * before the session picks its ticket, so it cannot know which one applies
+   * — it describes them all, and the digest's `repo` column says which is
+   * this ticket's (ISSUE-350).
+   */
+  repos: EnvironmentRepo[];
   contract: Contract;
   /** Where this ticket's work happens, when the cycle knows it. */
   repoDir?: string | null;
@@ -92,8 +110,67 @@ function branchExample(repo: EffectiveRepoConfig, key: string): string {
   return renderBranchName(repo.branch.name, { key, title: 'Fix the widget', role: 'dev' });
 }
 
+/**
+ * The part of the environment that is true of ONE repository.
+ *
+ * Split out because a connection may serve several, and everything in here —
+ * where the worktree goes, what the branch is called, which files to copy,
+ * which commands may be run — differs between them.
+ */
+function repoSection(r: EnvironmentRepo, key: string, heading: string): string[] {
+  const repo = r.config;
+  const lines: string[] = [
+    '',
+    heading,
+    '',
+    `- Cut it from \`${repo.branch.base}\`, beside the checkout, at`,
+    `  \`../${repo.worktrees.prefix}<number>\`.`,
+    `- Name the branch the way this repository names branches: \`${repo.branch.name}\``,
+    `  — for ${key} that is \`${branchExample(repo, key)}\`.`,
+    '- Never work in the main checkout. It is the operator\'s, and the release phase',
+    '  uses it.',
+  ];
+
+  if (repo.worktrees.copy.length) {
+    lines.push(
+      '',
+      'A worktree is a clean checkout, so it is missing exactly the files git ignores.',
+      'Copy these across from the main checkout before running anything:',
+      '',
+      ...repo.worktrees.copy.map((c) => `- \`${c}\``),
+    );
+  }
+
+  if (repo.docs.designGuide) {
+    lines.push(
+      '',
+      '## This project\'s design brief',
+      '',
+      `\`${repo.docs.designGuide}\`, in the repository. Read it from the primary`,
+      'checkout before you `cd` into any worktree — a worktree cut from the base',
+      'branch only has it once it has been committed there.',
+    );
+  }
+
+  if (repo.docs.triagePolicy) {
+    lines.push(
+      '',
+      '## This project\'s triage policy',
+      '',
+      `\`${repo.docs.triagePolicy}\`, in the repository. Where it and any brief`,
+      'disagree about what a status means or when a ticket may be accepted, the',
+      'policy document wins: it is the project\'s own decision, and the brief is',
+      'shared with projects that decided differently.',
+    );
+  }
+
+  return lines;
+}
+
 export function renderEnvironment(i: EnvironmentInput): string {
-  const { conn, repo, contract } = i;
+  const { conn, contract } = i;
+  const repos = i.repos;
+  const only = repos.length === 1 ? repos[0]! : undefined;
   const models = conn.resolved?.models;
   const key = 'ISSUE-000';
 
@@ -151,55 +228,35 @@ export function renderEnvironment(i: EnvironmentInput): string {
     `- Parked on an unresolved dependency, set by the crew and not by you: \`${contract.statuses.parked}\``,
     '',
     `\`${contract.statuses.verified}\` and the closed statuses are **never yours to set**.`,
-    '',
-    '## Your worktree',
-    '',
-    `- Cut it from \`${repo.branch.base}\`, beside the checkout, at`,
-    `  \`../${conn.worktreePrefix}<number>\`.`,
-    `- Name the branch the way this repository names branches: \`${repo.branch.name}\``,
-    `  — for ${key} that is \`${branchExample(repo, key)}\`.`,
-    '- Never work in the main checkout. It is the operator\'s, and the release phase',
-    '  uses it.',
   );
 
-  if (repo.worktrees.copy.length) {
+  if (only) {
+    lines.push(...repoSection(only, key, '## Your worktree'));
+  } else {
     lines.push(
       '',
-      'A worktree is a clean checkout, so it is missing exactly the files git ignores.',
-      'Copy these across from the main checkout before running anything:',
+      '## The repositories this board covers',
       '',
-      ...repo.worktrees.copy.map((c) => `- \`${c}\``),
+      'This board spans several repositories, and they do not share a branch name,',
+      'a worktree location or a test command. **The `repo` column of your queue',
+      'says which one your ticket belongs to** — read the section for THAT one and',
+      'ignore the others. A ticket whose repo is not listed here has no checkout on',
+      'this machine and is not yours to work.',
     );
-  }
-
-  if (repo.docs.designGuide) {
-    lines.push(
-      '',
-      '## This project\'s design brief',
-      '',
-      `\`${repo.docs.designGuide}\`, in the repository. Read it from the primary`,
-      'checkout before you `cd` into any worktree — a worktree cut from the base',
-      'branch only has it once it has been committed there.',
-    );
-  }
-
-  if (repo.docs.triagePolicy) {
-    lines.push(
-      '',
-      '## This project\'s triage policy',
-      '',
-      `\`${repo.docs.triagePolicy}\`, in the repository. Where it and any brief`,
-      'disagree about what a status means or when a ticket may be accepted, the',
-      'policy document wins: it is the project\'s own decision, and the brief is',
-      'shared with projects that decided differently.',
-    );
+    for (const r of repos) {
+      lines.push(...repoSection(r, key, `### ${r.name} — \`${r.dir}\``));
+      lines.push('', `Hooks for ${r.name} — the only commands you should run here:`, '', hookTable(r.config));
+    }
   }
 
   if (i.repoDir) {
     lines.push('', `This ticket's work happens in \`${i.repoDir}\`.`);
   }
 
-  lines.push('', '## Hooks — the only commands you should run', '', hookTable(repo));
+  // Rendered per repository above when there is more than one: a single hooks
+  // table for a board spanning three repos would name one repo's test command
+  // as though it ran everywhere.
+  if (only) lines.push('', '## Hooks — the only commands you should run', '', hookTable(only.config));
 
   return lines.join('\n');
 }

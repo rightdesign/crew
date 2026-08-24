@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { parse } from 'yaml';
 import { isPlatformRequirement, type PlatformRequirement } from './platform.ts';
 
@@ -219,6 +219,21 @@ export interface Worktrees {
    * relative to the repository root. Copied before `hooks.setup` runs.
    */
   copy: string[];
+  /**
+   * What this repository's worktrees are called: a ticket's worktree is cut
+   * beside the checkout at `../<prefix><number>`.
+   *
+   * A fact about the repository, not about the ship or the board — the same
+   * kind of convention as `branch.name`, and it lived on the CONNECTION until
+   * ISSUE-350. A connection spans several repos (ISSUE-331), so one prefix
+   * there told a session working the second repo to cut its worktree under
+   * the first repo's name.
+   *
+   * Defaults to the checkout's own directory name plus `-issue-`, which is
+   * what every repo the crew works was already doing by hand. A ship-level
+   * `worktreePrefix` still overrides that default, and this overrides both.
+   */
+  prefix: string;
 }
 
 /**
@@ -339,7 +354,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file);
   rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file);
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
-  rejectUnknown(raw.worktrees, new Set(['copy']), 'worktrees', file);
+  rejectUnknown(raw.worktrees, new Set(['copy', 'prefix']), 'worktrees', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
@@ -371,7 +386,24 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   if (copyRaw !== undefined && !Array.isArray(copyRaw)) {
     throw new RepoConfigError(`${file}: worktrees.copy must be a list of paths`);
   }
-  const worktrees: Worktrees = { copy: (copyRaw ?? []).map((c: unknown) => String(c)) };
+  const prefixRaw = raw.worktrees?.prefix;
+  if (prefixRaw !== undefined && (typeof prefixRaw !== 'string' || prefixRaw.trim() === '')) {
+    throw new RepoConfigError(`${file}: worktrees.prefix must be a non-empty string`);
+  }
+  // A worktree sits beside the checkout, so a prefix that escapes that
+  // directory puts it somewhere nobody is looking for it.
+  if (typeof prefixRaw === 'string' && /[/\\]/.test(prefixRaw)) {
+    throw new RepoConfigError(
+      `${file}: worktrees.prefix ("${prefixRaw}") must not contain a path separator — ` +
+        'a worktree is cut beside the checkout, not inside a directory of its own',
+    );
+  }
+  const worktrees: Worktrees = {
+    copy: (copyRaw ?? []).map((c: unknown) => String(c)),
+    // Empty means "not declared" here; the effective config fills it in, since
+    // only that layer knows the ship's setting and the checkout's directory.
+    prefix: prefixRaw === undefined ? '' : String(prefixRaw),
+  };
   const docs: RepoDocs = {};
   if (raw.docs?.triagePolicy) docs.triagePolicy = String(raw.docs.triagePolicy);
   if (raw.docs?.designGuide) docs.designGuide = String(raw.docs.designGuide);
@@ -613,11 +645,27 @@ export function renderBranchName(template: string, ctx: BranchContext): string {
  */
 export interface ShipRepoSettings {
   branch?: Partial<BranchNaming>;
+  /** The connection's `worktreePrefix`, if it declares one (ISSUE-350). */
+  worktrees?: { prefix?: string };
   platform?: PlatformRequirement;
   shell?: string;
   hooks?: RepoHooks;
   labels?: Partial<Record<keyof RepoHooks, string>>;
   release?: Partial<RepoConfig['release']>;
+}
+
+/**
+ * What a repository's worktrees are called when nobody says.
+ *
+ * The checkout's own directory name plus `-issue-`, which is what every repo
+ * the crew works had already settled on by hand: `synthesis-issue-341` beside
+ * `synthesis`, `crew-issue-346` beside `crew`. Deriving it means a second repo
+ * added to an area needs no configuration to get its own worktree names, which
+ * is the failure ISSUE-350 was filed for.
+ */
+export function defaultWorktreePrefix(dir: string): string {
+  const name = basename(dir.replace(/[/\\]+$/, ''));
+  return name ? `${name}-issue-` : 'issue-';
 }
 
 export type Source = 'repo' | 'ship' | 'default';
@@ -695,9 +743,19 @@ export function resolveRepoConfig(
 
   return {
     version: SPEC_VERSION,
-    // Not merged: which gitignored files a worktree needs is a fact about the
-    // repository and nothing else, so a ship cannot supply or override it.
-    worktrees: repo?.worktrees ?? { copy: [] },
+    worktrees: {
+      // Not merged: which gitignored files a worktree needs is a fact about
+      // the repository and nothing else, so a ship cannot supply or override
+      // it.
+      copy: repo?.worktrees.copy ?? [],
+      // Merged, unlike `copy`: this one HAS a ship-level source, because it
+      // lived on the connection before it lived here (ISSUE-350). The default
+      // is derived from the checkout rather than fixed, so a repo that
+      // declares nothing and a ship that declares nothing still get the
+      // convention already in use.
+      prefix: pick('worktrees.prefix', repo?.worktrees.prefix || undefined,
+        ship?.worktrees?.prefix, defaultWorktreePrefix(dir)),
+    },
     docs: repo?.docs ?? {},
     branch: {
       base: pick('branch.base', repo?.branch.base === 'main' ? undefined : repo?.branch.base,

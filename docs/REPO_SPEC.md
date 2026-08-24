@@ -179,6 +179,7 @@ release:
 | `hooks.isolate` | no | — | Prints `KEY=value` lines pointing this worktree at state of its own — typically its own database. Receives `CREW_TICKET`, `CREW_BRANCH`. Without it, a session that changes a schema has nowhere to run migrations except the operator's own data. |
 | `hooks.handoff` | no | — | Leaves the operator able to open what was built, and prints how. Receives `CREW_TICKET`, `CREW_BRANCH` and whatever `isolate` printed. Its output goes into the session's progress comment. |
 | `worktrees.copy` | no | `[]` | Gitignored paths to copy from the main checkout into a new worktree, before `setup` runs. Repo-relative; absolute paths and `..` are rejected. A ship cannot supply or override this. |
+| `worktrees.prefix` | no | `<checkout>-issue-` | What this repository's worktrees are called: a ticket's worktree is cut beside the checkout at `../<prefix><number>`. Defaults to the checkout's own directory name — `crew` gets `crew-issue-346`. No path separator: a worktree sits beside the checkout, not inside a directory of its own. A connection's `worktreePrefix` supplies it for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
 | `docs.triagePolicy` | no | — | The triage seat's contract for this project — what its statuses mean, when a ticket may be accepted. Where it and a brief disagree, it wins. |
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
