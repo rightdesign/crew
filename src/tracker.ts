@@ -18,6 +18,15 @@ export interface Ticket {
   issue_id: string;
   /** The `Projects` row — the area of development this ticket belongs to. */
   project_id?: string | null;
+  /**
+   * The `Repos` row — which repository this ticket's work happens in.
+   *
+   * An area spans several repositories, so this is what decides the checkout:
+   * without it a release looks for a branch in whichever directory the
+   * connection happened to name, which is the wrong one for every repo but
+   * the first.
+   */
+  repo_id?: string | null;
   title?: string | null;
   status: string;
   severity?: string | null;

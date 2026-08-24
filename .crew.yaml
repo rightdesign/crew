@@ -1,0 +1,34 @@
+# The crew's contract for its own repository — see docs/REPO_SPEC.md, which
+# this file is the first non-trivial example of.
+version: 1
+
+# POSIX-shell hooks: macOS or Linux, not Windows.
+platform: unix
+
+worktrees:
+  # Nothing gitignored is needed to run the tests: no .env, no generated
+  # client, no build step. `setup` below is the whole bootstrap.
+  copy: []
+
+hooks:
+  # `link:` to the sibling client, so a fresh worktree needs the install to
+  # resolve it — there is no published package to fall back on.
+  setup: pnpm install
+
+  # Runs directly, not through `pnpm test`: type stripping means there is no
+  # build to do first, and the suite includes an in-process fake board so it
+  # touches no network.
+  test: node --test --test-timeout 90000 --experimental-strip-types test/*.test.ts
+
+  build: npx tsc --noEmit
+
+  version: node -p "require('./package.json').version"
+
+release:
+  # There is no target to deploy TO. Merging to the base branch IS the
+  # release, and an operator upgrades by pulling — which is exactly what
+  # `integrate` means (ISSUE-345). It merges, versions and tags; it runs no
+  # deploy hook, and declaring one here is an error rather than a no-op.
+  mode: integrate
+  versioning: none
+  changelog: false

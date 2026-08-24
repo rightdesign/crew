@@ -186,7 +186,7 @@ release:
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
-| `release.mode` | no | `local` | `local` / `ci_manual` / `ci_auto` |
+| `release.mode` | no | `local` | `local` / `integrate` / `ci_manual` / `ci_auto` / `external` |
 | `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none` |
 | `release.ci.ref` | when not `local` | — | Workflow file or pipeline slug. |
 | `release.versioning` | no | `auto` | `auto` or `none`. `none` means the crew never writes a version. |
@@ -195,6 +195,23 @@ release:
 | `release.verify.intervalSeconds` | no | `15` | How often to ask. |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
+
+### `release.mode: integrate`
+
+For a repository where **merging to the base branch IS the release** — a CLI, a
+library, a tool an operator upgrades by pulling. The crew merges, versions,
+writes the changelog and tags; it runs no deploy hook, expects no CI provider,
+and does not verify a release it never performed. Declaring `hooks.deploy`
+alongside it is an error rather than a silent no-op, because silently not
+running a deploy hook would leave an operator believing it runs.
+
+It exists against a specific temptation: declaring `local` with
+`deploy: exit 0`. A hook that exits zero without shipping anything reports
+success for something that did not happen, and the release then stamps its
+tickets as deployed on the strength of it. The crew's own repository is the
+first instance; before this mode existed it declared `external`, which meant
+its verified branches were never merged and every ticket had to be closed by
+hand.
 
 ### Why `isolate` and `handoff` are hooks
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadConfig, connection, configuredMembers, ConfigError } from '../src/config.ts';
+import { loadConfig, connection, configuredMembers, reposOf, ticketsByRepo, ConfigError } from '../src/config.ts';
 
 function withConfig(yaml: string) {
   const dir = mkdtempSync(join(tmpdir(), 'crew-cfg-'));
@@ -154,4 +154,66 @@ test('the shipped example config still parses', () => {
   assert.equal(cfg.connections.length, 1);
   // Shipped disarmed: copying it must not start writing to someone's board.
   assert.equal(cfg.connections[0]!.enabled, false);
+});
+
+test('reposOf covers every checkout, not just the connection dir', () => {
+  // Release, merge and sync are REPOSITORY operations. Treating `dir` as "the"
+  // directory meant only the first repo on a board was ever released — the
+  // others were configured, referenced by tickets, and silently never shipped.
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'connections:',
+    '  - name: multi',
+    '    workspace: w',
+    '    apiKey: k',
+    '    worktreePrefix: m-',
+    '    baseUrl: https://example.com',
+    '    repos:',
+    '      alpha: /tmp/alpha',
+    '      beta: /tmp/beta',
+    '  - name: single',
+    '    workspace: w',
+    '    apiKey: k',
+    '    worktreePrefix: s-',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/only',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+
+  assert.deepEqual(reposOf(connection(cfg, 'multi')).map((r) => r.name), ['alpha', 'beta']);
+  // A single-repo connection still yields exactly one target, so callers never
+  // need to special-case it.
+  assert.deepEqual(reposOf(connection(cfg, 'single')), [{ name: 'single', dir: '/tmp/only' }]);
+});
+
+test('tickets are partitioned by repo, and unplaceable ones are surfaced', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'connections:',
+    '  - name: multi', '    workspace: w', '    apiKey: k',
+    '    worktreePrefix: m-', '    baseUrl: https://example.com',
+    '    repos:', '      alpha: /tmp/alpha', '      beta: /tmp/beta',
+    '    resolved:',
+    '      workspaceId: w-1',
+    '      operator: op-1',
+    '      models:',
+    '        issues: m-i', '        comments: m-c', '        crew: m-w',
+    '      repoNames:',
+    '        "r-a": alpha', '        "r-b": beta',
+  ].join('\n'));
+  const c = connection(loadConfig(dir, join(dir, 'crew.yaml')), 'multi');
+
+  const { byRepo, unplaceable } = ticketsByRepo(c, [
+    { issue_id: 'A', repo_id: 'r-a' },
+    { issue_id: 'B', repo_id: 'r-b' },
+    { issue_id: 'C', repo_id: null },        // names no repo
+    { issue_id: 'D', repo_id: 'r-gone' },    // names one this ship has no checkout of
+  ]);
+  assert.deepEqual(byRepo.get('alpha')!.map((t) => t.issue_id), ['A']);
+  assert.deepEqual(byRepo.get('beta')!.map((t) => t.issue_id), ['B']);
+  // Not silently dropped and not guessed into a repo: merging a branch into
+  // the wrong repository is worse than refusing to place the ticket.
+  assert.deepEqual(unplaceable.map((t) => t.issue_id), ['C', 'D']);
 });

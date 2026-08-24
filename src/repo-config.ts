@@ -24,6 +24,11 @@ export const REPO_CONFIG_FILENAMES = ['.crew.yaml', '.crew.yml', '.crew.json'] a
  * Who releases this repo.
  *
  *   local      the crew merges, versions and runs the deploy hook itself
+ *   integrate  the crew merges, versions, changelogs and tags — and there is
+ *              nothing to deploy. Merging to the base branch IS the release:
+ *              a CLI, a library, a tool an operator upgrades by pulling. No
+ *              deploy hook, no CI provider, no `released` verification,
+ *              because there is nothing to verify against.
  *   ci_manual  the crew merges, then triggers CI and waits
  *   ci_auto    the crew merges; CI releases on its own and the crew watches
  *   external   the crew does NOT release at all. It pushes a branch and
@@ -35,8 +40,16 @@ export const REPO_CONFIG_FILENAMES = ['.crew.yaml', '.crew.yml', '.crew.json'] a
  * `external` exists because the alternative was composing three settings
  * (review + ci_auto + versioning:none) that had to agree, and a wrong
  * combination read as contradictory rather than merely unusual.
+ *
+ * `integrate` exists for the same reason, and against a specific temptation:
+ * declaring `local` with `deploy: exit 0`. A hook that exits zero without
+ * shipping anything reports success for something that did not happen, and
+ * the release then stamps tickets as deployed on the strength of it. The
+ * crew's own repository is the first instance (ISSUE-345); before this it was
+ * declared `external`, which meant its verified branches were never merged and
+ * every Crew ticket had to be closed by hand.
  */
-export type ReleaseMode = 'local' | 'ci_manual' | 'ci_auto' | 'external';
+export type ReleaseMode = 'local' | 'integrate' | 'ci_manual' | 'ci_auto' | 'external';
 export type CiProvider = 'github' | 'buildkite' | 'other' | 'none';
 
 export interface RepoHooks {
@@ -282,7 +295,7 @@ const VERSIONINGS: Versioning[] = ['auto', 'none'];
 const CI_KEYS = new Set(['provider', 'ref']);
 const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
 const MATCHES: VerifyMatch[] = ['commit', 'version'];
-const MODES: ReleaseMode[] = ['local', 'ci_manual', 'ci_auto', 'external'];
+const MODES: ReleaseMode[] = ['local', 'integrate', 'ci_manual', 'ci_auto', 'external'];
 const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
 
 /** The path of the repo contract in `dir`, or null if it has none. */
@@ -405,8 +418,15 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   // here is far better than discovering it mid-release.
   // `external` needs no CI provider: the crew is not watching a pipeline it
   // triggered, it has simply handed the work over.
-  if (mode !== 'local' && mode !== 'external' && provider === 'none') {
+  // `integrate` needs none either: there is no pipeline, which is the point.
+  if (mode !== 'local' && mode !== 'external' && mode !== 'integrate' && provider === 'none') {
     throw new RepoConfigError(`${file}: release.mode "${mode}" needs release.ci.provider`);
+  }
+  if (mode === 'integrate' && hooks.deploy) {
+    throw new RepoConfigError(
+      `${file}: release.mode "integrate" means there is nothing to deploy, but hooks.deploy ` +
+        'is defined — use "local" if the crew should deploy it',
+    );
   }
   if (mode === 'external' && hooks.deploy) {
     throw new RepoConfigError(
@@ -416,7 +436,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   }
   // Without this the crew would report a CI release as successful purely on
   // the basis of having pushed. Refuse at load, not at release time.
-  if (mode !== 'local' && mode !== 'external' && !hooks.released) {
+  if (mode !== 'local' && mode !== 'external' && mode !== 'integrate' && !hooks.released) {
     throw new RepoConfigError(
       `${file}: release.mode "${mode}" needs a hooks.released — the crew cannot ` +
         'observe a release it did not perform without one',
@@ -735,7 +755,10 @@ export function resolveRepoConfig(
  */
 export function validateEffective(cfg: EffectiveRepoConfig): string[] {
   const problems: string[] = [];
-  if (cfg.release.mode !== 'local' && cfg.release.ci.provider === 'none') {
+  if (
+    cfg.release.mode !== 'local' && cfg.release.mode !== 'integrate'
+    && cfg.release.ci.provider === 'none'
+  ) {
     problems.push(`release.mode "${cfg.release.mode}" needs a CI provider`);
   }
   if (cfg.release.mode === 'local' && !cfg.hooks.deploy) {
@@ -747,7 +770,10 @@ export function validateEffective(cfg: EffectiveRepoConfig): string[] {
         'has no reliable way to learn whether it landed',
     );
   }
-  if (cfg.release.mode !== 'local' && cfg.release.mode !== 'external' && !cfg.hooks.released) {
+  if (
+    cfg.release.mode !== 'local' && cfg.release.mode !== 'external'
+    && cfg.release.mode !== 'integrate' && !cfg.hooks.released
+  ) {
     problems.push(
       `release.mode "${cfg.release.mode}" needs a released hook — without one a CI release ` +
         'would be reported as successful merely for having been pushed',

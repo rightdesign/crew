@@ -216,9 +216,9 @@ function memory() {
     deployFailedSha: () => failed,
     noteDeployFailed: (sha: string) => { failed = sha; },
     clearDeployFailed: () => { failed = null; },
-    releaseBlockedCount: () => blocked,
-    noteReleaseBlocked: () => ++blocked,
-    clearReleaseBlock: () => { blocked = 0; },
+    blockedCount: () => blocked,
+    noteBlocked: () => ++blocked,
+    clearBlocked: () => { blocked = 0; },
   };
 }
 
@@ -279,7 +279,7 @@ test('a persistent refusal gets LOUD rather than staying a warning', async () =>
 test('a clean release resets the blocked counter', async () => {
   const { dir, repo } = project(LOCAL);
   const state = memory();
-  state.noteReleaseBlocked();
+  state.noteBlocked();
   await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false, state });
   assert.equal(state.calls.blocked, 0);
 });
@@ -353,4 +353,110 @@ test('a git failure reported on stdout still names its cause', async () => {
     () => git(dir, ['commit', '-m', 'nothing here']),
     /nothing to commit/,
   );
+});
+
+test('a cycle of nothing but no-op merges cuts no version at all', () => {
+  // ISSUE-342. A no-op merge counted as "1 merged" and drove the full
+  // sequence — bump, changelog, build, deploy, tag — producing a release
+  // whose entire diff was its own version bump. Twice.
+  return (async () => {
+    const { dir, repo, g } = project(LOCAL);
+    g('checkout', '-qb', 'issue-8');
+    writeFileSync(join(dir, 'dup.txt'), 'same'); g('add', '.'); g('commit', '-qm', 'fixed it');
+    g('checkout', '-q', 'main');
+    // The change reaches main by another route, and main is already released.
+    writeFileSync(join(dir, 'dup.txt'), 'same'); g('add', '.'); g('commit', '-qm', 'someone else did it');
+    g('tag', '-a', 'v1.3.0', '-m', 'Release v1.3.0');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-8')],
+      emit: emitter(), dryRun: false, skipTests: true,
+    });
+
+    // Merged and live — so the ticket must still be stamped...
+    assert.equal(out.merged.length, 1);
+    assert.equal(out.alreadyLive, true);
+    assert.equal(out.version, '1.3.0');       // the release that actually carried it
+    // ...but nothing was cut: no commit, no bump, no new tag.
+    assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim(), head);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version, '1.2.3');
+    assert.equal(out.deployed, false);
+    assert.ok(lines.some((l) => /already contained in main/.test(l)));
+  })();
+});
+
+test('a real merge alongside a no-op still releases normally', () => {
+  // The over-correction to avoid: one branch that genuinely changes something
+  // must still ship, and the no-op riding along with it must still be stamped.
+  return (async () => {
+    const { dir, repo, g } = project(LOCAL);      // project() leaves issue-7 with a real change
+    g('checkout', '-qb', 'issue-8');
+    writeFileSync(join(dir, 'dup.txt'), 'same'); g('add', '.'); g('commit', '-qm', 'fixed it');
+    g('checkout', '-q', 'main');
+    writeFileSync(join(dir, 'dup.txt'), 'same'); g('add', '.'); g('commit', '-qm', 'someone else did it');
+
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7'), T('ISSUE-8')],
+      emit: emitter(), dryRun: false, skipTests: true,
+    });
+
+    assert.equal(out.merged.length, 2);
+    assert.ok(!out.alreadyLive, 'a real change was merged — this is a normal release');
+    assert.equal(out.deployed, true);
+    assert.notEqual(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version, '1.2.3');
+  })();
+});
+
+test('an untagged repo with nothing merged does not run the gate every cycle', () => {
+  // `upToDate` is `lastReleased === head`, so a repo that has never been
+  // tagged reports "not up to date" forever. That is indistinguishable from
+  // genuinely-unshipped work, and the release proceeded on it: an untagged
+  // repo with `versioning: none` ran its whole test suite and build on every
+  // cycle — every two minutes — merging nothing and stamping nothing.
+  return (async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-untagged-'));
+    const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
+    g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+    writeFileSync(join(dir, 'a'), '1'); g('add', '.'); g('commit', '-qm', 'base');
+    // No tag anywhere, which is the permanent state of `versioning: none`.
+    const repo = resolveRepoConfig(parseRepoConfig([
+      'version: 1',
+      'hooks:', '  test: exit 1', '  build: exit 1',   // running either is the bug
+      'release:', '  mode: integrate', '  versioning: none', '  changelog: false',
+    ].join('\n'), '.crew.yaml'), undefined, dir);
+
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.stopped, 'nothing merged and no release marker');
+    assert.ok(!out.integrated);
+    // The gate would have failed loudly if it ran — so a clean stop proves it did not.
+    assert.ok(lines.some((l) => /no release tag to compare against/.test(l)));
+  })();
+});
+
+test('...but an untagged repo DOES release once something merges', () => {
+  // The "releases forward from here" behaviour has to survive the guard: a
+  // brand-new repo's first verified merge is a real release.
+  return (async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-untagged2-'));
+    const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
+    g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+    writeFileSync(join(dir, 'a'), '1'); g('add', '.'); g('commit', '-qm', 'base');
+    g('checkout', '-qb', 'issue-7');
+    writeFileSync(join(dir, 'f'), 'x'); g('add', '.'); g('commit', '-qm', 'built it');
+    g('checkout', '-q', 'main');
+    const repo = resolveRepoConfig(parseRepoConfig([
+      'version: 1',
+      'hooks:', '  test: exit 0', '  build: exit 0',
+      'release:', '  mode: integrate', '  versioning: none', '  changelog: false',
+    ].join('\n'), '.crew.yaml'), undefined, dir);
+
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.merged.length, 1);
+    assert.equal(out.integrated, true);
+  })();
 });

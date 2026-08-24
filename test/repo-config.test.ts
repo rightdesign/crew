@@ -343,3 +343,41 @@ test('a ship cannot supply worktrees.copy — it is the repo\'s fact alone', () 
   // ...and with no repo file at all it is empty rather than inherited.
   assert.deepEqual(resolveRepoConfig(null, { hooks: { test: 'x' } }, '/tmp').worktrees.copy, []);
 });
+
+test('integrate: merges and versions, with nothing to deploy', () => {
+  // ISSUE-345. Before this mode existed the crew's own repo declared
+  // `external`, which meant its verified branches were never merged and every
+  // Crew ticket had to be closed by hand.
+  const c = parseRepoConfig([
+    'version: 1',
+    'hooks:',
+    '  test: node --test',
+    '  build: npx tsc --noEmit',
+    'release:',
+    '  mode: integrate',
+    '  versioning: none',
+    '  changelog: false',
+  ].join('\n'), 'f');
+  assert.equal(c.release.mode, 'integrate');
+
+  const eff = resolveRepoConfig(c, undefined, '/tmp');
+  // No CI provider and no `released` hook are demanded: there is no pipeline,
+  // which is the whole point of the mode.
+  assert.deepEqual(validateEffective(eff), []);
+});
+
+test('integrate refuses a deploy hook rather than ignoring one', () => {
+  // The alternative — silently not running it — would leave an operator
+  // believing their deploy hook runs on every release.
+  assert.throws(
+    () => parseRepoConfig('version: 1\nhooks:\n  deploy: ./ship.sh\nrelease:\n  mode: integrate\n', 'f'),
+    /means there is nothing to deploy, but hooks.deploy is defined/,
+  );
+});
+
+test('the mode list is closed, and names itself in the error', () => {
+  assert.throws(
+    () => parseRepoConfig('version: 1\nrelease:\n  mode: whenever\n', 'f'),
+    /must be one of local\|integrate\|ci_manual\|ci_auto\|external/,
+  );
+});

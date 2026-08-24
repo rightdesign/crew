@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncState, fastForward, worktrees, fetchRemote } from '../src/git.ts';
+import { syncState, fastForward, worktrees, fetchRemote, status } from '../src/git.ts';
 
 /** A bare remote and two clones — "the reviewer" and "the ship". */
 function world() {
@@ -112,4 +112,36 @@ test('worktrees are enumerated with their branches', () => {
   const list = worktrees(ship.d);
   assert.ok(list.some((w) => w.branch === 'issue-9'));
   assert.ok(list.some((w) => w.branch === 'main'));
+});
+
+test('porcelain parsing keeps the leading status column, and the whole filename', () => {
+  // `git()` trims, which strips the leading space of the FIRST porcelain line
+  // only — so `slice(3)` started a character late and ate the first character
+  // of the first filename. `.crew.yaml` was reported as `crew.yaml`, a file
+  // that does not exist, which is how this was noticed at all. Later lines
+  // kept their leading space and parsed correctly, so it looked like a one-off.
+  const dir = mkdtempSync(join(tmpdir(), 'crew-status-'));
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
+  g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+  writeFileSync(join(dir, '.crew.yaml'), 'x');
+  writeFileSync(join(dir, 'b.txt'), 'y');
+  g('add', '.'); g('commit', '-qm', 'base');
+
+  // A dotfile first, unstaged: the exact shape that lost its dot.
+  writeFileSync(join(dir, '.crew.yaml'), 'changed');
+  writeFileSync(join(dir, 'b.txt'), 'changed');
+  const unstaged = status(dir);
+  assert.deepEqual(unstaged.map((c) => c.path).sort(), ['.crew.yaml', 'b.txt']);
+  // The code is positional and must survive too — " M" is worktree-modified,
+  // "M " is staged, and reading one as the other would be a real mistake.
+  assert.ok(unstaged.every((c) => c.code === ' M'), JSON.stringify(unstaged));
+
+  g('add', '.crew.yaml');
+  const staged = status(dir).find((c) => c.path === '.crew.yaml')!;
+  assert.equal(staged.code, 'M ');
+
+  // Untracked never had a leading space, so it always worked — pin it anyway.
+  writeFileSync(join(dir, '.env'), 'secret');
+  const untracked = status(dir).find((c) => c.path === '.env')!;
+  assert.equal(untracked.untracked, true);
 });

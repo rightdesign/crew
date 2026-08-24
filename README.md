@@ -151,6 +151,13 @@ versioning and release mode:
 The crew carries no commands of its own: everything it runs to test, build,
 version or ship a repository comes from that repository's own file.
 
+One hook is the exception and lives in `crew.yaml` instead: `notify`, which is
+handed a level (`ok` / `warn` / `fail`), a headline and a detail line whenever a
+release ships or is blocked. Where that should be *shown* — a desktop
+notification, a status widget, a webhook, a push — is a fact about the machine
+and the person watching it, not about the code. Define none and release state
+simply goes to the log.
+
 A repo's own `.crew.yaml` wins over anything repeated in `crew.yaml`, and
 `crew doctor` reports the duplication as drift. The client can still configure
 a repo that has no `.crew.yaml` of its own.

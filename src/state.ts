@@ -88,7 +88,17 @@ export class State {
    * A lock naming a DEAD pid is stale and taken over: a run killed mid-cycle
    * (a reboot, a Ctrl-C) must not wedge the crew until someone notices.
    */
-  acquire(name: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
+  /**
+   * Lock names become filenames, so anything that could be read as a path has
+   * to go. A scope like `connection/repo` otherwise produced
+   * `.release-conn/repo.lock` — a write into a directory that does not exist.
+   */
+  private static safe(name: string): string {
+    return name.replace(/[^A-Za-z0-9_-]/g, '_');
+  }
+
+  acquire(rawName: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
+    const name = State.safe(rawName);
     const file = this.path(`.${name}.lock`);
     try {
       const existing = Number.parseInt(readFileSync(file, 'utf8').trim(), 10);
@@ -114,41 +124,42 @@ export class State {
    * behind a single untracked file with nothing saying so (ISSUE-174). One
    * blocked cycle is normal; the count is what makes a persistent one loud.
    */
-  releaseBlockedCount(): number {
-    try {
-      return Number.parseInt(readFileSync(this.path('.release-blocked'), 'utf8').trim(), 10) || 0;
-    } catch {
-      return 0;
-    }
-  }
-  noteReleaseBlocked(): number {
-    const n = this.releaseBlockedCount() + 1;
-    writeFileSync(this.path('.release-blocked'), `${n}\n`);
-    return n;
-  }
-  clearReleaseBlock(): void {
-    rmSync(this.path('.release-blocked'), { force: true });
-  }
-
   /**
-   * The commit a deploy last failed on.
+   * Release bookkeeping, scoped to one connection.
    *
-   * Without this the crew retries a broken deploy on every cycle — every two
-   * minutes, indefinitely — hammering the target and burying the original
-   * failure under identical ones. A failed commit is retried only when a NEW
-   * commit lands, or when an operator forces it by hand.
+   * Scoped because a ship serves several boards and releases each repo
+   * independently (ISSUE-338). These were single global files, so a deploy
+   * failure on one connection suppressed releases on every other one, and a
+   * release blocked in one repo counted cycles for all of them — a dirty tree
+   * in one checkout would have silently held up an unrelated project.
    */
-  deployFailedSha(): string | null {
-    try {
-      return readFileSync(this.path('.deploy-failed-sha'), 'utf8').trim() || null;
-    } catch {
-      return null;
-    }
-  }
-  noteDeployFailed(sha: string): void {
-    writeFileSync(this.path('.deploy-failed-sha'), `${sha}\n`);
-  }
-  clearDeployFailed(): void {
-    rmSync(this.path('.deploy-failed-sha'), { force: true });
+  release(connection: string) {
+    const suffix = State.safe(connection);
+    const blocked = `.release-blocked-${suffix}`;
+    const failed = `.deploy-failed-sha-${suffix}`;
+    const read = (f: string): string | null => {
+      try { return readFileSync(this.path(f), 'utf8').trim() || null; } catch { return null; }
+    };
+    return {
+      blockedCount: (): number => Number.parseInt(read(blocked) ?? '', 10) || 0,
+      noteBlocked: (): number => {
+        const n = (Number.parseInt(read(blocked) ?? '', 10) || 0) + 1;
+        writeFileSync(this.path(blocked), `${n}\n`);
+        return n;
+      },
+      clearBlocked: (): void => { rmSync(this.path(blocked), { force: true }); },
+
+      /**
+       * The commit a deploy last failed on.
+       *
+       * Without this the crew retries a broken deploy on every cycle — every
+       * two minutes, indefinitely — hammering the target and burying the
+       * original failure under identical ones. A failed commit is retried
+       * only when a NEW commit lands, or when an operator forces it by hand.
+       */
+      deployFailedSha: (): string | null => read(failed),
+      noteDeployFailed: (sha: string): void => { writeFileSync(this.path(failed), `${sha}\n`); },
+      clearDeployFailed: (): void => { rmSync(this.path(failed), { force: true }); },
+    };
   }
 }

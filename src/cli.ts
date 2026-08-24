@@ -9,7 +9,10 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, connection, resolveApiKey, ConfigError, type RoleName } from './config.ts';
+import {
+  loadConfig, connection, resolveApiKey, reposOf, ticketsByRepo,
+  ConfigError, type RoleName, type RepoTarget,
+} from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor } from './poll.ts';
@@ -20,6 +23,7 @@ import { loadRepoConfig, resolveRepoConfig, validateEffective } from './repo-con
 import { runRelease } from './release-run.ts';
 import { planStamp, applyStamp } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
+import { notify, describeRelease } from './notify.ts';
 import { Tracker } from './tracker.ts';
 import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
@@ -146,6 +150,49 @@ function requireArmed(what: string): void {
 
 
 /**
+ * Release every connection, whoever won the agent slot.
+ *
+ * The release phase is per connection and has nothing to do with which board
+ * got the agent this cycle: a repo with a QA-verified branch waiting needs
+ * releasing even if its board had no agent work at all. Running only the
+ * winner's would leave every other board's verified work sitting unmerged —
+ * and the fleet branch previously ran none at all, which is the same bug that
+ * left ISSUE-280 and ISSUE-292 unmerged for a day.
+ *
+ * Sequential rather than concurrent: each one runs a test suite, a build and a
+ * deploy, and two of those at once on one machine is how a release starts
+ * failing for reasons unrelated to the code.
+ */
+async function releaseFleet(): Promise<void> {
+  for (const c of cfg.connections) {
+    if (!dryRun && !c.enabled) continue;
+    if (!satisfies(cfg.ship.platform, c.platform)) continue;
+    for (const r of reposOf(c)) await releasePhase(c, r);
+  }
+}
+
+/**
+ * Release every repository of the connection in play.
+ *
+ * `crew run` on a single connection still has to cover all of its
+ * repositories: a verified branch in the second one is no less ready than a
+ * verified branch in the first.
+ */
+async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {}): Promise<void> {
+  const only = value('repo');
+  const targets = reposOf(conn);
+  const chosen = only ? targets.filter((t) => t.name === only) : targets;
+  if (only && chosen.length === 0) {
+    process.stderr.write(
+      `crew: no repo named "${only}" on connection "${conn.name}" ` +
+        `(have: ${targets.map((t) => t.name).join(', ')})\n`,
+    );
+    process.exit(2);
+  }
+  for (const t of chosen) await releasePhase(conn, t, opts);
+}
+
+/**
  * The Environment section of a session's prompt, for one connection.
  *
  * Assembled here rather than inside planAgentRun because it needs the repo's
@@ -172,28 +219,52 @@ function environmentFor(c: typeof conn): string {
  * schedule. The two phases take DIFFERENT locks, so a long release never
  * blocks the next poll from starting, and vice versa.
  */
-async function releasePhase(opts: { mergeOnly?: boolean; force?: boolean }): Promise<void> {
-  const relLock = dryRun ? undefined : state.acquire('release');
+async function releasePhase(
+  c: typeof conn, target: RepoTarget, opts: { mergeOnly?: boolean; force?: boolean } = {},
+): Promise<void> {
+  const scope = `${c.name}/${target.name}`;
+  // Per REPOSITORY, not per connection. A board's area spans several repos and
+  // each releases on its own: they have separate versions, separate tags and
+  // separate deploy targets, and a long release of one must not hold up
+  // another. Scoping this to the connection meant only `conn.dir` was ever
+  // released — every other repo on the board was silently never shipped.
+  const relLock = dryRun ? undefined : state.acquire(`release-${scope}`);
   if (relLock && !relLock.ok) {
     emit.emit(`a previous release (pid ${relLock.heldBy}) is still running — skipping`, { step: 'release' });
     return;
   }
   try {
 
-    const repoFile = loadRepoConfig(conn.dir);
+    const repoFile = loadRepoConfig(target.dir);
     const repo = resolveRepoConfig(repoFile, {
-      hooks: conn.hooks, labels: conn.labels,
-      release: { versionFiles: conn.release.versionFiles, changelog: conn.release.changelog },
-      platform: conn.platform,
-    }, conn.dir);
+      hooks: c.hooks, labels: c.labels,
+      release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
+      platform: c.platform,
+    }, target.dir);
     const problems = validateEffective(repo);
-    for (const p of problems) emit.warn(p);
+    for (const p of problems) emit.warn(`${scope}: ${p}`);
 
-    if (!dryRun && !conn.enabled) return;
-    const tracker = new Tracker(conn, cfg.ship);
-    const tickets = await tracker.openTickets();
+    if (!dryRun && !c.enabled) return;
+    const tracker = new Tracker(c, cfg.ship);
+    const all = await tracker.openTickets();
+
+    // Only this repository's tickets. Handing the whole board's tickets to a
+    // release would look for their branches in the wrong checkout — and on a
+    // near-miss (a branch of the same name in two repos) merge the wrong work.
+    const { byRepo, unplaceable } = ticketsByRepo(c, all);
+    const tickets = byRepo.get(target.name) ?? [];
+    const strandedVerified = unplaceable.filter((t) => t.status === tracker.contract.statuses.verified);
+    if (strandedVerified.length) {
+      emit.warn(
+        `${strandedVerified.length} verified ticket(s) name no repository and cannot be released: ` +
+          strandedVerified.map((t) => t.issue_id).join(', '),
+        { step: 'release' },
+      );
+    }
+
     const outcome = await runRelease({
-      cwd: conn.dir, repo, contract: tracker.contract, tickets, emit, state,
+      cwd: target.dir, repo, contract: tracker.contract, tickets, emit,
+      state: state.release(scope),
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',
       // `deploy` is the "go now" button: it exists for a commit a previous
@@ -206,10 +277,10 @@ async function releasePhase(opts: { mergeOnly?: boolean; force?: boolean }): Pro
     // already live, and a tracker blip must not turn a good release into a
     // failed one. Untouched tickets are still `verified` and still named in
     // the released range, so the next cycle picks them up.
-    if (outcome.deployed || outcome.confirmed) {
+    if (outcome.deployed || outcome.confirmed || outcome.alreadyLive || outcome.integrated) {
       emit.enter('reconcile');
       const plan = planStamp(
-        conn.dir, tickets, tracker.contract,
+        target.dir, tickets, tracker.contract,
         outcome.decision.lastReleased, outcome.decision.head,
         outcome.merged.map((m) => m.ticket.issue_id),
       );
@@ -217,6 +288,11 @@ async function releasePhase(opts: { mergeOnly?: boolean; force?: boolean }): Pro
     } else if (outcome.stopped) {
       emit.emit(`nothing stamped — ${outcome.stopped}`);
     }
+
+    // Last, and non-fatal: whatever happened has happened, and telling someone
+    // about it must not be able to change the outcome.
+    const news = describeRelease(outcome, scope);
+    if (news) await notify(c, cfg.ship, news, emit, dryRun);
     
   } finally {
     if (relLock && relLock.ok) relLock.release();
@@ -252,8 +328,12 @@ switch (command) {
         enabledOnly: !dryRun,
       });
       process.stdout.write(renderFleet(fleet));
-      if (!fleet.winner) { emit.emit('nothing to run across the fleet'); break; }
       if (command === 'poll') break;
+      if (!fleet.winner) {
+        emit.emit('nothing to run across the fleet');
+        await releaseFleet();
+        break;
+      }
 
       const w = fleet.winner;
       if (!satisfies(cfg.ship.platform, w.connection.platform)) {
@@ -274,6 +354,7 @@ switch (command) {
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.connection.name}`);
       await spawnAgent(fleetPlan, emit);
+      await releaseFleet();
       break;
     }
 
@@ -313,7 +394,7 @@ switch (command) {
       // The release still has to happen. A cycle with no agent work is
       // exactly when verified branches are most likely to be waiting — and
       // returning here is what left ISSUE-280 and ISSUE-292 unmerged.
-      await releasePhase({});
+      await releaseTargets();
       break;
     }
 
@@ -360,14 +441,18 @@ switch (command) {
     // branch, and a ticket verified this cycle should ship this cycle.
     //
     // Skipped only for `--role`, which means "run exactly this seat".
-    if (!value('role')) await releasePhase({});
+    if (!value('role')) await releaseTargets();
     break;
   }
 
   case 'merge':
   case 'deploy':
   case 'release': {
-    await releasePhase({ mergeOnly: command === 'merge', force: command === 'deploy' || flag('force') });
+    // Named or single connection only: `crew release` is a deliberate act on
+    // one repo, not a fleet-wide sweep.
+    await releaseTargets({
+      mergeOnly: command === 'merge', force: command === 'deploy' || flag('force'),
+    });
     break;
   }
 

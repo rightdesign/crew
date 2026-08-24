@@ -431,3 +431,52 @@ export function configuredMembers(c: Connection) {
   for (const h of r.holds) if (h.id) out.push({ id: h.id, role: h.role ?? '', kind: 'hold' });
   return out;
 }
+
+/** One checkout the crew works in, and the name the board knows it by. */
+export interface RepoTarget {
+  /** The board's slug for it, or the connection name for a single-repo setup. */
+  name: string;
+  dir: string;
+}
+
+/**
+ * Every checkout this connection covers.
+ *
+ * A connection is a board; a board's area of development spans several
+ * repositories (ISSUE-331). Release, merge, deploy and sync are all
+ * REPOSITORY operations, so they iterate this rather than using `dir` —
+ * `conn.dir` is only the fallback for a connection that declares no `repos`
+ * map, and using it as "the" directory meant every repo but the first was
+ * never released at all.
+ */
+export function reposOf(c: Connection): RepoTarget[] {
+  const named = Object.entries(c.repos);
+  if (named.length === 0) return [{ name: c.name, dir: c.dir }];
+  return named.map(([name, dir]) => ({ name, dir }));
+}
+
+/**
+ * Split a connection's tickets by which repository they belong to.
+ *
+ * A ticket with no repo set cannot be placed once a connection has more than
+ * one checkout, and guessing would merge a branch into the wrong repository.
+ * Those are returned separately so the caller can say so out loud rather than
+ * silently dropping them.
+ */
+export function ticketsByRepo<T extends { repo_id?: string | null | undefined }>(
+  c: Connection, tickets: T[],
+): { byRepo: Map<string, T[]>; unplaceable: T[] } {
+  const targets = reposOf(c);
+  const byRepo = new Map<string, T[]>(targets.map((t) => [t.name, []]));
+  const unplaceable: T[] = [];
+  const single = Object.keys(c.repos).length === 0;
+  const names = c.resolved?.repoNames ?? {};
+
+  for (const t of tickets) {
+    if (single) { byRepo.get(targets[0]!.name)!.push(t); continue; }
+    const name = t.repo_id ? names[t.repo_id] : undefined;
+    if (name && byRepo.has(name)) byRepo.get(name)!.push(t);
+    else unplaceable.push(t);
+  }
+  return { byRepo, unplaceable };
+}

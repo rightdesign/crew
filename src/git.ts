@@ -10,6 +10,26 @@ import { execFileSync } from 'node:child_process';
 
 export class GitError extends Error {}
 
+/**
+ * The same call without the trailing `.trim()`.
+ *
+ * `git()` trims because almost every caller wants one clean value — a sha, a
+ * branch name, a tag. `git status --porcelain` is the exception: its first two
+ * characters ARE data, and for a worktree-only change the first of them is a
+ * space. Trimming ate it, which shifted the whole line left and silently
+ * removed the first character of the first filename — `.crew.yaml` was
+ * reported as `crew.yaml`, a file that does not exist.
+ */
+export function gitRaw(cwd: string, args: string[]): string {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    const err = e as { stderr?: string; stdout?: string; message: string };
+    const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
+    throw new GitError(`git ${args.join(' ')}: ${why || err.message.trim()}`);
+  }
+}
+
 export function git(cwd: string, args: string[]): string {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -35,13 +55,16 @@ export const headSha = (cwd: string): string => git(cwd, ['rev-parse', 'HEAD']);
 export interface WorkingTreeChange { code: string; path: string; untracked: boolean }
 
 export function status(cwd: string): WorkingTreeChange[] {
-  const out = git(cwd, ['status', '--porcelain']);
-  if (!out) return [];
-  return out.split('\n').map((l) => ({
-    code: l.slice(0, 2),
-    path: l.slice(3),
-    untracked: l.startsWith('??'),
-  }));
+  // Raw, not trimmed: see gitRaw. The two-character status code is positional,
+  // so leading whitespace on the first line is significant.
+  return gitRaw(cwd, ['status', '--porcelain'])
+    .split('\n')
+    .filter((l) => l.length > 3)
+    .map((l) => ({
+      code: l.slice(0, 2),
+      path: l.slice(3),
+      untracked: l.startsWith('??'),
+    }));
 }
 
 /** Branches matching a prefix, e.g. `issue-`. */

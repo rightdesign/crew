@@ -56,6 +56,16 @@ connections:
     baseUrl: "https://app.tablation.com"
     apiKey: "REPLACE_ME"             # workspace-scoped; one per connection
 
+    # Where release state should be SHOWN is a fact about this machine and the
+    # person watching it, not about the code — so unlike every other hook,
+    # notify lives here rather than in the repo's .crew.yaml. It receives
+    # CREW_LEVEL (ok|warn|fail), CREW_HEADLINE, CREW_DETAIL, CREW_CONNECTION
+    # and CREW_SHIP, and decides everything else. Define none and release state
+    # simply goes to the log.
+    #
+    # hooks:
+    #   notify: 'terminal-notifier -title "$CREW_HEADLINE" -message "$CREW_DETAIL"'
+
     # Prefer putting hooks, labels and release settings in the REPO's own
     # .crew.yaml (docs/REPO_SPEC.md) rather than here. A repo that carries one
     # shadows anything repeated here, and `crew doctor` reports that as drift.

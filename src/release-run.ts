@@ -24,14 +24,19 @@ import type { Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
-  /** Remembers a failed deploy and counts consecutive refusals. */
+  /**
+   * Remembers a failed deploy and counts consecutive refusals, for THIS
+   * connection — `State#release(name)`. Scoped, because a ship releases each
+   * board's repo independently and one repo's broken deploy must not suppress
+   * another's release.
+   */
   state?: {
     deployFailedSha(): string | null;
     noteDeployFailed(sha: string): void;
     clearDeployFailed(): void;
-    releaseBlockedCount(): number;
-    noteReleaseBlocked(): number;
-    clearReleaseBlock(): void;
+    blockedCount(): number;
+    noteBlocked(): number;
+    clearBlocked(): void;
   };
   cwd: string;
   repo: EffectiveRepoConfig;
@@ -62,6 +67,19 @@ export interface ReleaseOutcome {
   tag?: string;
   deployed: boolean;
   confirmed?: boolean;
+  /**
+   * `release.mode: integrate` — merged, versioned and tagged, with nothing to
+   * deploy. Separate from `deployed` because saying a thing deployed when
+   * there was no deploy is the lie this mode exists to avoid; the tickets
+   * still have to be stamped, and this is what says so.
+   */
+  integrated?: boolean;
+  /**
+   * Everything merged this cycle was already present on the base branch, and
+   * nothing else was unreleased. Nothing shipped because nothing needed to —
+   * but the tickets are live and must still be stamped.
+   */
+  alreadyLive?: boolean;
   /** Why nothing happened, when nothing did. */
   stopped?: string;
   decision: ReleaseDecision;
@@ -87,11 +105,19 @@ const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'b
  * belongs on the integration branch is the change, once, with a message a
  * human wrote for the changelog.
  */
-function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): boolean {
+/**
+ * `applied` wrote a commit; `noop` merged a branch whose change was already
+ * present; `false` failed. The caller needs the distinction: a cycle in which
+ * every merge was a no-op has nothing to release, however many branches it
+ * merged.
+ */
+type MergeResult = 'applied' | 'noop' | false;
+
+function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   const subject = c.entries[0] ?? `${c.ticket.title ?? c.ticket.issue_id} (${c.ticket.issue_id})`;
   if (o.dryRun) {
     o.emit.emit(`would squash-merge ${c.branch} — "${subject}"`, { ticket: c.ticket.issue_id });
-    return true;
+    return 'applied';
   }
   // Where to rewind to if this branch does not apply cleanly. A squash merge
   // never writes MERGE_HEAD, so `git merge --abort` cannot undo one — it fails
@@ -112,14 +138,14 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): boolean {
         `${c.branch} is already contained in the integration branch — nothing to apply`,
         { ticket: c.ticket.issue_id },
       );
-      return true;
+      return 'noop';
     }
 
     // The ticket key goes in the SUBJECT deliberately: it is the only durable
     // link once a forge squashes this again, and closure detection reads it.
     git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.`]);
     o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
-    return true;
+    return 'applied';
   } catch (e) {
     // Rewind to exactly where this branch started and stop touching it: a
     // half-applied squash is not something to paper over, and leaving conflict
@@ -228,13 +254,13 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     // Refusing is correct; refusing SILENTLY is what let eight commits sit
     // unreleased behind one untracked file (ISSUE-174). One blocked cycle is
     // normal — someone is mid-edit — so the alarm starts at two.
-    const n = o.state?.noteReleaseBlocked() ?? 1;
+    const n = o.state?.noteBlocked() ?? 1;
     const msg = `refusing to release — ${decision.block.detail}`;
     if (n >= 2) o.emit.error(`${msg} (blocked ${n} cycles running)`, { data: { cycles: n } });
     else o.emit.warn(msg);
     return { merged: [], deployed: false, stopped: decision.block.detail, decision };
   }
-  o.state?.clearReleaseBlock();
+  o.state?.clearBlocked();
 
   // A commit a deploy already failed on is not retried until something
   // changes. Otherwise a broken deploy repeats every cycle forever, and the
@@ -258,6 +284,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
 
   o.emit.enter('merge');
   const merged: MergeCandidate[] = [];
+  let applied = 0;
   for (const c of decision.merges) {
     if (!c.branch) {
       o.emit.emit(
@@ -268,7 +295,10 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       );
       continue;
     }
-    if (mergeOne(o, c)) merged.push(c);
+    const r = mergeOne(o, c);
+    if (!r) continue;
+    if (r === 'applied') applied++;
+    merged.push(c);
   }
 
   if (o.mergeOnly) {
@@ -281,6 +311,48 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   if (merged.length === 0 && decision.upToDate && !o.force) {
     o.emit.emit('nothing to release');
     return { merged, deployed: false, stopped: 'nothing to release', decision };
+  }
+
+  // Nothing merged, and no tag to measure against.
+  //
+  // `upToDate` is `lastReleased === head`, so a repo that has never been
+  // tagged reports "not up to date" forever — there is no marker saying what
+  // shipped. That is indistinguishable from genuinely-unshipped work, and the
+  // release proceeded on it: an untagged repo with `versioning: none` ran its
+  // full test suite and build on EVERY cycle, every two minutes, merging
+  // nothing and stamping nothing. The test gate exists to protect a release;
+  // with nothing merged and no marker, there is no release to protect.
+  //
+  // A repo that will legitimately never tag (`versioning: none`) therefore
+  // releases exactly when something merges, which is the only moment it can
+  // have anything to do.
+  if (merged.length === 0 && decision.unseeded && !o.force) {
+    o.emit.emit(
+      `nothing merged, and ${o.repo.branch.base} carries no release tag to compare against — ` +
+        'nothing to release',
+    );
+    return { merged, deployed: false, stopped: 'nothing merged and no release marker', decision };
+  }
+
+  // Branches were merged, but none of them wrote a commit and nothing else was
+  // waiting: every one was already contained in the base. There is nothing to
+  // version, build, deploy or tag — the work is live already, under whatever
+  // release carried it.
+  //
+  // Their tickets DO still have to be stamped, which is why this returns
+  // `alreadyLive` rather than simply stopping. Cutting a version whose entire
+  // diff is its own version bump, purely to have something to stamp against,
+  // is what produced two empty releases (ISSUE-342).
+  if (applied === 0 && merged.length > 0 && decision.upToDate && !o.force) {
+    o.emit.emit(
+      `nothing to release — ${merged.length} branch(es) were already contained in ` +
+        `${o.repo.branch.base}; stamping without cutting a version`,
+    );
+    return {
+      merged, deployed: false, alreadyLive: true,
+      version: decision.lastTag?.replace(/^v/, ''),
+      stopped: 'already contained in the base branch', decision,
+    };
   }
   if (merged.length === 0 && decision.upToDate && o.force) {
     o.emit.emit('forced: nothing new merged and nothing unreleased, releasing anyway');
@@ -330,7 +402,14 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   }
 
   let deployed = false;
-  if (o.repo.release.mode === 'local' && o.repo.hooks.deploy) {
+  let integrated = false;
+  if (o.repo.release.mode === 'integrate') {
+    // Merging to the base branch WAS the release. Nothing to deploy, so
+    // nothing to fail and nothing to verify — but the tickets are live and
+    // must be stamped, which is what `integrated` carries.
+    o.emit.emit('release.mode is integrate — merged and versioned; there is nothing to deploy');
+    integrated = true;
+  } else if (o.repo.release.mode === 'local' && o.repo.hooks.deploy) {
     if (o.dryRun) o.emit.emit(`would run: ${hookLabel(o.repo, 'deploy')}`);
     else {
       const r = await hook(o, 'deploy');
@@ -364,7 +443,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   o.emit.emit(
     `release ${o.dryRun ? 'plan complete' : 'complete'}: ${merged.length} merged` +
       `${version ? `, ${version}` : ''}${tag ? `, tagged ${tag}` : ''}`,
-    { data: { merged: merged.length, version, tag, deployed, confirmed } },
+    { data: { merged: merged.length, version, tag, deployed, integrated, confirmed } },
   );
-  return { merged, version, tag, deployed, confirmed, decision };
+  return { merged, version, tag, deployed, integrated, confirmed, decision };
 }

@@ -60,12 +60,43 @@ test('resuming something that was never paused is not an error', () => {
 });
 
 test('the release-block counter is what makes a persistent refusal loud', () => {
+  const r = fresh().release('proj');
+  assert.equal(r.blockedCount(), 0);
+  assert.equal(r.noteBlocked(), 1);   // one blocked cycle is normal
+  assert.equal(r.noteBlocked(), 2);   // two is the alarm
+  r.clearBlocked();
+  assert.equal(r.blockedCount(), 0);
+});
+
+test('release state is per connection, not per ship', () => {
+  // A ship serves several boards and releases each repo independently. These
+  // were single global files, so one repo's failed deploy suppressed releases
+  // on every other board, and a dirty tree in one checkout counted blocked
+  // cycles for all of them.
   const s = fresh();
-  assert.equal(s.releaseBlockedCount(), 0);
-  assert.equal(s.noteReleaseBlocked(), 1);   // one blocked cycle is normal
-  assert.equal(s.noteReleaseBlocked(), 2);   // two is the alarm
-  s.clearReleaseBlock();
-  assert.equal(s.releaseBlockedCount(), 0);
+  const a = s.release('alpha');
+  const b = s.release('beta');
+
+  a.noteDeployFailed('deadbeef');
+  a.noteBlocked();
+  assert.equal(a.deployFailedSha(), 'deadbeef');
+  assert.equal(b.deployFailedSha(), null, 'beta must not inherit alpha\'s failure');
+  assert.equal(b.blockedCount(), 0);
+
+  b.noteDeployFailed('cafe');
+  assert.equal(a.deployFailedSha(), 'deadbeef', 'and alpha must not be overwritten');
+  a.clearDeployFailed();
+  assert.equal(b.deployFailedSha(), 'cafe', 'clearing one must not clear the other');
+});
+
+test('a connection name that is not a safe filename still gets its own state', () => {
+  const s = fresh();
+  const odd = s.release('my repo/v2');
+  odd.noteDeployFailed('abc');
+  assert.equal(odd.deployFailedSha(), 'abc');
+  // ...and does not collide with a different name that sanitises the same way
+  // being read back as the same thing by accident.
+  assert.equal(s.release('other').deployFailedSha(), null);
 });
 
 test('a second run is refused while the first holds the lock', () => {

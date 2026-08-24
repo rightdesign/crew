@@ -114,16 +114,30 @@ command that tells you something useful in the meantime.
 
 ## Not moved
 
-- **`/opt/synthesis/triage` on the beta box.** The server-side triage sidecar
-  is deployed by rsync and holds its own `.env` with an OAuth token.
+- **`/opt/synthesis/triage` on the beta box — already retired.** It ran as
+  `tablation-triage.service` on a two-hour `tablation-triage.timer`. Last run
+  2026-08-23 01:53 UTC; disabled and deleted by the operator at 02:14 UTC the
+  same night:
 
-  **It no longer has a source.** `bin/crew-triage` was deleted when the bash
-  implementation was retired, and triage is a seat inside `crew` now rather
-  than a second process. Whatever is on that box is a copy of the
-  pre-unification behaviour — it self-assigns and writes `reporter_name`,
-  which `docs/BUG_TRACKER_TRIAGE_POLICY.md` now forbids. If it is still on a
-  timer there it is writing to the board on rules nothing else follows, so it
-  should be stopped and removed, not re-pointed.
+  ```sh
+  systemctl disable --now tablation-triage.timer
+  rm -rf /opt/synthesis/triage \
+    /etc/systemd/system/tablation-triage.timer \
+    /etc/systemd/system/tablation-triage.service
+  ```
+
+  Verified 2026-08-24: no directory, no unit, no timer, no crontab entry, no
+  process. The only non-stock service on that box is `synthesis-backend`.
+
+  This entry said for a day afterwards that the sidecar was still deployed and
+  needed re-pointing at this repo, which is how it ended up quoted as a live
+  hazard in ISSUE-321's closing note. Two things made that survive: the entry
+  was written from `docs/CREWS_PLAN.md` rather than from the server, and the
+  board seemed to agree — nothing had been filed under the triage signature
+  since 2026-08-22, which reads as "idle" and meant "gone". The unit was also
+  named `tablation-`, not `synthesis-`, so searching for the name in the doc
+  found nothing either way.
+
 - **The triage policy document.** `docs/BUG_TRACKER_TRIAGE_POLICY.md` stays in
   the project it governs; the prompt reads it at run time from
   `CREW_PROJECT_DIR`.
