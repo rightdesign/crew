@@ -564,3 +564,87 @@ release:
     assert.equal(execFileSync('git', ['--git-dir', bare, 'tag', '--list'], { encoding: 'utf8' }).trim(), '');
   })();
 });
+
+/* ── Drift: what the remote has, and what another ship has already done ── */
+
+test('the base is fast-forwarded to the remote before anything is decided', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(LOCAL, bare);
+
+  // Another ship pushes to the shared base while this one is not looking.
+  const other = mkdtempSync(join(tmpdir(), 'crew-rel-other-'));
+  const o = (...a: string[]) => execFileSync('git', a, { cwd: other, stdio: 'pipe' });
+  execFileSync('git', ['clone', '-q', bare, other], { stdio: 'pipe' });
+  o('config', 'user.email', 't@t'); o('config', 'user.name', 'T');
+  writeFileSync(join(other, 'from-elsewhere.txt'), 'x');
+  o('add', '.'); o('commit', '-qm', 'another ship shipped this');
+  o('push', '-q', 'origin', 'main');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+  });
+
+  assert.ok(existsSync(join(dir, 'from-elsewhere.txt')), 'the other ship\'s commit must be here');
+  assert.equal(out.merged.length, 1, 'and the release still ships its own work');
+  assert.ok(lines.some((l) => /fast-forwarded main/.test(l)));
+});
+
+test('a base that has diverged from the remote refuses to release', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(LOCAL, bare);
+
+  // Another ship pushes...
+  const other = mkdtempSync(join(tmpdir(), 'crew-rel-other2-'));
+  const o = (...a: string[]) => execFileSync('git', a, { cwd: other, stdio: 'pipe' });
+  execFileSync('git', ['clone', '-q', bare, other], { stdio: 'pipe' });
+  o('config', 'user.email', 't@t'); o('config', 'user.name', 'T');
+  writeFileSync(join(other, 'theirs.txt'), 'x');
+  o('add', '.'); o('commit', '-qm', 'theirs'); o('push', '-q', 'origin', 'main');
+
+  // ...and this ship has a local commit of its own, so neither contains the other.
+  writeFileSync(join(dir, 'ours.txt'), 'x');
+  g('add', '.'); g('commit', '-qm', 'ours');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+  });
+
+  assert.match(out.stopped ?? '', /diverged/);
+  assert.equal(out.merged.length, 0, 'nothing may merge onto a base two ships disagree about');
+  assert.ok(lines.some((l) => /refusing to release/.test(l)));
+});
+
+test('a repo with no remote at all releases exactly as before', async () => {
+  const { dir, repo } = project(LOCAL);          // no origin configured
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.merged.length, 1);
+  assert.equal(out.deployed, true);
+});
+
+test('a conflicting branch is reported rather than silently skipped', async () => {
+  const { dir, repo, g } = project(LOCAL);
+  // Make issue-7 and main disagree about the same file — the ISSUE-346 shape.
+  g('checkout', '-q', 'issue-7');
+  writeFileSync(join(dir, 'contested.txt'), 'the branch version\n');
+  g('add', '.'); g('commit', '-qm', 'branch takes it');
+  g('checkout', '-q', 'main');
+  writeFileSync(join(dir, 'contested.txt'), 'the base version\n');
+  g('add', '.'); g('commit', '-qm', 'base takes it');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+  });
+
+  assert.equal(out.merged.length, 0);
+  assert.equal(out.conflicts?.length, 1);
+  assert.equal(out.conflicts![0]!.candidate.ticket.issue_id, 'ISSUE-7');
+  assert.deepEqual(out.conflicts![0]!.paths, ['contested.txt'], 'the caller needs to know WHAT disagreed');
+  // and the failed merge left nothing behind
+  assert.equal(git(dir, ['status', '--porcelain']), '');
+});

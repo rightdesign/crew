@@ -12,7 +12,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  createReleaseTag, git, gitOk, GitError, headSha, pushTag, tagExists,
+  createReleaseTag, currentBranch, fetchRemote, git, gitOk, GitError, headSha,
+  pushTag, remoteBranchExists, status, tagExists,
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
@@ -84,6 +85,15 @@ export interface ReleaseOutcome {
   alreadyLive?: boolean;
   /** Why nothing happened, when nothing did. */
   stopped?: string;
+  /**
+   * Verified branches that would not merge. Empty on almost every cycle.
+   *
+   * The release does not act on these — it has already shipped everything
+   * else by the time they are known, and resolving a merge is not a thing to
+   * do while holding the release lock. The caller turns them into work on the
+   * board instead.
+   */
+  conflicts?: ConflictFailure[];
   decision: ReleaseDecision;
 }
 
@@ -113,7 +123,22 @@ const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'b
  * every merge was a no-op has nothing to release, however many branches it
  * merged.
  */
-type MergeResult = 'applied' | 'noop' | false;
+type MergeResult = 'applied' | 'noop' | { conflict: ConflictFailure };
+
+/**
+ * A branch that would not merge, and what it disagreed about.
+ *
+ * Carried out of the release rather than merely logged: a conflict that only
+ * reaches a log line is retried identically every cycle forever, which is
+ * exactly what ISSUE-346 did six times in an hour. The caller turns this into
+ * work on the board — see conflict.ts.
+ */
+export interface ConflictFailure {
+  candidate: MergeCandidate;
+  /** Paths git could not merge, read before the checkout was rewound. */
+  paths: string[];
+  message: string;
+}
 
 function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   const subject = c.entries[0] ?? `${c.ticket.title ?? c.ticket.issue_id} (${c.ticket.issue_id})`;
@@ -149,6 +174,12 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
     return 'applied';
   } catch (e) {
+    // WHAT disagreed, read while the failed merge is still in the index —
+    // after the rewind below there is nothing left to ask. This is the only
+    // moment the information exists.
+    const paths = (gitOk(o.cwd, ['diff', '--name-only', '--diff-filter=U']) ?? '')
+      .split('\n').filter(Boolean);
+
     // Rewind to exactly where this branch started and stop touching it: a
     // half-applied squash is not something to paper over, and leaving conflict
     // markers staged would poison every later candidate in this run.
@@ -158,7 +189,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     // reporting — the release phase reads this return value and stops.
     gitOk(o.cwd, ['reset', '--hard', before]);
     o.emit.error(`could not merge ${c.branch}: ${(e as Error).message}`, { ticket: c.ticket.issue_id });
-    return false;
+    return { conflict: { candidate: c, paths, message: (e as Error).message } };
   }
 }
 
@@ -245,12 +276,97 @@ async function confirm(o: ReleaseRunOptions, expected: string): Promise<boolean 
   }
 }
 
+
+/**
+ * Take what the remote has before deciding anything.
+ *
+ * With one ship this is housekeeping. With SEVERAL it is the difference
+ * between releasing and corrupting a release: ships share nothing but the
+ * remote and the board, so another ship's merges exist only as commits on
+ * `origin/<base>` until this one fetches them. Releasing without doing so
+ * versions a base that is already behind, cuts a tag that omits shipped work,
+ * and produces a push the remote will reject.
+ *
+ * `crew sync` has always been able to do this, but nothing in a cycle called
+ * it — drift was unbounded until an operator typed it by hand.
+ *
+ * Three outcomes, and the third is why this returns anything:
+ *   - no remote, or a base that tracks none: nothing to take, carry on. Three
+ *     of the repos on this ship are exactly that, and it is not a fault.
+ *   - behind: fast-forward, and release from what everyone else has.
+ *   - DIVERGED: stop. Local commits the remote has not got AND remote commits
+ *     this ship has not got means two ships have both written to the base.
+ *     Fast-forwarding is impossible and merging would be this crew inventing a
+ *     resolution nobody asked for, on the branch everything ships from.
+ */
+function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: string } {
+  const base = o.repo.branch.base;
+  const remote = o.repo.branch.remote;
+
+  // Only from a clean checkout sitting on the base. Neither is this
+  // function's job to report — `checkGuards` says it better a moment later —
+  // but fast-forwarding from anywhere else would move the wrong branch.
+  if (currentBranch(o.cwd) !== base || status(o.cwd).length > 0) return { ok: true };
+
+  // A fetch touches only remote-tracking refs, so it runs in a dry run too:
+  // without it a dry run would report drift that is merely unobserved, which
+  // is worse than useless. Nothing that moves a local branch runs below.
+  if (!fetchRemote(o.cwd, remote)) {
+    o.emit.warn(`could not fetch ${remote} — releasing from what this ship already has`);
+    return { ok: true };
+  }
+
+  // Measured against `<remote>/<base>` directly rather than through a
+  // configured upstream: a crew checkout is cut by an operator or a script and
+  // very often tracks nothing, and `git branch -u` is not something this is
+  // entitled to set on someone's repo. The remote-tracking ref is there either
+  // way once the fetch above succeeded.
+  const upstream = `${remote}/${base}`;
+  if (!remoteBranchExists(o.cwd, remote, base)) return { ok: true };
+
+  const counts = gitOk(o.cwd, ['rev-list', '--left-right', '--count', `${upstream}...${base}`]);
+  if (!counts) return { ok: true };
+  const [behindStr, aheadStr] = counts.split(/\s+/);
+  const behind = Number.parseInt(behindStr ?? '0', 10);
+  const ahead = Number.parseInt(aheadStr ?? '0', 10);
+
+  if (ahead > 0 && behind > 0) {
+    return { ok: false, why: `${base} has diverged from ${upstream} (${ahead} ahead, ${behind} behind)` };
+  }
+  // Ahead only is the normal state of a ship between releases: it has merged
+  // work the remote has not seen, and the release is what pushes it.
+  if (behind === 0) return { ok: true };
+
+  if (o.dryRun) {
+    o.emit.emit(`would fast-forward ${base}: ${behind} behind ${upstream}`);
+    return { ok: true };
+  }
+  if (gitOk(o.cwd, ['merge', '--ff-only', upstream]) === null) {
+    return { ok: false, why: `${base} is ${behind} behind ${upstream} and would not fast-forward` };
+  }
+  o.emit.emit(`fast-forwarded ${base} to ${upstream} (${behind} commit(s) from elsewhere)`);
+  return { ok: true };
+}
+
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
+
+  // Before anything is decided: what does the remote have? Every number the
+  // decision below rests on — the last tag, the head, what is unreleased — is
+  // wrong if another ship has pushed since this one last looked.
+  o.emit.enter('release');
+  const fresh = refreshBase(o);
+
   const decision = decideRelease(o.cwd, o.tickets, o.contract, {
     tagPattern, base: o.repo.branch.base,
   });
-  o.emit.enter('release');
+
+  if (!fresh.ok) {
+    // Deliberately not `--force`-able: `crew deploy` exists to retry a deploy
+    // that failed, not to release over another ship's work.
+    o.emit.error(`refusing to release — ${fresh.why}; a person has to reconcile the two`);
+    return { merged: [], conflicts: [], deployed: false, stopped: fresh.why, decision };
+  }
 
   if (decision.block) {
     // Refusing is correct; refusing SILENTLY is what let eight commits sit
@@ -286,6 +402,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
 
   o.emit.enter('merge');
   const merged: MergeCandidate[] = [];
+  const conflicts: ConflictFailure[] = [];
   let applied = 0;
   for (const c of decision.merges) {
     if (!c.branch) {
@@ -298,21 +415,21 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       continue;
     }
     const r = mergeOne(o, c);
-    if (!r) continue;
+    if (typeof r === 'object') { conflicts.push(r.conflict); continue; }
     if (r === 'applied') applied++;
     merged.push(c);
   }
 
   if (o.mergeOnly) {
     o.emit.emit(`merge only: ${merged.length} branch(es) merged, not releasing`);
-    return { merged, deployed: false, stopped: 'merge only', decision };
+    return { merged, conflicts, deployed: false, stopped: 'merge only', decision };
   }
 
   o.emit.enter('release');
   const head = o.dryRun ? decision.head : headSha(o.cwd);
   if (merged.length === 0 && decision.upToDate && !o.force) {
     o.emit.emit('nothing to release');
-    return { merged, deployed: false, stopped: 'nothing to release', decision };
+    return { merged, conflicts, deployed: false, stopped: 'nothing to release', decision };
   }
 
   // Nothing merged, and no tag to measure against.
@@ -333,7 +450,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       `nothing merged, and ${o.repo.branch.base} carries no release tag to compare against — ` +
         'nothing to release',
     );
-    return { merged, deployed: false, stopped: 'nothing merged and no release marker', decision };
+    return { merged, conflicts, deployed: false, stopped: 'nothing merged and no release marker', decision };
   }
 
   // Branches were merged, but none of them wrote a commit and nothing else was
@@ -351,7 +468,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
         `${o.repo.branch.base}; stamping without cutting a version`,
     );
     return {
-      merged, deployed: false, alreadyLive: true,
+      merged, conflicts, deployed: false, alreadyLive: true,
       version: decision.lastTag?.replace(/^v/, ''),
       stopped: 'already contained in the base branch', decision,
     };
@@ -366,7 +483,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       const r = await hook(o, 'test');
       if (r && r.code !== 0) {
         o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
-        return { merged, deployed: false, stopped: 'tests failed', decision };
+        return { merged, conflicts, deployed: false, stopped: 'tests failed', decision };
       }
     }
   }
@@ -398,7 +515,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       const r = await hook(o, 'build');
       if (r && r.code !== 0) {
         o.emit.error('build failed — not deploying');
-        return { merged, version, deployed: false, stopped: 'build failed', decision };
+        return { merged, conflicts, version, deployed: false, stopped: 'build failed', decision };
       }
     }
   }
@@ -418,7 +535,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       if (r && r.code !== 0) {
         o.emit.error(`deploy FAILED (exit ${r.code}) — the target may be partially deployed`);
         o.state?.noteDeployFailed(headSha(o.cwd));
-        return { merged, version, deployed: false, stopped: 'deploy failed', decision };
+        return { merged, conflicts, version, deployed: false, stopped: 'deploy failed', decision };
       }
       deployed = true;
       o.state?.clearDeployFailed();
@@ -462,7 +579,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
         o.emit.emit(`pushed tag ${tag} to ${o.repo.branch.remote}`);
       } catch (e) {
         o.emit.error(`failed to push tag ${tag} to ${o.repo.branch.remote} — ${(e as GitError).message}`);
-        return { merged, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
+        return { merged, conflicts, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
       }
     }
   }
@@ -473,5 +590,5 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       `${version ? `, ${version}` : ''}${tag ? `, tagged ${tag}` : ''}`,
     { data: { merged: merged.length, version, tag, deployed, integrated, confirmed } },
   );
-  return { merged, version, tag, deployed, integrated, confirmed, decision };
+  return { merged, conflicts, version, tag, deployed, integrated, confirmed, decision };
 }

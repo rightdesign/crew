@@ -35,9 +35,17 @@ it has anything to check. If the winning role turns out to have nothing it can
 actually do, the cycle falls through to the runner-up rather than idling.
 
 Merging and deploying are **not** an agent's job. After the agent phase, a
-release phase squash-merges every QA-verified branch, bumps the version, writes
-the changelog and runs the repo's deploy hook. A headless session is never
-handed permission to push to production.
+release phase takes whatever the remote has, squash-merges every QA-verified
+branch, bumps the version, writes the changelog and runs the repo's deploy
+hook. A headless session is never handed permission to push to production.
+
+A branch that will not merge is **handed back**, not skipped. The release
+rewinds it, merges the base into the branch in its own worktree, and returns
+the ticket to the dev lane with the conflict left in place to look at — so the
+seat that resolves it is one with the ticket's context, and QA checks the
+resolution like any other change. A branch that was merely stale merges
+cleanly at that point and nobody is woken at all. Conflicting a second time
+stops at `needs_info` rather than looping.
 
 ## What a workspace has to provide
 
@@ -96,7 +104,7 @@ crew doctor [conn]            read-only preflight
 crew ports [conn]             which checkout owns which ports, and what is up
 crew reap [conn]              kill servers left behind by removed worktrees
 crew drop [conn] NNN          remove a merged ticket's worktree and branch
-crew sync [conn]              fast-forward worktrees that are behind their remote
+crew sync [conn]              fast-forward the checkout and its worktrees from the remote
 crew pause|resume [conn] [R]  pause everything, or one role
 crew log [conn]               tail the log
 crew inbox [--member NAME]    your tickets across every workspace

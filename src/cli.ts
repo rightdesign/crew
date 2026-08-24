@@ -18,6 +18,7 @@ import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor } from './poll.ts';
 import { applySweep } from './blocked.ts';
+import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
@@ -54,7 +55,7 @@ function usage(): never {
   crew ports [conn]             which checkout owns which ports, and what is up
   crew reap [conn]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [conn] NNN          remove a merged ticket's worktree and branch
-  crew sync [conn]              fast-forward worktrees that are behind their remote
+  crew sync [conn]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [conn] [R]  pause everything, or one role
   crew log [conn]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
@@ -351,6 +352,33 @@ async function releasePhase(
     // about it must not be able to change the outcome.
     const news = describeRelease(outcome, scope);
     if (news) await notify(c, cfg.ship, news, emit, dryRun);
+
+    // A verified branch that would not merge. Non-fatal like everything else
+    // down here — the release has already shipped whatever could ship — but
+    // unlike the old behaviour it does not evaporate: the ticket goes back to
+    // a lane that can fix it, so the same merge is not retried identically
+    // every cycle forever (ISSUE-346 failed six times in an hour that way).
+    for (const f of outcome.conflicts ?? []) {
+      try {
+        // Comments are fetched only when a conflict actually happens, which is
+        // almost never — it costs a request on the rare cycle that needs one,
+        // and none at all on the rest.
+        const comments = await tracker.comments();
+        const bounce = planConflictBounce(
+          target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, comments,
+        );
+        const seat = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+        const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, emit, dryRun);
+        if (r.kind === 'failed') {
+          emit.warn(`could not hand back ${f.candidate.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+        }
+      } catch (e) {
+        emit.warn(
+          `could not hand back ${f.candidate.ticket.issue_id}: ${(e as Error).message}`,
+          { step: 'merge' },
+        );
+      }
+    }
 
     // Also non-fatal, and last of all: a ticket that reached a terminal
     // status (here or on an earlier cycle) is done with its worktree. A
