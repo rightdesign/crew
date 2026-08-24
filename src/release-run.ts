@@ -11,7 +11,9 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createReleaseTag, git, gitOk, headSha, tagExists } from './git.ts';
+import {
+  createReleaseTag, git, gitOk, GitError, headSha, pushTag, tagExists,
+} from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
   type MergeCandidate, type ReleaseDecision,
@@ -437,6 +439,32 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     if (o.dryRun) o.emit.emit(`would tag ${tag} at ${at.slice(0, 8)}`);
     else if (tagExists(o.cwd, tag)) o.emit.warn(`tag ${tag} already exists — not retagging`);
     else { createReleaseTag(o.cwd, tag, at, `Release ${tag}`); o.emit.emit(`tagged ${tag}`); }
+  }
+
+  // For ci_manual/ci_auto the tag push IS the CI trigger, so it has to
+  // happen AFTER the version commit but BEFORE the verify wait below starts
+  // — otherwise `confirm` polls the whole timeout for a release nobody
+  // asked CI to start. local/integrate/external never reach here with a
+  // release.mode that pushes, so a repo with no remote configured (three on
+  // this ship) is never asked to push and this is never an error for them.
+  //
+  // This is the first thing in the release phase that reaches the outside
+  // world, so it gets the same treatment as the deploy hook: a failed push
+  // is a failed release, not a warning — the version commit already landed
+  // on the base branch, and something has to say the release did not
+  // actually happen.
+  if (tag && (o.repo.release.mode === 'ci_manual' || o.repo.release.mode === 'ci_auto')) {
+    if (o.dryRun) {
+      o.emit.emit(`would push tag ${tag} to ${o.repo.branch.remote}`);
+    } else {
+      try {
+        pushTag(o.cwd, o.repo.branch.remote, tag);
+        o.emit.emit(`pushed tag ${tag} to ${o.repo.branch.remote}`);
+      } catch (e) {
+        o.emit.error(`failed to push tag ${tag} to ${o.repo.branch.remote} — ${(e as GitError).message}`);
+        return { merged, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
+      }
+    }
   }
 
   const confirmed = await confirm(o, o.dryRun ? head : headSha(o.cwd));

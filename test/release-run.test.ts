@@ -14,6 +14,27 @@ import type { Ticket } from '../src/tracker.ts';
 const T = (issue_id: string, over: Partial<Ticket> = {}): Ticket =>
   ({ id: issue_id, issue_id, status: 'verified', updated_at: '2026-08-23T00:00:00Z', ...over }) as Ticket;
 
+/** A bare repository standing in for the forge `origin` points at. */
+function bareRemote() {
+  const bare = mkdtempSync(join(tmpdir(), 'crew-rel-bare-'));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: bare, stdio: 'pipe' });
+  return bare;
+}
+
+/**
+ * Same as `project()`, but `origin` is a real bare repository the crew can
+ * push to — for exercising `ci_manual`/`ci_auto`, where the tag push is the
+ * whole point. Takes the bare path rather than creating one, since a
+ * `hooks.released` script that watches it needs the path before the project
+ * (and its config) exist.
+ */
+function projectWithRemote(crewYaml: string, bare: string) {
+  const p = project(crewYaml);
+  p.g('remote', 'add', 'origin', bare);
+  p.g('push', '-q', 'origin', 'main');
+  return p;
+}
+
 /** A repo with a version, a changelog, and a verified branch ready to merge. */
 function project(crewYaml: string) {
   const dir = mkdtempSync(join(tmpdir(), 'crew-rel-'));
@@ -458,5 +479,88 @@ test('...but an untagged repo DOES release once something merges', () => {
     });
     assert.equal(out.merged.length, 1);
     assert.equal(out.integrated, true);
+  })();
+});
+
+test('ci_manual pushes the release tag to the remote before confirming', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  released: git --git-dir="${bare}" for-each-ref --sort=-creatordate --format='%(*objectname)' refs/tags | head -1
+release:
+  mode: ci_manual
+  ci: { provider: github }
+  verify: { timeoutSeconds: 5, intervalSeconds: 1 }
+`, bare);
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.tag, 'v1.3.0');
+    // proves the push reached the remote, not just the local repo
+    assert.match(
+      execFileSync('git', ['--git-dir', bare, 'tag', '--list'], { encoding: 'utf8' }),
+      /v1\.3\.0/,
+    );
+    assert.equal(out.confirmed, true);
+    assert.ok(lines.some((l) => /pushed tag v1\.3\.0 to origin/.test(l)));
+  })();
+});
+
+test('local and integrate modes never push a tag, even with a remote configured', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const { dir, repo } = projectWithRemote(LOCAL, bare);
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.tag, 'v1.3.0');
+    assert.equal(execFileSync('git', ['--git-dir', bare, 'tag', '--list'], { encoding: 'utf8' }).trim(), '');
+    assert.ok(!lines.some((l) => /pushed tag/.test(l)));
+  })();
+});
+
+test('a failed tag push stops the release rather than waiting on a release that was never triggered', () => {
+  return (async () => {
+    const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  released: echo nope
+release:
+  mode: ci_manual
+  ci: { provider: github }
+  verify: { timeoutSeconds: 5, intervalSeconds: 1 }
+`, bareRemote());
+    // Remove the remote so the push has nowhere to go.
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: dir, stdio: 'pipe' });
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.stopped, 'tag push failed');
+    assert.equal(out.confirmed, undefined);        // confirm() was never reached
+    assert.ok(lines.some((l) => /failed to push tag/.test(l)));
+  })();
+});
+
+test('a dry run reports the tag push it would make, without touching the remote', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  released: echo nope
+release:
+  mode: ci_auto
+  ci: { provider: github }
+`, bare);
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: true,
+    });
+    assert.ok(lines.some((l) => /would push tag v1\.3\.0 to origin/.test(l)));
+    assert.equal(execFileSync('git', ['--git-dir', bare, 'tag', '--list'], { encoding: 'utf8' }).trim(), '');
   })();
 });

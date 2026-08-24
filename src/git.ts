@@ -146,6 +146,10 @@ export function createReleaseTag(cwd: string, tag: string, sha: string, message:
 export const tagExists = (cwd: string, tag: string): boolean =>
   gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]) !== null;
 
+export function pushTag(cwd: string, remote: string, tag: string): void {
+  git(cwd, ['push', remote, tag]);
+}
+
 // ---------------------------------------------------------------------------
 // Closure detection: what happened to a branch that left this machine?
 // ---------------------------------------------------------------------------
