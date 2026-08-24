@@ -53,7 +53,6 @@ export interface CrewRow {
  * contract instead — a ship follows each workspace's own rules.
  */
 export const RESOLVED_STATUSES = new Set(DEFAULT_CONTRACT.statuses.resolved);
-export const OPEN_STATUSES = DEFAULT_CONTRACT.statuses.open;
 
 type Filter = { columnName: string; operator: string; value: unknown };
 const encodeFilters = (f: Filter[]): string => JSON.stringify(f);

@@ -79,6 +79,34 @@ export class State {
   }
 
   /**
+   * Take an exclusive lock, or report who holds it.
+   *
+   * A timer fires every couple of minutes and an agent run takes minutes, so
+   * overlapping fires are certain rather than hypothetical — and two agents
+   * on one checkout would fight over the same worktree and the same tickets.
+   *
+   * A lock naming a DEAD pid is stale and taken over: a run killed mid-cycle
+   * (a reboot, a Ctrl-C) must not wedge the crew until someone notices.
+   */
+  acquire(name: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
+    const file = this.path(`.${name}.lock`);
+    try {
+      const existing = Number.parseInt(readFileSync(file, 'utf8').trim(), 10);
+      if (Number.isFinite(existing) && existing > 0) {
+        try {
+          process.kill(existing, 0);        // signal 0 tests liveness only
+          return { ok: false, heldBy: existing };
+        } catch { /* the pid is gone; the lock is stale */ }
+      }
+    } catch { /* no lock file */ }
+    writeFileSync(file, `${process.pid}\n`);
+    return {
+      ok: true,
+      release: () => { try { rmSync(file, { force: true }); } catch { /* ignore */ } },
+    };
+  }
+
+  /**
    * How many consecutive cycles the release phase has refused to deploy.
    *
    * Refusing is correct — a dirty tree or a non-main checkout must never be
@@ -100,5 +128,27 @@ export class State {
   }
   clearReleaseBlock(): void {
     rmSync(this.path('.release-blocked'), { force: true });
+  }
+
+  /**
+   * The commit a deploy last failed on.
+   *
+   * Without this the crew retries a broken deploy on every cycle — every two
+   * minutes, indefinitely — hammering the target and burying the original
+   * failure under identical ones. A failed commit is retried only when a NEW
+   * commit lands, or when an operator forces it by hand.
+   */
+  deployFailedSha(): string | null {
+    try {
+      return readFileSync(this.path('.deploy-failed-sha'), 'utf8').trim() || null;
+    } catch {
+      return null;
+    }
+  }
+  noteDeployFailed(sha: string): void {
+    writeFileSync(this.path('.deploy-failed-sha'), `${sha}\n`);
+  }
+  clearDeployFailed(): void {
+    rmSync(this.path('.deploy-failed-sha'), { force: true });
   }
 }

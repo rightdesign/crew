@@ -11,7 +11,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createReleaseTag, git, headSha, tagExists } from './git.ts';
+import { createReleaseTag, git, gitOk, headSha, tagExists } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
   type MergeCandidate, type ReleaseDecision,
@@ -24,6 +24,15 @@ import type { Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
+  /** Remembers a failed deploy and counts consecutive refusals. */
+  state?: {
+    deployFailedSha(): string | null;
+    noteDeployFailed(sha: string): void;
+    clearDeployFailed(): void;
+    releaseBlockedCount(): number;
+    noteReleaseBlocked(): number;
+    clearReleaseBlock(): void;
+  };
   cwd: string;
   repo: EffectiveRepoConfig;
   contract: Contract;
@@ -84,17 +93,42 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): boolean {
     o.emit.emit(`would squash-merge ${c.branch} — "${subject}"`, { ticket: c.ticket.issue_id });
     return true;
   }
+  // Where to rewind to if this branch does not apply cleanly. A squash merge
+  // never writes MERGE_HEAD, so `git merge --abort` cannot undo one — it fails
+  // with "no merge to abort", and when that failure came from inside the catch
+  // block it replaced the real error and killed the whole cycle.
+  const before = headSha(o.cwd);
   try {
     git(o.cwd, ['merge', '--squash', c.branch!]);
+
+    // A verified branch can stage nothing: its change is already on the
+    // integration branch, because another ticket's fix covered it or it was
+    // cherry-picked. That is a MERGED branch with nothing to apply, not a
+    // failure — and treating it as one is what stalled the whole release,
+    // since `git commit` refuses an empty index and the error propagated.
+    if (!git(o.cwd, ['diff', '--cached', '--name-only'])) {
+      git(o.cwd, ['reset', '--hard', before]);   // drop SQUASH_MSG and the empty index
+      o.emit.emit(
+        `${c.branch} is already contained in the integration branch — nothing to apply`,
+        { ticket: c.ticket.issue_id },
+      );
+      return true;
+    }
+
     // The ticket key goes in the SUBJECT deliberately: it is the only durable
     // link once a forge squashes this again, and closure detection reads it.
     git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.`]);
     o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
     return true;
   } catch (e) {
-    // Leave the tree as git left it and stop touching this branch: a
-    // half-applied squash is not something to paper over.
-    git(o.cwd, ['merge', '--abort']);
+    // Rewind to exactly where this branch started and stop touching it: a
+    // half-applied squash is not something to paper over, and leaving conflict
+    // markers staged would poison every later candidate in this run.
+    //
+    // Best-effort on purpose. If the rewind itself fails there is nothing
+    // useful left to do about it here, and the ORIGINAL error is the one worth
+    // reporting — the release phase reads this return value and stops.
+    gitOk(o.cwd, ['reset', '--hard', before]);
     o.emit.error(`could not merge ${c.branch}: ${(e as Error).message}`, { ticket: c.ticket.issue_id });
     return false;
   }
@@ -191,8 +225,27 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   o.emit.enter('release');
 
   if (decision.block) {
-    o.emit.warn(`refusing to release — ${decision.block.detail}`);
+    // Refusing is correct; refusing SILENTLY is what let eight commits sit
+    // unreleased behind one untracked file (ISSUE-174). One blocked cycle is
+    // normal — someone is mid-edit — so the alarm starts at two.
+    const n = o.state?.noteReleaseBlocked() ?? 1;
+    const msg = `refusing to release — ${decision.block.detail}`;
+    if (n >= 2) o.emit.error(`${msg} (blocked ${n} cycles running)`, { data: { cycles: n } });
+    else o.emit.warn(msg);
     return { merged: [], deployed: false, stopped: decision.block.detail, decision };
+  }
+  o.state?.clearReleaseBlock();
+
+  // A commit a deploy already failed on is not retried until something
+  // changes. Otherwise a broken deploy repeats every cycle forever, and the
+  // original failure is buried under identical ones.
+  const failedAt = o.state?.deployFailedSha();
+  if (!o.force && failedAt && failedAt === decision.head) {
+    o.emit.warn(
+      `a deploy already failed on ${failedAt.slice(0, 8)} — not retrying until a new commit lands ` +
+        '(force it with `crew deploy`)',
+    );
+    return { merged: [], deployed: false, stopped: 'previous deploy failed on this commit', decision };
   }
 
   // `external` means the crew is not the thing that releases. It must not
@@ -283,9 +336,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       const r = await hook(o, 'deploy');
       if (r && r.code !== 0) {
         o.emit.error(`deploy FAILED (exit ${r.code}) — the target may be partially deployed`);
+        o.state?.noteDeployFailed(headSha(o.cwd));
         return { merged, version, deployed: false, stopped: 'deploy failed', decision };
       }
       deployed = true;
+      o.state?.clearDeployFailed();
     }
   } else if (o.repo.release.mode !== 'local') {
     o.emit.emit(`release.mode is ${o.repo.release.mode} — CI takes it from here`);

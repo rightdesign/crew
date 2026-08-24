@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncState, fastForward, worktrees, trackedRemote, fetchRemote } from '../src/git.ts';
+import { syncState, fastForward, worktrees, fetchRemote } from '../src/git.ts';
 
 /** A bare remote and two clones — "the reviewer" and "the ship". */
 function world() {
@@ -33,7 +33,6 @@ test('a branch level with its upstream needs nothing', () => {
   assert.equal(s.behind, 0);
   assert.equal(s.canFastForward, false);
   assert.match(s.detail, /level with origin\/issue-1/);
-  assert.equal(trackedRemote(ship.d, 'issue-1'), 'origin');
 });
 
 test('a reviewer\'s commits are taken automatically when the tree is clean', () => {

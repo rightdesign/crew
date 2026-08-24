@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, sweepDiagnostics,
-  planSweep, strandedNeedsInfo, rollUpParents,
+  planSweep, strandedNeedsInfo, rollUpParents, applySweep, sweepComment,
 } from '../src/blocked.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -129,4 +129,67 @@ test('a ticket assigned to a SEAT is still reported — a seat is not a person',
   const tickets = [done, t];
   const blocked = computeBlockedIds(tickets, blockerInfoMap(tickets));
   assert.equal(strandedNeedsInfo(tickets, blocked, new Set(['op-1'])).length, 1);
+});
+
+test('the sweep is APPLIED, not merely announced', async () => {
+  // The bug this pins: planSweep was computed and logged, and nothing ever
+  // wrote it — so a parked ticket stayed in the pool and a ready one stayed
+  // invisible, on every cycle, silently.
+  const writes: Array<[string, unknown]> = [];
+  const events: string[] = [];
+  const writer = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => { writes.push([id, patch]); return {}; },
+    postEvent: async (id: string, body: string) => { events.push(`${id}:${body.slice(0, 20)}`); },
+  };
+  const log = { emit: () => {}, warn: () => {} };
+  const steps = [
+    { action: 'park' as const, ticket: T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' }), blockers: 'ISSUE-9 (accepted)', to: 'blocked' as const },
+    { action: 'restore' as const, ticket: T({ id: 'b', issue_id: 'ISSUE-2', status: 'blocked' }), blockers: 'ISSUE-8 (verified)', to: 'accepted' as const },
+  ];
+  const r = await applySweep(writer, steps, 'seat-1', log);
+  assert.deepEqual(r, { parked: 1, restored: 1, failed: 0 });
+  assert.deepEqual(writes, [['a', { status: 'blocked' }], ['b', { status: 'accepted' }]]);
+  assert.equal(events.length, 2);
+});
+
+test('a failed status write is reported and does not stop the rest', async () => {
+  const writes: string[] = [];
+  const writer = {
+    updateTicket: async (id: string) => {
+      writes.push(id);
+      if (id === 'a') throw new Error('409 conflict');
+      return {};
+    },
+    postEvent: async () => {},
+  };
+  const warned: string[] = [];
+  const r = await applySweep(writer, [
+    { action: 'park' as const, ticket: T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' }), blockers: 'x', to: 'blocked' as const },
+    { action: 'park' as const, ticket: T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' }), blockers: 'x', to: 'blocked' as const },
+  ], 's', { emit: () => {}, warn: (m: string) => warned.push(m) });
+  assert.deepEqual(writes, ['a', 'b']);
+  assert.deepEqual(r, { parked: 1, restored: 0, failed: 1 });
+  assert.ok(warned.some((w) => /could not park/.test(w)));
+});
+
+test('a comment that fails to post does not undo the status change', async () => {
+  const writer = {
+    updateTicket: async () => ({}),
+    postEvent: async () => { throw new Error('comment endpoint down'); },
+  };
+  const warned: string[] = [];
+  const r = await applySweep(writer, [
+    { action: 'park' as const, ticket: T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' }), blockers: 'x', to: 'blocked' as const },
+  ], 's', { emit: () => {}, warn: (m: string) => warned.push(m) });
+  assert.equal(r.parked, 1);            // the ticket IS parked
+  assert.ok(warned.some((w) => /note failed to post/.test(w)));
+});
+
+test('the park and restore notes explain themselves', () => {
+  const park = sweepComment({ action: 'park', ticket: T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' }), blockers: 'ISSUE-9 (accepted)', to: 'blocked' });
+  assert.match(park, /automatic and reversible/);
+  assert.match(park, /not at `fixed`/);
+  const restore = sweepComment({ action: 'restore', ticket: T({ id: 'b', issue_id: 'ISSUE-2', status: 'blocked' }), blockers: 'ISSUE-8 (verified)', to: 'accepted' });
+  assert.match(restore, /Restored to \*\*Approved\*\*/);
+  assert.match(restore, /a call for a human, not the crew/);
 });

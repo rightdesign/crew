@@ -1,34 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Tablation ticket-implementation loop, polled every 2 minutes (see
-     crew/bin/crew). Each fire is a cheap curl/jq check
-     against the tracker — the full agent session only runs when the check
-     finds an accepted ticket or a new reply worth acting on. Runs while
-     this Mac is on; pause anytime with
-     `crew/bin/crew pause` (resume with `... resume`)
-     — no need to unload this to pause.
-     Install:  cp crew/launchd/com.tablation.crew.plist ~/Library/LaunchAgents/
-               launchctl load ~/Library/LaunchAgents/com.tablation.crew.plist
-     Remove:   launchctl unload ~/Library/LaunchAgents/com.tablation.crew.plist
-     Logs:     /tmp/tablation-crew.log -->
-<!-- __CREW_HOME__ is a placeholder: replace it with the absolute path
-     of your crew checkout before copying this into ~/Library/LaunchAgents.
-     launchd does not expand variables, ~ or relative paths. -->
+<!-- The crew, polled every 2 minutes. Each fire is a cheap tracker read; a
+     full agent session only runs when the poll finds work. `crew run` takes
+     an exclusive lock, so a fire that lands while a previous run is still
+     going skips rather than starting a second agent on the same checkout.
+
+     Pause without unloading:  __CREW_HOME__/bin/crew pause
+     Resume:                   __CREW_HOME__/bin/crew resume
+     Watch:                    __CREW_HOME__/bin/crew watch
+     Logs:                     /tmp/tablation-crew.log        (the crew's own)
+                               /tmp/tablation-crew.launchd.log (only what
+                               escapes it: a crash before the emitter exists)
+
+     These MUST be different files. The emitter writes the first; launchd
+     redirects stderr into the second. Pointing both at one file logs every
+     line twice.
+
+     node is named absolutely because launchd hands a script a minimal PATH
+     with no node on it; PATH below is for whatever the project's hooks need.
+-->
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>com.tablation.crew</string>
   <key>ProgramArguments</key>
   <array>
+    <string>__NODE__</string>
     <string>__CREW_HOME__/bin/crew</string>
+    <string>run</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__NODE_BIN_DIR__:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>__CREW_HOME__</string>
   <key>StartInterval</key>
   <integer>120</integer>
   <key>RunAtLoad</key>
   <false/>
   <key>StandardOutPath</key>
-  <string>/tmp/tablation-crew.log</string>
+  <string>/tmp/tablation-crew.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/tablation-crew.log</string>
+  <string>/tmp/tablation-crew.launchd.log</string>
 </dict>
 </plist>

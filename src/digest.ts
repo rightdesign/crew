@@ -22,6 +22,7 @@ export interface DigestTicket extends Rankable {
   assignee_id?: string | null;
   needs_design?: boolean | null;
   blocked_by?: string[] | null;
+  repo_id?: string | null;
   updated_at: string;
 }
 
@@ -34,6 +35,28 @@ export interface DigestComment {
 }
 
 export interface DigestInput {
+  /**
+   * How this repo names branches, rendered per ticket by the crew.
+   *
+   * The crew cannot create the worktree itself: it does not know which ticket
+   * the agent will take. The agent applies Step 1/Step 2 judgment and may
+   * skip every one — a design run did exactly that, judging its only
+   * candidate unbuildable and creating nothing.
+   *
+   * So the crew renders the NAME rather than describing the pattern, and the
+   * agent copies it. A template in prose is something an agent can mistype;
+   * a rendered name is not.
+   */
+  branchFor?: (t: DigestTicket) => string;
+  /**
+   * Where this ticket's work happens on this machine.
+   *
+   * An area spans several repos, so the checkout is a property of the TICKET,
+   * not of the connection. A ticket whose repo this ship has no checkout for
+   * is marked, because working it in the wrong directory is worse than
+   * skipping it.
+   */
+  dirFor?: (t: DigestTicket) => string | null;
   tickets: DigestTicket[];
   comments: DigestComment[];
   /** The running seat's Crew row id — what "you" means in every column. */
@@ -122,11 +145,14 @@ function table(ts: DigestTicket[], i: DigestInput, header: string, row: (t: Dige
 /** The digest for a building role — dev or design. */
 export function buildingDigest(i: DigestInput): string {
   const header =
-    '| ticket | status | assignee | sev | pri | eff | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | branch | status | assignee | sev | pri | eff | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|';
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
-    return `| ${t.issue_id} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    const branch = i.branchFor ? i.branchFor(t) : '';
+    const dir = i.dirFor ? i.dirFor(t) : null;
+    const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
+    return `| ${t.issue_id} | ${repo} | ${branch} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${t.issue_id} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -149,6 +175,7 @@ export function buildingDigest(i: DigestInput): string {
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
+    '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` column verbatim.** It is that repository\'s own naming\nconvention, rendered for you — do not derive a branch name yourself.\n',
     '\n### Step 1 — open tickets that may be yours to act on\n',
     '\n`fixed` tickets are deliberately absent: they belong to the QA lane.\n',
     table(step1, i, header, row),

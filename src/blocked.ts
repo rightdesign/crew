@@ -189,3 +189,70 @@ export function rollUpParents(tickets: Ticket[], done = RESOLVED_STATUSES): Pare
   }
   return rollups;
 }
+
+// ---------------------------------------------------------------------------
+// Applying the sweep
+// ---------------------------------------------------------------------------
+
+/**
+ * What the crew writes on a ticket when it parks or restores one.
+ *
+ * An `event` comment, not prose: it is the crew's audit trail, and `kind`
+ * keeps it out of the "new comment from someone else" wake signal so the crew
+ * does not wake itself.
+ */
+export function sweepComment(step: SweepStep): string {
+  return step.action === 'park'
+    ? `Parked as **Blocked** by the crew — waiting on: ${step.blockers}.
+
+This is automatic and reversible: an approved ticket whose \`Blocked by\` entries are not all resolved is parked out of the queue, and restored on the first poll after the last one resolves. Nothing else about the ticket changes. A blocker counts as resolved at \`verified\`, \`closed_deployed\`, \`closed_wont_fix\` or \`closed_duplicate\` — not at \`fixed\`, which is still an unmerged branch awaiting QA.`
+    : `Restored to **Approved** by the crew — every blocker has resolved${step.blockers && step.blockers !== '—' ? ` (${step.blockers})` : ''}.
+
+This restores the status it was approved at before being parked; it is back in the queue and a role may pick it up. If a blocker resolved as \`closed_wont_fix\` or \`closed_duplicate\` this ticket may still not be buildable as written — that is a call for a human, not the crew.`;
+}
+
+export interface SweepWriter {
+  updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
+  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+}
+
+/**
+ * Perform the plan.
+ *
+ * A ticket whose status write fails is skipped and reported — the next poll
+ * recomputes blocked-ness from scratch and will try again, because nothing
+ * here is read back off the `blocked` status.
+ *
+ * A comment that fails to post does NOT undo the status change: the ticket
+ * being in the right state matters more than the note explaining why.
+ */
+export async function applySweep(
+  writer: SweepWriter, steps: SweepStep[], memberId: string,
+  log: { emit(msg: string, extra?: Record<string, unknown>): unknown; warn(msg: string, extra?: Record<string, unknown>): unknown },
+): Promise<{ parked: number; restored: number; failed: number }> {
+  let parked = 0;
+  let restored = 0;
+  let failed = 0;
+  for (const step of steps) {
+    try {
+      await writer.updateTicket(step.ticket.id, { status: step.to });
+      if (step.action === 'park') parked++;
+      else restored++;
+      log.emit(
+        step.action === 'park'
+          ? `parked (waiting on ${step.blockers})`
+          : `restored to ${step.to} (blockers resolved: ${step.blockers || 'none'})`,
+        { ticket: step.ticket.issue_id, step: 'sweep' },
+      );
+      try {
+        await writer.postEvent(step.ticket.id, sweepComment(step), memberId);
+      } catch {
+        log.warn('status changed but the note failed to post', { ticket: step.ticket.issue_id, step: 'sweep' });
+      }
+    } catch (e) {
+      failed++;
+      log.warn(`could not ${step.action}: ${(e as Error).message}`, { ticket: step.ticket.issue_id, step: 'sweep' });
+    }
+  }
+  return { parked, restored, failed };
+}

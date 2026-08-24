@@ -1,0 +1,192 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+
+/**
+ * ASYNC on purpose. The fake tracker runs in THIS process, so a synchronous
+ * child would block the event loop and the server could never answer it —
+ * the crew would hang waiting for a reply this process could not send.
+ */
+const run = promisify(execFile);
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { FakeTracker, MODELS, SEATS, OPERATOR, crewRows, ticket } from './helpers/fake-tracker.ts';
+
+const CREW = resolve(import.meta.dirname, '..', 'bin', 'crew');
+
+/** A whole ship: config, state dir, a git checkout, pointed at the fake. */
+function ship(tracker: FakeTracker, over: Record<string, string> = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'crew-it-'));
+  const repo = join(home, 'project');
+  mkdirSync(repo);
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: repo, stdio: 'pipe' });
+  g('init', '-q', '-b', 'main');
+  g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+  writeFileSync(join(repo, 'README.md'), 'x'); g('add', '.'); g('commit', '-qm', 'base');
+  writeFileSync(join(home, '.env'), 'KEY=test-key\n');
+
+  const cfg = `ship:
+  name: Test Ship
+  agent: { bin: /bin/echo }
+  stateDir: state
+  logFile: ${join(home, 'crew.log')}
+connections:
+  - name: proj
+    enabled: true
+    workspace: test
+    dir: ${repo}
+    worktreePrefix: proj-issue-
+    baseUrl: ${tracker.baseUrl}
+    apiKeyFile: ${join(home, '.env')}
+    apiKeyVar: KEY
+${over.extra ?? ''}    resolved:
+      workspaceId: ws-1
+      models: { issues: ${MODELS.issues}, comments: ${MODELS.comments}, crew: ${MODELS.crew} }
+      seats: { dev: ${SEATS.dev}, design: ${SEATS.design}, qa: ${SEATS.qa} }
+      operator: ${OPERATOR}
+`;
+  const cfgPath = join(home, 'crew.yaml');
+  writeFileSync(cfgPath, cfg);
+  return {
+    home, repo, cfgPath,
+    run: async (...args: string[]) => {
+      const { stdout, stderr } = await run(process.execPath, [CREW, ...args], {
+        env: { ...process.env, CREW_CONFIG: cfgPath },
+        timeout: 30_000,
+      });
+      return `${stdout}${stderr}`;
+    },
+  };
+}
+
+test('a real cycle PARKS a blocked ticket in the tracker, not just in the log', async () => {
+  // The bug this exists for: planSweep was computed, logged, and never
+  // applied. Every unit test passed; the tracker stayed wrong.
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows())
+    .table(MODELS.comments, [])
+    .table(MODELS.issues, [
+      ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted', blocked_by: ['i2'] }),
+      ticket({ id: 'i2', issue_id: 'ISSUE-2', status: 'in_progress' }),
+    ])
+    .start();
+  try {
+    const s = ship(t);
+    await s.run('poll', 'proj');
+    assert.equal(t.row(MODELS.issues, 'i1')?.status, 'blocked', 'the blocked ticket must actually be parked');
+    assert.ok(t.writes.some((w) => w.method === 'PATCH' && w.id === 'i1' && w.body.status === 'blocked'));
+    // and it explains itself
+    assert.ok(t.writes.some((w) => w.method === 'POST' && w.model === MODELS.comments
+      && String(w.body.body).includes('Parked as **Blocked**') && w.body.kind === 'event'));
+  } finally { await t.stop(); }
+});
+
+test('a real cycle RESTORES one whose blockers resolved', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows())
+    .table(MODELS.comments, [])
+    .table(MODELS.issues, [
+      ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'blocked', blocked_by: ['i2'] }),
+      ticket({ id: 'i2', issue_id: 'ISSUE-2', status: 'verified' }),
+    ])
+    .start();
+  try {
+    await ship(t).run('poll', 'proj');
+    assert.equal(t.row(MODELS.issues, 'i1')?.status, 'accepted');
+  } finally { await t.stop(); }
+});
+
+test('a dry run writes NOTHING to the tracker', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows())
+    .table(MODELS.comments, [])
+    .table(MODELS.issues, [
+      ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted', blocked_by: ['i2'] }),
+      ticket({ id: 'i2', issue_id: 'ISSUE-2', status: 'in_progress' }),
+    ])
+    .start();
+  try {
+    const out = await ship(t).run('poll', 'proj', '--dry-run');
+    assert.match(out + '', /[\s\S]*/);
+    assert.equal(t.writes.length, 0, 'a dry run must not write');
+    assert.equal(t.row(MODELS.issues, 'i1')?.status, 'accepted');
+  } finally { await t.stop(); }
+});
+
+test('the poll writes a digest and advances the watermark on disk', async () => {
+  // Both were tested units that nothing called.
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows())
+    .table(MODELS.comments, [{ id: 'c1', ticket_id: 'i1', team_member_id: OPERATOR, created_at: '2026-08-02T00:00:00.000Z' }])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
+    .start();
+  try {
+    const s = ship(t);
+    await s.run('poll', 'proj');
+    const digest = join(s.home, 'state', 'digest-proj-dev.md');
+    assert.ok(existsSync(digest), 'the digest must be written, or the agent refetches everything');
+    assert.match(readFileSync(digest, 'utf8'), /ISSUE-1/);
+    const wm = readFileSync(join(s.home, 'state', '.poll-watermark'), 'utf8').trim();
+    assert.notEqual(wm, '1970-01-01T00:00:00.000Z', 'the watermark must advance, or every comment stays "new"');
+  } finally { await t.stop(); }
+});
+
+test('a second run is refused while the first holds the lock', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
+    .start();
+  try {
+    const s = ship(t);
+    mkdirSync(join(s.home, 'state'), { recursive: true });
+    writeFileSync(join(s.home, 'state', '.crew.lock'), `${process.pid}\n`);   // a live pid
+    const out = await s.run('run', 'proj');
+    assert.match(out, /still running — skipping this cycle/);
+  } finally { await t.stop(); }
+});
+
+test('a disabled connection refuses to run but still reports', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
+    .start();
+  try {
+    const s = ship(t, {});
+    const cfg = join(s.home, 'crew.yaml');
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('enabled: true', 'enabled: false'));
+    const out = await s.run('run', 'proj');
+    assert.match(out, /not enabled/);
+    assert.ok(!t.writes.some((w) => w.method === 'PATCH'), 'a disabled connection must not write');
+  } finally { await t.stop(); }
+});
+
+test('a cycle with NO agent work still runs the release phase', async () => {
+  // The bug this pins: `run` returned at "nothing to run this cycle" before
+  // reaching the release, so verified branches sat unmerged indefinitely —
+  // and a cycle with no agent work is exactly when they are most likely to be
+  // waiting.
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    // verified, but no branch exists, so the merge phase has nothing to do —
+    // what matters is that the release phase RAN and said so.
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
+    .start();
+  try {
+    const out = await ship(t).run('run', 'proj');
+    assert.match(out, /no role to run this cycle/);
+    assert.match(out, /release:/, 'the release phase must still run');
+  } finally { await t.stop(); }
+});
+
+test('--role runs exactly that seat and does not release', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
+    .start();
+  try {
+    const out = await ship(t).run('run', 'proj', '--role', 'dev');
+    assert.doesNotMatch(out, /release:/);
+  } finally { await t.stop(); }
+});

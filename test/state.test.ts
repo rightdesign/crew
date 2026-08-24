@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { State, EPOCH } from '../src/state.ts';
@@ -66,4 +66,28 @@ test('the release-block counter is what makes a persistent refusal loud', () => 
   assert.equal(s.noteReleaseBlocked(), 2);   // two is the alarm
   s.clearReleaseBlock();
   assert.equal(s.releaseBlockedCount(), 0);
+});
+
+test('a second run is refused while the first holds the lock', () => {
+  const s = fresh();
+  const first = s.acquire('crew');
+  assert.equal(first.ok, true);
+  const second = s.acquire('crew');
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.equal(second.heldBy, process.pid);
+  if (first.ok) first.release();
+  assert.equal(s.acquire('crew').ok, true);   // released
+});
+
+test('a lock naming a dead pid is stale and taken over', () => {
+  // A run killed mid-cycle must not wedge the crew until someone notices.
+  const s = fresh();
+  writeFileSync(join(s.dir, '.crew.lock'), '999999\n');   // a pid that cannot be alive
+  assert.equal(s.acquire('crew').ok, true);
+});
+
+test('locks are per name, so a release does not block a run', () => {
+  const s = fresh();
+  assert.equal(s.acquire('release').ok, true);
+  assert.equal(s.acquire('crew').ok, true);
 });

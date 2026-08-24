@@ -129,14 +129,4 @@ export class Emitter {
   }
 }
 
-/** Read a cycle back out of the JSONL — what a view does, and what tests assert on. */
-export function readEvents(file: string, cycle?: string): CrewEvent[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as CrewEvent)
-    .filter((e) => !cycle || e.cycle === cycle);
-}
-
 export const eventFileFor = (stateDir: string) => join(stateDir, 'events.jsonl');

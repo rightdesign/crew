@@ -17,6 +17,8 @@ import {
 } from './blocked.ts';
 import { selectRole, sliceFor, type Selection } from './select.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
+import { loadRepoConfig, resolveRepoConfig, renderBranchName } from './repo-config.ts';
+import { dirForRepo } from './config.ts';
 import { branches } from './git.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -101,6 +103,19 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const decision: CycleDecision = {
     tickets, comments, roster, blocked, info, sweep, stranded, selection, watermark,
   };
+
+  // AFTER every role has been evaluated, never during: advancing inside the
+  // first role's check would hide that role's new comments from the second.
+  //
+  // Advanced to the newest thing this cycle actually SAW, never to the clock
+  // — using `now` would silently skip anything written between the fetch and
+  // the write, and losing a signal is worse than repeating one.
+  const advanced = state.advanceWatermark([...comments, ...tickets]);
+  if (advanced !== watermark) {
+    emit.emit(`watermark ${watermark.slice(0, 19)} -> ${advanced.slice(0, 19)}`, {
+      step: 'poll', data: { from: watermark, to: advanced },
+    });
+  }
   if (selection.selected) {
     writeDigest(o, decision, selection.selected, state.dir);
     emit.emit(
@@ -139,7 +154,12 @@ export function writeDigest(
   const me = o.conn.resolved?.seats[role];
   if (!me) return false;
   try {
+    // The repo's own convention, not the crew's assumption.
+    const repo = resolveRepoConfig(loadRepoConfig(o.conn.dir), undefined, o.conn.dir);
     const input = {
+      dirFor: (t: { repo_id?: string | null }) => dirForRepo(o.conn, t.repo_id),
+      branchFor: (t: { issue_id: string; title?: string | null }) =>
+        renderBranchName(repo.branch.name, { key: t.issue_id, title: t.title ?? undefined, role }),
       tickets: role === 'triage'
         ? d.tickets.filter((t) => t.assignee_id === o.conn.resolved?.seats.triage)
         : sliceFor(d.tickets, role),

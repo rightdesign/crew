@@ -9,20 +9,23 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, connection, type RoleName } from './config.ts';
+import { loadConfig, connection, ConfigError, type RoleName } from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor } from './poll.ts';
+import { applySweep } from './blocked.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective } from './repo-config.ts';
 import { runRelease } from './release-run.ts';
 import { planStamp, applyStamp } from './stamp.ts';
 import { Tracker } from './tracker.ts';
+import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphans, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExists } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles } from './fleet.ts';
+import { discover, renderConnection } from './connect.ts';
 import { worktrees, git, gitOk, syncState, fastForward, fetchRemote } from './git.ts';
 import { readFileSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
@@ -47,6 +50,8 @@ function usage(): never {
   crew pause|resume [conn] [R]  pause everything, or one role
   crew log [conn]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
+  crew connect                  resolve a workspace's ids into a crew.yaml block
+     --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
 
 Options:
   --dry-run      decide everything, perform nothing
@@ -78,17 +83,45 @@ const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.st
 const command = positional[0];
 if (!command) usage();
 
-const cfg = loadConfig(CREW_HOME);
+/**
+ * A bad config is an operator's mistake, not a crash. Print what is wrong and
+ * exit — a stack trace naming this file's internals tells them nothing about
+ * their YAML.
+ */
+let cfg: ReturnType<typeof loadConfig>;
+try {
+  cfg = loadConfig(CREW_HOME);
+} catch (e) {
+  if (e instanceof ConfigError) {
+    process.stderr.write(`crew: ${e.message}\n`);
+    process.exit(2);
+  }
+  throw e;
+}
 // `inbox` spans every connection, so it must not demand one be named.
 // `inbox` spans every connection; `poll`/`run` do too when none is named.
 const FLEET_CAPABLE = new Set(['poll', 'run']);
 const named = positional[1];
 const fleetWide = command === 'inbox' || (FLEET_CAPABLE.has(command) && !named && cfg.connections.length > 1);
-const conn = fleetWide
-  ? (cfg.connections[0] as ReturnType<typeof connection>)
-  : connection(cfg, named);
+let conn: ReturnType<typeof connection>;
+try {
+  conn = fleetWide ? (cfg.connections[0] as ReturnType<typeof connection>) : connection(cfg, named);
+} catch (e) {
+  if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+  throw e;
+}
 const state = new State(cfg.ship.stateDir);
 const dryRun = flag('dry-run');
+
+/**
+ * Commands that must not overlap themselves. `poll`, `watch`, `status` and
+ * the read-only inspections may run any number of times at once.
+ */
+const EXCLUSIVE: Record<string, string> = {
+  run: 'crew',
+  // `release`/`merge`/`deploy` take their own lock inside releasePhase(), so
+  // a long release never blocks the next poll from starting.
+};
 
 const emit = new Emitter({
   connection: conn.name,
@@ -108,6 +141,84 @@ function requireArmed(what: string): void {
       `      Add --dry-run to see what it would do.\n`,
   );
   process.exit(0);
+}
+
+
+/**
+ * The release phase, callable on its own (`crew release`) or as the tail of a
+ * cycle (`crew run`).
+ *
+ * Running it after the agent phase is what the bash did, and it matters: a
+ * ticket verified at 03:00 ships at 03:00 rather than waiting for a separate
+ * schedule. The two phases take DIFFERENT locks, so a long release never
+ * blocks the next poll from starting, and vice versa.
+ */
+async function releasePhase(opts: { mergeOnly?: boolean; force?: boolean }): Promise<void> {
+  const relLock = dryRun ? undefined : state.acquire('release');
+  if (relLock && !relLock.ok) {
+    emit.emit(`a previous release (pid ${relLock.heldBy}) is still running — skipping`, { step: 'release' });
+    return;
+  }
+  try {
+
+    const repoFile = loadRepoConfig(conn.dir);
+    const repo = resolveRepoConfig(repoFile, {
+      hooks: conn.hooks, labels: conn.labels,
+      release: { versionFiles: conn.release.versionFiles, changelog: conn.release.changelog },
+      platform: conn.platform,
+    }, conn.dir);
+    const problems = validateEffective(repo);
+    for (const p of problems) emit.warn(p);
+
+    if (!dryRun && !conn.enabled) return;
+    const tracker = new Tracker(conn, cfg.ship);
+    const tickets = await tracker.openTickets();
+    const outcome = await runRelease({
+      cwd: conn.dir, repo, contract: tracker.contract, tickets, emit, state,
+      dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
+      mergeOnly: command === 'merge',
+      // `deploy` is the "go now" button: it exists for a commit a previous
+      // deploy failed on, where nothing new will merge but the work is
+      // genuinely unreleased.
+      force: command === 'deploy' || flag('force'),
+    });
+
+    // Stamping is deliberately last and deliberately non-fatal: the work is
+    // already live, and a tracker blip must not turn a good release into a
+    // failed one. Untouched tickets are still `verified` and still named in
+    // the released range, so the next cycle picks them up.
+    if (outcome.deployed || outcome.confirmed) {
+      emit.enter('reconcile');
+      const plan = planStamp(
+        conn.dir, tickets, tracker.contract,
+        outcome.decision.lastReleased, outcome.decision.head,
+      );
+      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
+    } else if (outcome.stopped) {
+      emit.emit(`nothing stamped — ${outcome.stopped}`);
+    }
+    
+  } finally {
+    if (relLock && relLock.ok) relLock.release();
+  }
+}
+
+// Taken before any work and released on the way out, however that happens.
+let lock: { release: () => void } | undefined;
+if (EXCLUSIVE[command] && !dryRun) {
+  const got = state.acquire(EXCLUSIVE[command]!);
+  if (!got.ok) {
+    process.stderr.write(
+      `crew: a previous ${command} (pid ${got.heldBy}) is still running — skipping this cycle\n`,
+    );
+    process.exit(0);
+  }
+  lock = got;
+  const drop = () => { lock?.release(); lock = undefined; };
+  process.on('exit', drop);
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(sig, () => { drop(); process.exit(0); });
+  }
 }
 
 switch (command) {
@@ -157,17 +268,30 @@ switch (command) {
     const decision = await decideCycle({ conn, ship: cfg.ship, state, emit });
 
     if (decision.sweep.length) {
-      const verb = dryRun ? 'would' : 'will';
-      for (const s of decision.sweep) {
-        emit.emit(`${verb} ${s.action} ${s.ticket.issue_id} -> ${s.to} (blockers: ${s.blockers})`, {
-          ticket: s.ticket.issue_id, step: 'sweep',
-        });
+      if (dryRun) {
+        for (const s of decision.sweep) {
+          emit.emit(`would ${s.action} -> ${s.to} (blockers: ${s.blockers})`, {
+            ticket: s.ticket.issue_id, step: 'sweep',
+          });
+        }
+      } else {
+        const seat = conn.resolved?.seats.qa ?? conn.resolved?.seats.dev;
+        const r = await applySweep(new Tracker(conn, cfg.ship), decision.sweep, seat ?? '', emit);
+        emit.emit(
+          `swept ${r.parked} parked, ${r.restored} restored${r.failed ? `, ${r.failed} failed` : ''}`,
+          { step: 'sweep', data: r },
+        );
       }
     }
 
     const role = (value('role') as RoleName | undefined) ?? decision.selection.selected;
-    if (command === 'poll' || !role) {
-      if (!role) emit.emit('nothing to run this cycle');
+    if (command === 'poll') break;
+    if (!role) {
+      emit.emit('no role to run this cycle');
+      // The release still has to happen. A cycle with no agent work is
+      // exactly when verified branches are most likely to be waiting — and
+      // returning here is what left ISSUE-280 and ISSUE-292 unmerged.
+      await releasePhase({});
       break;
     }
 
@@ -206,48 +330,20 @@ switch (command) {
       if (current) emit.emit(`${ran.at(-1)} changed nothing — falling through to ${current}`);
       else emit.emit(`${ran.at(-1)} changed nothing, and no other role is pending`);
     }
+
+    // The release phase closes the cycle, as it did in the bash. Without it
+    // verified work sits unmerged indefinitely: nothing else ever merges a
+    // branch, and a ticket verified this cycle should ship this cycle.
+    //
+    // Skipped only for `--role`, which means "run exactly this seat".
+    if (!value('role')) await releasePhase({});
     break;
   }
 
   case 'merge':
   case 'deploy':
   case 'release': {
-    const repoFile = loadRepoConfig(conn.dir);
-    const repo = resolveRepoConfig(repoFile, {
-      hooks: conn.hooks, labels: conn.labels,
-      release: { versionFiles: conn.release.versionFiles, changelog: conn.release.changelog },
-      platform: conn.platform,
-    }, conn.dir);
-    const problems = validateEffective(repo);
-    for (const p of problems) emit.warn(p);
-
-    requireArmed('release');
-    const tracker = new Tracker(conn, cfg.ship);
-    const tickets = await tracker.openTickets();
-    const outcome = await runRelease({
-      cwd: conn.dir, repo, contract: tracker.contract, tickets, emit,
-      dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
-      mergeOnly: command === 'merge',
-      // `deploy` is the "go now" button: it exists for a commit a previous
-      // deploy failed on, where nothing new will merge but the work is
-      // genuinely unreleased.
-      force: command === 'deploy' || flag('force'),
-    });
-
-    // Stamping is deliberately last and deliberately non-fatal: the work is
-    // already live, and a tracker blip must not turn a good release into a
-    // failed one. Untouched tickets are still `verified` and still named in
-    // the released range, so the next cycle picks them up.
-    if (outcome.deployed || outcome.confirmed) {
-      emit.enter('reconcile');
-      const plan = planStamp(
-        conn.dir, tickets, tracker.contract,
-        outcome.decision.lastReleased, outcome.decision.head,
-      );
-      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
-    } else if (outcome.stopped) {
-      emit.emit(`nothing stamped — ${outcome.stopped}`);
-    }
+    await releasePhase({ mergeOnly: command === 'merge', force: command === 'deploy' || flag('force') });
     break;
   }
 
@@ -263,6 +359,40 @@ switch (command) {
       },
     });
     process.on('SIGINT', () => { stop(); process.exit(0); });
+    break;
+  }
+
+  case 'connect': {
+    const wsId = value('workspace-id');
+    const apiKey = value('key') ?? process.env.CREW_CONNECT_KEY;
+    if (!wsId || !apiKey) {
+      process.stderr.write(
+        'crew connect: need --workspace-id and --key (or CREW_CONNECT_KEY).\n' +
+        '  API keys are workspace-scoped — there is no platform key — so create one\n' +
+        '  in that workspace first (Admin > API keys).\n',
+      );
+      process.exit(2);
+    }
+    const found = await discover({
+      baseUrl: value('base-url') ?? cfg.connections[0]?.baseUrl ?? 'https://app.tablation.com',
+      apiKey, workspaceId: wsId,
+      project: value('project'), area: value('area'),
+      userAgent: cfg.ship.userAgent,
+    });
+    process.stdout.write(renderConnection(
+      found,
+      value('name') ?? (found.projectName ?? 'new-connection').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      value('dir') ?? 'REPLACE — the local checkout this connection works',
+      { area: value('area') },
+    ));
+    if (found.problems.length) {
+      process.stderr.write('\n  Unresolved — fix these before arming it:\n');
+      for (const p of found.problems) process.stderr.write(`    - ${p}\n`);
+    }
+    process.stderr.write(
+      '\n  Paste the block above under `connections:` in crew.yaml, fill the REPLACE\n' +
+      '  fields, then: crew doctor <name>\n',
+    );
     break;
   }
 
@@ -428,6 +558,18 @@ switch (command) {
     // Does this machine have a row on the board, and which seats are its own?
     // Matched by name, per Brad's call: it is what an operator recognises.
     const tracker = new Tracker(conn, cfg.ship);
+
+    // A workspace's contract can be internally inconsistent — a status named
+    // as `approved` that is not in `open`, a `handoff` listed as resolved.
+    // Checked here rather than left to fail as odd behaviour later.
+    const contractProblems = validateContract(tracker.contract);
+    process.stdout.write(
+      contractProblems.length
+        ? `contract:          ${contractProblems.length} problem(s)\n` +
+          contractProblems.map((p) => `                   - ${p}\n`).join('')
+        : 'contract:          consistent\n',
+    );
+
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
     if (ships.length === 0) {
       process.stdout.write('ship record:       this workspace has no Ships table (fine)\n');
@@ -459,3 +601,5 @@ switch (command) {
   default:
     usage();
 }
+
+lock?.release();

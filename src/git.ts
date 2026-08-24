@@ -14,8 +14,13 @@ export function git(cwd: string, args: string[]): string {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   } catch (e) {
-    const err = e as { stderr?: string; message: string };
-    throw new GitError(`git ${args.join(' ')}: ${(err.stderr || err.message).trim()}`);
+    // stdout matters as much as stderr here: git reports several failures
+    // there, "nothing to commit, working tree clean" among them. Reading only
+    // stderr produced a bare "Command failed" with no cause, which is what
+    // made a stalled release phase so hard to read.
+    const err = e as { stderr?: string; stdout?: string; message: string };
+    const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
+    throw new GitError(`git ${args.join(' ')}: ${why || err.message.trim()}`);
   }
 }
 
@@ -26,7 +31,6 @@ export function gitOk(cwd: string, args: string[]): string | null {
 
 export const currentBranch = (cwd: string): string => git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
 export const headSha = (cwd: string): string => git(cwd, ['rev-parse', 'HEAD']);
-export const shortSha = (cwd: string, sha: string): string => git(cwd, ['rev-parse', '--short', sha]);
 
 export interface WorkingTreeChange { code: string; path: string; untracked: boolean }
 
@@ -96,10 +100,6 @@ export const resolve = (cwd: string, ref: string): string | null =>
 
 export const countCommits = (cwd: string, range: string): number =>
   Number.parseInt(gitOk(cwd, ['rev-list', '--count', range]) ?? '0', 10);
-
-export const setRef = (cwd: string, ref: string, sha: string): void => {
-  git(cwd, ['update-ref', ref, sha]);
-};
 
 /**
  * The most recent release tag reachable from `ref`.
@@ -272,11 +272,6 @@ export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
 // ---------------------------------------------------------------------------
 // Worktree sync: keeping local work level with what reviewers pushed
 // ---------------------------------------------------------------------------
-
-/** The remote a branch tracks, per .git/config, or null if it tracks nothing. */
-export function trackedRemote(cwd: string, branch: string): string | null {
-  return gitOk(cwd, ['config', '--get', `branch.${branch}.remote`]);
-}
 
 /** The upstream ref for a branch, e.g. "origin/issue-326". */
 export function upstreamOf(cwd: string, branch: string): string | null {

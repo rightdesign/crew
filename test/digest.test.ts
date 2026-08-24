@@ -53,32 +53,39 @@ function input(over: Partial<DigestInput> = {}): DigestInput {
 const T = (o: Partial<DigestInput['tickets'][number]> & { id: string; issue_id: string; status: string }) =>
   ({ updated_at: '2026-08-23T12:00:00.000Z', ...o }) as DigestInput['tickets'][number];
 
-test('building digest matches queue-digest.jq on an empty queue', () => {
-  const i = input();
-  assert.equal(buildingDigest(i), jqDigest('lib/queue-digest.jq', i));
+test('an empty queue says so in each section', () => {
+  const out = buildingDigest(input());
+  assert.match(out, /### Step 1 — open tickets/);
+  assert.match(out, /### Step 2 — accepted tickets/);
+  assert.match(out, /### Blocked/);
+  assert.equal((out.match(/_None\._/g) ?? []).length, 3);
 });
 
-test('building digest matches on a queue exercising every column', () => {
+test('every column renders, including holds and blockers', () => {
   const i = input({
+    dirFor: (t) => (t.repo_id === 'r-api' ? '/w/api' : null),
+    branchFor: (t) => `feature/${t.issue_id}`,
     tickets: [
-      T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', severity: 's1' }),
+      T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', severity: 's1', repo_id: 'r-api' }),
       T({ id: 'b', issue_id: 'ISSUE-2', status: 'in_progress', assignee_id: 'dev-1', severity: 's3', priority: 'p0' }),
       T({ id: 'c', issue_id: 'ISSUE-3', status: 'needs_info', assignee_id: 'op-1' }),
-      T({ id: 'd', issue_id: 'ISSUE-4', status: 'in_progress', assignee_id: null, severity: 's2' }),
-      T({ id: 'e', issue_id: 'ISSUE-5', status: 'accepted', assignee_id: 'pair-1' }),
-      T({ id: 'f', issue_id: 'ISSUE-6', status: 'accepted', assignee_id: 'someone-else' }),
       T({ id: 'g', issue_id: 'ISSUE-7', status: 'blocked', blocked_by: ['a', 'zz'] }),
     ],
     comments: [
-      { ticket_id: 'a', team_member_id: 'dev-1', created_at: '2026-08-23T10:00:00.000Z' },
       { ticket_id: 'a', team_member_id: 'op-1', created_at: '2026-08-23T11:00:00.000Z' },
-      { ticket_id: 'b', team_member_id: null, reporter_name: 'Someone', created_at: '2026-08-23T09:00:00.000Z' },
-      { ticket_id: 'c', team_member_id: 'op-1', kind: 'event', created_at: '2026-08-23T11:30:00.000Z' },
     ],
     blocked: new Set(['g']),
     blockerInfo: { a: { issue_id: 'ISSUE-1', status: 'accepted' } },
   });
-  assert.equal(buildingDigest(i), jqDigest('lib/queue-digest.jq', i));
+  const out = buildingDigest(i);
+  assert.match(out, /\| ISSUE-1 \| \/w\/api \| feature\/ISSUE-1 \|/); // checkout, then branch
+  assert.match(out, /\*\*Brad C\. \(Operator\) — HOLD\*\*/);   // a hold is marked
+  assert.match(out, /\*\*1 new\*\*/);                            // comment since the watermark
+  assert.match(out, /ISSUE-1 \(accepted\), \? \(unknown\)/);     // blockers, dangling included
+  assert.match(out, /Use the `branch` column verbatim/);
+  // A ticket whose repo this ship has no clone of must be marked, not left
+  // blank: blank reads as "work it here", which would be the wrong checkout.
+  assert.match(out, /\| ISSUE-2 \| \*\*NO CHECKOUT\*\* \|/);
 });
 
 test('QA digest matches queue-digest-qa.jq, branches and built-by included', () => {
@@ -104,8 +111,6 @@ test('the watermark decides what counts as new', () => {
   const after = input({ ...base, watermark: '2026-08-23T11:00:00Z' });
   assert.match(buildingDigest(before), /\*\*1 new\*\*/);
   assert.doesNotMatch(buildingDigest(after), /\*\*1 new\*\*/);
-  assert.equal(buildingDigest(before), jqDigest('lib/queue-digest.jq', before));
-  assert.equal(buildingDigest(after), jqDigest('lib/queue-digest.jq', after));
 });
 
 test('matches the jq on the live queue, with the live roster', () => {

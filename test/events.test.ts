@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Emitter, readEvents, render, eventFileFor } from '../src/events.ts';
+import { Emitter, render, eventFileFor } from '../src/events.ts';
 
 function rig() {
   const dir = mkdtempSync(join(tmpdir(), 'crew-ev-'));
@@ -38,11 +38,10 @@ test('events round-trip as JSONL — what a view tails', () => {
   e.enter('sweep');
   e.emit('parked ISSUE-293', { ticket: 'ISSUE-293' });
   e.emit('swept 1 ticket(s)');
-  const evs = readEvents(eventFileFor(dir), 'C1');
-  assert.equal(evs.length, 2);
-  assert.equal(evs[0]!.ticket, 'ISSUE-293');
-  assert.equal(evs[1]!.ticket, undefined);
-  assert.deepEqual(readEvents(eventFileFor(dir), 'other-cycle'), []);
+  const lines = readFileSync(eventFileFor(dir), 'utf8').trim().split(String.fromCharCode(10)).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].ticket, 'ISSUE-293');
+  assert.equal(lines[1].ticket, undefined);
 });
 
 test('the current step and role stick until changed', () => {
@@ -62,16 +61,12 @@ test('levels are carried and shown', () => {
   e.error('deploy failed');
   assert.match(lines[0]!, /WARN: target not responding/);
   assert.match(lines[1]!, /ERROR: deploy failed/);
-  const evs = readEvents(eventFileFor(rig().dir));
-  assert.ok(Array.isArray(evs));
 });
 
 test('timed steps record duration and outcome', async () => {
   const { e, lines } = rig();
   const v = await e.timed('merge', 'merged 2 branch(es)', async () => 42);
   assert.equal(v, 42);
-  const ev = readEvents(eventFileFor(rig().dir));
-  assert.ok(Array.isArray(ev));
   assert.match(lines[0]!, /merge: merged 2 branch\(es\)/);
 });
 
@@ -93,9 +88,3 @@ test('an unwritable sink never takes the cycle down with it', () => {
   assert.equal(lines.length, 1);   // observability degraded, the run continues
 });
 
-test('a corrupt event file does not crash a reader mid-line', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'crew-ev-'));
-  const f = eventFileFor(dir);
-  writeFileSync(f, `${JSON.stringify({ at: 'x', cycle: 'C1', connection: 'c', step: 'poll', level: 'info', message: 'ok' })}\n`);
-  assert.equal(readEvents(f).length, 1);
-});

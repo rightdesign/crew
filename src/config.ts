@@ -43,6 +43,9 @@ export interface ResolvedIds {
   /** The `Projects` table, and the row this connection's `area` names. */
   areaModelId?: string;
   areaId?: string;
+  /** The `Repos` table, and repo id -> name, so a ticket's repo resolves. */
+  reposModelId?: string;
+  repoNames?: Record<string, string>;
   /**
    * The `Ships` table, when this workspace has one. The ship is matched by
    * NAME (`ship.name`) rather than by a stored id: a machine's name is what
@@ -76,7 +79,21 @@ export interface Connection {
   enabled: boolean;
   workspace: string;
   project?: string;
+  /**
+   * The checkout this connection works, when its area has exactly one repo.
+   * Kept for the common case; `repos` is what a multi-repo area needs.
+   */
   dir: string;
+  /**
+   * Repo name (as the tracker's `Repos` table calls it) -> local checkout.
+   *
+   * An area has many repos (ISSUE-331), and each needs its own directory on
+   * this machine. A ticket names its repo; this is how the crew turns that
+   * into a path. Without it a ticket for a second repo would be worked in the
+   * first one's checkout, which is the failure `crew connect` refuses by
+   * verifying a repo's remote against the local origin.
+   */
+  repos: Record<string, string>;
   worktreePrefix: string;
   /** What this project needs of a host. Checked against the ship's platform. */
   platform: PlatformRequirement;
@@ -86,7 +103,13 @@ export interface Connection {
   apiKeyVar?: string;
   hooks: { test?: string; build?: string; deploy?: string; notify?: string };
   labels: { test?: string; build?: string; deploy?: string };
-  release: { versionFiles: string[]; changelog: string };
+  /**
+   * Release settings the SHIP declares for a repo that has no `.crew.yaml`.
+   * Undefined when nothing was declared — a synthesised default here would be
+   * passed on as though the operator had written it, and would silently
+   * shadow the repo's own contract.
+   */
+  release: { versionFiles?: string[]; changelog?: string };
   /**
    * This workspace's own rules, where they differ from the default (see
    * docs/CONTRACT.md). Absent means the workspace means what the unmodified
@@ -119,6 +142,36 @@ export interface CrewConfig {
 
 export class ConfigError extends Error {}
 
+const SHIP_KEYS = new Set([
+  'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl',
+]);
+const CONNECTION_KEYS = new Set([
+  'name', 'enabled', 'workspace', 'project', 'area', 'dir', 'repos', 'worktreePrefix',
+  'platform', 'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
+]);
+
+/**
+ * An unknown key is an ERROR, not something to ignore — the same rule the
+ * repo contract uses, and for the same reason.
+ *
+ * This exists because of a real mistake: removing a `hooks:` key left its
+ * children (`test:`, `build:`, `deploy:`) dangling at connection level, where
+ * they were silently dropped. The file still LOOKED like it configured a test
+ * command. Config that reads as meaningful and does nothing is worse than
+ * config that is absent.
+ */
+function rejectUnknownKeys(obj: unknown, allowed: Set<string>, where: string, file: string): void {
+  if (!obj || typeof obj !== 'object') return;
+  const unknown = Object.keys(obj as object).filter((k) => !allowed.has(k));
+  if (unknown.length === 0) return;
+  throw new ConfigError(
+    `${file}: unknown ${where} ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}\n` +
+      `  allowed: ${[...allowed].sort().join(', ')}`,
+  );
+}
+
 function expand(p: string, base: string): string {
   let out = p.startsWith('~') ? p.replace(/^~/, homedir()) : p;
   out = out.replace(/\$\{?HOME\}?/g, homedir());
@@ -143,9 +196,38 @@ class Missing {
   }
 }
 
-export function findConfigFile(crewHome: string): string {
-  return process.env.CREW_CONFIG ? resolve(process.env.CREW_CONFIG) : resolve(crewHome, 'crew.yaml');
+/**
+ * Where this machine's config lives, in order of preference.
+ *
+ * The config describes the MACHINE, not the checkout: which projects this
+ * ship serves, where they are, which agent binary to run. Keeping it outside
+ * the repo means the checkout can be replaced or reinstalled without losing
+ * it, the repo stays uncluttered, and an eventual `npm i -g crew` works with
+ * no checkout at all.
+ *
+ *   1. $CREW_CONFIG              — explicit, wins always
+ *   2. $XDG_CONFIG_HOME/crew/    — respected where set
+ *   3. ~/.config/crew/crew.yaml  — the normal home
+ *   4. <checkout>/crew.yaml      — legacy, for installs that predate this
+ */
+export function configSearchPath(crewHome: string): string[] {
+  if (process.env.CREW_CONFIG) return [resolve(process.env.CREW_CONFIG)];
+  const xdg = process.env.XDG_CONFIG_HOME;
+  return [
+    ...(xdg ? [join(xdg, 'crew', 'crew.yaml')] : []),
+    join(homedir(), '.config', 'crew', 'crew.yaml'),
+    resolve(crewHome, 'crew.yaml'),
+  ];
 }
+
+export function findConfigFile(crewHome: string): string {
+  const candidates = configSearchPath(crewHome);
+  return candidates.find((c) => existsSync(c)) ?? candidates[candidates.length - 1]!;
+}
+
+/** Where a fresh install should write its config. */
+export const defaultConfigPath = (): string =>
+  join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'crew', 'crew.yaml');
 
 function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undefined {
   if (!raw) return undefined;
@@ -160,6 +242,8 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     areaModelId: raw.areaModelId,
     areaId: raw.areaId,
     shipsModelId: raw.shipsModelId,
+    reposModelId: raw.reposModelId,
+    repoNames: raw.repoNames,
     models: {
       issues: m.req(raw.models?.issues, `${where}.resolved.models.issues`),
       comments: m.req(raw.models?.comments, `${where}.resolved.models.comments`),
@@ -174,14 +258,28 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
 export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   const file = configFile ?? findConfigFile(crewHome);
   if (!existsSync(file)) {
-    throw new ConfigError(`no config at ${file} — copy crew.example.yaml to crew.yaml and fill it in`);
+    throw new ConfigError(
+      `no config found. Looked in:\n` +
+        configSearchPath(crewHome).map((c) => `  - ${c}`).join('\n') +
+        `\n\nCreate the first of those:\n` +
+        `  mkdir -p ${dirname(defaultConfigPath())} && cp ${join(crewHome, 'crew.example.yaml')} ${defaultConfigPath()}`,
+    );
   }
-  const raw = parse(readFileSync(file, 'utf8')) as Record<string, any> | null;
+  let raw: Record<string, any> | null;
+  try {
+    raw = parse(readFileSync(file, 'utf8')) as Record<string, any> | null;
+  } catch (e) {
+    // The YAML library throws with a stack trace naming its own internals,
+    // which tells an operator nothing about their file.
+    throw new ConfigError(`${file}: not valid YAML — ${(e as Error).message}`);
+  }
   if (!raw || typeof raw !== 'object') throw new ConfigError(`${file} is empty or not a mapping`);
   const base = dirname(file);
   const missing = new Missing();
 
+  rejectUnknownKeys(raw, new Set(['ship', 'connections']), 'top-level', file);
   const shipRaw = raw.ship ?? {};
+  rejectUnknownKeys(shipRaw, SHIP_KEYS, 'ship', file);
   const declaredPlatform = shipRaw.platform ? String(shipRaw.platform) : undefined;
   if (declaredPlatform && !isShipPlatform(declaredPlatform)) {
     missing.add(`ship.platform must be one of macos|linux|windows (got "${declaredPlatform}")`);
@@ -194,15 +292,28 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
 
   const connections: Connection[] = (Array.isArray(connRaw) ? connRaw : []).map((c: any, i: number) => {
     const where = `connections[${i}]`;
+    rejectUnknownKeys(c, CONNECTION_KEYS, `${where}`, file);
     const name = missing.req(c?.name, `${where}.name`) as string;
-    const dir = expand(missing.req(c?.dir, `${where}.dir`) as string, base);
+    // `repos` or `dir` — one of them must say where the code is.
+    const repoDirs: Record<string, string> = {};
+    if (c?.repos && typeof c.repos === 'object') {
+      for (const [name, d] of Object.entries(c.repos as Record<string, string>)) {
+        repoDirs[name] = expand(String(d), base);
+      }
+    }
+    const hasRepos = Object.keys(repoDirs).length > 0;
+    const dir = c?.dir
+      ? expand(String(c.dir), base)
+      : hasRepos
+        ? Object.values(repoDirs)[0]!
+        : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
     const platformRaw = String(c?.platform ?? 'any');
     if (!isPlatformRequirement(platformRaw)) {
       missing.add(`${where}.platform must be one of any|unix|macos|linux|windows (got "${platformRaw}")`);
     }
-    const versionFiles: string[] = Array.isArray(c?.release?.versionFiles)
+    const versionFiles: string[] | undefined = Array.isArray(c?.release?.versionFiles)
       ? c.release.versionFiles
-      : c?.release?.versionFile ? [c.release.versionFile] : ['package.json'];
+      : c?.release?.versionFile ? [c.release.versionFile] : undefined;
     return {
       name,
       enabled: c?.enabled === true,
@@ -210,6 +321,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       project: c?.project,
       area: c?.area,
       dir,
+      repos: repoDirs,
       worktreePrefix: missing.req(c?.worktreePrefix, `${where}.worktreePrefix`) as string,
       platform: platformRaw as PlatformRequirement,
       baseUrl: (missing.req(c?.baseUrl ?? raw.ship?.baseUrl, `${where}.baseUrl`) as string).replace(/\/+$/, ''),
@@ -222,7 +334,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
         build: c?.labels?.build ?? c?.hooks?.build,
         deploy: c?.labels?.deploy ?? c?.hooks?.deploy,
       },
-      release: { versionFiles, changelog: c?.release?.changelog ?? 'CHANGELOG.md' },
+      release: { versionFiles, changelog: c?.release?.changelog },
       contract: c?.contract ?? null,
       resolved: parseResolved(c?.resolved, missing, where),
     };
@@ -243,8 +355,10 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       extraPath: shipRaw.extraPath,
       useNvm: shipRaw.useNvm !== false,
       nvmSh: shipRaw.nvmSh,
-      stateDir: expand(shipRaw.stateDir ?? '.state', crewHome),
-      logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'tablation-crew.log'), crewHome),
+      // Relative to the CONFIG's directory, not the checkout: config and
+      // state belong to the machine and should travel together.
+      stateDir: expand(shipRaw.stateDir ?? 'state', base),
+      logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'crew.log'), base),
       userAgent: shipRaw.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
     },
     connections,
@@ -268,6 +382,26 @@ export function connection(cfg: CrewConfig, name?: string): Connection {
     throw new ConfigError(`no connection named "${name}" (have: ${cfg.connections.map((c) => c.name).join(', ')})`);
   }
   return found;
+}
+
+/**
+ * Where a ticket's work happens on this machine.
+ *
+ * ticket.repo_id -> the Repos row's name -> the configured directory. Falls
+ * back to the connection's single `dir` when the area has one repo, which is
+ * the common case and what every connection looked like before areas could
+ * span several.
+ *
+ * Returns null when a ticket names a repo this ship has no checkout for —
+ * that is a real state (another ship may serve it), and the caller reports it
+ * rather than working the wrong directory.
+ */
+export function dirForRepo(c: Connection, repoId?: string | null): string | null {
+  const names = c.resolved?.repoNames;
+  if (!repoId || !names) return Object.keys(c.repos).length ? null : c.dir;
+  const name = names[repoId];
+  if (!name) return null;
+  return c.repos[name] ?? (Object.keys(c.repos).length === 0 ? c.dir : null);
 }
 
 /** The API key for one connection. Never logged. */
