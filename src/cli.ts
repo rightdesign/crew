@@ -34,6 +34,7 @@ import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles } from './fleet.ts';
 import { discover, renderConnection } from './connect.ts';
 import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
+import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 
@@ -51,7 +52,7 @@ function usage(): never {
   crew status [conn]            paused/running state
   crew doctor [conn]            read-only preflight
   crew ports [conn]             which checkout owns which ports, and what is up
-  crew reap [conn]              kill servers left behind by removed worktrees
+  crew reap [conn]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [conn] NNN          remove a merged ticket's worktree and branch
   crew sync [conn]              fast-forward worktrees that are behind their remote
   crew pause|resume [conn] [R]  pause everything, or one role
@@ -303,6 +304,7 @@ async function releasePhase(
       hooks: c.hooks, labels: c.labels,
       release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
       platform: c.platform,
+      worktrees: { prefix: c.worktreePrefix },
     }, target.dir);
     const problems = validateEffective(repo);
     for (const p of problems) emit.warn(`${scope}: ${p}`);
@@ -349,7 +351,24 @@ async function releasePhase(
     // about it must not be able to change the outcome.
     const news = describeRelease(outcome, scope);
     if (news) await notify(c, cfg.ship, news, emit, dryRun);
-    
+
+    // Also non-fatal, and last of all: a ticket that reached a terminal
+    // status (here or on an earlier cycle) is done with its worktree. A
+    // tracker blip here must not turn a good release into a failed one, the
+    // same reasoning as stamping above (ISSUE-346).
+    try {
+      const terminal = await tracker.terminalTickets();
+      const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
+      const actions = planWorktreeSweep(target, scoped, tracker.contract, repo.worktrees.prefix);
+      if (actions.length) {
+        emit.enter('worktree');
+        const r = await applyWorktreeSweep(target.dir, actions, dryRun, emit);
+        emit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
+      }
+    } catch (e) {
+      emit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
+    }
+
   } finally {
     if (relLock && relLock.ok) relLock.release();
   }
@@ -617,17 +636,41 @@ switch (command) {
 
   case 'reap': {
     emit.enter('worktree');
+    let anything = false;
+
     // Every repository, not just the connection's first: a worktree alive in
     // the second one used to read as an orphan, and reap kills orphans.
     const orphans = findOrphansIn(worktreeLocations(conn));
-    if (!orphans.length) { emit.emit('nothing to clean up'); break; }
     for (const o of orphans) {
+      anything = true;
       emit.emit(
         `${dryRun ? 'would kill' : 'killing'} orphaned ${o.role} on :${o.port} (pid ${o.pid})` +
           ` — no worktree for ISSUE-${o.n}`,
       );
     }
-    if (!dryRun) await killGently(orphans.map((o) => o.pid));
+    if (!dryRun && orphans.length) await killGently(orphans.map((o) => o.pid));
+
+    // Worktrees whose ticket has since reached a terminal status — the
+    // by-hand case for the same sweep the release phase runs on its own
+    // (ISSUE-346). Each repository names its worktrees itself (ISSUE-350), so
+    // the sweep is planned with that repo's prefix, not the ship default.
+    const tracker = new Tracker(conn, cfg.ship);
+    const terminal = await tracker.terminalTickets();
+    const { byRepo } = ticketsByRepo(conn, terminal);
+    for (const r of resolvedRepos(conn)) {
+      const actions = planWorktreeSweep(
+        r, byRepo.get(r.name) ?? [], tracker.contract, r.config.worktrees.prefix,
+      );
+      if (!actions.length) continue;
+      anything = true;
+      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit);
+      emit.emit(
+        `swept ${res.removed} worktree(s) for ${r.name}, kept ${res.keptBranches} branch(es)`,
+        { step: 'worktree' },
+      );
+    }
+
+    if (!anything) emit.emit('nothing to clean up');
     break;
   }
 

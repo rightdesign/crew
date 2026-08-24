@@ -120,6 +120,31 @@ export class Tracker {
   }
 
   /**
+   * Tickets at a terminal, no-longer-open status — the worktree sweep's
+   * input (ISSUE-346).
+   *
+   * The exact complement of `openTickets()`: `closed_deployed`,
+   * `closed_wont_fix`, `closed_duplicate`. `verified` is excluded even
+   * though the contract counts it as resolved for a *blocker*'s purposes —
+   * it is still pre-release, and its worktree is exactly what the release
+   * phase is about to merge.
+   */
+  async terminalTickets(): Promise<Ticket[]> {
+    const c = this.contract;
+    const statuses = c.statuses.resolved.filter((s) => s !== c.statuses.verified);
+    if (!statuses.length) return [];
+    const filters: Filter[] = [
+      { columnName: c.columns.status, operator: 'IN', value: statuses },
+    ];
+    const areaId = this.conn.resolved?.areaId;
+    if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
+    return this.client.records.list<Ticket>(this.models.issues, {
+      filters: encodeFilters(filters),
+      limit: 500,
+    });
+  }
+
+  /**
    * Tickets by id, for blockers that have already closed and so are absent
    * from the open set. Bounded to the ids actually referenced.
    */
