@@ -49,9 +49,21 @@ export function matches(e: CrewEvent, f: WatchFilter): boolean {
   return true;
 }
 
-/** One event as a line: time, step[role], ticket, message. */
+/**
+ * Events are stamped in UTC, which is right for a log file that may be
+ * compared across machines. A person watching a terminal wants their own
+ * clock, so the view converts.
+ */
+export function localTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(11, 19);   // unparseable: show it raw
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** One event as a line: local time, step[role], ticket, message. */
 export function formatLine(e: CrewEvent): string {
-  const t = dim(e.at.slice(11, 19));
+  const t = dim(localTime(e.at));
   const scope = e.role ? `${e.step}[${e.role}]` : e.step;
   const paint = e.level === 'error' ? red : e.level === 'warn' ? yellow : cyan;
   const ticket = e.ticket ? ` ${bold(e.ticket)}` : '';

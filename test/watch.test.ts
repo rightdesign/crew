@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { foldCycle, renderHeader, formatLine, matches, readFrom } from '../src/watch.ts';
+import { foldCycle, renderHeader, formatLine, matches, readFrom, localTime } from '../src/watch.ts';
 import type { CrewEvent } from '../src/events.ts';
 
 const E = (o: Partial<CrewEvent> & { step: CrewEvent['step']; message: string }): CrewEvent => ({
@@ -101,8 +101,26 @@ test('a truncated file is re-read from the start rather than read as garbage', (
 });
 
 test('a line is rendered with time, scope and ticket', () => {
-  const line = formatLine(E({ step: 'agent', role: 'dev', ticket: 'ISSUE-9', message: 'picked up' }));
-  assert.match(line, /01:15:45/);
+  const e = E({ step: 'agent', role: 'dev', ticket: 'ISSUE-9', message: 'picked up' });
+  const line = formatLine(e);
+  // The time is the LOCAL rendering, so assert against that rather than a
+  // fixed string — the previous version only passed in UTC.
+  assert.match(line, new RegExp(localTime(e.at)));
   assert.match(line, /agent\[dev\]/);
   assert.match(line, /ISSUE-9/);
+});
+
+test('the view shows local time, though events are stamped in UTC', () => {
+  // Asserted against the platform's own conversion rather than a fixed
+  // string, so the test is correct in any timezone.
+  const iso = '2026-08-24T01:15:45.000Z';
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const expected = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  assert.equal(localTime(iso), expected);
+  assert.match(formatLine(E({ step: 'poll', message: 'x' })), new RegExp(expected));
+});
+
+test('an unparseable timestamp is shown rather than swallowed', () => {
+  assert.equal(localTime('not-a-date'), 'not-a-date'.slice(11, 19));
 });

@@ -30,6 +30,10 @@ export const DIGEST_MAX_AGE_SECONDS = 600;
  * for throwaway verification scripts.
  */
 export function allowedTools(role: RoleName): string[] {
+  // Triage classifies and nothing else: no Edit, no Write. It reads reports,
+  // sets fields and comments. Withholding both editing tools makes "this is
+  // not yours to fix" structural rather than a rule in a brief.
+  if (role === 'triage') return ['Bash', 'Read'];
   if (role === 'qa') return ['Bash', 'Read', 'Write', 'Grep', 'Glob'];
   const base = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'];
   // The design role additionally loads skills and publishes a design canvas.
@@ -118,7 +122,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   if (!existsSync(commonPath)) throw new AgentError(`no shared policy at ${commonPath}`);
 
   const now = o.now ?? (() => Date.now());
-  const digestPath = join(o.stateDir, `digest-${o.conn.name}-${o.role}.md`);
+  const digestPath = join(o.stateDir, `digest-${o.conn.name}-${o.role}.md`);   // see poll.ts digestPath()
   let digest: string | undefined;
   let ageSeconds: number | undefined;
   if (existsSync(digestPath)) {

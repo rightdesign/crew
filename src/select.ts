@@ -48,9 +48,29 @@ export const qaSlice = (tickets: Ticket[]): Ticket[] =>
 export const buildingSlice = (tickets: Ticket[], role: 'dev' | 'design'): Ticket[] =>
   tickets.filter((t) => (role === 'design' ? t.needs_design === true : t.needs_design !== true));
 
+/**
+ * Triage owns whatever is ASSIGNED to it.
+ *
+ * Assignment is the queue, not a side effect: a record-create automation
+ * assigns every new report to the triage seat, and triage clears the
+ * assignee when it is done. That reuses the hand-off protocol the rest of
+ * the crew already runs on — clearing `assignee_id` means "no longer mine" —
+ * and it answers "have I processed this?" without a second marker.
+ *
+ * It also survives the case a status check cannot: a report triage assessed
+ * but could not classify is unassigned like any other, so it is not
+ * reassessed every cycle. And re-assigning one to triage is how a human asks
+ * for it to be looked at again.
+ *
+ * Triage never writes `reporter_name` — that belongs to the intake form —
+ * and never assigns itself.
+ */
+export const triageSlice = (tickets: Ticket[], triageSeat?: string): Ticket[] =>
+  triageSeat ? tickets.filter((t) => t.assignee_id === triageSeat) : [];
+
 export function sliceFor(tickets: Ticket[], role: RoleName): Ticket[] {
   if (role === 'qa') return qaSlice(tickets);
-  if (role === 'triage') return tickets.filter((t) => t.status === 'new');
+  if (role === 'triage') return triageSlice(tickets);   // caller passes the seat where it matters
   return buildingSlice(tickets, role);
 }
 
@@ -131,10 +151,25 @@ export function qaRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: st
     : { hasWork: false, reason: 'nothing awaiting verification' };
 }
 
+/**
+ * Triage's version, simpler still: a report at `new` is work by definition.
+ *
+ * Folded in rather than left on its own timer (Brad, 2026-08-24) — one
+ * installed process rather than two. It costs nothing when there is nothing
+ * new, which is most cycles, so it does not need a cadence of its own.
+ */
+export function triageRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: string } {
+  if (!i.seats.triage) return { hasWork: false, reason: 'this ship does not crew that role' };
+  const n = triageSlice(i.tickets, i.seats.triage).length;
+  return n > 0
+    ? { hasWork: true, reason: `${n} report(s) assigned to triage` }
+    : { hasWork: false, reason: 'nothing assigned to triage' };
+}
+
 export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boolean; reason: string } {
   if (i.paused?.has(role)) return { hasWork: false, reason: 'paused' };
   if (role === 'qa') return qaRoleHasWork(i);
-  if (role === 'triage') return { hasWork: false, reason: 'triage runs on its own timer' };
+  if (role === 'triage') return triageRoleHasWork(i);
   return buildingRoleHasWork(role, i);
 }
 
@@ -176,8 +211,20 @@ export interface Selection {
  * One role runs per cycle. QA is evaluated first so that a tie falls to it:
  * verifying finished work outranks starting more of it.
  */
+/**
+ * Fixed ranks for the roles that have no ordered queue of their own.
+ *
+ * QA wins any cycle it has work: verifying finished work outranks starting
+ * more of it. Triage comes next — an unclassified report cannot be worked by
+ * anyone until it is classified, and classifying is cheap — but it does not
+ * outrank QA, which is unblocking a release.
+ *
+ * Both sort ahead of every building rank, which start in the billions.
+ */
+const FIXED_RANK: Partial<Record<RoleName, number>> = { qa: -2, triage: -1 };
+
 export function selectRole(i: SelectionInput): Selection {
-  const order: RoleName[] = ['qa', 'dev', 'design'];
+  const order: RoleName[] = ['qa', 'triage', 'dev', 'design'];
   const pending: RoleName[] = [];
   const ranks: Partial<Record<RoleName, number>> = {};
   const reasons: Partial<Record<RoleName, string>> = {};
@@ -192,9 +239,7 @@ export function selectRole(i: SelectionInput): Selection {
   let selected: RoleName | null = null;
   let best = Infinity;
   for (const role of pending) {
-    // QA has no ordered queue of its own to rank; it wins any cycle it has
-    // work, which is why it sorts ahead of every building rank.
-    const rank = role === 'qa' ? -1 : roleTopRank(role, i);
+    const rank = FIXED_RANK[role] ?? roleTopRank(role, i);
     ranks[role] = rank;
     if (rank < best) {
       best = rank;

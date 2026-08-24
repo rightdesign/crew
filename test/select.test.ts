@@ -35,7 +35,7 @@ test('QA wins any cycle it has work — a tie falls to verifying, not building',
   }));
   assert.deepEqual(sel.pending, ['qa', 'dev']);
   assert.equal(sel.selected, 'qa');
-  assert.equal(sel.ranks.qa, -1);
+  assert.equal(sel.ranks.qa, -2);
 });
 
 test('between building roles, the most urgent ticket wins', () => {
@@ -126,4 +126,72 @@ test('nothing to do is expressed as nothing, not as a default role', () => {
   const sel = selectRole(input());
   assert.deepEqual(sel.pending, []);
   assert.equal(sel.selected, null);
+});
+
+test('triage is a role, not a separate timer — one process, not two', () => {
+  const i = input({
+    seats: { dev: 'dev-1', qa: 'qa-1', triage: 'triage-1' },
+    tickets: [T({ id: 'n', issue_id: 'ISSUE-1', status: 'new', assignee_id: 'triage-1' })],
+  });
+  const r = roleHasWork('triage', i);
+  assert.equal(r.hasWork, true);
+  assert.match(r.reason, /1 report\(s\) assigned to triage/);
+  assert.equal(selectRole(i).selected, 'triage');
+});
+
+test('an unclassified report outranks building, but not verification', () => {
+  const i = input({
+    seats: { dev: 'dev-1', qa: 'qa-1', triage: 'triage-1' },
+    tickets: [
+      T({ id: 'n', issue_id: 'ISSUE-1', status: 'new', assignee_id: 'triage-1' }),
+      T({ id: 'd', issue_id: 'ISSUE-2', status: 'accepted', severity: 's1' }),
+    ],
+  });
+  // nothing to build can start until it is classified
+  assert.equal(selectRole(i).selected, 'triage');
+
+  const withQa = input({
+    seats: { dev: 'dev-1', qa: 'qa-1', triage: 'triage-1' },
+    tickets: [
+      T({ id: 'n', issue_id: 'ISSUE-1', status: 'new', assignee_id: 'triage-1' }),
+      T({ id: 'q', issue_id: 'ISSUE-3', status: 'fixed' }),
+    ],
+  });
+  // ...but verifying finished work still comes first
+  assert.equal(selectRole(withQa).selected, 'qa');
+});
+
+test('triage costs nothing on the cycles when nothing is new', () => {
+  const i = input({ seats: { dev: 'dev-1', triage: 'triage-1' }, tickets: [] });
+  assert.equal(roleHasWork('triage', i).hasWork, false);
+  assert.match(roleHasWork('triage', i).reason, /nothing assigned to triage/);
+});
+
+test('a ship that does not crew triage is unaffected', () => {
+  const i = input({ seats: { dev: 'dev-1' }, tickets: [T({ id: 'n', issue_id: 'ISSUE-1', status: 'new', assignee_id: 'triage-1' })] });
+  assert.equal(roleHasWork('triage', i).hasWork, false);
+  assert.match(roleHasWork('triage', i).reason, /does not crew/);
+});
+
+test('an unassigned report is NOT triage\'s — clearing the assignee is how it says done', () => {
+  const seats = { dev: 'dev-1', qa: 'qa-1', triage: 'triage-1' };
+  const assigned = input({ seats, tickets: [T({ id: 'n', issue_id: 'ISSUE-1', status: 'new', assignee_id: 'triage-1' })] });
+  assert.equal(roleHasWork('triage', assigned).hasWork, true);
+
+  // triage processed it: status moved, assignee cleared
+  const done = input({ seats, tickets: [T({ id: 'n', issue_id: 'ISSUE-1', status: 'accepted' })] });
+  assert.equal(roleHasWork('triage', done).hasWork, false);
+});
+
+test('a report triage could not classify is still not reassessed', () => {
+  // The case a status check cannot survive: left at `new`, but unassigned.
+  const seats = { dev: 'dev-1', triage: 'triage-1' };
+  const i = input({ seats, tickets: [T({ id: 'n', issue_id: 'ISSUE-1', status: 'new' })] });
+  assert.equal(roleHasWork('triage', i).hasWork, false);
+});
+
+test('reassigning to triage is how a human asks for another look', () => {
+  const seats = { dev: 'dev-1', triage: 'triage-1' };
+  const i = input({ seats, tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', assignee_id: 'triage-1' })] });
+  assert.equal(roleHasWork('triage', i).hasWork, true);   // whatever its status
 });

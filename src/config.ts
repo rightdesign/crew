@@ -43,6 +43,12 @@ export interface ResolvedIds {
   /** The `Projects` table, and the row this connection's `area` names. */
   areaModelId?: string;
   areaId?: string;
+  /**
+   * The `Ships` table, when this workspace has one. The ship is matched by
+   * NAME (`ship.name`) rather than by a stored id: a machine's name is what
+   * an operator recognises on the board, and it is stable enough in practice.
+   */
+  shipsModelId?: string;
   models: { issues: string; comments: string; crew: string };
   seats: Partial<Record<RoleName, string>>;
   operator: string;
@@ -153,6 +159,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     projectId: raw.projectId,
     areaModelId: raw.areaModelId,
     areaId: raw.areaId,
+    shipsModelId: raw.shipsModelId,
     models: {
       issues: m.req(raw.models?.issues, `${where}.resolved.models.issues`),
       comments: m.req(raw.models?.comments, `${where}.resolved.models.comments`),

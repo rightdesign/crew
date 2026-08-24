@@ -15,7 +15,11 @@ import {
   sweepDiagnostics, strandedNeedsInfo, rollUpParents,
   type BlockerInfo, type SweepStep,
 } from './blocked.ts';
-import { selectRole, type Selection } from './select.ts';
+import { selectRole, sliceFor, type Selection } from './select.ts';
+import { buildingDigest, qaDigest } from './digest.ts';
+import { branches } from './git.ts';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { State } from './state.ts';
 import type { Emitter } from './events.ts';
 
@@ -94,7 +98,11 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     paused: state.pausedRoles(['dev', 'design', 'qa']),
     contract: tracker.contract,
   });
+  const decision: CycleDecision = {
+    tickets, comments, roster, blocked, info, sweep, stranded, selection, watermark,
+  };
   if (selection.selected) {
+    writeDigest(o, decision, selection.selected, state.dir);
     emit.emit(
       `roles with work: ${selection.pending.join(' ')} -> '${selection.selected}' wins this cycle` +
         `; the rest stay pending for the next`,
@@ -104,7 +112,58 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     emit.enter('idle');
     emit.emit('nothing pending');
   }
-  return { tickets, comments, roster, blocked, info, sweep, stranded, selection, watermark };
+  return decision;
+}
+
+/**
+ * Where a role's queue digest lives. Per connection AND per role: a ship
+ * serves several projects, and each seat gets its own slice.
+ */
+export const digestPath = (stateDir: string, connection: string, role: RoleName): string =>
+  join(stateDir, `digest-${connection}-${role}.md`);
+
+/**
+ * Write the digest the winning seat will be handed.
+ *
+ * Without this the agent fetches the whole tracker itself at the top of every
+ * run — ~691 KB of JSON, ~275 KB of it case history for tickets it will never
+ * touch, paid again every cycle. The digest is the same data the poll has
+ * already fetched, filtered to one role and already in pick order.
+ *
+ * Never fatal: a digest that cannot be rendered or written just means the
+ * agent falls back to fetching, which is slower rather than wrong.
+ */
+export function writeDigest(
+  o: CycleOptions, d: CycleDecision, role: RoleName, stateDir: string,
+): boolean {
+  const me = o.conn.resolved?.seats[role];
+  if (!me) return false;
+  try {
+    const input = {
+      tickets: role === 'triage'
+        ? d.tickets.filter((t) => t.assignee_id === o.conn.resolved?.seats.triage)
+        : sliceFor(d.tickets, role),
+      comments: d.comments,
+      me,
+      roster: d.roster,
+      watermark: d.watermark,
+      branches: branches(o.conn.dir, `${o.conn.worktreePrefix.replace(/-$/, '')}*`).concat(
+        branches(o.conn.dir, 'issue-*'),
+      ),
+      blocked: d.blocked,
+      blockerInfo: d.info,
+    };
+    const text = role === 'qa' ? qaDigest(input) : buildingDigest(input);
+    const path = digestPath(stateDir, o.conn.name, role);
+    writeFileSync(path, text);
+    o.emit.emit(`queue digest written for ${role} (${Buffer.byteLength(text)} bytes)`, {
+      data: { role, bytes: Buffer.byteLength(text) },
+    });
+    return true;
+  } catch (e) {
+    o.emit.warn(`could not write the ${role} digest — the agent will fetch the tracker itself: ${(e as Error).message}`);
+    return false;
+  }
 }
 
 /** The roster block the winning seat is handed. */

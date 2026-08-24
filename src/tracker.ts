@@ -135,6 +135,22 @@ export class Tracker {
     return this.client.records.list<CrewRow>(this.models.crew, { limit: 200 });
   }
 
+  /**
+   * The Ships rows of this workspace, if it has a Ships table.
+   *
+   * Optional by design: a workspace that has not adopted ships still works,
+   * and the crew must not require a table it did not create.
+   */
+  async shipRows(): Promise<Array<{ id: string; name?: string | null; platform?: string | null }>> {
+    const model = this.conn.resolved?.shipsModelId;
+    if (!model) return [];
+    try {
+      return await this.client.records.list(model, { limit: 200 });
+    } catch {
+      return [];   // the table may be absent or unreadable; neither is fatal
+    }
+  }
+
   async updateTicket(id: string, patch: Record<string, unknown>): Promise<Ticket> {
     return this.client.records.update<Ticket>(this.models.issues, id, patch);
   }

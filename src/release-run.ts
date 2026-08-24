@@ -32,6 +32,18 @@ export interface ReleaseRunOptions {
   dryRun: boolean;
   /** Skip the test gate — a hotfix that cannot wait on a red suite. */
   skipTests?: boolean;
+  /**
+   * Merge what QA verified and stop. No version, no build, no deploy, no tag.
+   * `crew merge` — for getting verified work onto the integration branch
+   * without waiting for a cycle, or shipping it.
+   */
+  mergeOnly?: boolean;
+  /**
+   * Release even when nothing new merged this cycle. `crew deploy` — for a
+   * commit a previous deploy failed on, where the work IS unreleased but the
+   * merge phase has nothing left to do.
+   */
+  force?: boolean;
   shell?: string;
 }
 
@@ -206,11 +218,19 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     if (mergeOne(o, c)) merged.push(c);
   }
 
+  if (o.mergeOnly) {
+    o.emit.emit(`merge only: ${merged.length} branch(es) merged, not releasing`);
+    return { merged, deployed: false, stopped: 'merge only', decision };
+  }
+
   o.emit.enter('release');
   const head = o.dryRun ? decision.head : headSha(o.cwd);
-  if (merged.length === 0 && decision.upToDate) {
+  if (merged.length === 0 && decision.upToDate && !o.force) {
     o.emit.emit('nothing to release');
     return { merged, deployed: false, stopped: 'nothing to release', decision };
+  }
+  if (merged.length === 0 && decision.upToDate && o.force) {
+    o.emit.emit('forced: nothing new merged and nothing unreleased, releasing anyway');
   }
 
   if (!o.skipTests && o.repo.hooks.test) {
