@@ -36,7 +36,7 @@ test('an unknown key is an error — a mistyped hook must never silently not run
     (e: Error) => {
       assert.ok(e instanceof RepoConfigError);
       assert.match(e.message, /unknown hooks key: tests/);
-      assert.match(e.message, /allowed: build, bump, deploy, merged, ports, pr, released, setup, test, version/);
+      assert.match(e.message, /allowed: build, bump, deploy, handoff, isolate, merged, ports, pr, released, setup, test, version/);
       return true;
     });
   assert.throws(() => parseRepoConfig('version: 1\nplatfrom: unix\n', 'f'), /unknown top-level key: platfrom/);
@@ -314,4 +314,32 @@ test('the tag pattern is derived from the template unless stated', () => {
   assert.equal(parseRepoConfig(MIN, 'f').release.tagPattern, 'v*');
   assert.equal(parseRepoConfig(MIN + 'release: { tag: "release-{version}" }\n', 'f').release.tagPattern, 'release-*');
   assert.equal(parseRepoConfig(MIN + 'release: { tagPattern: "rel/*" }\n', 'f').release.tagPattern, 'rel/*');
+});
+
+test('worktrees.copy carries gitignored files a fresh worktree cannot have', () => {
+  const base = 'version: 1\nrelease:\n  mode: external\n';
+  const c = parseRepoConfig(`${base}worktrees:\n  copy:\n    - .env\n    - apps/api/.env\n`, 'f');
+  assert.deepEqual(c.worktrees.copy, ['.env', 'apps/api/.env']);
+  // Absent is empty, not undefined — every consumer can iterate it.
+  assert.deepEqual(parseRepoConfig(base, 'f').worktrees.copy, []);
+});
+
+test('worktrees.copy cannot reach outside the repository', () => {
+  // It runs on every ticket, unattended. An absolute path or a climb out of
+  // the tree would copy something that is not this repo's to copy.
+  const base = 'version: 1\nrelease:\n  mode: external\n';
+  assert.throws(() => parseRepoConfig(`${base}worktrees:\n  copy: ["/etc/passwd"]\n`, 'f'),
+    /must be a path inside the repository/);
+  assert.throws(() => parseRepoConfig(`${base}worktrees:\n  copy: ["../../.ssh/id_rsa"]\n`, 'f'),
+    /must be a path inside the repository/);
+  assert.throws(() => parseRepoConfig(`${base}worktrees:\n  copy: "just a string"\n`, 'f'),
+    /must be a list of paths/);
+});
+
+test('a ship cannot supply worktrees.copy — it is the repo\'s fact alone', () => {
+  const repo = parseRepoConfig('version: 1\nrelease:\n  mode: external\nworktrees:\n  copy: [".env"]\n', 'f');
+  const eff = resolveRepoConfig(repo, { hooks: { test: 'x' } }, '/tmp');
+  assert.deepEqual(eff.worktrees.copy, ['.env']);
+  // ...and with no repo file at all it is empty rather than inherited.
+  assert.deepEqual(resolveRepoConfig(null, { hooks: { test: 'x' } }, '/tmp').worktrees.copy, []);
 });

@@ -115,9 +115,15 @@ command that tells you something useful in the meantime.
 ## Not moved
 
 - **`/opt/synthesis/triage` on the beta box.** The server-side triage sidecar
-  is deployed by rsync and holds its own `.env` with an OAuth token. Its
-  source is `bin/crew-triage` + `prompts/triage-prompt.md` here now, but
-  re-pointing the box at this repo is a separate job on the server.
+  is deployed by rsync and holds its own `.env` with an OAuth token.
+
+  **It no longer has a source.** `bin/crew-triage` was deleted when the bash
+  implementation was retired, and triage is a seat inside `crew` now rather
+  than a second process. Whatever is on that box is a copy of the
+  pre-unification behaviour — it self-assigns and writes `reporter_name`,
+  which `docs/BUG_TRACKER_TRIAGE_POLICY.md` now forbids. If it is still on a
+  timer there it is writing to the board on rules nothing else follows, so it
+  should be stopped and removed, not re-pointed.
 - **The triage policy document.** `docs/BUG_TRACKER_TRIAGE_POLICY.md` stays in
   the project it governs; the prompt reads it at run time from
   `CREW_PROJECT_DIR`.

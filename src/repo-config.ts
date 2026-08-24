@@ -42,9 +42,41 @@ export type CiProvider = 'github' | 'buildkite' | 'other' | 'none';
 export interface RepoHooks {
   test?: string;
   build?: string;
+  /**
+   * Makes a freshly created worktree usable: install dependencies, generate
+   * clients, whatever this repo needs before anything can run in it.
+   *
+   * A hook rather than a convention because a fresh worktree is missing more
+   * than dependencies — gitignored files it needs are not in git by
+   * definition, and which ones matter is not inferable (see
+   * `worktrees.copy`).
+   */
   setup?: string;
   deploy?: string;
   ports?: string;
+  /**
+   * Prints environment overrides (`KEY=value` per line) that point this
+   * worktree at state of its OWN — typically a separate database.
+   *
+   * Receives `CREW_TICKET` and `CREW_BRANCH`. The principle it exists to
+   * enforce is that a headless session must not be able to destroy the
+   * operator's working state: migrating the shared dev database is not
+   * reversible, and an agent asked to change a schema will otherwise do
+   * exactly that. The principle is general; where a repo keeps its state is
+   * not, so the repo prints the answer.
+   */
+  isolate?: string;
+  /**
+   * Leaves the operator able to open what was built, and prints how.
+   *
+   * Receives `CREW_TICKET` and `CREW_BRANCH`, and whatever `isolate` printed.
+   * For this project it seeds an admin login, because isolated state means a
+   * database nobody has an account on, there is no password reset on local
+   * dev and no mail to send one — so an un-seeded database can only be fixed
+   * by re-provisioning it. Whatever a repo's version of that is, its output
+   * belongs in the agent's progress comment.
+   */
+  handoff?: string;
   /**
    * Prints this repo's current version, on one line. Where a version lives is
    * entirely a repo's business — package.json, Cargo.toml, pyproject.toml, a
@@ -159,9 +191,47 @@ export interface BranchNaming {
   remote: string;
 }
 
+/**
+ * What a freshly cut worktree needs before work can start in it.
+ *
+ * A worktree is a clean checkout, which means it is missing precisely the
+ * files git was told to ignore — and those are often the ones without which
+ * nothing runs. Which ones matter cannot be inferred: an `.env` must usually
+ * be carried over, `node_modules` must NOT (it is rebuilt, and copying it
+ * across is both slow and wrong when native modules are involved).
+ */
+export interface Worktrees {
+  /**
+   * Gitignored paths to copy from the main checkout into a new worktree,
+   * relative to the repository root. Copied before `hooks.setup` runs.
+   */
+  copy: string[];
+}
+
+/**
+ * Documents in this repository that a brief needs to point at.
+ *
+ * A brief may not contain a path (ISSUE-293), but some of what a seat must
+ * follow genuinely lives in the project rather than in the crew — a triage
+ * policy is the project's own decision about what its statuses mean and when
+ * a ticket may be accepted. So the repo says where, and the brief says "the
+ * policy document, if this project has one".
+ */
+export interface RepoDocs {
+  /** The contract the triage seat follows for this project. */
+  triagePolicy?: string;
+  /**
+   * How this project designs: its own design brief, house style, component
+   * conventions. The design seat reads it before working any surface out.
+   */
+  designGuide?: string;
+}
+
 export interface RepoConfig {
   version: number;
   branch: BranchNaming;
+  worktrees: Worktrees;
+  docs: RepoDocs;
   platform: PlatformRequirement;
   shell?: string;
   hooks: RepoHooks;
@@ -194,12 +264,15 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'version', 'bump', 'pr', 'merged', 'released',
+  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff',
+  'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
 export type BumpSize = (typeof BUMP_SIZES)[number];
-const TOP_LEVEL = new Set(['version', 'platform', 'shell', 'branch', 'hooks', 'labels', 'release']);
+const TOP_LEVEL = new Set([
+  'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release',
+]);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
 const PLACEHOLDER = /\{(key|number|slug|role)\}/g;
 const RELEASE_KEYS = new Set([
@@ -253,6 +326,8 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file);
   rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file);
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
+  rejectUnknown(raw.worktrees, new Set(['copy']), 'worktrees', file);
+  rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
   if (raw.version !== SPEC_VERSION) {
@@ -278,6 +353,24 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     push: String(raw.branch?.push ?? branchName),
     remote: String(raw.branch?.remote ?? 'origin'),
   };
+
+  const copyRaw = raw.worktrees?.copy;
+  if (copyRaw !== undefined && !Array.isArray(copyRaw)) {
+    throw new RepoConfigError(`${file}: worktrees.copy must be a list of paths`);
+  }
+  const worktrees: Worktrees = { copy: (copyRaw ?? []).map((c: unknown) => String(c)) };
+  const docs: RepoDocs = {};
+  if (raw.docs?.triagePolicy) docs.triagePolicy = String(raw.docs.triagePolicy);
+  if (raw.docs?.designGuide) docs.designGuide = String(raw.docs.designGuide);
+  for (const c of worktrees.copy) {
+    // An absolute path or a climb out of the tree would copy something that is
+    // not this repo's to copy, into a worktree, on every ticket.
+    if (c.startsWith('/') || c.split('/').includes('..')) {
+      throw new RepoConfigError(
+        `${file}: worktrees.copy entry "${c}" must be a path inside the repository`,
+      );
+    }
+  }
 
   const platform = String(raw.platform ?? 'any');
   if (!isPlatformRequirement(platform)) {
@@ -417,6 +510,8 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   return {
     version: SPEC_VERSION,
     branch,
+    worktrees,
+    docs,
     platform: platform as PlatformRequirement,
     shell: raw.shell ? String(raw.shell) : undefined,
     hooks,
@@ -580,6 +675,10 @@ export function resolveRepoConfig(
 
   return {
     version: SPEC_VERSION,
+    // Not merged: which gitignored files a worktree needs is a fact about the
+    // repository and nothing else, so a ship cannot supply or override it.
+    worktrees: repo?.worktrees ?? { copy: [] },
+    docs: repo?.docs ?? {},
     branch: {
       base: pick('branch.base', repo?.branch.base === 'main' ? undefined : repo?.branch.base,
         ship?.branch?.base, 'main'),

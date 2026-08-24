@@ -144,3 +144,14 @@ test('an unsliced tracker needs no area, and gets the whole queue', () => {
   assert.equal(c.area, undefined);
   assert.equal(c.resolved?.areaId, undefined);
 });
+
+test('the shipped example config still parses', () => {
+  // The loader rejects unknown keys, so a renamed or removed setting turns the
+  // example into a file that cannot be used — and the example is the only
+  // thing a fresh install has to copy from. Failing here is the point.
+  const example = join(import.meta.dirname, '..', 'crew.yaml.example');
+  const cfg = loadConfig(process.cwd(), example);
+  assert.equal(cfg.connections.length, 1);
+  // Shipped disarmed: copying it must not start writing to someone's board.
+  assert.equal(cfg.connections[0]!.enabled, false);
+});

@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Connection, RoleName, Ship } from './config.ts';
+import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 
 /**
@@ -68,6 +69,12 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
 
 export interface PromptParts {
   roster: string;
+  /**
+   * Everything specific to this connection and repository — ids, hooks, the
+   * worktree convention. The briefs name none of it (ISSUE-293), so without
+   * this section they refer to things the session has no way to resolve.
+   */
+  environment: string;
   common: string;
   brief: string;
   digest?: string;
@@ -76,12 +83,16 @@ export interface PromptParts {
 }
 
 /**
- * Roster first, then the shared policy, then this role's brief, then the
- * queue. The roster leads because everything below refers to seats and to the
- * operator generically, and it is what binds those words to real names.
+ * Roster first, then the environment, then the shared policy, then this
+ * role's brief, then the queue.
+ *
+ * The roster leads because everything below refers to seats and to the
+ * operator generically, and it is what binds those words to real names. The
+ * environment comes next for the same reason: the briefs name no id, path or
+ * command, so it is what binds THOSE words to real ones.
  */
 export function assemblePrompt(p: PromptParts): string {
-  const sections = [p.roster, `${p.common}${p.brief}`];
+  const sections = [p.roster, p.environment, `${p.common}${p.brief}`];
   if (p.digest) sections.push(p.digest);
   return sections.join('\n\n');
 }
@@ -95,6 +106,11 @@ export interface AgentPlan {
   prompt: string;
   promptBytes: number;
   unsetEnv: string[];
+  /**
+   * Added to the session's environment. Carries the tracker key, so that a
+   * brief never has to tell an agent where someone else's secrets are kept.
+   */
+  setEnv: Record<string, string>;
   digestAttached: boolean;
   digestAgeSeconds?: number;
 }
@@ -106,6 +122,9 @@ export interface PlanOptions {
   crewHome: string;
   stateDir: string;
   roster: string;
+  environment: string;
+  /** The tracker key, handed to the session in the environment. */
+  apiKey?: string;
   /** Injected for testing; defaults to the real clock. */
   now?: () => number;
 }
@@ -132,6 +151,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   const prompt = assemblePrompt({
     roster: o.roster,
+    environment: o.environment,
     common: readFileSync(commonPath, 'utf8'),
     brief: readFileSync(briefPath, 'utf8'),
     digest,
@@ -145,6 +165,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
     unsetEnv: BILLING_VARS_TO_UNSET,
+    setEnv: o.apiKey ? { [API_KEY_VAR]: o.apiKey } : {},
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,
   };
@@ -159,6 +180,9 @@ export function describePlan(p: AgentPlan): string {
     `prompt:  ${p.promptBytes} bytes on stdin (never argv)`,
     `digest:  ${p.digestAttached ? `attached, ${p.digestAgeSeconds}s old` : 'absent — the agent will fetch the tracker itself'}`,
     `unset:   ${p.unsetEnv.join(' ')}`,
+    // The VALUE is deliberately absent: --dry-run output is pasted into
+    // tickets and chat.
+    `set:     ${Object.keys(p.setEnv).join(' ') || '(nothing)'}`,
   ].join('\n');
 }
 
@@ -181,7 +205,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(plan.bin, plan.args, {
       cwd: plan.cwd,
-      env: scrubbedEnv(),
+      env: { ...scrubbedEnv(), ...plan.setEnv },
       stdio: ['pipe', 'inherit', 'inherit'],
     });
     child.on('error', (err) => reject(new AgentError(`cannot run ${plan.bin}: ${err.message}`)));

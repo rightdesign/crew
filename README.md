@@ -4,13 +4,14 @@ A standing team of headless agents that picks work off a
 [Tablation](https://tablation.com) board, does it on a machine you control,
 and reports back on the board.
 
-Each **seat** is a row in the tracker's Crew table that happens to be a robot,
+Each **seat** is a row in the board's Crew table that happens to be a robot,
 with a brief (`prompts/`) and a slice of the queue. A seat is named in that
 table and answers to that name — call the dev seat "Trevor" and the crew will
-call it Trevor, in the queue digest and in the comments they write on tickets. Everything the crew knows
-about a run — what to build, what is blocked, what has shipped — is table
-data, and every step it takes is visible as a status change or a comment on
-the ticket. There is no hidden state and no queue but the board.
+call it Trevor, in the queue digest and in the comments it writes on tickets.
+Everything the crew knows about a run — what to build, what is blocked, what
+has shipped — is table data, and every step it takes is visible as a status
+change or a comment on the ticket. There is no hidden state and no queue but
+the board.
 
 Every agent is handed a roster at the top of its prompt: who else is aboard,
 what each of them is called, and which rows are **holds** — the people using
@@ -25,32 +26,48 @@ Today's crew has four seats:
 | **dev** | approved tickets that don't need design work | `prompts/lane-dev.md` |
 | **design** | approved tickets flagged *Needs design* | `prompts/lane-design.md` |
 | **qa** | everything at `fixed` or `qa`, whoever built it | `prompts/lane-qa.md` |
-| **triage** | tickets at `new` | `prompts/triage-prompt.md` |
+| **triage** | tickets assigned to the triage seat | `prompts/lane-triage.md` |
 
 One role runs per cycle, whichever holds the most urgent actionable ticket
-(`lib/priority.jq` decides, and the same module sorts the digest the agent is
-handed, so the two can never disagree). QA outranks the building roles
-whenever it has anything to check.
+(`src/priority.ts` decides, and the same module sorts the digest that agent is
+handed, so the two can never disagree). QA outranks the building roles whenever
+it has anything to check. If the winning role turns out to have nothing it can
+actually do, the cycle falls through to the runner-up rather than idling.
 
 Merging and deploying are **not** an agent's job. After the agent phase, a
-release phase in plain shell squash-merges every QA-verified branch, bumps the
-version, writes the changelog and runs the project's deploy hook. A headless
-session is never handed permission to push to production.
+release phase squash-merges every QA-verified branch, bumps the version, writes
+the changelog and runs the repo's deploy hook. A headless session is never
+handed permission to push to production.
+
+## What a workspace has to provide
+
+The crew reads its meaning from the board, not from its own source. Statuses,
+the priority order, and which column plays which role are **per-workspace
+facts**, because a ship can be connected to several boards that each made
+different choices. `docs/CONTRACT.md` documents the defaults and what a
+workspace has to override if it names things differently.
 
 ## Install
 
 ```sh
 git clone <this repo> crew
 cd crew
-cp crew.config.example.sh crew.config.sh
-$EDITOR crew.config.sh          # project dir, tracker ids, crew member rows, hooks
-bin/crew doctor          # read-only preflight — run this before arming anything
+cp crew.yaml.example ~/.config/crew/crew.yaml
+chmod 600 ~/.config/crew/crew.yaml     # it holds an API key
+$EDITOR ~/.config/crew/crew.yaml
+bin/crew doctor                        # read-only preflight
 ```
 
-`doctor` checks the config against reality: the project checkout, this repo's
-own files, the tools on PATH, the agent binary, the three project hooks, and
-whether the tracker answers with an open-ticket list. Nothing writes, wakes an
-agent or deploys until `CREW_ENABLED=true` in `crew.config.sh`.
+The config lives in `~/.config/crew/` rather than in the checkout: it describes
+the **machine**, so reinstalling or replacing the checkout does not lose it.
+`crew` looks in `$CREW_CONFIG`, then `$XDG_CONFIG_HOME/crew`, then
+`~/.config/crew/crew.yaml`, and only then beside the checkout.
+
+`crew connect` resolves a workspace's ids into the `resolved:` block so you do
+not have to look them up by hand. `doctor` then checks the config against
+reality: the checkouts, the tools on PATH, the agent binary, the repo's hooks,
+and whether the board answers. Nothing writes, wakes an agent or deploys until
+a connection has `enabled: true`.
 
 Then put it on a timer:
 
@@ -60,62 +77,93 @@ cp launchd/com.tablation.crew.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.tablation.crew.plist
 ```
 
-Each fire is a few curl/jq calls against the tracker; a full agent session only
-starts when that cheap check finds something worth waking for.
+Use an **absolute** interpreter path in the plist — a timer runs with a minimal
+PATH and will not find a version-managed node otherwise. Each fire is a few API
+calls; a full agent session only starts when that cheap check finds something
+worth waking for.
 
 ## Commands
 
 ```
-bin/crew                 poll once, run the winning role if there is work
-bin/crew doctor          read-only preflight (safe at any time)
-bin/crew run [role]      force one agent session now
-bin/crew status          paused/running state, unreleased commits
-bin/crew pause [role]    pause everything, or just one role's poll
-bin/crew resume [role]
-bin/crew merge           merge verified branches now
-bin/crew deploy          force the release check now
-bin/crew ports           which checkout owns which ports, and what's up
-bin/crew reap            kill dev servers left by removed worktrees
-bin/crew drop NNN        remove a merged ticket's worktree and branch
-bin/crew log -f          tail the log
-bin/crew-triage             one triage pass (its own launchd timer)
+crew poll [conn]              decide a cycle and report it; writes nothing
+crew run [conn] [--role R]    run the winning role's session, then release
+crew release [conn]           merge what QA verified, version it, ship it
+crew merge [conn]             merge verified branches and stop
+crew deploy [conn]            release now, even with nothing new to merge
+crew watch [conn]             live view of what the crew is doing
+crew status [conn]            paused/running state
+crew doctor [conn]            read-only preflight
+crew ports [conn]             which checkout owns which ports, and what is up
+crew reap [conn]              kill servers left behind by removed worktrees
+crew drop [conn] NNN          remove a merged ticket's worktree and branch
+crew sync [conn]              fast-forward worktrees that are behind their remote
+crew pause|resume [conn] [R]  pause everything, or one role
+crew log [conn]               tail the log
+crew inbox [--member NAME]    your tickets across every workspace
+crew connect                  resolve a workspace's ids into a crew.yaml block
 ```
+
+Every command that could change something takes `--dry-run`.
+
+## One ship, many boards
+
+A ship connects to several workspaces at once, and ranks their queues against
+each other — a P0 on one board outranks a P2 on another. The ship is identified
+by `ship.name` matching a row in each board's Ships table; a crew member is
+identified by email, so the same person is recognised across workspaces.
+
+An area of development spans **several repositories**, so a checkout is a
+property of the ticket, not of the connection: `repos:` maps each name in the
+board's Repos table to a directory on this machine. A ticket whose repository
+this ship has no clone of is marked `NO CHECKOUT` in the digest rather than
+left blank — blank would read as "work it here", which is the wrong directory.
 
 ## What lives where
 
 ```
-bin/          the two entry points: the dev loop and the triage agent
-lib/          jq programs — ticket ordering, and the queue digest each role reads
-prompts/      the shared policy, plus one brief per role
-launchd/      timer templates (edit the paths before installing)
-crew.config.sh   this machine and this project. Gitignored; never committed.
-.state/       locks, poll watermark, rendered digests. Gitignored.
+bin/crew          the entry point
+src/              the implementation (Node, run directly via type stripping)
+test/             its tests, including a fake board for integration runs
+prompts/          the shared policy, plus one brief per role
+docs/             CONTRACT.md, REPO_SPEC.md, MIGRATION.md
+launchd/          timer templates (edit the paths before installing)
+crew.yaml.example copy to ~/.config/crew/crew.yaml
 ```
 
-The scripts carry no ids, no absolute paths, no project commands and no
-device names. If a change would put your repo's — or your machine's — name
-inside `bin/`, it belongs in `crew.config.sh` instead. The `crew_hook_*`
-functions at the bottom of that file are the seam:
+The crew carries no ids, no absolute paths, no project commands and no device
+names. Anything specific to a **machine** belongs in `crew.yaml`; anything
+specific to a **repository** belongs in that repository's own `.crew.yaml`
+(`docs/REPO_SPEC.md`), which declares its platform, hooks, branch naming,
+versioning and release mode:
 
 | hook | required | what it is for |
 | --- | --- | --- |
-| `crew_hook_test` | yes | run the project's suite before a release |
-| `crew_hook_build` | yes | build it |
-| `crew_hook_deploy` | yes | ship it |
-| `crew_hook_notify` | no | show release state somewhere — a widget, a push, a webhook |
+| `test` | yes | run the suite before a release |
+| `build` | yes | build it |
+| `deploy` | when `release.mode: local` | ship it |
+| `setup` | no | prepare a fresh worktree |
+| `ports` | no | print this checkout's port assignments |
+| `version` | no | print the current version |
+| `bump` | no | produce and print the next one |
+| `merged` | no | ask the forge whether a branch actually landed |
+| `released` | no | confirm a commit is live (a sha, or an exact version) |
 
-`crew_hook_notify` is handed a level (`ok` / `warn` / `fail`), a headline and a
-detail line, and decides everything else. The crew has no icons, colours or
-target devices in it; define no hook and release state simply goes to the log.
+The crew carries no commands of its own: everything it runs to test, build,
+version or ship a repository comes from that repository's own file.
+
+A repo's own `.crew.yaml` wins over anything repeated in `crew.yaml`, and
+`crew doctor` reports the duplication as drift. The client can still configure
+a repo that has no `.crew.yaml` of its own.
 
 ## Status
 
-**Not yet portable, and not yet live.** This repo is a working copy of a crew
-that currently runs from `synthesis/scripts/local/dev-loop`, extracted so that
-changes to it can go on a branch and be reviewed like any other code
-(ISSUE-321). Two things are still outstanding:
+Live on macOS, driving this project's own board. Triage is a **seat**, not a
+second process — there is one timer to install, not two.
 
-- The **prompts** are written for one repo, one workspace and one operator —
-  paths, shell commands and names are baked into the prose. Generalizing them
-  into hooks is ISSUE-293, and is a prerequisite for anyone else using this.
-- The **cutover** has not happened; see `docs/MIGRATION.md`.
+The bash implementation this replaces has been deleted. Where its behaviour was
+the only specification of something — the priority matrix, the QA digest, the
+crew labels — it was captured as a fixture under `test/fixtures/` first, so the
+tests still hold the port to what the original did.
+
+Outstanding: Linux has not been exercised end to end, and the API key sits in
+`crew.yaml` in plaintext until the device-code flow and keychain storage land.

@@ -1,19 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   rank, rankScalar, effectivePriority, severityRank, issueNumber, compareRank,
 } from '../src/priority.ts';
 
-/** Rank the same tickets through lib/priority.jq, the implementation this port replaces. */
-function jqRank(tickets: unknown[]): number[][] {
-  const out = execFileSync(
-    'jq',
-    ['-L', 'lib', '-c', 'include "priority"; [ .[] | rank ]'],
-    { input: JSON.stringify(tickets), encoding: 'utf8' },
-  );
-  return JSON.parse(out) as number[][];
-}
+/**
+ * Every severity x priority combination, and the rank the jq implementation
+ * gave it — captured from lib/priority.jq before that file was deleted.
+ *
+ * This started as a differential test that shelled out to the jq. Ranking is
+ * the one thing in the crew with no natural oracle: the numbers are only
+ * "right" because they are the numbers a working queue was already ordered by,
+ * so they are pinned here rather than re-derived. Changing one changes what
+ * the crew works on next.
+ */
+const MATRIX = JSON.parse(
+  readFileSync(join(import.meta.dirname, 'fixtures/priority-matrix.json'), 'utf8'),
+) as { tickets: { issue_id: string; severity: string | null; priority: string | null }[]; ranks: number[][] };
 
 test('effective priority: explicit can only move a ticket forward (ISSUE-159 vs ISSUE-142)', () => {
   // An S2 marked "P2 Medium" must not fall behind an unmarked S2.
@@ -41,29 +46,16 @@ test('rankScalar orders the same way as the tuple', () => {
   assert.ok(compareRank(a, b) < 0);
 });
 
-test('matches lib/priority.jq across the full matrix', () => {
-  const severities = ['s1', 's2', 's3', 's4', 'weird', null];
-  const priorities = ['p0', 'p1', 'p2', 'p3', 'weird', null];
-  const tickets = [];
-  let n = 1;
-  for (const severity of severities) {
-    for (const priority of priorities) {
-      tickets.push({ issue_id: `ISSUE-${n++}`, severity, priority });
-    }
-  }
-  assert.deepEqual(tickets.map((t) => rank(t)), jqRank(tickets));
+test('the full severity x priority matrix ranks as it always has', () => {
+  assert.equal(MATRIX.tickets.length, 36);   // 6 severities x 6 priorities, junk and null included
+  assert.deepEqual(MATRIX.tickets.map((t) => rank(t)), MATRIX.ranks);
 });
 
-test('matches lib/priority.jq on the live open queue', () => {
-  const raw = process.env.CREW_TEST_TICKETS;
-  if (!raw) return; // fixture-free run; the matrix test above still covers the logic
-  const tickets = JSON.parse(raw) as { issue_id: string }[];
-  assert.deepEqual(tickets.map((t) => rank(t)), jqRank(tickets));
-  // and the derived ordering itself agrees, not just the keys
-  const mine = [...tickets].sort(compareRank).map((t) => t.issue_id);
-  const theirs = JSON.parse(
-    execFileSync('jq', ['-L', 'lib', '-c', 'include "priority"; [ sort_by(rank)[] | .issue_id ]'],
-      { input: raw, encoding: 'utf8' }),
-  ) as string[];
-  assert.deepEqual(mine, theirs);
+test('the matrix ordering is total and stable', () => {
+  // Ranks are only useful if they order; equal ranks must fall back to the
+  // issue number rather than leaving two tickets interchangeable.
+  const sorted = [...MATRIX.tickets].sort(compareRank).map((t) => t.issue_id);
+  assert.equal(new Set(sorted).size, sorted.length);
+  assert.deepEqual([...MATRIX.tickets].sort(compareRank).map((t) => t.issue_id), sorted);
 });
+

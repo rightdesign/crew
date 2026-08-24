@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { buildRoster, crewLabel, isHold, holdIds, rosterMarkdown } from '../src/roster.ts';
 
 const CONFIGURED = [
@@ -26,20 +25,19 @@ test('name is primary; role is parenthetical only when the name lacks it', () =>
   assert.equal(crewLabel(r.get('sam-1')), 'Sam');              // hold with no role
 });
 
-test('agrees with lib/roster.jq', () => {
-  const rows = [
+test('every label shape the jq produced is still produced', () => {
+  // Captured from lib/roster.jq before it was deleted. These five rows are the
+  // whole of what crewlabel can do: role appended, role withheld because the
+  // name already carries it, a person, a session, and a hold with no role.
+  const r = buildRoster(CONFIGURED, [
     { id: 'dev-1', name: 'Trevor' }, { id: 'qa-1', name: 'QA agent' },
     { id: 'op-1', name: 'Brad C.' }, { id: 'pair-1', name: 'Pair agent' },
     { id: 'sam-1', name: 'Sam' },
-  ];
-  const r = buildRoster(CONFIGURED, rows);
-  const asJq = Object.fromEntries(
-    [...r.values()].map((m) => [m.id, { name: m.name, role: m.role, kind: m.kind === 'hold' ? 'hold' : 'agent' }]),
+  ]);
+  assert.deepEqual(
+    [...r.values()].map((m) => crewLabel(m)),
+    ['Trevor (Dev)', 'QA agent', 'Brad C. (Operator)', 'Pair agent (live session)', 'Sam'],
   );
-  const theirs = JSON.parse(execFileSync('jq',
-    ['-L', 'lib', '-c', 'include "roster"; . as $r | [ to_entries[] | crewlabel($r; .key) ]'],
-    { input: JSON.stringify(asJq), encoding: 'utf8' })) as string[];
-  assert.deepEqual([...r.values()].map((m) => crewLabel(m)), theirs);
 });
 
 test('a missing Name falls back to the role, not to blank', () => {

@@ -9,7 +9,7 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, connection, ConfigError, type RoleName } from './config.ts';
+import { loadConfig, connection, resolveApiKey, ConfigError, type RoleName } from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor } from './poll.ts';
@@ -19,6 +19,7 @@ import { hostPlatform, satisfies, explain } from './platform.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective } from './repo-config.ts';
 import { runRelease } from './release-run.ts';
 import { planStamp, applyStamp } from './stamp.ts';
+import { renderEnvironment } from './environment.ts';
 import { Tracker } from './tracker.ts';
 import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
@@ -145,6 +146,24 @@ function requireArmed(what: string): void {
 
 
 /**
+ * The Environment section of a session's prompt, for one connection.
+ *
+ * Assembled here rather than inside planAgentRun because it needs the repo's
+ * own `.crew.yaml` and the connection's contract, and reading those is the
+ * cycle's job, not the prompt builder's.
+ */
+function environmentFor(c: typeof conn): string {
+  const contract = new Tracker(c, cfg.ship).contract;
+  const dir = c.dir;
+  const repo = resolveRepoConfig(loadRepoConfig(dir), {
+    hooks: c.hooks, labels: c.labels,
+    release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
+    platform: c.platform,
+  }, dir);
+  return renderEnvironment({ conn: c, userAgent: cfg.ship.userAgent, repo, contract });
+}
+
+/**
  * The release phase, callable on its own (`crew release`) or as the tail of a
  * cycle (`crew run`).
  *
@@ -248,6 +267,8 @@ switch (command) {
       const fleetPlan = planAgentRun({
         role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
+        environment: environmentFor(w.connection),
+        apiKey: resolveApiKey(w.connection),
       });
       if (dryRun) { process.stdout.write(`${describePlan(fleetPlan)}\n`); break; }
       emit.enter('agent', w.role);
@@ -311,6 +332,8 @@ switch (command) {
       const plan = planAgentRun({
         role: current, conn, ship: cfg.ship, crewHome: CREW_HOME,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, conn, current),
+        environment: environmentFor(conn),
+        apiKey: resolveApiKey(conn),
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);

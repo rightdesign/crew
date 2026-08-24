@@ -176,6 +176,11 @@ release:
 | `hooks.setup` | no | — | Run once in a fresh worktree, before anything else. |
 | `hooks.deploy` | when `mode: local` | — | Ship it. |
 | `hooks.ports` | no | — | Prints `KEY=value` lines assigning ports, so parallel worktrees do not collide. |
+| `hooks.isolate` | no | — | Prints `KEY=value` lines pointing this worktree at state of its own — typically its own database. Receives `CREW_TICKET`, `CREW_BRANCH`. Without it, a session that changes a schema has nowhere to run migrations except the operator's own data. |
+| `hooks.handoff` | no | — | Leaves the operator able to open what was built, and prints how. Receives `CREW_TICKET`, `CREW_BRANCH` and whatever `isolate` printed. Its output goes into the session's progress comment. |
+| `worktrees.copy` | no | `[]` | Gitignored paths to copy from the main checkout into a new worktree, before `setup` runs. Repo-relative; absolute paths and `..` are rejected. A ship cannot supply or override this. |
+| `docs.triagePolicy` | no | — | The triage seat's contract for this project — what its statuses mean, when a ticket may be accepted. Where it and a brief disagree, it wins. |
+| `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
@@ -190,6 +195,24 @@ release:
 | `release.verify.intervalSeconds` | no | `15` | How often to ask. |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
+
+### Why `isolate` and `handoff` are hooks
+
+Both express a principle that is general and an implementation that is not.
+
+*A headless session must not be able to destroy the operator's working state.*
+Migrating a shared development database is not reversible by the agent that
+ran it, and an agent asked to change a schema will do exactly that unless it
+has somewhere else to go. Where a project keeps its state — a database, a
+volume, a cloud namespace, nothing at all — is entirely the project's own
+business, so it prints the answer rather than the crew assuming one.
+
+*Leave the operator able to open what you built.* For a project with no
+password-reset flow and no mail service on local dev, that means seeding a
+login: a fresh database nobody has an account on can only be fixed by
+re-provisioning it. For another project it means something else entirely. What
+generalises is that the session must say, in its progress comment, how to get
+in — so the hook prints that, and the crew carries it.
 
 ## Rules
 

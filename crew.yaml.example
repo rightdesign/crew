@@ -1,0 +1,91 @@
+# crew.yaml — what this ship is, and what it is connected to.
+#
+# Copy to ~/.config/crew/crew.yaml (NOT into the checkout): it describes this
+# MACHINE, so replacing or reinstalling the crew checkout must not lose it.
+# `crew` looks in $CREW_CONFIG, then $XDG_CONFIG_HOME/crew, then
+# ~/.config/crew/crew.yaml, and only then beside the checkout.
+#
+# It holds an API key in plaintext, so: chmod 600.
+#
+# Unknown keys are an ERROR, not a warning. A typo that silently did nothing
+# would be indistinguishable from a setting that does not work.
+
+ship:
+  # Must match a row in the board's Ships table — that row is how the crew
+  # knows which seats are aboard here rather than on someone else's machine.
+  name: "My Mac"
+
+  # Detected from the host. Set it only to override.
+  # platform: macos | linux
+
+  agent:
+    bin: "/usr/local/bin/claude"     # absolute: a timer runs with a minimal PATH
+    model: "claude-sonnet-5"
+
+  # shell: bash                      # defaults per platform
+  extraPath: "/opt/homebrew/bin"     # prepended for hooks
+  useNvm: true                       # source the repo's .nvmrc before hooks
+  stateDir: "state"                  # relative to THIS file: locks, watermark, digests
+  logFile: "/tmp/crew.log"           # give each runner its own file — a shared one interleaves
+  userAgent: "Mozilla/5.0 CrewAgent/1.0"
+
+# One ship, many boards. Each connection is one workspace + one area of
+# development within it, and carries its own key: keys are workspace-scoped,
+# so there is no single key that reaches all of them.
+connections:
+  - name: myproject
+    enabled: false                   # nothing writes, wakes an agent or deploys until this is true
+    workspace: my-workspace          # the workspace slug
+    project: "Issues"                # the Tablation project holding the tracker tables
+    area: "My Product"               # the row of its Projects table this connection works
+
+    # An area spans several repositories, and each needs its own checkout on
+    # this machine. Keyed by the name the board's Repos table uses — a ticket
+    # whose repo is not listed here is one this ship cannot work, and the queue
+    # digest marks it NO CHECKOUT rather than leaving it blank.
+    repos:
+      My Product: "/home/me/src/my-product"
+      My Product CLI: "/home/me/src/my-product-cli"
+
+    # A single-repo connection may use `dir:` instead of `repos:`.
+    # dir: "/home/me/src/my-product"
+
+    worktreePrefix: "myproject-issue-"
+    platform: unix                   # POSIX-shell hooks. The cached value dispatch
+                                     # reads BEFORE a repo is cloned (ISSUE-331).
+    baseUrl: "https://app.tablation.com"
+    apiKey: "REPLACE_ME"             # workspace-scoped; one per connection
+
+    # Prefer putting hooks, labels and release settings in the REPO's own
+    # .crew.yaml (docs/REPO_SPEC.md) rather than here. A repo that carries one
+    # shadows anything repeated here, and `crew doctor` reports that as drift.
+    # These exist for a repo you cannot add a .crew.yaml to:
+    #
+    # hooks:
+    #   test: "npm test"
+    #   build: "npm run build"
+    #   deploy: "./deploy.sh"
+
+    # Discovered from the board, not authored by hand. `crew connect` writes
+    # this block; without it every cycle would re-resolve the same ids.
+    resolved:
+      workspaceId: "…"
+      projectId: "…"
+      areaModelId: "…"
+      areaId: "…"
+      models:
+        issues: "…"
+        comments: "…"
+        crew: "…"
+      seats:
+        dev: "…"
+        design: "…"
+        qa: "…"
+        triage: "…"
+      # The human this ship belongs to, and any row a person works through.
+      # A ticket assigned to a hold is off limits to every seat, whatever its
+      # status — that is how someone takes work over without racing the crew.
+      operator: "…"
+      holds:
+        - id: "…"
+          role: "live session"

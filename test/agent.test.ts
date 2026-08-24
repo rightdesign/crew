@@ -47,16 +47,19 @@ test('every billing variable is removed, not merely unset in config', () => {
   assert.equal(clean.HOME, '/home/x');
 });
 
-test('the roster leads the prompt, then policy, then brief, then queue', () => {
-  const p = assemblePrompt({ roster: 'ROSTER', common: 'POLICY\n', brief: 'BRIEF', digest: 'QUEUE' });
-  assert.ok(p.indexOf('ROSTER') < p.indexOf('POLICY'));
+test('the roster leads, then environment, then policy, then brief, then queue', () => {
+  const p = assemblePrompt({
+    roster: 'ROSTER', environment: 'ENVIRONMENT', common: 'POLICY\n', brief: 'BRIEF', digest: 'QUEUE',
+  });
+  assert.ok(p.indexOf('ROSTER') < p.indexOf('ENVIRONMENT'));
+  assert.ok(p.indexOf('ENVIRONMENT') < p.indexOf('POLICY'));
   assert.ok(p.indexOf('POLICY') < p.indexOf('BRIEF'));
   assert.ok(p.indexOf('BRIEF') < p.indexOf('QUEUE'));
 });
 
 test('a plan is fully decided without running anything', () => {
   const { home, state, conn, ship } = rig();
-  const plan = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R' });
+  const plan = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
   assert.deepEqual(plan.args, ['-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', '--model', 'claude-sonnet-5']);
@@ -70,14 +73,14 @@ test('a fresh digest is attached; a stale one is ignored', () => {
   const digest = join(state, 'digest-proj-dev.md');
   writeFileSync(digest, '## Current queue\n');
 
-  const fresh = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R' });
+  const fresh = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
   assert.equal(fresh.digestAttached, true);
   assert.match(fresh.prompt, /## Current queue/);
 
   // age it past the cutoff — acting on a stale queue is worse than rebuilding
   const old = (Date.now() - (DIGEST_MAX_AGE_SECONDS + 60) * 1000) / 1000;
   utimesSync(digest, old, old);
-  const stale = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R' });
+  const stale = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
   assert.equal(stale.digestAttached, false);
   assert.doesNotMatch(stale.prompt, /## Current queue/);
   assert.ok(stale.digestAgeSeconds! > DIGEST_MAX_AGE_SECONDS);
@@ -86,8 +89,8 @@ test('a fresh digest is attached; a stale one is ignored', () => {
 test('digests are per connection AND per role — one ship, several projects', () => {
   const { home, state, conn, ship } = rig();
   writeFileSync(join(state, 'digest-proj-qa.md'), 'QA QUEUE\n');
-  const qa = planAgentRun({ role: 'qa', conn, ship, crewHome: home, stateDir: state, roster: 'R' });
-  const dev = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R' });
+  const qa = planAgentRun({ role: 'qa', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
+  const dev = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
   assert.equal(qa.digestAttached, true);
   assert.equal(dev.digestAttached, false);   // not the other role's queue
 });
@@ -95,7 +98,7 @@ test('digests are per connection AND per role — one ship, several projects', (
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, conn, ship } = rig();
   assert.throws(
-    () => planAgentRun({ role: 'triage', conn, ship, crewHome: home, stateDir: state, roster: 'R' }),
+    () => planAgentRun({ role: 'triage', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' }),
     (e: Error) => {
       assert.ok(e instanceof AgentError);
       assert.match(e.message, /refusing to run an unscoped session/);

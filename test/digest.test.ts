@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildingDigest, qaDigest, type DigestInput } from '../src/digest.ts';
 import { buildRoster } from '../src/roster.ts';
 
@@ -16,31 +17,6 @@ const ROWS = [
 ];
 const roster = buildRoster(MEMBERS, ROWS);
 
-/** The roster as lib/roster.jq wants it: {id: {name, role, kind:"agent"|"hold"}}. */
-const rosterJson = Object.fromEntries(
-  [...roster.values()].map((m) => [m.id, { name: m.name, role: m.role, kind: m.kind === 'hold' ? 'hold' : 'agent' }]),
-);
-
-/** The roster as lib/roster.jq wants it, for whichever roster a test uses. */
-function toJqRoster(r: DigestInput['roster']) {
-  return Object.fromEntries(
-    [...r.values()].map((m) => [m.id, { name: m.name, role: m.role, kind: m.kind === 'hold' ? 'hold' : 'agent' }]),
-  );
-}
-
-function jqDigest(program: string, i: DigestInput): string {
-  return execFileSync('jq', [
-    '-L', 'lib', '-r',
-    '--argjson', 'comments', JSON.stringify(i.comments),
-    '--arg', 'me', i.me,
-    '--argjson', 'roster', JSON.stringify(toJqRoster(i.roster)),
-    '--arg', 'watermark', i.watermark,
-    '--arg', 'branches', i.branches.join('\n'),
-    '--argjson', 'blocked', JSON.stringify([...i.blocked]),
-    '--argjson', 'blockerinfo', JSON.stringify(i.blockerInfo),
-    '--from-file', program,
-  ], { input: JSON.stringify(i.tickets), encoding: 'utf8' });
-}
 
 function input(over: Partial<DigestInput> = {}): DigestInput {
   return {
@@ -88,7 +64,7 @@ test('every column renders, including holds and blockers', () => {
   assert.match(out, /\| ISSUE-2 \| \*\*NO CHECKOUT\*\* \|/);
 });
 
-test('QA digest matches queue-digest-qa.jq, branches and built-by included', () => {
+test('the QA digest renders as it always has, branches and built-by included', () => {
   const i = input({
     me: 'qa-1',
     tickets: [
@@ -99,7 +75,10 @@ test('QA digest matches queue-digest-qa.jq, branches and built-by included', () 
     branches: ['issue-10', 'issue-0011'],
     comments: [{ ticket_id: 'a', team_member_id: 'dev-1', created_at: '2026-08-23T10:00:00.000Z' }],
   });
-  assert.equal(qaDigest(i), jqDigest('lib/queue-digest-qa.jq', i));
+  // Golden captured from lib/queue-digest-qa.jq before it was deleted. The QA
+  // digest is prose an agent reads and acts on, so a diff here is a change to
+  // instructions, not just to formatting — it should be looked at, not blessed.
+  assert.equal(qaDigest(i), readFileSync(join(import.meta.dirname, 'fixtures/qa-digest.md'), 'utf8'));
 });
 
 test('the watermark decides what counts as new', () => {
@@ -113,17 +92,3 @@ test('the watermark decides what counts as new', () => {
   assert.doesNotMatch(buildingDigest(after), /\*\*1 new\*\*/);
 });
 
-test('matches the jq on the live queue, with the live roster', () => {
-  const raw = process.env.CREW_TEST_DIGEST;
-  if (!raw) return;
-  const { tickets, comments, members, rows, seats } =
-    JSON.parse(raw) as { tickets: any[]; comments: any[]; members: any[]; rows: any[]; seats: string[] };
-  // The real roster, so `who` and `author` resolve real assignees and authors
-  // rather than falling through to "someone off this ship" on every row.
-  const live = buildRoster(members, rows);
-  for (const me of seats) {
-    const i = input({ tickets, comments, me, roster: live, watermark: '2026-08-20T00:00:00Z' });
-    assert.equal(buildingDigest(i), jqDigest('lib/queue-digest.jq', i), `building digest, me=${me}`);
-    assert.equal(qaDigest(i), jqDigest('lib/queue-digest-qa.jq', i), `qa digest, me=${me}`);
-  }
-});
