@@ -192,6 +192,7 @@ async function releasePhase(opts: { mergeOnly?: boolean; force?: boolean }): Pro
       const plan = planStamp(
         conn.dir, tickets, tracker.contract,
         outcome.decision.lastReleased, outcome.decision.head,
+        outcome.merged.map((m) => m.ticket.issue_id),
       );
       if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
     } else if (outcome.stopped) {

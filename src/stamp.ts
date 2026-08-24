@@ -34,13 +34,31 @@ export interface StampPlan {
 export function planStamp(
   cwd: string, tickets: Ticket[], contract: Contract,
   fromSha: string | null, toSha: string,
+  /**
+   * Tickets this run merged itself, by issue id.
+   *
+   * The commit scan below cannot see all of them. A branch already contained
+   * in the integration branch merges as a no-op and writes NO commit, so it is
+   * named nowhere in the released range — ISSUE-292 shipped inside v0.58.4 and
+   * sat at `verified` afterwards for exactly this reason. What the run merged
+   * is first-hand knowledge; the scan is for everything else, including work a
+   * forge or a person merged outside the crew.
+   */
+  merged: Iterable<string> = [],
 ): StampPlan[] {
-  if (!fromSha) return [];
-  const bodies = commitBodies(cwd, `${fromSha}..${toSha}`);
+  const own = new Set(merged);
+  const range = fromSha ? `${fromSha.slice(0, 8)}..${toSha.slice(0, 8)}` : null;
+  const bodies = fromSha ? commitBodies(cwd, `${fromSha}..${toSha}`) : '';
   return tickets
     .filter((t) => t.status === contract.statuses.verified)
-    .filter((t) => new RegExp(`(^|[^0-9A-Za-z_-])${t.issue_id}([^0-9]|$)`).test(bodies))
-    .map((t) => ({ ticket: t, reason: `named in ${fromSha.slice(0, 8)}..${toSha.slice(0, 8)}` }));
+    .map((t) => {
+      if (own.has(t.issue_id)) return { ticket: t, reason: 'merged by this release' };
+      if (range && new RegExp(`(^|[^0-9A-Za-z_-])${t.issue_id}([^0-9]|$)`).test(bodies)) {
+        return { ticket: t, reason: `named in ${range}` };
+      }
+      return null;
+    })
+    .filter((p): p is StampPlan => p !== null);
 }
 
 export async function applyStamp(

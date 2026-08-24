@@ -83,3 +83,17 @@ test('a dry run stamps nothing but reports what it would', async () => {
   assert.equal(n, 1);
   assert.ok(lines.some((l) => /would stamp -> closed_deployed \(1\.3\.0\)/.test(l)));
 });
+
+test('a no-op merge is still stamped, though no commit names it', () => {
+  // A branch already contained in the integration branch writes no commit, so
+  // the released range never mentions it. The run merged it all the same, and
+  // its work IS live — ISSUE-292 sat at `verified` after shipping in v0.58.4
+  // because only the commit scan was consulted.
+  const { dir, from, to } = repoWith(['Release v1.0.0']);
+  const plan = planStamp(
+    dir, [T('ISSUE-292'), T('ISSUE-500')], DEFAULT_CONTRACT, from, to,
+    ['ISSUE-292'],   // ISSUE-500 was neither merged nor named
+  );
+  assert.deepEqual(plan.map((p) => p.ticket.issue_id), ['ISSUE-292']);
+  assert.equal(plan[0]!.reason, 'merged by this release');
+});
