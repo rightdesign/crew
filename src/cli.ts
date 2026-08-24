@@ -128,10 +128,16 @@ const EXCLUSIVE: Record<string, string> = {
   // a long release never blocks the next poll from starting.
 };
 
+// A dry run writes to the terminal ONLY.
+//
+// It used to append to the shared event file and log, with nothing marking it
+// hypothetical — so `crew watch` showed a dry run's "released 1.2.3" among the
+// real ones, and the ship's own history recorded things that never happened.
+// An inspection belongs to whoever ran it, not to the record.
 const emit = new Emitter({
   connection: conn.name,
-  eventFile: eventFileFor(cfg.ship.stateDir),
-  logFile: cfg.ship.logFile,
+  eventFile: dryRun ? undefined : eventFileFor(cfg.ship.stateDir),
+  logFile: dryRun ? undefined : cfg.ship.logFile,
   console: (l) => process.stderr.write(`${l}\n`),
 });
 

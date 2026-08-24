@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Emitter, render, eventFileFor } from '../src/events.ts';
@@ -88,3 +88,24 @@ test('an unwritable sink never takes the cycle down with it', () => {
   assert.equal(lines.length, 1);   // observability degraded, the run continues
 });
 
+
+test('a dry run writes to the terminal and not to the ship history', () => {
+  // A dry run used to append to the shared event file with nothing marking it
+  // hypothetical, so `crew watch` showed a dry run's release among the real
+  // ones and the ship's own history recorded things that never happened.
+  const dir = mkdtempSync(join(tmpdir(), 'crew-ev-'));
+  const file = join(dir, 'events.jsonl');
+  const seen: string[] = [];
+
+  // How cli.ts constructs it under --dry-run: no eventFile, no logFile.
+  const dry = new Emitter({ connection: 'c', console: (l) => seen.push(l), cycleId: 'C' });
+  dry.emit('would release 1.2.3');
+  assert.equal(existsSync(file), false, 'a dry run must leave no trace in the record');
+  assert.equal(seen.length, 1, 'but the person who ran it still sees it');
+
+  // ...and a real run does write it, so the absence above is the dry run's
+  // doing rather than the emitter simply not working.
+  const real = new Emitter({ connection: 'c', eventFile: file, console: () => {}, cycleId: 'C' });
+  real.emit('released 1.2.3');
+  assert.match(readFileSync(file, 'utf8'), /released 1\.2\.3/);
+});
