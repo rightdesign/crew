@@ -63,8 +63,17 @@ export interface DigestInput {
   me: string;
   roster: Roster;
   watermark: string;
-  /** Local branch names, for QA's "is there still a worktree to test?" column. */
-  branches: string[];
+  /**
+   * The branch this ticket's work is actually on, or null when none exists.
+   *
+   * QA's "is there still a worktree to test?" column. Per ticket rather than
+   * one flat list of the connection directory's branches: an area spans
+   * several repos (ISSUE-331), and a branch in the second one is invisible
+   * from the first. The single-repo version reported every cross-repo
+   * ticket as having no branch, which QA reads as nothing to verify
+   * against (ISSUE-349).
+   */
+  existingBranchFor?: (t: DigestTicket) => string | null;
   /** Ticket ids the poll computed as dependency-blocked (ISSUE-187). */
   blocked: Set<string>;
   /** {ticketId: {issue_id, status}} for every blocker named, closed ones included. */
@@ -191,22 +200,33 @@ export function buildingDigest(i: DigestInput): string {
 /** The digest for the QA role. */
 export function qaDigest(i: DigestInput): string {
   const header =
-    '| ticket | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|';
-  /** No branch means no worktree to test. */
-  const hasBranch = (t: DigestTicket) =>
-    i.branches.map((b) => `ISSUE-${b.replace(/^issue-/, '')}`).includes(t.issue_id ?? '')
-      ? 'yes'
-      : '**MISSING**';
+    '| ticket | repo | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|';
+  /**
+   * The branch to verify, or a mark that there is none.
+   *
+   * Looked up in the ticket's OWN repository — see `existingBranchFor`. A
+   * ticket this ship has no checkout for gets neither: there is nowhere to
+   * look, and reporting `MISSING` there would say the branch is gone when
+   * the truth is that nobody here can see it.
+   */
+  const branchCell = (t: DigestTicket) => {
+    if (i.dirFor && i.dirFor(t) === null) return '—';
+    if (!i.existingBranchFor) return '';
+    return i.existingBranchFor(t) ?? '**MISSING**';
+  };
   const builtBy = (t: DigestTicket) => (t.needs_design === true ? 'design' : 'dev');
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
-    return `| ${t.issue_id} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${hasBranch(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    const dir = i.dirFor ? i.dirFor(t) : null;
+    const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
+    return `| ${t.issue_id} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   return stream([
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane: every ticket at `qa` ("Verification" —\nyours, unfinished) or `fixed` (nobody has checked it yet), from both\nbuilding lanes. Ticket bodies are deliberately omitted: fetch the full\nrecord and the comments of the one ticket you actually pick up. **Do not\nre-fetch the whole tracker.** This digest comes from the same API call the\npoll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
+    '\n**`repo` is the checkout the ticket\'s work happens in** — an area spans\nseveral repositories, so the worktree you verify in sits beside THAT\ndirectory, not beside whichever one this session started in. A ticket\nmarked **NO CHECKOUT** is not yours: this ship has no clone of its\nrepository, and another ship may serve it.\n\n**`branch` is that repository\'s own branch for the ticket**, found there\nrather than derived. **MISSING** means the branch is gone and there is\nnothing left to verify — say so on the ticket. A `—` means the branch\ncould not be looked for at all, because the repo has no checkout here.\n',
     '\n### Still in verification — yours, unfinished (take these first)\n',
     table(i.tickets.filter((t) => t.status === 'qa'), i, header, row),
     '\n### Awaiting verification, in pick order\n',

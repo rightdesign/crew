@@ -13,19 +13,31 @@ poll just made, moments ago.
 the poll watermark — the same signal that woke this run.
 
 
+**`repo` is the checkout the ticket's work happens in** — an area spans
+several repositories, so the worktree you verify in sits beside THAT
+directory, not beside whichever one this session started in. A ticket
+marked **NO CHECKOUT** is not yours: this ship has no clone of its
+repository, and another ship may serve it.
+
+**`branch` is that repository's own branch for the ticket**, found there
+rather than derived. **MISSING** means the branch is gone and there is
+nothing left to verify — say so on the ticket. A `—` means the branch
+could not be looked for at all, because the repo has no checkout here.
+
+
 ### Still in verification — yours, unfinished (take these first)
 
 
-| ticket | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |
-|---|---|---|---|---|---|---|---|---|---|---|
-| ISSUE-11 | qa | dev | you | — | — | p2 | **MISSING** | 2026-08-23T12:00Z | — | — |
+| ticket | repo | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ISSUE-11 | /w/api | qa | dev | you | — | — | p2 | issue-0011 | 2026-08-23T12:00Z | — | — |
 
 
 ### Awaiting verification, in pick order
 
 
-| ticket | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |
-|---|---|---|---|---|---|---|---|---|---|---|
-| ISSUE-12 | fixed | dev | **Brad C. (Operator) — HOLD** | s1 | — | p0 | **MISSING** | 2026-08-23T12:00Z | — | — |
-| ISSUE-10 | fixed | design | unassigned | s2 | — | p1 | yes | 2026-08-23T12:00Z | 2026-08-23T10:00Z Developer agent | **1 new** |
+| ticket | repo | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| ISSUE-12 | /w/api | fixed | dev | **Brad C. (Operator) — HOLD** | s1 | — | p0 | **MISSING** | 2026-08-23T12:00Z | — | — |
+| ISSUE-10 | /w/api | fixed | design | unassigned | s2 | — | p1 | issue-10 | 2026-08-23T12:00Z | 2026-08-23T10:00Z Developer agent | **1 new** |
 

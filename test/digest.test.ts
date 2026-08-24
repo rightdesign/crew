@@ -21,7 +21,7 @@ const roster = buildRoster(MEMBERS, ROWS);
 function input(over: Partial<DigestInput> = {}): DigestInput {
   return {
     tickets: [], comments: [], me: 'dev-1', roster,
-    watermark: '1970-01-01T00:00:00Z', branches: [],
+    watermark: '1970-01-01T00:00:00Z',
     blocked: new Set(), blockerInfo: {}, ...over,
   };
 }
@@ -65,6 +65,7 @@ test('every column renders, including holds and blockers', () => {
 });
 
 test('the QA digest renders as it always has, branches and built-by included', () => {
+  const found: Record<string, string> = { a: 'issue-10', b: 'issue-0011' };
   const i = input({
     me: 'qa-1',
     tickets: [
@@ -72,13 +73,51 @@ test('the QA digest renders as it always has, branches and built-by included', (
       T({ id: 'b', issue_id: 'ISSUE-11', status: 'qa', assignee_id: 'qa-1' }),
       T({ id: 'c', issue_id: 'ISSUE-12', status: 'fixed', assignee_id: 'op-1', severity: 's1' }),
     ],
-    branches: ['issue-10', 'issue-0011'],
+    dirFor: () => '/w/api',
+    existingBranchFor: (t) => found[t.id] ?? null,
     comments: [{ ticket_id: 'a', team_member_id: 'dev-1', created_at: '2026-08-23T10:00:00.000Z' }],
   });
   // Golden captured from lib/queue-digest-qa.jq before it was deleted. The QA
   // digest is prose an agent reads and acts on, so a diff here is a change to
   // instructions, not just to formatting — it should be looked at, not blessed.
   assert.equal(qaDigest(i), readFileSync(join(import.meta.dirname, 'fixtures/qa-digest.md'), 'utf8'));
+});
+
+// ISSUE-349. QA was handed one flat list of the connection directory's
+// branches and no checkout column at all, so a ticket in the area's second
+// repo rendered as "no worktree to test" and QA routed it to a human. Both
+// halves are per-ticket now, which is the only way either can be right when
+// an area spans several repos.
+test('the QA digest places a ticket in its own repo, and finds its branch there', () => {
+  const dirs: Record<string, string | null> = {
+    'r-api': '/w/api', 'r-cli': '/w/cli', 'r-far': null,
+  };
+  const i = input({
+    me: 'qa-1',
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-20', status: 'fixed', repo_id: 'r-api' }),
+      T({ id: 'b', issue_id: 'ISSUE-21', status: 'fixed', repo_id: 'r-cli' }),
+      T({ id: 'c', issue_id: 'ISSUE-22', status: 'fixed', repo_id: 'r-cli' }),
+      T({ id: 'd', issue_id: 'ISSUE-23', status: 'fixed', repo_id: 'r-far' }),
+    ],
+    dirFor: (t) => dirs[t.repo_id ?? ''] ?? null,
+    // Only the CLI repo has ISSUE-21's branch; the connection's own directory
+    // never sees it. The pre-ISSUE-349 lookup answered from one repo and so
+    // reported this as MISSING.
+    existingBranchFor: (t) => (t.id === 'b' ? 'bc/issue-21-add-widget' : null),
+  });
+  const out = qaDigest(i);
+  assert.match(out, /\| ISSUE-20 \| \/w\/api \| fixed \|/);
+  assert.match(out, /\| ISSUE-21 \| \/w\/cli \| fixed \|/);
+  // The branch is reported as the repo actually names it, not re-derived.
+  assert.match(out, /\| bc\/issue-21-add-widget \|/);
+  // Same repo, no branch left: there is genuinely nothing to verify.
+  assert.match(out, /\| ISSUE-22 \|[^\n]*\| \*\*MISSING\*\* \|/);
+  // No checkout here means the branch could not be looked for at all, which
+  // is not the same claim as "the branch is gone".
+  assert.match(out, /\| ISSUE-23 \| \*\*NO CHECKOUT\*\* \|/);
+  assert.match(out, /\| ISSUE-23 \|[^\n]*\| — \|/);
+  assert.match(out, /the worktree you verify in sits beside THAT/);
 });
 
 test('the watermark decides what counts as new', () => {

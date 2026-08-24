@@ -159,6 +159,12 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   return {
     role: o.role,
+    // The connection's directory, which is a STARTING POINT and not the
+    // ticket's repo: the runner cannot know which ticket the session will
+    // take, so it cannot know the checkout either. Where an area spans
+    // several repos this is whichever one `repos` happened to list first
+    // (config.ts), and the digest's `repo` column is what actually places
+    // the work. Kept deliberately rather than guessed at (ISSUE-349).
     cwd: o.conn.dir,
     bin: o.ship.agent.bin,
     args: ['-p', '--allowedTools', ...allowedTools(o.role), '--model', o.ship.agent.model],

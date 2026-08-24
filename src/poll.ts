@@ -19,7 +19,7 @@ import { selectRole, sliceFor, type Selection } from './select.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, renderBranchName } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
-import { branches } from './git.ts';
+import { branchForIssue } from './git.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { State } from './state.ts';
@@ -154,12 +154,35 @@ export function writeDigest(
   const me = o.conn.resolved?.seats[role];
   if (!me) return false;
   try {
-    // The repo's own convention, not the crew's assumption.
-    const repo = resolveRepoConfig(loadRepoConfig(o.conn.dir), undefined, o.conn.dir);
+    // The repo's own convention, not the crew's assumption — and each repo
+    // has its own, so this is resolved per ticket rather than once for the
+    // connection's directory. Cached by directory: an area of a dozen repos
+    // must not re-read and re-parse the same .crew.yaml once per row.
+    const repoCache = new Map<string, ReturnType<typeof resolveRepoConfig>>();
+    const repoFor = (dir: string) => {
+      const hit = repoCache.get(dir);
+      if (hit) return hit;
+      const cfg = resolveRepoConfig(loadRepoConfig(dir), undefined, dir);
+      repoCache.set(dir, cfg);
+      return cfg;
+    };
+    const dirFor = (t: { repo_id?: string | null }) => dirForRepo(o.conn, t.repo_id);
+    const render = (t: { issue_id: string; title?: string | null }) => (template: string) =>
+      renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role });
+
     const input = {
-      dirFor: (t: { repo_id?: string | null }) => dirForRepo(o.conn, t.repo_id),
-      branchFor: (t: { issue_id: string; title?: string | null }) =>
-        renderBranchName(repo.branch.name, { key: t.issue_id, title: t.title ?? undefined, role }),
+      dirFor,
+      branchFor: (t: { issue_id: string; title?: string | null; repo_id?: string | null }) =>
+        render(t)(repoFor(dirFor(t) ?? o.conn.dir).branch.name),
+      // Looked for in the ticket's own repository. Asking the connection's
+      // directory whether a second repo's branch exists always answered no,
+      // which QA reads as "no worktree to test" (ISSUE-349).
+      existingBranchFor: (t: { issue_id: string; title?: string | null; repo_id?: string | null }) => {
+        const dir = dirFor(t);
+        if (!dir) return null;
+        const { name, push } = repoFor(dir).branch;
+        return branchForIssue(dir, t.issue_id, { name, push }, render(t));
+      },
       tickets: role === 'triage'
         ? d.tickets.filter((t) => t.assignee_id === o.conn.resolved?.seats.triage)
         : sliceFor(d.tickets, role),
@@ -167,9 +190,6 @@ export function writeDigest(
       me,
       roster: d.roster,
       watermark: d.watermark,
-      branches: branches(o.conn.dir, `${o.conn.worktreePrefix.replace(/-$/, '')}*`).concat(
-        branches(o.conn.dir, 'issue-*'),
-      ),
       blocked: d.blocked,
       blockerInfo: d.info,
     };
