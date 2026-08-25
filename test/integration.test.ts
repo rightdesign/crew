@@ -46,7 +46,7 @@ ${over.extra ?? ''}    resolved:
       models: { issues: ${MODELS.issues}, comments: ${MODELS.comments}, crew: ${MODELS.crew} }
       seats: { dev: ${SEATS.dev}, design: ${SEATS.design}, qa: ${SEATS.qa} }
       operator: ${OPERATOR}
-`;
+${over.resolvedExtra ?? ''}`;
   const cfgPath = join(home, 'crew.yaml');
   writeFileSync(cfgPath, cfg);
   return {
@@ -112,6 +112,32 @@ test('a dry run writes NOTHING to the tracker', async () => {
     assert.match(out + '', /[\s\S]*/);
     assert.equal(t.writes.length, 0, 'a dry run must not write');
     assert.equal(t.row(MODELS.issues, 'i1')?.status, 'accepted');
+  } finally { await t.stop(); }
+});
+
+test('ISSUE-385: a ticket whose epic is in progress digests ahead of an identical one with no epic', async () => {
+  const EPICS = 'm-epics';
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows())
+    .table(MODELS.comments, [])
+    .table(EPICS, [
+      { id: 'e1', status: 'in_progress' },
+      { id: 'e2', status: 'planned' },
+    ])
+    .table(MODELS.issues, [
+      // Same severity, same priority, filed in numeric order — without the
+      // epic tiebreaker ISSUE-1 would digest first (older wins ties).
+      ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted', severity: 's3' }),
+      ticket({ id: 'i2', issue_id: 'ISSUE-2', status: 'accepted', severity: 's3', epic_id: 'e1' }),
+    ])
+    .start();
+  try {
+    const s = ship(t, { resolvedExtra: `      epicsModelId: ${EPICS}\n` });
+    await s.run('poll', 'proj');
+    const digest = readFileSync(join(s.home, 'state', 'digest-proj-dev.md'), 'utf8');
+    const i1 = digest.indexOf('ISSUE-1');
+    const i2 = digest.indexOf('ISSUE-2');
+    assert.ok(i2 >= 0 && i1 >= 0 && i2 < i1, 'the in-progress-epic ticket must digest first');
   } finally { await t.stop(); }
 });
 

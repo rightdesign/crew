@@ -15,6 +15,15 @@ export interface Rankable {
   issue_id?: string | null;
   severity?: string | null;
   priority?: string | null;
+  /**
+   * Whether this ticket's epic is already in progress (ISSUE-385).
+   *
+   * Precomputed by the caller, never fetched here: priority.ts stays free of
+   * contract/tracker concerns, and a caller with no Epics table (or that
+   * never looked one up) just never sets this — the tiebreaker then falls
+   * through as if every ticket had no epic, which is the correct default.
+   */
+  epicInProgress?: boolean | null;
 }
 
 import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
@@ -73,9 +82,29 @@ export function issueNumber(t: Rankable): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
-/** Full sort key: effective priority, then severity, then oldest first. */
-export function rank(t: Rankable, c: Contract = DEFAULT_CONTRACT): [number, number, number] {
-  return [effectivePriority(t, c), severityRank(t, c), issueNumber(t)];
+/**
+ * Epic membership as a tiebreaker (ISSUE-385): within equal effective
+ * priority and severity, a ticket whose epic is already in progress goes
+ * first — finishing beats starting, since an in-progress epic is committed
+ * work with the rest of it still owed.
+ *
+ * Bare membership doesn't count, and neither does an epic that is merely
+ * `planned` — both rank the same as no epic at all (1). That's deliberate on
+ * two counts: priority is already explicit, so boosting on membership alone
+ * would double-count an operator who set both; and it's what keeps a ticket
+ * in no epic from ever being permanently starved by this — it only ever
+ * loses a TIE, never a comparison against a higher priority or severity.
+ */
+export function epicRank(t: Rankable): number {
+  return t.epicInProgress ? 0 : 1;
+}
+
+/**
+ * Full sort key: effective priority, then severity, then epic-in-progress,
+ * then oldest first.
+ */
+export function rank(t: Rankable, c: Contract = DEFAULT_CONTRACT): [number, number, number, number] {
+  return [effectivePriority(t, c), severityRank(t, c), epicRank(t), issueNumber(t)];
 }
 
 /** Compare two rank keys lexicographically; lower sorts first. */
@@ -93,10 +122,14 @@ export function compareRank(a: Rankable, b: Rankable, c: Contract = DEFAULT_CONT
  * The single integer role selection compares across roles, matching the
  * arithmetic in bash's `lane_top_rank`. Kept identical so a Node runner and
  * a bash runner would pick the same role from the same queue.
+ *
+ * The epic-in-progress digit sits between severity and issue number, at
+ * 1,000,000 — comfortably inside severity's 10,000,000-wide band, and with
+ * ten times the headroom `issueNumber` needs at any realistic ticket count.
  */
 export function rankScalar(t: Rankable, c: Contract = DEFAULT_CONTRACT): number {
-  const [p, s, n] = rank(t, c);
-  return p * 1_000_000_000 + s * 10_000_000 + n;
+  const [p, s, e, n] = rank(t, c);
+  return p * 1_000_000_000 + s * 10_000_000 + e * 1_000_000 + n;
 }
 
 /** "Nothing actionable" — loses to any role that has something. */

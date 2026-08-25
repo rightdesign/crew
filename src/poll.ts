@@ -59,14 +59,28 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const tracker = new Tracker(conn, ship);
   emit.enter('poll');
 
-  const [tickets, comments, crewRows] = await Promise.all([
+  const [tickets, comments, crewRows, epicRows] = await Promise.all([
     tracker.openTickets(),
     tracker.comments(200),
     tracker.crewRows(),
+    tracker.epicRows(),
   ]);
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
   });
+
+  // ISSUE-385: the epic-in-progress tiebreaker priority.ts reads is computed
+  // here, once, rather than fetched inside priority.ts itself — that module
+  // stays free of contract/tracker concerns. Annotating these Ticket objects
+  // in place means every downstream consumer (select.ts, digest.ts, fleet.ts)
+  // sees it too, since they all read from this same array or slices of it.
+  const epicColumn = tracker.contract.columns.epic;
+  const epicBuilding = tracker.contract.statuses.building;
+  const epicStatusById = new Map(epicRows.map((e) => [e.id, e.status ?? null]));
+  for (const t of tickets) {
+    const epicId = t[epicColumn];
+    t.epicInProgress = typeof epicId === 'string' && epicStatusById.get(epicId) === epicBuilding;
+  }
 
   const extra = await tracker.ticketsByIds(missingBlockerIds(tickets));
   const info = blockerInfoMap(tickets, extra);

@@ -35,6 +35,12 @@ export interface Ticket {
   needs_design?: boolean | null;
   blocked_by?: string[] | null;
   updated_at: string;
+  /**
+   * Whether this ticket's epic is already in progress (ISSUE-385) — computed
+   * by `decideCycle` from `epicRows()`, not a column the API returns. Absent
+   * on a workspace with no Epics table, which the ranker reads as "no epic".
+   */
+  epicInProgress?: boolean | null;
   [k: string]: unknown;
 }
 
@@ -191,6 +197,23 @@ export class Tracker {
     if (!model) return [];
     try {
       return await this.client.records.list(model, { limit: 200 });
+    } catch {
+      return [];   // the table may be absent or unreadable; neither is fatal
+    }
+  }
+
+  /**
+   * The Epics rows of this workspace, if it has an Epics table (ISSUE-384).
+   *
+   * Optional by design, the same way `shipRows()` is: a workspace that has
+   * not adopted epics still works, and the crew must not require a table it
+   * did not create.
+   */
+  async epicRows(): Promise<Array<{ id: string; status?: string | null }>> {
+    const model = this.conn.resolved?.epicsModelId;
+    if (!model) return [];
+    try {
+      return await this.client.records.list(model, { limit: 500 });
     } catch {
       return [];   // the table may be absent or unreadable; neither is fatal
     }

@@ -89,8 +89,9 @@ test('an unknown value still ranks mid-pack as a priority and last as a tiebreak
 
 test('ranking under the default is unchanged by all of this', () => {
   const t = { issue_id: 'ISSUE-42', severity: 's2', priority: 'p1' };
-  assert.deepEqual(rank(t), [1, 1, 42]);
-  assert.deepEqual(rank(t, DEFAULT_CONTRACT), [1, 1, 42]);
+  // 3rd element is the ISSUE-385 epic-in-progress tiebreaker; 1 (no epic).
+  assert.deepEqual(rank(t), [1, 1, 1, 42]);
+  assert.deepEqual(rank(t, DEFAULT_CONTRACT), [1, 1, 1, 42]);
 });
 
 test('a workspace with no review step says so, rather than inventing a status', () => {

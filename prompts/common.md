@@ -225,7 +225,15 @@ check.
     *forward*, never behind where its `Severity` alone would have placed
     it.
   - Within one effective-priority tier, **more severe first** (`s1`, `s2`,
-    `s3`, `s4`, then unset), and only then oldest `issue_id` first.
+    `s3`, `s4`, then unset).
+  - Within one severity tier, a ticket whose **epic is already in
+    progress** goes first (ISSUE-385) — finishing beats starting, since an
+    in-progress epic is committed work with the rest of it still owed. Bare
+    membership doesn't count, and neither does an epic that is merely
+    `planned`; both rank the same as no epic at all, which is what keeps a
+    ticket in no epic from ever being permanently starved by this — it only
+    ever loses a *tie*, never a comparison against a higher priority or
+    severity. Only then, oldest `issue_id` first.
 
   Priority is how the operator jumps the queue; before it was considered at all the
   order was strictly oldest-first, so raising a ticket to `p0` changed

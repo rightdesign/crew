@@ -46,9 +46,41 @@ test('rankScalar orders the same way as the tuple', () => {
   assert.ok(compareRank(a, b) < 0);
 });
 
+test('epic tiebreaker (ISSUE-385): two tickets identical but for epic status sort with the in-progress epic first', () => {
+  const inEpic = { issue_id: 'ISSUE-2', severity: 's2', priority: 'p2', epicInProgress: true };
+  const notInEpic = { issue_id: 'ISSUE-1', severity: 's2', priority: 'p2', epicInProgress: false };
+  assert.ok(compareRank(inEpic, notInEpic) < 0);
+  assert.ok(rankScalar(inEpic) < rankScalar(notInEpic));
+});
+
+test('epic tiebreaker: a standalone higher effective priority still wins outright', () => {
+  const standaloneP0 = { issue_id: 'ISSUE-1', severity: 's3', priority: 'p0', epicInProgress: false };
+  const epicP3 = { issue_id: 'ISSUE-2', severity: 's3', priority: 'p3', epicInProgress: true };
+  assert.ok(compareRank(standaloneP0, epicP3) < 0);
+});
+
+test('epic tiebreaker: no epic ranks the same as an epic that is not in progress — never permanently starved', () => {
+  const noEpic = { issue_id: 'ISSUE-1', severity: 's3' };
+  const plannedEpic = { issue_id: 'ISSUE-2', severity: 's3', epicInProgress: false };
+  // Same priority/severity/epic-tier, so the two fall back to oldest-first —
+  // exactly as they would have before this ticket existed.
+  assert.ok(compareRank(noEpic, plannedEpic) < 0);
+  const [, , epicTierA] = rank(noEpic);
+  const [, , epicTierB] = rank(plannedEpic);
+  assert.equal(epicTierA, epicTierB);
+});
+
 test('the full severity x priority matrix ranks as it always has', () => {
   assert.equal(MATRIX.tickets.length, 36);   // 6 severities x 6 priorities, junk and null included
-  assert.deepEqual(MATRIX.tickets.map((t) => rank(t)), MATRIX.ranks);
+  // The fixture predates the epic-in-progress tiebreaker (ISSUE-385) and is
+  // pinned to the jq implementation's 3-element output; none of these
+  // tickets carry an epic, so drop the (constant, always-1) 3rd element
+  // rank() now inserts before comparing against that oracle.
+  const withoutEpicTier = (t: { severity: string | null; priority: string | null }) => {
+    const [p, s, , n] = rank(t);
+    return [p, s, n];
+  };
+  assert.deepEqual(MATRIX.tickets.map(withoutEpicTier), MATRIX.ranks);
 });
 
 test('the matrix ordering is total and stable', () => {
