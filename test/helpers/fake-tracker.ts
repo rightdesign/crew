@@ -22,6 +22,15 @@ export class FakeTracker {
   /** Every write the crew made, in order. */
   readonly writes: Write[] = [];
   port = 0;
+  /**
+   * Fired once, right after the NEXT `GET .../records` for `model` is
+   * answered — for simulating a race (ISSUE-395): another ship's write
+   * lands on a row between this ship's read of it and its own write.
+   */
+  private raceHooks = new Map<string, () => void>();
+  raceOnNextList(model: string, fn: () => void): void {
+    this.raceHooks.set(model, fn);
+  }
 
   table(id: string, rows: Row[]): this {
     this.tables.set(id, rows.map((r) => ({ ...r })));
@@ -64,7 +73,10 @@ export class FakeTracker {
             });
           }
         }
-        return send(200, out);
+        send(200, out);
+        const hook = this.raceHooks.get(model);
+        if (hook) { this.raceHooks.delete(model); hook(); }
+        return;
       }
 
       let body = '';
@@ -74,6 +86,14 @@ export class FakeTracker {
         if (req.method === 'PATCH' && parts[4]) {
           const row = rows.find((r) => r.id === parts[4]);
           if (!row) return send(404, { message: 'no such record' });
+          // Conditional write (ISSUE-395, ISSUE-394's same primitive):
+          // `RecordsResource.update`'s expectedUpdatedAt arrives as this
+          // header, and a mismatch is a 409 — which @tablation/client
+          // itself turns into `StaleWriteError` for the caller.
+          const expected = req.headers['x-expected-updated-at'];
+          if (expected !== undefined && expected !== row.updated_at) {
+            return send(409, { message: 'stale write', conflict: true });
+          }
           this.writes.push({ method: 'PATCH', model, id: parts[4], body: parsed });
           Object.assign(row, parsed, { updated_at: new Date(Date.parse(String(row.updated_at ?? 0)) + 1000).toISOString() });
           return send(200, row);

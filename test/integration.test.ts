@@ -257,3 +257,43 @@ test('--role runs exactly that seat and does not release', async () => {
     assert.doesNotMatch(out, /release:/);
   } finally { await t.stop(); }
 });
+
+test('ISSUE-395: the winning ticket is claimed (in_progress + assignee) before the agent runs, not left to it', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
+    .start();
+  try {
+    await ship(t).run('run', 'proj', '--role', 'dev');
+    const claim = t.writes.find((w) => w.model === MODELS.issues && w.id === 'i1');
+    assert.ok(claim, 'the poll itself must claim the ticket, not just the (here, no-op) agent');
+    assert.equal(claim?.body.status, 'in_progress');
+    assert.equal(claim?.body.assignee_id, SEATS.dev);
+  } finally { await t.stop(); }
+});
+
+test('ISSUE-395: a ticket already claimed elsewhere is skipped for the next-ranked one', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [
+      // i1 ranks first (more severe) but is stale by the time the claim's
+      // conditional write lands — as if another ship claimed it a moment
+      // after this ship's poll fetched it. i2 is the fallback.
+      ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted', severity: 's1' }),
+      ticket({ id: 'i2', issue_id: 'ISSUE-2', status: 'accepted', severity: 's3' }),
+    ])
+    .start();
+  try {
+    // Another ship's write lands on i1 right after this ship's poll reads
+    // the ticket list, and before its own claim's conditional write does.
+    t.raceOnNextList(MODELS.issues, () => {
+      const row = t.row(MODELS.issues, 'i1')!;
+      row.updated_at = new Date(Date.parse(String(row.updated_at)) + 1).toISOString();
+    });
+    const out = await ship(t).run('run', 'proj', '--role', 'dev');
+    assert.match(out, /claim contended for ISSUE-1/);
+    const claim = t.writes.find((w) => w.model === MODELS.issues);
+    assert.equal(claim?.id, 'i2', 'the contended ticket must not be the one actually claimed');
+    assert.equal(claim?.body.status, 'in_progress');
+  } finally { await t.stop(); }
+});

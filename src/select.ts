@@ -196,6 +196,18 @@ export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
   );
 }
 
+/**
+ * `roleCandidates`, in the same most-urgent-first order the digest and
+ * `roleTopRank` use — what claim.ts walks down when its top pick turns out
+ * to be contended (ISSUE-395). Kept here rather than inlined at each call
+ * site so the ranking a ship claims against can never drift from the one the
+ * digest showed it.
+ */
+export function rankedCandidates(role: RoleName, i: SelectionInput): Ticket[] {
+  const c = i.contract ?? DEFAULT_CONTRACT;
+  return [...roleCandidates(role, i)].sort((a, b) => rankScalar(a, c) - rankScalar(b, c));
+}
+
 export function roleTopRank(role: RoleName, i: SelectionInput): number {
   if (role !== 'qa' && role !== 'triage' && !i.seats[role]) return NOTHING_ACTIONABLE;
   const candidates = roleCandidates(role, i);

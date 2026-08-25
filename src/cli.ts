@@ -16,7 +16,9 @@ import {
 } from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
-import { decideCycle, rosterFor } from './poll.ts';
+import { decideCycle, rosterFor, writeDigest } from './poll.ts';
+import { rankedCandidates } from './select.ts';
+import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
@@ -31,7 +33,7 @@ import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { Tracker, type Ticket } from './tracker.ts';
 import type { BoardLockResult } from './board-lock.ts';
-import { validateContract } from './contract.ts';
+import { validateContract, DEFAULT_CONTRACT } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
@@ -527,14 +529,17 @@ switch (command) {
         emit.emit(`connection "${w.connection.name}" is not enabled — not running`);
         break;
       }
-      const fleetPlan = planAgentRun({
-        role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
-        stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
-        environment: environmentFor(w.connection),
-        apiKey: resolveApiKey(w.connection),
-        cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
-      });
-      if (dryRun) { process.stdout.write(`${describePlan(fleetPlan)}\n`); break; }
+      if (dryRun) {
+        const fleetPlan = planAgentRun({
+          role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
+          stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
+          environment: environmentFor(w.connection),
+          apiKey: resolveApiKey(w.connection),
+          cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
+        });
+        process.stdout.write(`${describePlan(fleetPlan)}\n`);
+        break;
+      }
 
       // Role-distinct, capacity-limited (ISSUE-381) — see State.acquireRun.
       // Taken here, once the winning role is known, not up front: the fleet
@@ -546,13 +551,58 @@ switch (command) {
         break;
       }
       lock = fleetLock;
+      const fleetTracker = new Tracker(w.connection, cfg.ship);
+
+      // ISSUE-395: claim the fleet winner's top ticket before spawning it —
+      // see the matching comment on the single-connection path below for why.
+      // A fleet-wide runner-up is out of scope here: a contended claim just
+      // ends this cycle for the whole fleet, same as "nothing to run" did
+      // before this ticket, and the next poll re-ranks everything fresh.
+      let fleetTicketHint = w.decision.actionable.top?.issue_id;
+      let fleetWorkingId = w.decision.actionable.top?.id ?? null;
+      if (w.role === 'dev' || w.role === 'design') {
+        const seat = w.connection.resolved?.seats[w.role];
+        if (seat) {
+          const candidates = rankedCandidates(w.role, w.decision.selectionInput);
+          const contract = w.decision.selectionInput.contract ?? DEFAULT_CONTRACT;
+          const result = await resolveTopCandidate(
+            fleetTracker, candidates, seat,
+            contract.statuses.approved,
+            contract.statuses.building,
+          );
+          if (result.contended.length) {
+            emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+              step: 'select', role: w.role,
+            });
+          }
+          if (!result.ticket) {
+            emit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
+            await releaseFleet();
+            break;
+          }
+          if (result.claimed) {
+            const idx = w.decision.tickets.findIndex((t) => t.id === result.ticket!.id);
+            if (idx >= 0) w.decision.tickets[idx] = result.ticket;
+            writeDigest({ conn: w.connection, ship: cfg.ship, state, emit }, w.decision, w.role, cfg.ship.stateDir);
+          }
+          fleetTicketHint = result.ticket.issue_id;
+          fleetWorkingId = result.ticket.id;
+        }
+      }
+
+      const fleetPlan = planAgentRun({
+        role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
+        stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
+        environment: environmentFor(w.connection),
+        apiKey: resolveApiKey(w.connection),
+        cycle: emit.cycle, ticket: fleetTicketHint,
+      });
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.connection.name}`);
-      const fleetTracker = new Tracker(w.connection, cfg.ship);
       const fleetMemberId = w.connection.resolved?.seats[w.role];
       if (fleetMemberId) {
         try {
-          await fleetTracker.setCrewStatus(fleetMemberId, 'working', w.decision.actionable.top?.id ?? null);
+          await fleetTracker.setCrewStatus(fleetMemberId, 'working', fleetWorkingId);
         } catch (e) {
           emit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
         }
@@ -643,12 +693,53 @@ switch (command) {
         lock = got;
       }
 
+      // ISSUE-395: the poll only DECIDED this role's top ticket; claim it now,
+      // atomically, rather than leaving that to the session minutes from now.
+      // A ticket still at the approved status is contended with a conditional
+      // write — a second ship's identical claim loses and this walks down to
+      // the next candidate. A resumption ticket needs no claim and is handed
+      // back as-is.
+      let ticketHint = decision.actionable.top?.issue_id;
+      let workingId = decision.actionable.top?.id ?? null;
+      if (!dryRun && (current === 'dev' || current === 'design')) {
+        const seat = conn.resolved?.seats[current];
+        if (seat) {
+          const candidates = rankedCandidates(current, decision.selectionInput);
+          const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
+          const result = await resolveTopCandidate(
+            tracker2, candidates, seat,
+            contract.statuses.approved,
+            contract.statuses.building,
+          );
+          if (result.contended.length) {
+            emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+              step: 'select', role: current,
+            });
+          }
+          if (!result.ticket) {
+            emit.emit(`${current} skipped this cycle — every candidate was already claimed elsewhere`);
+            dropLock();
+            if (explicitRole) { current = undefined; break; }
+            const remaining = nextRoles(decision, [...ran, current]);
+            current = remaining[0];
+            continue;
+          }
+          if (result.claimed) {
+            const idx = decision.tickets.findIndex((t) => t.id === result.ticket!.id);
+            if (idx >= 0) decision.tickets[idx] = result.ticket;
+            writeDigest({ conn, ship: cfg.ship, state, emit }, decision, current, cfg.ship.stateDir);
+          }
+          ticketHint = result.ticket.issue_id;
+          workingId = result.ticket.id;
+        }
+      }
+
       const plan = planAgentRun({
         role: current, conn, ship: cfg.ship, crewHome: CREW_HOME,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, conn, current),
         environment: environmentFor(conn),
         apiKey: resolveApiKey(conn),
-        cycle: emit.cycle, ticket: decision.actionable.top?.issue_id,
+        cycle: emit.cycle, ticket: ticketHint,
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);
@@ -660,7 +751,7 @@ switch (command) {
       const memberId = conn.resolved?.seats[current];
       if (memberId) {
         try {
-          await tracker2.setCrewStatus(memberId, 'working', decision.actionable.top?.id ?? null);
+          await tracker2.setCrewStatus(memberId, 'working', workingId);
         } catch (e) {
           emit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
         }

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectRole, roleHasWork, roleTopRank, sliceFor, qaSlice, buildingSlice, actionableSummary } from '../src/select.ts';
+import {
+  selectRole, roleHasWork, roleTopRank, sliceFor, qaSlice, buildingSlice, actionableSummary, rankedCandidates,
+} from '../src/select.ts';
 import type { SelectionInput } from '../src/select.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -228,4 +230,30 @@ test('actionableSummary excludes held and blocked tickets, same as roleTopRank',
     blocked: new Set(['b']),
   });
   assert.deepEqual(actionableSummary(i, ['dev']), { count: 0 });
+});
+
+// ---------------------------------------------------------------------------
+// rankedCandidates (ISSUE-395)
+// ---------------------------------------------------------------------------
+
+test('rankedCandidates is roleCandidates in the same most-urgent-first order roleTopRank uses', () => {
+  const i = input({
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-3', status: 'accepted', severity: 's3' }),
+      T({ id: 'b', issue_id: 'ISSUE-1', status: 'accepted', severity: 's1' }),
+      T({ id: 'c', issue_id: 'ISSUE-2', status: 'accepted', severity: 's2' }),
+    ],
+  });
+  assert.deepEqual(rankedCandidates('dev', i).map((t) => t.id), ['b', 'c', 'a']);
+});
+
+test('rankedCandidates excludes held and blocked tickets, same as roleCandidates', () => {
+  const i = input({
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', assignee_id: 'hold-1' }),
+      T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' }),
+    ],
+    blocked: new Set(['b']),
+  });
+  assert.deepEqual(rankedCandidates('dev', i), []);
 });

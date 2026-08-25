@@ -15,7 +15,9 @@ import {
   sweepDiagnostics, strandedNeedsInfo, rollUpParents, filingErrors,
   type BlockerInfo, type SweepStep,
 } from './blocked.ts';
-import { selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary } from './select.ts';
+import {
+  selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
+} from './select.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, renderBranchName } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
@@ -37,6 +39,13 @@ export interface CycleDecision {
   /** Everything actionable this cycle, pooled across every pending role (ISSUE-382). */
   actionable: ActionableSummary;
   watermark: string;
+  /**
+   * The exact input `selectRole` ranked this cycle — exposed so the caller
+   * can re-rank the winning role's candidates itself (ISSUE-395's claim
+   * step) without reconstructing holds/seats/contract from scratch, and
+   * risking that reconstruction drifting from what this cycle actually saw.
+   */
+  selectionInput: SelectionInput;
 }
 
 export interface CycleOptions {
@@ -129,6 +138,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
     tickets, comments, roster, blocked, info, sweep, stranded, selection, actionable, watermark,
+    selectionInput,
   };
 
   // AFTER every role has been evaluated, never during: advancing inside the

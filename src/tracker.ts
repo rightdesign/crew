@@ -220,8 +220,16 @@ export class Tracker {
     }
   }
 
-  async updateTicket(id: string, patch: Record<string, unknown>): Promise<Ticket> {
-    return this.client.records.update<Ticket>(this.models.issues, id, patch);
+  /**
+   * `expectedUpdatedAt` makes this a conditional write (ISSUE-395, the same
+   * `RecordsResource.update` primitive board-lock.ts uses): pass the
+   * `updated_at` this caller last read, and the write throws
+   * `StaleWriteError` instead of applying if the row has moved since —
+   * exactly what claim.ts needs to let a contended ticket claim fail loudly
+   * rather than silently overwrite a winning ship's write.
+   */
+  async updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<Ticket> {
+    return this.client.records.update<Ticket>(this.models.issues, id, patch, expectedUpdatedAt);
   }
 
   /**
