@@ -82,6 +82,16 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
     (acc, e) => (!acc || e.rank < acc.rank ? e : acc), undefined,
   );
 
+  // Record what this cycle saw for every reachable connection (ISSUE-382),
+  // so a connection that keeps having work and never winning shows up
+  // without anyone going looking. An unreachable connection has no data to
+  // record, not zero — recording it as idle would erase a real streak.
+  for (const e of entries) {
+    if (e.error || !e.decision) continue;
+    const won = best?.connection.name === e.connection.name;
+    o.state.fairness(e.connection.name).record(e.decision.actionable.count, e.decision.actionable.top?.issue_id, won);
+  }
+
   return {
     entries,
     winner: best && best.role && best.decision
@@ -91,14 +101,37 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
   };
 }
 
+/**
+ * A run passed over often enough that it is worth naming even in the
+ * one-line summary, rather than only in `crew status`. Arbitrary but small:
+ * a handful of cycles is normal traffic between two busy boards, a long run
+ * is the thing ISSUE-382 exists to make visible.
+ */
+const LOUD_STREAK = 5;
+
+/**
+ * How long ago an ISO timestamp was, in the coarsest unit that reads
+ * naturally — good enough for a status line, not a precise duration.
+ */
+export function since(iso: string, now: number = Date.now()): string {
+  const ms = Math.max(0, now - Date.parse(iso));
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 /** A one-line-per-connection summary, for `crew poll` with no name. */
-export function renderFleet(f: FleetDecision): string {
+export function renderFleet(f: FleetDecision, state?: State): string {
   const rows = f.entries.map((e) => {
     if (e.error) return `  ${e.connection.name.padEnd(16)} unreachable — ${e.error}`;
     if (!e.role) return `  ${e.connection.name.padEnd(16)} nothing pending`;
     const pending = e.decision?.selection.pending.join(' ') ?? '';
     const win = f.winner?.connection.name === e.connection.name ? '  <- runs this cycle' : '';
-    return `  ${e.connection.name.padEnd(16)} ${e.role.padEnd(7)} rank ${String(e.rank).padStart(12)}  pending: ${pending}${win}`;
+    const streak = state?.fairness(e.connection.name).streak() ?? 0;
+    const passedOver = !win && streak >= LOUD_STREAK ? `  ! passed over ${streak} cycles running` : '';
+    return `  ${e.connection.name.padEnd(16)} ${e.role.padEnd(7)} rank ${String(e.rank).padStart(12)}  pending: ${pending}${win}${passedOver}`;
   });
   if (!rows.length) return 'no enabled connections\n';
   return `${rows.join('\n')}\n`;

@@ -182,20 +182,51 @@ export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boole
  * the role that wins is always the one holding the ticket that would have
  * sorted first.
  */
-export function roleTopRank(role: RoleName, i: SelectionInput): number {
+/** Every ticket `role` could actually start or resume right now. */
+export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
+  if (role === 'qa') return qaSlice(i.tickets).filter((t) => !isHeld(t, i.holds));
+  if (role === 'triage') return triageSlice(i.tickets, i.seats.triage).filter((t) => !isHeld(t, i.holds));
   const me = i.seats[role];
-  if (!me) return NOTHING_ACTIONABLE;
-  const candidates = sliceFor(i.tickets, role).filter(
+  if (!me) return [];
+  return sliceFor(i.tickets, role).filter(
     (t) =>
       (((t.status === 'accepted' || t.status === 'blocked') && !i.blocked.has(t.id)) ||
         (t.status === 'in_progress' && (t.assignee_id === me || !t.assignee_id))) &&
       !isHeld(t, i.holds),
   );
+}
+
+export function roleTopRank(role: RoleName, i: SelectionInput): number {
+  if (role !== 'qa' && role !== 'triage' && !i.seats[role]) return NOTHING_ACTIONABLE;
+  const candidates = roleCandidates(role, i);
   if (candidates.length === 0) return NOTHING_ACTIONABLE;
   // NB the arrow: passing `rankScalar` bare would hand .map's INDEX to its
   // second parameter, which is now the contract.
   const c = i.contract ?? DEFAULT_CONTRACT;
   return Math.min(...candidates.map((t) => rankScalar(t, c)));
+}
+
+export interface ActionableSummary {
+  /** How many tickets, across every pending role, could be started or resumed right now. */
+  count: number;
+  /** The single most urgent one of those — the same ticket a winning role would open first. */
+  top?: Ticket;
+}
+
+/**
+ * A connection-wide view for fairness tracking (ISSUE-382): not "did the
+ * winning role have work" but "how much work was waiting here at all, and
+ * which piece of it is most overdue". `rankScalar` is the same comparator
+ * the digest sorts every table with (queue, blocked, QA alike), so pooling
+ * candidates from every pending role and picking the lowest is consistent
+ * with the order an agent would actually see them in.
+ */
+export function actionableSummary(i: SelectionInput, pending: RoleName[]): ActionableSummary {
+  const c = i.contract ?? DEFAULT_CONTRACT;
+  const all = pending.flatMap((role) => roleCandidates(role, i));
+  if (all.length === 0) return { count: 0 };
+  const top = all.reduce((best, t) => (rankScalar(t, c) < rankScalar(best, c) ? t : best));
+  return { count: all.length, top };
 }
 
 export interface Selection {

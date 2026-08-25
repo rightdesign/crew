@@ -15,7 +15,7 @@ import {
   sweepDiagnostics, strandedNeedsInfo, rollUpParents,
   type BlockerInfo, type SweepStep,
 } from './blocked.ts';
-import { selectRole, sliceFor, type Selection } from './select.ts';
+import { selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary } from './select.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, renderBranchName } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
@@ -34,6 +34,8 @@ export interface CycleDecision {
   sweep: SweepStep[];
   stranded: Ticket[];
   selection: Selection;
+  /** Everything actionable this cycle, pooled across every pending role (ISSUE-382). */
+  actionable: ActionableSummary;
   watermark: string;
 }
 
@@ -93,15 +95,17 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
 
   emit.enter('select');
   const watermark = state.watermark();
-  const selection = selectRole({
+  const selectionInput = {
     tickets, comments, watermark, blocked,
     holds,
     seats: conn.resolved!.seats,
     paused: state.pausedRoles(['dev', 'design', 'qa']),
     contract: tracker.contract,
-  });
+  };
+  const selection = selectRole(selectionInput);
+  const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, blocked, info, sweep, stranded, selection, watermark,
+    tickets, comments, roster, blocked, info, sweep, stranded, selection, actionable, watermark,
   };
 
   // AFTER every role has been evaluated, never during: advancing inside the

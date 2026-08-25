@@ -34,7 +34,7 @@ import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
-import { decideFleet, renderFleet, snapshot, changed, nextRoles } from './fleet.ts';
+import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, renderConnection } from './connect.ts';
 import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
@@ -466,7 +466,7 @@ switch (command) {
         connections: cfg.connections, ship: cfg.ship, state, emit,
         enabledOnly: !dryRun,
       });
-      process.stdout.write(renderFleet(fleet));
+      process.stdout.write(renderFleet(fleet, state));
       if (command === 'poll') break;
       if (!fleet.winner) {
         emit.emit('nothing to run across the fleet');
@@ -915,6 +915,17 @@ switch (command) {
     );
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
       if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);
+    }
+    // Starvation instrumentation (ISSUE-382): the poll writes this every
+    // cycle, so a quiet board's most urgent ticket going unpicked shows up
+    // here without anyone reading the log by hand.
+    const fairness = state.fairness(conn.name);
+    const waiting = fairness.waiting();
+    if (waiting) {
+      process.stdout.write(
+        `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +
+          ` (passed over ${fairness.streak()} cycle${fairness.streak() === 1 ? '' : 's'} running)\n`,
+      );
     }
     break;
   }

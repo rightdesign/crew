@@ -207,4 +207,65 @@ export class State {
       clearDeployFailed: (): void => { rmSync(this.path(failed), { force: true }); },
     };
   }
+
+  /**
+   * Starvation bookkeeping, scoped to one connection (ISSUE-382).
+   *
+   * `decideFleet` already renders the winner and each role's rank; what it
+   * throws away is the other side — a connection that had work and did not
+   * win, and the same ticket sitting at the front of that connection's queue
+   * cycle after cycle. This is state, not memory: a single process is one
+   * cycle, so "how long has this been waiting" only exists if it survives
+   * between them.
+   */
+  fairness(connection: string) {
+    const suffix = State.safe(connection);
+    const streakFile = `.fairness-streak-${suffix}`;
+    const ticketFile = `.fairness-ticket-${suffix}`;
+    const sinceFile = `.fairness-since-${suffix}`;
+    const ticketStreakFile = `.fairness-ticket-streak-${suffix}`;
+    const read = (f: string): string | null => {
+      try { return readFileSync(this.path(f), 'utf8').trim() || null; } catch { return null; }
+    };
+    const clear = (): void => {
+      for (const f of [streakFile, ticketFile, sinceFile, ticketStreakFile]) rmSync(this.path(f), { force: true });
+    };
+    return {
+      /** Consecutive cycles this connection had actionable work and did not win. */
+      streak: (): number => Number.parseInt(read(streakFile) ?? '', 10) || 0,
+      /**
+       * The ticket sitting at the front of this connection's queue, how long
+       * it has been there and its own consecutive-passed-over count — or
+       * undefined if nothing is waiting.
+       */
+      waiting: (): { ticket: string; since: string; streak: number } | undefined => {
+        const ticket = read(ticketFile);
+        const since = read(sinceFile);
+        if (!ticket || !since) return undefined;
+        return { ticket, since, streak: Number.parseInt(read(ticketStreakFile) ?? '', 10) || 0 };
+      },
+      /**
+       * Record what one cycle saw for this connection: how many tickets were
+       * actionable, which one was most urgent, and whether this connection
+       * won. Winning or running dry both reset the streak — there is nothing
+       * left being passed over.
+       */
+      record: (actionable: number, topTicket: string | undefined, won: boolean): void => {
+        if (won || actionable === 0) { clear(); return; }
+        writeFileSync(this.path(streakFile), `${this.readInt(streakFile) + 1}\n`);
+        const prior = read(ticketFile);
+        if (topTicket && topTicket === prior) {
+          writeFileSync(this.path(ticketStreakFile), `${this.readInt(ticketStreakFile) + 1}\n`);
+        } else if (topTicket) {
+          writeFileSync(this.path(ticketFile), `${topTicket}\n`);
+          writeFileSync(this.path(sinceFile), `${new Date().toISOString()}\n`);
+          writeFileSync(this.path(ticketStreakFile), '1\n');
+        }
+      },
+    };
+  }
+
+  private readInt(file: string): number {
+    try { return Number.parseInt(readFileSync(this.path(file), 'utf8').trim(), 10) || 0; } catch { return 0; }
+  }
 }

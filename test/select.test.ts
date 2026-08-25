@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectRole, roleHasWork, roleTopRank, sliceFor, qaSlice, buildingSlice } from '../src/select.ts';
+import { selectRole, roleHasWork, roleTopRank, sliceFor, qaSlice, buildingSlice, actionableSummary } from '../src/select.ts';
 import type { SelectionInput } from '../src/select.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -194,4 +194,38 @@ test('reassigning to triage is how a human asks for another look', () => {
   const seats = { dev: 'dev-1', triage: 'triage-1' };
   const i = input({ seats, tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', assignee_id: 'triage-1' })] });
   assert.equal(roleHasWork('triage', i).hasWork, true);   // whatever its status
+});
+
+// ---------------------------------------------------------------------------
+// actionableSummary (ISSUE-382)
+// ---------------------------------------------------------------------------
+
+test('actionableSummary pools candidates across every pending role and picks the most urgent', () => {
+  const i = input({
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-9', status: 'accepted', severity: 's3' }),
+      T({ id: 'b', issue_id: 'ISSUE-8', status: 'accepted', severity: 's1', needs_design: true }),
+    ],
+  });
+  const summary = actionableSummary(i, ['dev', 'design']);
+  assert.equal(summary.count, 2);
+  assert.equal(summary.top?.id, 'b');   // s1 outranks s3
+});
+
+test('actionableSummary counts nothing for a role that is not pending', () => {
+  const i = input({
+    tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' })],
+  });
+  assert.deepEqual(actionableSummary(i, ['design']), { count: 0 });
+});
+
+test('actionableSummary excludes held and blocked tickets, same as roleTopRank', () => {
+  const i = input({
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', assignee_id: 'hold-1' }),
+      T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' }),
+    ],
+    blocked: new Set(['b']),
+  });
+  assert.deepEqual(actionableSummary(i, ['dev']), { count: 0 });
 });
