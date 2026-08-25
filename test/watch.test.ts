@@ -90,6 +90,34 @@ test('a partial final line is not parsed until it is complete', () => {
   assert.equal(third.events.length, 1);
 });
 
+test('blocked and QA-held tickets fold into the header without a separate `crew status` lookup', () => {
+  const s = foldCycle([
+    E({ step: 'sweep', message: '2 ticket(s) parked as blocked', data: { blocked: ['ISSUE-1', 'ISSUE-2'] } }),
+    E({ step: 'sweep', message: '1 ticket(s) held in QA', data: { qaHeld: ['ISSUE-9'] } }),
+  ])!;
+  assert.deepEqual(s.blockedTickets, ['ISSUE-1', 'ISSUE-2']);
+  assert.deepEqual(s.qaHeldTickets, ['ISSUE-9']);
+  const h = renderHeader(s);
+  assert.match(h, /blocked: ISSUE-1 ISSUE-2/);
+  assert.match(h, /qa holding: ISSUE-9/);
+});
+
+test('a release in progress is not shown as blocked', () => {
+  const s = foldCycle([E({ step: 'release', message: 'merging' })])!;
+  assert.equal(s.releaseBlockedCycles, undefined);
+  assert.doesNotMatch(renderHeader(s), /BLOCKED/);
+});
+
+test('a blocked release names the cycle count and the reason, from its very first cycle', () => {
+  const s = foldCycle([
+    E({ step: 'release', level: 'warn', message: 'refusing to release', data: { cycles: 1, reason: 'dirty tree' } }),
+  ])!;
+  assert.equal(s.releaseBlockedCycles, 1);
+  assert.equal(s.releaseBlockedReason, 'dirty tree');
+  const h = renderHeader(s);
+  assert.match(h, /release BLOCKED \(1 cycle\): dirty tree/);
+});
+
 test('a truncated file is re-read from the start rather than read as garbage', () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-watch-'));
   const f = join(dir, 'events.jsonl');

@@ -82,6 +82,13 @@ export interface CycleState {
   pending?: string[];
   warnings: number;
   errors: number;
+  /** Ticket keys parked as `blocked`, off the sweep step's own emit. */
+  blockedTickets?: string[];
+  /** Ticket keys sitting in QA, off the sweep step's own emit. */
+  qaHeldTickets?: string[];
+  /** Consecutive cycles the release phase has refused to release, if any. */
+  releaseBlockedCycles?: number;
+  releaseBlockedReason?: string;
 }
 
 /** Fold an event stream into "where is this cycle now". */
@@ -104,6 +111,12 @@ export function foldCycle(events: CrewEvent[]): CycleState | null {
   for (const e of ofCycle) {
     if (typeof e.data?.rank === 'number') state.rank = e.data.rank as number;
     if (Array.isArray(e.data?.pending)) state.pending = e.data.pending as string[];
+    if (Array.isArray(e.data?.blocked)) state.blockedTickets = e.data.blocked as string[];
+    if (Array.isArray(e.data?.qaHeld)) state.qaHeldTickets = e.data.qaHeld as string[];
+    if (e.step === 'release' && typeof e.data?.cycles === 'number') {
+      state.releaseBlockedCycles = e.data.cycles as number;
+      state.releaseBlockedReason = typeof e.data.reason === 'string' ? e.data.reason : undefined;
+    }
   }
   return state;
 }
@@ -122,7 +135,22 @@ export function renderHeader(s: CycleState | null, now = Date.now()): string {
     s.errors ? red(`${s.errors} error(s)`) : s.warnings ? yellow(`${s.warnings} warning(s)`) : null,
     dim(`${elapsed}s in ${s.step}`),
   ].filter(Boolean);
-  return `${bits.join(dim('  |  '))}\n${progress}\n${dim('-'.repeat(72))}\n`;
+  // A release "in progress" and a release "blocked" both sit in step
+  // `release` — indistinguishable from the progress bar alone — so a
+  // refusal gets its own loud line naming how long and why (ISSUE-399).
+  const releaseLine = s.releaseBlockedCycles
+    ? red(
+        `release BLOCKED (${s.releaseBlockedCycles} cycle${s.releaseBlockedCycles === 1 ? '' : 's'}): ` +
+          `${s.releaseBlockedReason ?? 'unknown reason'}`,
+      )
+    : null;
+  const extra = [
+    releaseLine,
+    s.blockedTickets?.length ? dim(`blocked: ${s.blockedTickets.join(' ')}`) : null,
+    s.qaHeldTickets?.length ? dim(`qa holding: ${s.qaHeldTickets.join(' ')}`) : null,
+  ].filter(Boolean);
+  const extraLines = extra.length ? `${extra.join('\n')}\n` : '';
+  return `${bits.join(dim('  |  '))}\n${extraLines}${progress}\n${dim('-'.repeat(72))}\n`;
 }
 
 /** Read whole lines appended since `from`; returns the new offset. */

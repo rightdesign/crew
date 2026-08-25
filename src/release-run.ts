@@ -385,8 +385,13 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     // normal — someone is mid-edit — so the alarm starts at two.
     const n = o.state?.noteBlocked() ?? 1;
     const msg = `refusing to release — ${decision.block.detail}`;
-    if (n >= 2) o.emit.error(`${msg} (blocked ${n} cycles running)`, { data: { cycles: n } });
-    else o.emit.warn(msg);
+    // `cycles`/`reason` go out on both branches, not only the LOUD one: a
+    // watcher folding this cycle's events needs to tell "release blocked
+    // since cycle 1" from "release in progress" from its very first cycle,
+    // not only once the alarm escalates at two (ISSUE-399).
+    const data = { cycles: n, reason: decision.block.detail };
+    if (n >= 2) o.emit.error(`${msg} (blocked ${n} cycles running)`, { data });
+    else o.emit.warn(msg, { data });
     return { merged: [], deployed: false, stopped: decision.block.detail, decision };
   }
   o.state?.clearBlocked();

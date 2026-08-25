@@ -297,6 +297,36 @@ test('a persistent refusal gets LOUD rather than staying a warning', async () =>
   assert.ok(lines.some((l) => /ERROR.*blocked 2 cycles running/.test(l)));
 });
 
+test('a blocked release carries its cycle count and reason as data, from the first cycle', async () => {
+  // ISSUE-399: `crew watch` folds `data` off the event stream rather than
+  // parsing the rendered message, so the structured payload — not just the
+  // LOUD text — has to be there on the very first (still-a-warning) cycle,
+  // not only once it escalates to an error at two.
+  const { dir, repo } = project(LOCAL);
+  writeFileSync(join(dir, 'scratch.txt'), 'x');
+  const state = memory();
+  const eventDir = mkdtempSync(join(tmpdir(), 'crew-rel-events-'));
+  const eventFile = join(eventDir, 'events.jsonl');
+  const readEvents = () =>
+    readFileSync(eventFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+  await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], dryRun: false, state,
+    emit: new Emitter({ connection: 'c', eventFile, console: () => {} }),
+  });
+  const first = readEvents().find((e) => e.level === 'warn' && /refusing to release/.test(e.message));
+  assert.equal(first?.data?.cycles, 1);
+  assert.equal(typeof first?.data?.reason, 'string');
+
+  await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], dryRun: false, state,
+    emit: new Emitter({ connection: 'c', eventFile, console: () => {} }),
+  });
+  const second = readEvents().find((e) => e.level === 'error' && /refusing to release/.test(e.message));
+  assert.equal(second?.data?.cycles, 2);
+  assert.equal(typeof second?.data?.reason, 'string');
+});
+
 test('a clean release resets the blocked counter', async () => {
   const { dir, repo } = project(LOCAL);
   const state = memory();

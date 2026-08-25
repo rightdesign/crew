@@ -104,6 +104,16 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     emit.warn(`ticket(s) blocking themselves, parked permanently: ${diag.selfBlocked.join(', ')}`);
   }
   const sweep = planSweep(tickets, info, blocked);
+
+  // What a watcher can't otherwise see without `crew status`: the queue
+  // behind the winning role. Emitted every cycle, empty or not, since each
+  // cycle is its own event-stream id — a view folding only the latest cycle
+  // has nothing to fall back on if a quiet cycle skipped the emit (ISSUE-399).
+  const blockedIssues = tickets.filter((t) => blocked.has(t.id)).map((t) => t.issue_id);
+  emit.emit(`${blockedIssues.length} ticket(s) parked as blocked`, { data: { blocked: blockedIssues } });
+  const qaHeld = tickets.filter((t) => t.status === tracker.contract.statuses.verifying).map((t) => t.issue_id);
+  emit.emit(`${qaHeld.length} ticket(s) held in QA`, { data: { qaHeld } });
+
   const stranded = strandedNeedsInfo(tickets, blocked, holds);
   for (const t of stranded) {
     emit.emit('needs_info with all blockers resolved — the operator\'s call, not the crew\'s', {
