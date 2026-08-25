@@ -312,7 +312,7 @@ test('a blocked release carries its cycle count and reason as data, from the fir
 
   await runRelease({
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], dryRun: false, state,
-    emit: new Emitter({ connection: 'c', eventFile, console: () => {} }),
+    emit: new Emitter({ route: 'c', eventFile, console: () => {} }),
   });
   const first = readEvents().find((e) => e.level === 'warn' && /refusing to release/.test(e.message));
   assert.equal(first?.data?.cycles, 1);
@@ -320,7 +320,7 @@ test('a blocked release carries its cycle count and reason as data, from the fir
 
   await runRelease({
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], dryRun: false, state,
-    emit: new Emitter({ connection: 'c', eventFile, console: () => {} }),
+    emit: new Emitter({ route: 'c', eventFile, console: () => {} }),
   });
   const second = readEvents().find((e) => e.level === 'error' && /refusing to release/.test(e.message));
   assert.equal(second?.data?.cycles, 2);
