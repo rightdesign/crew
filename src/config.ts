@@ -140,6 +140,17 @@ export interface Ship {
   stateDir: string;
   logFile: string;
   userAgent: string;
+  /**
+   * How many agent sessions this machine will run at once (ISSUE-381).
+   *
+   * A fact about this machine's capacity, not about any board — role
+   * queues are already disjoint by construction (`sliceFor`), so raising
+   * this only ever lets two DIFFERENT roles overlap, never two of the same
+   * one. Default 2: dev/design building while QA verifies is the case that
+   * was actually measured costing idle time (ISSUE-353: QA sat behind a
+   * 68-minute dev session that held the ship's one lock).
+   */
+  maxConcurrentAgents: number;
 }
 
 export interface CrewConfig {
@@ -153,7 +164,7 @@ export class ConfigError extends Error {}
 
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
-  'stateDir', 'logFile', 'userAgent', 'baseUrl',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'maxConcurrentAgents',
 ]);
 const CONNECTION_KEYS = new Set([
   'name', 'enabled', 'workspace', 'project', 'area', 'dir', 'repos', 'worktreePrefix',
@@ -294,6 +305,10 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   if (declaredPlatform && !isShipPlatform(declaredPlatform)) {
     missing.add(`ship.platform must be one of macos|linux|windows (got "${declaredPlatform}")`);
   }
+  const maxConcurrentAgents = shipRaw.maxConcurrentAgents === undefined ? 2 : Number(shipRaw.maxConcurrentAgents);
+  if (!Number.isInteger(maxConcurrentAgents) || maxConcurrentAgents < 1) {
+    missing.add(`ship.maxConcurrentAgents must be a positive integer (got "${shipRaw.maxConcurrentAgents}")`);
+  }
 
   const connRaw = raw.connections;
   if (!Array.isArray(connRaw) || connRaw.length === 0) {
@@ -370,6 +385,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       stateDir: expand(shipRaw.stateDir ?? 'state', base),
       logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'crew.log'), base),
       userAgent: shipRaw.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+      maxConcurrentAgents,
     },
     connections,
     crewHome,

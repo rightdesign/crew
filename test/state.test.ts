@@ -122,3 +122,59 @@ test('locks are per name, so a release does not block a run', () => {
   assert.equal(s.acquire('release').ok, true);
   assert.equal(s.acquire('crew').ok, true);
 });
+
+// ---------------------------------------------------------------------------
+// acquireN / acquireRun (ISSUE-381)
+// ---------------------------------------------------------------------------
+
+test('acquireN takes whichever numbered slot is free', () => {
+  const s = fresh();
+  const first = s.acquireN('slot', 2);
+  assert.equal(first.ok, true);
+  const second = s.acquireN('slot', 2);
+  assert.equal(second.ok, true);
+  const third = s.acquireN('slot', 2);
+  assert.equal(third.ok, false);
+  if (!third.ok) assert.deepEqual(third.heldBy, [process.pid, process.pid]);
+  if (second.ok) second.release();
+  assert.equal(s.acquireN('slot', 2).ok, true);   // slot 2 freed up
+});
+
+test('acquireRun refuses a SECOND session of the same role even with slots free', () => {
+  const s = fresh();
+  const first = s.acquireRun('dev', 5);
+  assert.equal(first.ok, true);
+  const second = s.acquireRun('dev', 5);
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.match(second.reason, /dev is already running \(pid \d+\)/);
+});
+
+test('acquireRun lets two DIFFERENT roles run at once, up to the limit', () => {
+  const s = fresh();
+  assert.equal(s.acquireRun('dev', 2).ok, true);
+  assert.equal(s.acquireRun('qa', 2).ok, true);
+  const third = s.acquireRun('design', 2);
+  assert.equal(third.ok, false);
+  if (!third.ok) assert.match(third.reason, /at capacity — 2 agent\(s\) already running/);
+});
+
+test('acquireRun releasing gives back BOTH the role lock and the slot', () => {
+  const s = fresh();
+  const dev = s.acquireRun('dev', 1);
+  assert.equal(dev.ok, true);
+  if (dev.ok) dev.release();
+  // Same role, same single slot — both must be free again.
+  assert.equal(s.acquireRun('dev', 1).ok, true);
+});
+
+test('acquireRun gives the slot back when the role lock is held, not just the reverse', () => {
+  // A role locked elsewhere must not also burn a capacity slot: taking the
+  // role lock and then failing on capacity has to release the role lock too.
+  const s = fresh();
+  const heldRole = s.acquire('crew-role-dev');
+  assert.equal(heldRole.ok, true);
+  const attempt = s.acquireRun('dev', 1);
+  assert.equal(attempt.ok, false);
+  // The slot was never actually taken by the failed attempt.
+  assert.equal(s.acquireN('crew-slot', 1).ok, true);
+});

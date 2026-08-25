@@ -26,6 +26,10 @@ ship:
   useNvm: true
   stateDir: .state
   logFile: /tmp/tablation-crew.log
+  # How many agent sessions this machine runs at once. Role queues are
+  # disjoint by construction, so this only ever lets DIFFERENT roles overlap
+  # (e.g. QA verifying while dev builds) — never two of the same role.
+  # maxConcurrentAgents: 2
 
 connections:
   - # A short local handle. `crew run <name>` addresses this connection, and

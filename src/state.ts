@@ -117,6 +117,51 @@ export class State {
   }
 
   /**
+   * Like `acquire`, but for a resource with `max` interchangeable slots
+   * rather than one exclusive holder — this machine's overall concurrency
+   * capacity (ISSUE-381), which nothing needs to name a particular slot to
+   * use. Takes whichever numbered slot is free first.
+   */
+  acquireN(rawPrefix: string, max: number): { ok: true; release: () => void } | { ok: false; heldBy: number[] } {
+    const heldBy: number[] = [];
+    for (let i = 1; i <= max; i++) {
+      const got = this.acquire(`${rawPrefix}-${i}`);
+      if (got.ok) return got;
+      heldBy.push(got.heldBy);
+    }
+    return { ok: false, heldBy };
+  }
+
+  /**
+   * The run lock (ISSUE-381): role-distinct AND capacity-limited, checked
+   * together.
+   *
+   * Role queues are disjoint by construction (`sliceFor`), so two sessions
+   * of the SAME role would collide on the same ticket if ever let run at
+   * once — that half is a plain exclusive lock, one per role name, and
+   * never relaxed. `max` is this machine's separate, configurable limit on
+   * how many DIFFERENT roles may run together; a role that clears its own
+   * lock but finds every slot taken must give the slot back its lock too,
+   * or a locked-but-not-running role would wedge itself out for the rest
+   * of the machine's uptime.
+   */
+  acquireRun(role: string, max: number): { ok: true; release: () => void } | { ok: false; reason: string } {
+    const roleLock = this.acquire(`crew-role-${role}`);
+    if (!roleLock.ok) {
+      return { ok: false, reason: `${role} is already running (pid ${roleLock.heldBy})` };
+    }
+    const slot = this.acquireN('crew-slot', max);
+    if (!slot.ok) {
+      roleLock.release();
+      return {
+        ok: false,
+        reason: `at capacity — ${max} agent(s) already running (pid${slot.heldBy.length > 1 ? 's' : ''} ${slot.heldBy.join(', ')})`,
+      };
+    }
+    return { ok: true, release: () => { slot.release(); roleLock.release(); } };
+  }
+
+  /**
    * How many consecutive cycles the release phase has refused to deploy.
    *
    * Refusing is correct — a dirty tree or a non-main checkout must never be

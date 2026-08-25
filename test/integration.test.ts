@@ -133,7 +133,7 @@ test('the poll writes a digest and advances the watermark on disk', async () => 
   } finally { await t.stop(); }
 });
 
-test('a second run is refused while the first holds the lock', async () => {
+test('a second run of the SAME role is skipped while the first holds it (ISSUE-381)', async () => {
   const t = await new FakeTracker()
     .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
     .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
@@ -141,9 +141,31 @@ test('a second run is refused while the first holds the lock', async () => {
   try {
     const s = ship(t);
     mkdirSync(join(s.home, 'state'), { recursive: true });
-    writeFileSync(join(s.home, 'state', '.crew.lock'), `${process.pid}\n`);   // a live pid
+    // The role this ticket resolves to (dev) is locked by a live pid — a
+    // role-distinct lock, not the old single blanket 'crew' one.
+    writeFileSync(join(s.home, 'state', '.crew-role-dev.lock'), `${process.pid}\n`);
     const out = await s.run('run', 'proj');
-    assert.match(out, /still running — skipping this cycle/);
+    assert.match(out, /dev skipped this cycle — dev is already running \(pid \d+\)/);
+    // The rest of the cycle still runs — a locked role must not also block
+    // the release phase, exactly as "no role to run" does not.
+    assert.match(out, /nothing to release|nothing merged/);
+  } finally { await t.stop(); }
+});
+
+test('two DIFFERENT roles may run at once, up to the configured limit (ISSUE-381)', async () => {
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
+    .start();
+  try {
+    const s = ship(t);
+    mkdirSync(join(s.home, 'state'), { recursive: true });
+    // Every capacity slot is taken by some OTHER role's live session — the
+    // ship is simply at capacity, distinct from a same-role collision.
+    writeFileSync(join(s.home, 'state', '.crew-slot-1.lock'), `${process.pid}\n`);
+    writeFileSync(join(s.home, 'state', '.crew-slot-2.lock'), `${process.pid}\n`);
+    const out = await s.run('run', 'proj');
+    assert.match(out, /dev skipped this cycle — at capacity — 2 agent\(s\) already running/);
   } finally { await t.stop(); }
 });
 

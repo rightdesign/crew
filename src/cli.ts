@@ -129,12 +129,20 @@ const dryRun = flag('dry-run');
 /**
  * Commands that must not overlap themselves. `poll`, `watch`, `status` and
  * the read-only inspections may run any number of times at once.
+ *
+ * `run` used to be a single blanket lock here (`{ run: 'crew' }`) — one
+ * pid file, so a second `run` firing while the first was still mid-session
+ * always skipped its whole cycle, whatever role either one wanted. That is
+ * what let a single long dev session hold QA's queue idle for 68 minutes
+ * (ISSUE-353) with nothing else able to run. ISSUE-381 replaces it with
+ * `State.acquireRun`, taken once the role is actually known (role-distinct,
+ * capacity-limited — see its own comment), so `run` is no longer listed
+ * here at all.
+ *
+ * `release`/`merge`/`deploy` take their own lock inside releasePhase(), so
+ * a long release never blocks the next poll from starting.
  */
-const EXCLUSIVE: Record<string, string> = {
-  run: 'crew',
-  // `release`/`merge`/`deploy` take their own lock inside releasePhase(), so
-  // a long release never blocks the next poll from starting.
-};
+const EXCLUSIVE: Record<string, string> = {};
 
 // A dry run writes to the terminal ONLY.
 //
@@ -426,7 +434,17 @@ async function releasePhase(
 }
 
 // Taken before any work and released on the way out, however that happens.
+// Registered unconditionally (when not a dry run) so that `run`'s
+// role/capacity lock — acquired further down, once the role is known — is
+// covered by the same cleanup as a plain EXCLUSIVE command's.
 let lock: { release: () => void } | undefined;
+const dropLock = () => { lock?.release(); lock = undefined; };
+if (!dryRun) {
+  process.on('exit', dropLock);
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(sig, () => { dropLock(); process.exit(0); });
+  }
+}
 if (EXCLUSIVE[command] && !dryRun) {
   const got = state.acquire(EXCLUSIVE[command]!);
   if (!got.ok) {
@@ -436,11 +454,6 @@ if (EXCLUSIVE[command] && !dryRun) {
     process.exit(0);
   }
   lock = got;
-  const drop = () => { lock?.release(); lock = undefined; };
-  process.on('exit', drop);
-  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(sig, () => { drop(); process.exit(0); });
-  }
 }
 
 switch (command) {
@@ -477,9 +490,24 @@ switch (command) {
         apiKey: resolveApiKey(w.connection),
       });
       if (dryRun) { process.stdout.write(`${describePlan(fleetPlan)}\n`); break; }
+
+      // Role-distinct, capacity-limited (ISSUE-381) — see State.acquireRun.
+      // Taken here, once the winning role is known, not up front: the fleet
+      // poll above is read-only and must run every cycle regardless.
+      const fleetLock = state.acquireRun(w.role, cfg.ship.maxConcurrentAgents);
+      if (!fleetLock.ok) {
+        emit.emit(`${w.role} skipped this cycle — ${fleetLock.reason}`);
+        await releaseFleet();
+        break;
+      }
+      lock = fleetLock;
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.connection.name}`);
-      await spawnAgent(fleetPlan, emit);
+      try {
+        await spawnAgent(fleetPlan, emit);
+      } finally {
+        dropLock();
+      }
       await releaseFleet();
       break;
     }
@@ -531,11 +559,29 @@ switch (command) {
     // unbuildable. When that happens the runner-up is worth trying rather
     // than spending the whole cycle on a no-op.
     const maxRoles = Number(value('max-roles') ?? 2);
+    const explicitRole = value('role') !== undefined;   // means "run exactly this seat"
     const ran: RoleName[] = [];
     let current: RoleName | undefined = role;
     const tracker2 = new Tracker(conn, cfg.ship);
 
     while (current) {
+      // Role-distinct, capacity-limited (ISSUE-381) — see State.acquireRun.
+      // A role already running elsewhere (another connection, another
+      // ship-wide invocation) is skipped for the runner-up exactly as a
+      // role that changed nothing is below; an explicit --role never falls
+      // through, so it just stops.
+      if (!dryRun) {
+        const got = state.acquireRun(current, cfg.ship.maxConcurrentAgents);
+        if (!got.ok) {
+          emit.emit(`${current} skipped this cycle — ${got.reason}`);
+          if (explicitRole) { current = undefined; break; }
+          const remaining = nextRoles(decision, [...ran, current]);
+          current = remaining[0];
+          continue;
+        }
+        lock = got;
+      }
+
       const plan = planAgentRun({
         role: current, conn, ship: cfg.ship, crewHome: CREW_HOME,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, conn, current),
@@ -549,10 +595,14 @@ switch (command) {
       const before = snapshot(await tracker2.openTickets());
       emit.enter('agent', current);
       emit.emit('starting agent run');
-      await spawnAgent(plan, emit);
+      try {
+        await spawnAgent(plan, emit);
+      } finally {
+        dropLock();
+      }
       ran.push(current);
 
-      if (ran.length >= maxRoles || value('role')) break;   // an explicit --role means that role only
+      if (ran.length >= maxRoles || explicitRole) break;   // an explicit --role means that role only
       const after = snapshot(await tracker2.openTickets());
       if (changed(before, after)) { emit.emit(`${current} changed something — done this cycle`); break; }
 

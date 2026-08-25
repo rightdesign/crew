@@ -11,6 +11,7 @@ const ship = (over: Partial<Ship> = {}): Ship => ({
   stateDir: '/tmp/crew-state',
   logFile: '/tmp/crew.log',
   userAgent: 'Mozilla/5.0 CrewAgent/1.0',
+  maxConcurrentAgents: 2,
   ...over,
 });
 
