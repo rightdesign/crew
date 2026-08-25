@@ -25,19 +25,25 @@ ship:
   # shell: bash                      # defaults per platform
   extraPath: "/opt/homebrew/bin"     # prepended for hooks
   useNvm: true                       # source the repo's .nvmrc before hooks
-  stateDir: "state"                  # relative to THIS file: locks, watermark, digests
+  # stateDir: "state"                 # defaults to "state", relative to THIS file
   logFile: "/tmp/crew.log"           # give each runner its own file — a shared one interleaves
-  userAgent: "Mozilla/5.0 CrewAgent/1.0"
+  # Defaults to "Mozilla/5.0 CrewAgent/<this checkout's version>". The
+  # Mozilla/5.0 prefix is load-bearing: Cloudflare blocks a bare tool
+  # User-Agent before it reaches the tracker API. Set this only to identify
+  # a specific ship in the tracker's own request logs.
+  # userAgent: "Mozilla/5.0 CrewAgent/1.0"
 
-# One ship, many boards. Each connection is one workspace + one area of
-# development within it, and carries its own key: keys are workspace-scoped,
-# so there is no single key that reaches all of them.
-connections:
-  - name: myproject
+# One ship, many boards. Each route is one workspace/project pair + one area
+# of development within it — `crew run my-workspace/my-product`, the same
+# string `crew connect` takes, addresses it; there is no separate `name:` to
+# keep in sync with that. Keys are workspace-scoped in general, so a route
+# normally carries its own — but if one key happens to be valid for all of
+# them (a personal account key), declare it once as `ship.apiKey` instead and
+# every route that omits its own picks it up.
+routes:
+  - route: my-workspace/my-product
     enabled: false                   # nothing writes, wakes an agent or deploys until this is true
-    workspace: my-workspace          # the workspace slug
-    project: "Issues"                # the Tablation project holding the tracker tables
-    area: "My Product"               # the row of its Projects table this connection works
+    area: "My Product"               # the row of its Projects table this route works
 
     # An area spans several repositories, and each needs its own checkout on
     # this machine. Keyed by the name the board's Repos table uses — a ticket
@@ -47,19 +53,23 @@ connections:
       My Product: "/home/me/src/my-product"
       My Product CLI: "/home/me/src/my-product-cli"
 
-    # A single-repo connection may use `dir:` instead of `repos:`.
+    # A single-repo route may use `dir:` instead of `repos:`.
     # dir: "/home/me/src/my-product"
 
     worktreePrefix: "myproject-issue-"
-    platform: unix                   # POSIX-shell hooks. The cached value dispatch
-                                     # reads BEFORE a repo is cloned (ISSUE-331).
-    baseUrl: "https://app.tablation.com"
-    apiKey: "REPLACE_ME"             # workspace-scoped; one per connection
+    # What a host must be to build a repo lives in THAT repo's own .crew.yaml
+    # (any | unix | macos | linux | windows) — never here. A route can span
+    # repos with different needs; the ship refuses a route only when it can
+    # satisfy none of them.
+    # Defaults to https://app.tablation.com when omitted here and on `ship:`.
+    # Only needed for a self-hosted tracker.
+    # baseUrl: "https://app.tablation.com"
+    apiKey: "REPLACE_ME"             # or omit if `ship.apiKey` covers this workspace too
 
     # Where release state should be SHOWN is a fact about this machine and the
     # person watching it, not about the code — so unlike every other hook,
     # notify lives here rather than in the repo's .crew.yaml. It receives
-    # CREW_LEVEL (ok|warn|fail), CREW_HEADLINE, CREW_DETAIL, CREW_CONNECTION
+    # CREW_LEVEL (ok|warn|fail), CREW_HEADLINE, CREW_DETAIL, CREW_ROUTE
     # and CREW_SHIP, and decides everything else. Define none and release state
     # simply goes to the log.
     #
@@ -76,26 +86,12 @@ connections:
     #   build: "npm run build"
     #   deploy: "./deploy.sh"
 
-    # Discovered from the board, not authored by hand. `crew connect` writes
-    # this block; without it every cycle would re-resolve the same ids.
-    resolved:
-      workspaceId: "…"
-      projectId: "…"
-      areaModelId: "…"
-      areaId: "…"
-      models:
-        issues: "…"
-        comments: "…"
-        crew: "…"
-      seats:
-        dev: "…"
-        design: "…"
-        qa: "…"
-        triage: "…"
-      # The human this ship belongs to, and any row a person works through.
-      # A ticket assigned to a hold is off limits to every seat, whatever its
-      # status — that is how someone takes work over without racing the crew.
-      operator: "…"
-      holds:
-        - id: "…"
-          role: "live session"
+    # Discovered from the board, not authored by hand, and NOT in this file:
+    # `crew connect my-workspace/my-product` (or a matching hand-filled JSON)
+    # writes state/resolved/my-workspace/my-product.json — workspaceId,
+    # projectId, areaModelId/areaId, the Issues/Comments/Crew model ids, each
+    # role's seat, the operator (the human this ship belongs to — set by
+    # hand; there is no way to derive it), and any hold (a row a person works
+    # through; a ticket assigned to one is off limits to every seat,
+    # whatever its status). Without it every cycle would re-resolve the same
+    # ids over the network instead of reading a local cache.

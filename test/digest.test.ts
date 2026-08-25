@@ -83,7 +83,7 @@ test('the QA digest renders as it always has, branches and built-by included', (
   assert.equal(qaDigest(i), readFileSync(join(import.meta.dirname, 'fixtures/qa-digest.md'), 'utf8'));
 });
 
-// ISSUE-349. QA was handed one flat list of the connection directory's
+// ISSUE-349. QA was handed one flat list of the route directory's
 // branches and no checkout column at all, so a ticket in the area's second
 // repo rendered as "no worktree to test" and QA routed it to a human. Both
 // halves are per-ticket now, which is the only way either can be right when
@@ -101,7 +101,7 @@ test('the QA digest places a ticket in its own repo, and finds its branch there'
       T({ id: 'd', issue_id: 'ISSUE-23', status: 'fixed', repo_id: 'r-far' }),
     ],
     dirFor: (t) => dirs[t.repo_id ?? ''] ?? null,
-    // Only the CLI repo has ISSUE-21's branch; the connection's own directory
+    // Only the CLI repo has ISSUE-21's branch; the route's own directory
     // never sees it. The pre-ISSUE-349 lookup answered from one repo and so
     // reported this as MISSING.
     existingBranchFor: (t) => (t.id === 'b' ? 'bc/issue-21-add-widget' : null),

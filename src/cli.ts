@@ -3,14 +3,15 @@
  * `crew` — the CLI.
  *
  * Every command that could change something takes `--dry-run`, and the
- * interlock (`enabled: false` per connection) refuses anything that writes
+ * interlock (`enabled: false` per route) refuses anything that writes
  * until an operator arms it deliberately.
  */
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  loadConfig, connection, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
+  loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
+  DEFAULT_BASE_URL, resolvedPathFor,
   type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
@@ -39,11 +40,11 @@ import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
-import { discover, renderConnection } from './connect.ts';
+import { discover, listWorkspaces, renderConnection } from './connect.ts';
 import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 
@@ -99,21 +100,21 @@ function renderShipLine(
 function usage(): never {
   process.stderr.write(`crew — a standing team of headless agents
 
-  crew poll [conn]              decide a cycle and report it; writes nothing
-  crew run [conn] [--role R]    run the winning role's session
-  crew release [conn]           merge what QA verified, version it, ship it
-  crew merge [conn]             merge verified branches and stop
-  crew deploy [conn]            release now, even with nothing new to merge
-  crew watch [conn]             live view of what the crew is doing
-  crew status [conn]            paused/running state
-  crew doctor [conn]            read-only preflight
-  crew ports [conn]             which checkout owns which ports, and what is up
-  crew reap [conn]              kill orphaned servers, drop worktrees for closed tickets
-  crew drop [conn] NNN          remove a merged ticket's worktree and branch
-  crew unassign [conn] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
-  crew sync [conn]              fast-forward the checkout and its worktrees from the remote
-  crew pause|resume [conn] [R]  pause everything, or one role
-  crew log [conn]               tail the log
+  crew poll [route]              decide a cycle and report it; writes nothing
+  crew run [route] [--role R]    run the winning role's session
+  crew release [route]           merge what QA verified, version it, ship it
+  crew merge [route]             merge verified branches and stop
+  crew deploy [route]            release now, even with nothing new to merge
+  crew watch [route]             live view of what the crew is doing
+  crew status [route]            paused/running state
+  crew doctor [route]            read-only preflight
+  crew ports [route]             which checkout owns which ports, and what is up
+  crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
+  crew drop [route] NNN          remove a merged ticket's worktree and branch
+  crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
+  crew sync [route]              fast-forward the checkout and its worktrees from the remote
+  crew pause|resume [route] [R]  pause everything, or one role
+  crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
   crew install                  write and load this platform's scheduler unit
@@ -132,7 +133,7 @@ Options:
   --tail N       (watch) lines of history on start (default 20)
   --member WHO   (inbox) a colleague's queue — an email matches exactly,
                  a name is a per-workspace label and may differ between boards
-  --by-connection (inbox) group by workspace instead of status
+  --by-route (inbox) group by workspace instead of status
   --all          (inbox) include closed tickets
 
 In watch: space pauses the stream, q quits.
@@ -165,14 +166,19 @@ try {
   }
   throw e;
 }
-// `inbox` spans every connection, so it must not demand one be named.
-// `inbox` spans every connection; `poll`/`run` do too when none is named.
+// `inbox` spans every route, so it must not demand one be named.
+// `inbox` spans every route; `poll`/`run` do too when none is named.
+// `connect` is neither — its positional argument is a workspace[/project]
+// slug on the TRACKER, not the name of a route already in crew.yaml, so
+// it must not be forced through the same by-name lookup every other command
+// uses.
 const FLEET_CAPABLE = new Set(['poll', 'run']);
 const named = positional[1];
-const fleetWide = command === 'inbox' || (FLEET_CAPABLE.has(command) && !named && cfg.connections.length > 1);
-let conn: ReturnType<typeof connection>;
+const fleetWide = command === 'inbox' || command === 'connect' ||
+  (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
+let route: ReturnType<typeof findRoute>;
 try {
-  conn = fleetWide ? (cfg.connections[0] as ReturnType<typeof connection>) : connection(cfg, named);
+  route = fleetWide ? (cfg.routes[0] as ReturnType<typeof findRoute>) : findRoute(cfg, named);
 } catch (e) {
   if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
   throw e;
@@ -205,7 +211,7 @@ const EXCLUSIVE: Record<string, string> = {};
 // real ones, and the ship's own history recorded things that never happened.
 // An inspection belongs to whoever ran it, not to the record.
 const emit = new Emitter({
-  connection: conn.name,
+  route: route.route,
   eventFile: dryRun ? undefined : eventFileFor(cfg.ship.stateDir),
   logFile: dryRun ? undefined : cfg.ship.logFile,
   console: (l) => process.stderr.write(`${l}\n`),
@@ -216,9 +222,9 @@ const emit = new Emitter({
  * to inspect a disarmed installation is the point of having one.
  */
 function requireArmed(what: string): void {
-  if (dryRun || conn.enabled) return;
+  if (dryRun || route.enabled) return;
   process.stderr.write(
-    `crew: connection "${conn.name}" is not enabled in ${cfg.configFile} — refusing to ${what}.\n` +
+    `crew: route "${route.route}" is not enabled in ${cfg.configFile} — refusing to ${what}.\n` +
       `      Add --dry-run to see what it would do.\n`,
   );
   process.exit(0);
@@ -226,9 +232,9 @@ function requireArmed(what: string): void {
 
 
 /**
- * Release every connection, whoever won the agent slot.
+ * Release every route, whoever won the agent slot.
  *
- * The release phase is per connection and has nothing to do with which board
+ * The release phase is per route and has nothing to do with which board
  * got the agent this cycle: a repo with a QA-verified branch waiting needs
  * releasing even if its board had no agent work at all. Running only the
  * winner's would leave every other board's verified work sitting unmerged —
@@ -240,32 +246,33 @@ function requireArmed(what: string): void {
  * failing for reasons unrelated to the code.
  */
 async function releaseFleet(): Promise<void> {
-  for (const c of cfg.connections) {
+  for (const c of cfg.routes) {
     if (!dryRun && !c.enabled) continue;
-    if (!satisfies(cfg.ship.platform, c.platform)) continue;
+    // No route-wide platform gate: releasePhase checks each repo's own
+    // requirement, and a route can span repos with different needs.
     for (const r of reposOf(c)) await releasePhase(c, r);
   }
 }
 
 /**
- * Release every repository of the connection in play.
+ * Release every repository of the route in play.
  *
- * `crew run` on a single connection still has to cover all of its
+ * `crew run` on a single route still has to cover all of its
  * repositories: a verified branch in the second one is no less ready than a
  * verified branch in the first.
  */
 async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {}): Promise<void> {
   const only = value('repo');
-  const targets = reposOf(conn);
+  const targets = reposOf(route);
   const chosen = only ? targets.filter((t) => t.name === only) : targets;
   if (only && chosen.length === 0) {
     process.stderr.write(
-      `crew: no repo named "${only}" on connection "${conn.name}" ` +
+      `crew: no repo named "${only}" on route "${route.route}" ` +
         `(have: ${targets.map((t) => t.name).join(', ')})\n`,
     );
     process.exit(2);
   }
-  for (const t of chosen) await releasePhase(conn, t, opts);
+  for (const t of chosen) await releasePhase(route, t, opts);
 
   // Ship-wide, not per-repo — one sweep per release cycle, alongside the
   // worktree sweep each repo just ran above (ISSUE-401).
@@ -282,78 +289,142 @@ async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {
 }
 
 /**
- * The Environment section of a session's prompt, for one connection.
+ * The Environment section of a session's prompt, for one route.
  *
  * Assembled here rather than inside planAgentRun because it needs the repo's
- * own `.crew.yaml` and the connection's contract, and reading those is the
+ * own `.crew.yaml` and the route's contract, and reading those is the
  * cycle's job, not the prompt builder's.
  */
+// Repo row and Project (area) row lookups, cached by id for the life of this
+// process: several repos can share one area, and resolvedRepos() is called
+// more than once per cycle for the same route — without this every one
+// of those would refetch the same two rows over the network.
+const repoRowCache = new Map<string, Promise<{ project_id?: string | null } | undefined>>();
+const projectRowCache = new Map<string, Promise<{ issue_prefix?: string | null } | undefined>>();
+
 /**
- * Every repository a connection serves, with its own contract resolved.
+ * The area's own issue-key prefix for this repo, lowercased and dashed —
+ * `"CREW"` becomes `"crew-"` — or `undefined` when there is nothing to
+ * derive one from (no repo id, no Repos/Projects table, no `project_id` on
+ * the repo's row, or the Projects row's `issue_prefix` is unset or blank).
+ * `undefined` is not a value to report as an error: it means "fall back to
+ * the directory-derived default", which every repo already had before this
+ * existed, so a workspace that has not adopted this field sees no change at
+ * all.
+ */
+async function areaWorktreePrefix(c: typeof route, repoId: string | undefined): Promise<string | undefined> {
+  if (!repoId) return undefined;
+  let repoPromise = repoRowCache.get(repoId);
+  if (!repoPromise) {
+    repoPromise = new Tracker(c, cfg.ship).repoRow(repoId);
+    repoRowCache.set(repoId, repoPromise);
+  }
+  const projectId = (await repoPromise)?.project_id;
+  if (!projectId) return undefined;
+  let projectPromise = projectRowCache.get(projectId);
+  if (!projectPromise) {
+    projectPromise = new Tracker(c, cfg.ship).projectRow(projectId);
+    projectRowCache.set(projectId, projectPromise);
+  }
+  const raw = (await projectPromise)?.issue_prefix;
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  return trimmed ? `${trimmed.toLowerCase()}-` : undefined;
+}
+
+/**
+ * Every repository a route serves, with its own contract resolved.
  *
  * One place, because three commands need it and each got it wrong its own way
- * before ISSUE-350: they read the connection's `dir` and `worktreePrefix` and
+ * before ISSUE-350: they read the route's `dir` and `worktreePrefix` and
  * so saw only the first repo of an area that has several.
  */
-function resolvedRepos(c: typeof conn) {
-  return reposOf(c).map((t) => ({
-    name: t.name,
-    dir: t.dir,
-    id: repoIdForName(c, t.name),
-    config: resolveRepoConfig(loadRepoConfig(t.dir), {
-      hooks: c.hooks, labels: c.labels,
-      release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
-      platform: c.platform,
-      // The connection's prefix is a SHIP-level default for a repo that
-      // declares none. A repo that declares its own shadows it, and `doctor`
-      // reports that the way it reports every other shadowed setting. Only
-      // meaningful for a single-repo connection — see shipWorktreePrefixFor
-      // (ISSUE-398).
-      worktrees: { prefix: shipWorktreePrefixFor(c) },
-    }, t.dir),
+async function resolvedRepos(c: typeof route) {
+  return Promise.all(reposOf(c).map(async (t) => {
+    const id = repoIdForName(c, t.name);
+    return {
+      name: t.name,
+      dir: t.dir,
+      id,
+      config: resolveRepoConfig(loadRepoConfig(t.dir), {
+        hooks: c.hooks, labels: c.labels,
+        release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
+        // The route's own prefix is a SHIP-level default for a repo
+        // that declares none (ISSUE-398, single-repo only). Next, the
+        // repo's own area may name an issue-key prefix of its own (its
+        // tracker `Projects` row's `issue_prefix`) — shared across every
+        // repo in that area, since they use the same ticket-key format
+        // regardless of which one a ticket happens to build in. A repo
+        // that declares its own `worktrees.prefix` shadows either, and
+        // `doctor` reports that the way it reports every other shadowed
+        // setting.
+        worktrees: { prefix: shipWorktreePrefixFor(c) ?? await areaWorktreePrefix(c, id) },
+      }, t.dir),
+    };
   }));
 }
 
-/** Where this connection's worktrees live, per repository. */
-const worktreeLocations = (c: typeof conn) =>
-  resolvedRepos(c).map((r) => ({
+/** Where this route's worktrees live, per repository. */
+const worktreeLocations = async (c: typeof route) =>
+  (await resolvedRepos(c)).map((r) => ({
     parent: resolvePath(r.dir, '..'),
     prefix: r.config.worktrees.prefix,
   }));
 
-function environmentFor(c: typeof conn, ticket?: string | null): string {
+/**
+ * Whether this ship can build ANYTHING on this route at all.
+ *
+ * What a host must be belongs to each repo (its own `.crew.yaml`), not the
+ * route — so a route spanning repos with different needs is
+ * refused only when NONE of them fit. This runs before a ticket is picked
+ * and so cannot know which repo it targets, the same coarseness the old
+ * route-wide `platform` setting had; the release phase is the one
+ * place that already checks the actual repo (`releasePhase`), because it
+ * only ever runs one repo at a time.
+ */
+async function anyRepoServable(c: typeof route): Promise<boolean> {
+  return (await resolvedRepos(c)).some((r) => satisfies(cfg.ship.platform, r.config.platform));
+}
+
+/** Why `anyRepoServable` refused a route, naming each repo's own requirement. */
+async function explainUnservable(c: typeof route): Promise<string> {
+  return (await resolvedRepos(c))
+    .map((r) => `${r.name} requires ${r.config.platform}`)
+    .join(', ');
+}
+
+async function environmentFor(c: typeof route, ticket?: string | null): Promise<string> {
   const contract = new Tracker(c, cfg.ship).contract;
-  // Every repository the connection serves, not just the first. Which one
+  // Every repository the route serves, not just the first. Which one
   // THIS ticket's work happens in is unknowable here — the brief describes
   // them all (ISSUE-350). `ticket`, when the caller already resolved one
   // before building the environment, is only used for filing guidance
   // (ISSUE-411) — it names the ticket a spotted-bug report should reference,
   // never which repo section applies.
   return renderEnvironment({
-    conn: c, userAgent: cfg.ship.userAgent, repos: resolvedRepos(c), contract, sourceTicket: ticket,
+    route: c, userAgent: cfg.ship.userAgent, repos: await resolvedRepos(c), contract, sourceTicket: ticket,
   });
 }
 
 /**
- * Connections whose unplaceable tickets have already been reported this run.
+ * Routes whose unplaceable tickets have already been reported this run.
  *
  * `releasePhase` runs once per REPOSITORY, and every one of them computes the
- * same connection-wide unplaceable set — so without this the same message is
+ * same route-wide unplaceable set — so without this the same message is
  * emitted once per repo, three times over for an area with three checkouts.
  * A process is one cycle, so a Set that lives as long as it is exactly the
  * right lifetime.
  */
 const unplaceableReported = new Set<string>();
 
-/** Emit what `describeUnplaceable` decided, once per connection per run. */
+/** Emit what `describeUnplaceable` decided, once per route per run. */
 function reportUnplaceable(
-  c: typeof conn,
+  c: typeof route,
   unplaceable: Array<Unplaceable<Ticket>>,
   verified: string,
   emit: Emitter,
 ): void {
-  if (unplaceableReported.has(c.name)) return;
-  unplaceableReported.add(c.name);
+  if (unplaceableReported.has(c.route)) return;
+  unplaceableReported.add(c.route);
   for (const note of describeUnplaceable(unplaceable, verified)) {
     if (note.level === 'warn') emit.warn(note.message, { step: 'release' });
     else emit.emit(note.message, { step: 'release' });
@@ -370,13 +441,13 @@ function reportUnplaceable(
  * blocks the next poll from starting, and vice versa.
  */
 async function releasePhase(
-  c: typeof conn, target: RepoTarget, opts: { mergeOnly?: boolean; force?: boolean } = {},
+  c: typeof route, target: RepoTarget, opts: { mergeOnly?: boolean; force?: boolean } = {},
 ): Promise<void> {
-  const scope = `${c.name}/${target.name}`;
-  // Per REPOSITORY, not per connection. A board's area spans several repos and
+  const scope = `${c.route}/${target.name}`;
+  // Per REPOSITORY, not per route. A board's area spans several repos and
   // each releases on its own: they have separate versions, separate tags and
   // separate deploy targets, and a long release of one must not hold up
-  // another. Scoping this to the connection meant only `conn.dir` was ever
+  // another. Scoping this to the route meant only `route.dir` was ever
   // released — every other repo on the board was silently never shipped.
   const relLock = dryRun ? undefined : state.acquire(`release-${scope}`);
   if (relLock && !relLock.ok) {
@@ -394,11 +465,19 @@ async function releasePhase(
     const repo = resolveRepoConfig(repoFile, {
       hooks: c.hooks, labels: c.labels,
       release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
-      platform: c.platform,
       worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, target.dir);
     const problems = validateEffective(repo);
     for (const p of problems) emit.warn(`${scope}: ${p}`);
+
+    // What a host must be to build THIS repo is that repo's own fact
+    // (`.crew.yaml`), not the route's — a route can span repos with
+    // different needs. Skip only this one; the rest of the route's
+    // repos may still be releasable here.
+    if (!satisfies(cfg.ship.platform, repo.platform)) {
+      emit.emit(`${scope}: skipping — ${explain(cfg.ship.platform, repo.platform)}`, { step: 'release' });
+      return;
+    }
 
     if (!dryRun && !c.enabled) return;
     const tracker = new Tracker(c, cfg.ship);
@@ -550,11 +629,11 @@ if (EXCLUSIVE[command] && !dryRun) {
 switch (command) {
   case 'poll':
   case 'run': {
-    // Many connections and none named: poll them all and pick the most
+    // Many routes and none named: poll them all and pick the most
     // urgent across the fleet (ISSUE-338).
     if (fleetWide) {
       const fleet = await decideFleet({
-        connections: cfg.connections, ship: cfg.ship, state, emit,
+        routes: cfg.routes, ship: cfg.ship, state, emit,
         enabledOnly: !dryRun,
       });
       process.stdout.write(renderFleet(fleet, state));
@@ -564,18 +643,18 @@ switch (command) {
       // outcome — including this exact "nothing to run" case, which is the
       // one a task-progress-only heartbeat could never distinguish from a
       // dead ship. "A ship has a Ships row per workspace... beats on each":
-      // every eligible connection gets its own write, not only the winner's,
+      // every eligible route gets its own write, not only the winner's,
       // since this ship polled all of them successfully this cycle. Best
       // effort — a workspace with no Ships table, or unreachable this cycle,
       // must not stop the run itself. Skipped entirely for --dry-run, which
-      // "performs nothing" — see the matching guard on the single-connection
+      // "performs nothing" — see the matching guard on the single-route
       // path below.
       if (!dryRun) {
-        await Promise.all(cfg.connections.filter((c) => c.enabled).map(async (c) => {
+        await Promise.all(cfg.routes.filter((c) => c.enabled).map(async (c) => {
           try {
             await new Tracker(c, cfg.ship).beatShip(cfg.ship.name);
           } catch (e) {
-            emit.warn(`could not beat ship for ${c.name}: ${(e as Error).message}`, { step: 'poll' });
+            emit.warn(`could not beat ship for ${c.route}: ${(e as Error).message}`, { step: 'poll' });
           }
         }));
       }
@@ -587,20 +666,23 @@ switch (command) {
       }
 
       const w = fleet.winner;
-      if (!satisfies(cfg.ship.platform, w.connection.platform)) {
-        emit.error(`refusing ${w.connection.name} — ${explain(cfg.ship.platform, w.connection.platform)}`);
+      if (!(await anyRepoServable(w.route))) {
+        emit.error(
+          `refusing ${w.route.route} — this ship is ${cfg.ship.platform}, but ` +
+            `${await explainUnservable(w.route)}`,
+        );
         break;
       }
-      if (!dryRun && !w.connection.enabled) {
-        emit.emit(`connection "${w.connection.name}" is not enabled — not running`);
+      if (!dryRun && !w.route.enabled) {
+        emit.emit(`route "${w.route.route}" is not enabled — not running`);
         break;
       }
       if (dryRun) {
         const fleetPlan = planAgentRun({
-          role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
-          stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
-          environment: environmentFor(w.connection, w.decision.actionable.top?.issue_id),
-          apiKey: resolveApiKey(w.connection),
+          role: w.role, route: w.route, ship: cfg.ship, crewHome: CREW_HOME,
+          stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
+          environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
+          apiKey: resolveApiKey(w.route),
           cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
         });
         process.stdout.write(`${describePlan(fleetPlan)}\n`);
@@ -617,17 +699,17 @@ switch (command) {
         break;
       }
       lock = fleetLock;
-      const fleetTracker = new Tracker(w.connection, cfg.ship);
+      const fleetTracker = new Tracker(w.route, cfg.ship);
 
       // ISSUE-395: claim the fleet winner's top ticket before spawning it —
-      // see the matching comment on the single-connection path below for why.
+      // see the matching comment on the single-route path below for why.
       // A fleet-wide runner-up is out of scope here: a contended claim just
       // ends this cycle for the whole fleet, same as "nothing to run" did
       // before this ticket, and the next poll re-ranks everything fresh.
       let fleetTicketHint = w.decision.actionable.top?.issue_id;
       let fleetWorkingId = w.decision.actionable.top?.id ?? null;
       if (w.role === 'dev' || w.role === 'design') {
-        const seat = w.connection.resolved?.seats[w.role];
+        const seat = w.route.resolved?.seats[w.role];
         if (seat) {
           const candidates = rankedCandidates(w.role, w.decision.selectionInput);
           const contract = w.decision.selectionInput.contract ?? DEFAULT_CONTRACT;
@@ -649,7 +731,7 @@ switch (command) {
           if (result.claimed) {
             const idx = w.decision.tickets.findIndex((t) => t.id === result.ticket!.id);
             if (idx >= 0) w.decision.tickets[idx] = result.ticket;
-            writeDigest({ conn: w.connection, ship: cfg.ship, state, emit }, w.decision, w.role, cfg.ship.stateDir);
+            writeDigest({ route: w.route, ship: cfg.ship, state, emit }, w.decision, w.role, cfg.ship.stateDir);
           }
           fleetTicketHint = result.ticket.issue_id;
           fleetWorkingId = result.ticket.id;
@@ -657,15 +739,15 @@ switch (command) {
       }
 
       const fleetPlan = planAgentRun({
-        role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
-        stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
-        environment: environmentFor(w.connection, fleetTicketHint),
-        apiKey: resolveApiKey(w.connection),
+        role: w.role, route: w.route, ship: cfg.ship, crewHome: CREW_HOME,
+        stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
+        environment: await environmentFor(w.route, fleetTicketHint),
+        apiKey: resolveApiKey(w.route),
         cycle: emit.cycle, ticket: fleetTicketHint,
       });
       emit.enter('agent', w.role);
-      emit.emit(`starting agent run for ${w.connection.name}`);
-      const fleetMemberId = w.connection.resolved?.seats[w.role];
+      emit.emit(`starting agent run for ${w.route.route}`);
+      const fleetMemberId = w.route.resolved?.seats[w.role];
       if (fleetMemberId) {
         try {
           await fleetTracker.setCrewStatus(fleetMemberId, 'working', fleetWorkingId);
@@ -674,7 +756,7 @@ switch (command) {
         }
       }
       try {
-        await fleetTracker.beatEngaged(cfg.ship.name, w.connection.name, fleetWorkingId);
+        await fleetTracker.beatEngaged(cfg.ship.name, w.route.route, fleetWorkingId);
       } catch (e) {
         emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
       }
@@ -699,17 +781,20 @@ switch (command) {
       break;
     }
 
-    // A ship that cannot satisfy the project's platform must not take its
-    // work: it would fail at the first hook, having already claimed a ticket.
-    if (!satisfies(cfg.ship.platform, conn.platform)) {
-      emit.error(`refusing this connection — ${explain(cfg.ship.platform, conn.platform)}`);
+    // A ship that cannot satisfy any of this route's repos must not take
+    // its work: it would fail at the first hook, having already claimed a
+    // ticket.
+    if (!(await anyRepoServable(route))) {
+      emit.error(
+        `refusing this route — this ship is ${cfg.ship.platform}, but ${await explainUnservable(route)}`,
+      );
       process.exit(1);
     }
     if (state.isPaused()) {
       emit.emit('the crew is paused');
       break;
     }
-    const decision = await decideCycle({ conn, ship: cfg.ship, state, emit });
+    const decision = await decideCycle({ route, ship: cfg.ship, state, emit });
 
     if (decision.sweep.length) {
       if (dryRun) {
@@ -719,8 +804,8 @@ switch (command) {
           });
         }
       } else {
-        const seat = conn.resolved?.seats.qa ?? conn.resolved?.seats.dev;
-        const r = await applySweep(new Tracker(conn, cfg.ship), decision.sweep, seat ?? '', emit);
+        const seat = route.resolved?.seats.qa ?? route.resolved?.seats.dev;
+        const r = await applySweep(new Tracker(route, cfg.ship), decision.sweep, seat ?? '', emit);
         emit.emit(
           `swept ${r.parked} parked, ${r.restored} restored${r.failed ? `, ${r.failed} failed` : ''}`,
           { step: 'sweep', data: r },
@@ -736,7 +821,7 @@ switch (command) {
     // Skipped for --dry-run, which "performs nothing".
     if (!dryRun) {
       try {
-        await new Tracker(conn, cfg.ship).beatShip(cfg.ship.name);
+        await new Tracker(route, cfg.ship).beatShip(cfg.ship.name);
       } catch (e) {
         emit.warn(`could not beat ship: ${(e as Error).message}`, { step: 'poll' });
       }
@@ -761,11 +846,11 @@ switch (command) {
     const explicitRole = value('role') !== undefined;   // means "run exactly this seat"
     const ran: RoleName[] = [];
     let current: RoleName | undefined = role;
-    const tracker2 = new Tracker(conn, cfg.ship);
+    const tracker2 = new Tracker(route, cfg.ship);
 
     while (current) {
       // Role-distinct, capacity-limited (ISSUE-381) — see State.acquireRun.
-      // A role already running elsewhere (another connection, another
+      // A role already running elsewhere (another route, another
       // ship-wide invocation) is skipped for the runner-up exactly as a
       // role that changed nothing is below; an explicit --role never falls
       // through, so it just stops.
@@ -790,7 +875,7 @@ switch (command) {
       let ticketHint = decision.actionable.top?.issue_id;
       let workingId = decision.actionable.top?.id ?? null;
       if (!dryRun && (current === 'dev' || current === 'design')) {
-        const seat = conn.resolved?.seats[current];
+        const seat = route.resolved?.seats[current];
         if (seat) {
           const candidates = rankedCandidates(current, decision.selectionInput);
           const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
@@ -815,7 +900,7 @@ switch (command) {
           if (result.claimed) {
             const idx = decision.tickets.findIndex((t) => t.id === result.ticket!.id);
             if (idx >= 0) decision.tickets[idx] = result.ticket;
-            writeDigest({ conn, ship: cfg.ship, state, emit }, decision, current, cfg.ship.stateDir);
+            writeDigest({ route, ship: cfg.ship, state, emit }, decision, current, cfg.ship.stateDir);
           }
           ticketHint = result.ticket.issue_id;
           workingId = result.ticket.id;
@@ -823,10 +908,10 @@ switch (command) {
       }
 
       const plan = planAgentRun({
-        role: current, conn, ship: cfg.ship, crewHome: CREW_HOME,
-        stateDir: cfg.ship.stateDir, roster: rosterFor(decision, conn, current),
-        environment: environmentFor(conn, ticketHint),
-        apiKey: resolveApiKey(conn),
+        role: current, route, ship: cfg.ship, crewHome: CREW_HOME,
+        stateDir: cfg.ship.stateDir, roster: rosterFor(decision, route, current),
+        environment: await environmentFor(route, ticketHint),
+        apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint,
       });
       if (dryRun) {
@@ -836,7 +921,7 @@ switch (command) {
       const before = snapshot(await tracker2.openTickets());
       emit.enter('agent', current);
       emit.emit('starting agent run');
-      const memberId = conn.resolved?.seats[current];
+      const memberId = route.resolved?.seats[current];
       if (memberId) {
         try {
           await tracker2.setCrewStatus(memberId, 'working', workingId);
@@ -845,7 +930,7 @@ switch (command) {
         }
       }
       try {
-        await tracker2.beatEngaged(cfg.ship.name, conn.name, workingId);
+        await tracker2.beatEngaged(cfg.ship.name, route.route, workingId);
       } catch (e) {
         emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
       }
@@ -890,7 +975,7 @@ switch (command) {
   case 'merge':
   case 'deploy':
   case 'release': {
-    // Named or single connection only: `crew release` is a deliberate act on
+    // Named or single route only: `crew release` is a deliberate act on
     // one repo, not a fleet-wide sweep.
     await releaseTargets({
       mergeOnly: command === 'merge', force: command === 'deploy' || flag('force'),
@@ -906,7 +991,7 @@ switch (command) {
         role: value('role'),
         ticket: value('ticket'),
         level: value('level') as 'warn' | 'error' | undefined,
-        connection: positional[1] ? conn.name : undefined,
+        route: positional[1] ? route.route : undefined,
       },
     });
     process.on('SIGINT', () => { stop(); process.exit(0); });
@@ -914,44 +999,107 @@ switch (command) {
   }
 
   case 'connect': {
-    const wsId = value('workspace-id');
-    const apiKey = value('key') ?? process.env.CREW_CONNECT_KEY;
-    if (!wsId || !apiKey) {
+    // `crew connect foo/bar` (workspace slug / project slug) is the normal
+    // form; `crew connect foo` offers every project in that workspace with
+    // the tables a route needs, when there's more than one candidate; bare
+    // `crew connect` (no argument at all) offers every workspace this key's
+    // identity can see. `--workspace-id` (a uuid OR a slug — `discover()`
+    // accepts either) and `--project` remain for scripting and for a project
+    // named rather than slugged.
+    const arg = positional[1];
+    const [argWorkspace, argProject] = arg?.includes('/') ? arg.split(/\/(.*)/s) : [arg, undefined];
+    const workspace = argWorkspace ?? value('workspace-id') ?? value('workspace');
+    const project = argProject ?? value('project');
+    // No bare `cfg.ship.apiKey` to read here — it's only a fallback SOURCE the
+    // route parser merges in, not a field of its own on `Ship`. Any
+    // already-configured route's (already-merged) key is the next best
+    // guess, and exactly what a ship-level key resolves to in practice.
+    const apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? cfg.routes.find((c) => c.apiKey)?.apiKey;
+    if (!apiKey) {
       process.stderr.write(
-        'crew connect: need --workspace-id and --key (or CREW_CONNECT_KEY).\n' +
-        '  API keys are workspace-scoped — there is no platform key — so create one\n' +
-        '  in that workspace first (Admin > API keys).\n',
+        'crew connect [<workspace>[/<project>]] --key K (or CREW_CONNECT_KEY, or ship.apiKey in crew.yaml)\n' +
+        '  workspace/project may be slugs, ids, or (project) a name. Omit workspace to list them.\n',
       );
       process.exit(2);
     }
-    const found = await discover({
-      baseUrl: value('base-url') ?? cfg.connections[0]?.baseUrl ?? 'https://app.tablation.com',
-      apiKey, workspaceId: wsId,
-      project: value('project'), area: value('area'),
-      userAgent: cfg.ship.userAgent,
-    });
-    process.stdout.write(renderConnection(
-      found,
-      value('name') ?? (found.projectName ?? 'new-connection').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      value('dir') ?? 'REPLACE — the local checkout this connection works',
-      { area: value('area') },
-    ));
-    if (found.problems.length) {
-      process.stderr.write('\n  Unresolved — fix these before arming it:\n');
-      for (const p of found.problems) process.stderr.write(`    - ${p}\n`);
+    const authOpts = {
+      baseUrl: value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL,
+      apiKey, userAgent: cfg.ship.userAgent,
+    };
+
+    const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
+      const found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area') });
+      if (!found.projectId) {
+        process.stderr.write(`crew connect ${ws}: unresolved —\n`);
+        for (const p of found.problems) process.stderr.write(`  - ${p}\n`);
+        process.exit(2);
+      }
+      // The route's own identity, built from the SLUGS `discover()` resolved
+      // — never from a display name, which may hold spaces/mixed case a
+      // route string and a state-file path segment cannot.
+      const route = `${found.workspaceSlug}/${found.projectSlug ?? found.projectId}`;
+      const resolvedPath = resolvedPathFor(cfg.ship.stateDir, route);
+      const resolved = {
+        workspaceId: found.workspaceId, projectId: found.projectId,
+        areaModelId: found.areaModelId, areaId: found.areaId,
+        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, locksModelId: found.locksModelId,
+        reposModelId: found.reposModelId, repoNames: found.repoNames,
+        models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
+      };
+      if (dryRun) {
+        process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
+      } else {
+        mkdirSync(dirname(resolvedPath), { recursive: true });
+        writeFileSync(resolvedPath, `${JSON.stringify(resolved, null, 2)}\n`);
+        process.stderr.write(`Resolved ids written to ${resolvedPath}\n`);
+      }
+      process.stdout.write(renderConnection(
+        found, route,
+        value('dir') ?? 'REPLACE — the local checkout this route works',
+        { area: value('area') },
+      ));
+      if (found.problems.length) {
+        process.stderr.write('\n  Unresolved — fix these before arming it:\n');
+        for (const p of found.problems) process.stderr.write(`    - ${p}\n`);
+      }
+      // `resolved.operator` has no source: which Crew row is the human
+      // running this is not inferable from the workspace's data, and
+      // (unlike a seat or a hold) never will be — a person decides it once,
+      // by hand, in the state file `resolvedPath` names above.
+      process.stderr.write(
+        `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there\n` +
+        `  already), set operator in ${resolvedPath}, then: crew doctor ${route}\n`,
+      );
+    };
+
+    if (!workspace) {
+      const workspaces = await listWorkspaces(authOpts);
+      if (workspaces.length === 0) {
+        process.stderr.write('crew connect: this key\'s identity has no workspace memberships.\n');
+        process.exit(2);
+      } else if (workspaces.length === 1) {
+        // Only one candidate — same reasoning as an unnamed route with only
+        // one enabled: nothing to disambiguate, so proceed with it directly
+        // rather than making the operator retype what there was no choice in.
+        await runConnect(workspaces[0]!.slug, project);
+      } else {
+        process.stderr.write(
+          `${workspaces.length} workspaces reachable by this key — name one:\n` +
+          workspaces.map((w) => `  ${w.slug.padEnd(24)} ${w.name} (${w.role})\n`).join(''),
+        );
+        process.exit(2);
+      }
+    } else {
+      await runConnect(workspace, project);
     }
-    process.stderr.write(
-      '\n  Paste the block above under `connections:` in crew.yaml, fill the REPLACE\n' +
-      '  fields, then: crew doctor <name>\n',
-    );
     break;
   }
 
   case 'inbox': {
-    // Deliberately NOT scoped to one connection: the whole point is that no
+    // Deliberately NOT scoped to one route: the whole point is that no
     // single board can answer this.
     const who = value('member');
-    const { items, errors, resolved, ambiguous } = await gatherInbox(cfg.connections, cfg.ship, {
+    const { items, errors, resolved, ambiguous } = await gatherInbox(cfg.routes, cfg.ship, {
       includeClosed: flag('all'),
       memberQuery: who,
     });
@@ -962,9 +1110,9 @@ switch (command) {
       for (const r of resolved) {
         process.stdout.write(
           r.names.length
-            ? `${r.connection}: ${r.names.join(', ')}${r.emails.length ? ` <${r.emails.join(', ')}>` : ''}` +
+            ? `${r.route}: ${r.names.join(', ')}${r.emails.length ? ` <${r.emails.join(', ')}>` : ''}` +
               `${r.by === 'name' ? ' (matched by name)' : ''}\n`
-            : `${r.connection}: no crew member matching "${who}"\n`,
+            : `${r.route}: no crew member matching "${who}"\n`,
         );
       }
       if (ambiguous) {
@@ -979,13 +1127,13 @@ switch (command) {
     const subject = who
       ? [...new Set(resolved.flatMap((r) => r.names))].join(', ') || `"${who}"`
       : undefined;
-    process.stdout.write(renderInbox(items, flag('by-connection'), subject));
-    for (const e of errors) process.stderr.write(`  (${e.connection} unreachable: ${e.error})\n`);
+    process.stdout.write(renderInbox(items, flag('by-route'), subject));
+    for (const e of errors) process.stderr.write(`  (${e.route} unreachable: ${e.error})\n`);
     break;
   }
 
   case 'ports': {
-    const where = worktreeLocations(conn);
+    const where = await worktreeLocations(route);
     const rows = listeners()
       .map((l) => ({ ...l, t: ticketForPort(l.port) }))
       .filter((r) => r.t)
@@ -1005,9 +1153,9 @@ switch (command) {
     emit.enter('worktree');
     let anything = false;
 
-    // Every repository, not just the connection's first: a worktree alive in
+    // Every repository, not just the route's first: a worktree alive in
     // the second one used to read as an orphan, and reap kills orphans.
-    const orphans = findOrphansIn(worktreeLocations(conn));
+    const orphans = findOrphansIn(await worktreeLocations(route));
     for (const o of orphans) {
       anything = true;
       emit.emit(
@@ -1021,10 +1169,10 @@ switch (command) {
     // by-hand case for the same sweep the release phase runs on its own
     // (ISSUE-346). Each repository names its worktrees itself (ISSUE-350), so
     // the sweep is planned with that repo's prefix, not the ship default.
-    const tracker = new Tracker(conn, cfg.ship);
+    const tracker = new Tracker(route, cfg.ship);
     const terminal = await tracker.terminalTickets();
-    const { byRepo } = ticketsByRepo(conn, terminal);
-    for (const r of resolvedRepos(conn)) {
+    const { byRepo } = ticketsByRepo(route, terminal);
+    for (const r of await resolvedRepos(route)) {
       const actions = planWorktreeSweep(
         r, byRepo.get(r.name) ?? [], tracker.contract, r.config.worktrees.prefix,
       );
@@ -1058,7 +1206,8 @@ switch (command) {
     // Which repository's worktree? Each names them after itself (ISSUE-350),
     // so the number alone does not say — look for it in all of them. Removing
     // one is destructive, so an ambiguous answer stops rather than picks.
-    const candidates = resolvedRepos(conn)
+    const repos = await resolvedRepos(route);
+    const candidates = repos
       .map((r) => ({
         repo: r,
         path: `${resolvePath(r.dir, '..')}/${r.config.worktrees.prefix}${n}`,
@@ -1066,8 +1215,8 @@ switch (command) {
       .filter((c) => existsSync(`${c.path}/.git`));
     if (candidates.length === 0) {
       process.stderr.write(
-        `drop: no worktree for ISSUE-${n} in any of this connection's repositories ` +
-          `(looked in: ${resolvedRepos(conn).map((r) => `${r.config.worktrees.prefix}${n}`).join(', ')})\n`,
+        `drop: no worktree for ISSUE-${n} in any of this route's repositories ` +
+          `(looked in: ${repos.map((r) => `${r.config.worktrees.prefix}${n}`).join(', ')})\n`,
       );
       process.exit(2);
     }
@@ -1111,13 +1260,13 @@ switch (command) {
     emit.enter('select');   // closest existing step — this changes selection, not a worktree
     const n = positional[2] ?? positional[1];
     if (!n || !/^\d+$/.test(n)) { process.stderr.write('unassign: need a ticket number\n'); process.exit(2); }
-    const tracker3 = new Tracker(conn, cfg.ship);
+    const tracker3 = new Tracker(route, cfg.ship);
     const c = tracker3.contract;
     const key = `ISSUE-${n}`;
     const open = await tracker3.openTickets();
     const ticket = open.find((t) => t[c.columns.key] === key);
     if (!ticket) {
-      process.stderr.write(`unassign: no open ticket ${key} on ${conn.name} (already resolved, or not this connection's)\n`);
+      process.stderr.write(`unassign: no open ticket ${key} on ${route.route} (already resolved, or not this route's)\n`);
       process.exit(2);
     }
     if (!ticket[c.columns.assignee]) {
@@ -1147,9 +1296,9 @@ switch (command) {
     emit.enter('worktree');
     let tracked = 0;
     let acted = 0;
-    // Every repository of the connection: a reviewer's commits on the second
+    // Every repository of the route: a reviewer's commits on the second
     // repo's branch are no less stale for being next door (ISSUE-350).
-    for (const r of reposOf(conn)) {
+    for (const r of reposOf(route)) {
       fetchRemote(r.dir);
       for (const w of worktrees(r.dir)) {
         if (!w.branch) continue;
@@ -1224,8 +1373,8 @@ switch (command) {
   case 'status': {
     process.stdout.write(
       `ship:       ${cfg.ship.name} (${cfg.ship.platform})\n` +
-        `connection: ${conn.name} -> ${conn.dir}\n` +
-        `enabled:    ${conn.enabled}\n` +
+        `route:      ${route.route} -> ${route.dir}\n` +
+        `enabled:    ${route.enabled}\n` +
         `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
         `watermark:  ${state.watermark()}\n`,
     );
@@ -1235,7 +1384,7 @@ switch (command) {
     // Starvation instrumentation (ISSUE-382): the poll writes this every
     // cycle, so a quiet board's most urgent ticket going unpicked shows up
     // here without anyone reading the log by hand.
-    const fairness = state.fairness(conn.name);
+    const fairness = state.fairness(route.route);
     const waiting = fairness.waiting();
     if (waiting) {
       process.stdout.write(
@@ -1244,12 +1393,12 @@ switch (command) {
       );
     }
 
-    // Ship liveness (ISSUE-380): every ship this connection's Ships table
+    // Ship liveness (ISSUE-380): every ship this route's Ships table
     // knows about, not only this one — "status ... what this ship (or the
     // fleet) is doing" names both. Absent entirely on a workspace with no
     // Ships table, same as `doctor`'s "this workspace has no Ships table
     // (fine)".
-    const statusTracker = new Tracker(conn, cfg.ship);
+    const statusTracker = new Tracker(route, cfg.ship);
     const shipRows = await statusTracker.shipRows();
     if (shipRows.length) {
       // "An engaged ship names what it is working" — resolve the raw
@@ -1270,13 +1419,12 @@ switch (command) {
     const host = hostPlatform();
     process.stdout.write(
       `ship:              ${cfg.ship.name} (${host})\n` +
-        `project requires:  ${conn.platform} — ${satisfies(host, conn.platform) ? 'OK' : 'MISMATCH'}\n` +
-        `connections:       ${cfg.connections.map((c) => c.name).join(', ')}\n`,
+        `routes:            ${cfg.routes.map((c) => c.route).join(', ')}\n`,
     );
 
     // Does this machine have a row on the board, and which seats are its own?
     // Matched by name, per Brad's call: it is what an operator recognises.
-    const tracker = new Tracker(conn, cfg.ship);
+    const tracker = new Tracker(route, cfg.ship);
 
     // A workspace's contract can be internally inconsistent — a status named
     // as `approved` that is not in `open`, a `handoff` listed as resolved.
@@ -1289,17 +1437,18 @@ switch (command) {
         : 'contract:          consistent\n',
     );
 
-    // Per repository, because a connection serves several and each carries its
+    // Per repository, because a route serves several and each carries its
     // own contract. `shadowed` was computed and never read by anything until
     // ISSUE-350 — a setting the ship declares and the repo overrides is
     // otherwise invisible, and reads as though it were in use.
-    for (const r of resolvedRepos(conn)) {
+    for (const r of await resolvedRepos(route)) {
       const { config } = r;
       process.stdout.write(
         `${`repo ${r.name}:`.padEnd(19)}${r.dir}\n` +
           `                   worktrees at ../${config.worktrees.prefix}<number> ` +
           `(${config.provenance['worktrees.prefix'] ?? 'default'}), ` +
-          `branch ${config.branch.name}\n`,
+          `branch ${config.branch.name}\n` +
+          `                   requires ${config.platform} — ${satisfies(host, config.platform) ? 'OK' : 'MISMATCH'}\n`,
       );
       if (config.shadowed.length) {
         process.stdout.write(

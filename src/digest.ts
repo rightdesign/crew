@@ -52,7 +52,7 @@ export interface DigestInput {
    * Where this ticket's work happens on this machine.
    *
    * An area spans several repos, so the checkout is a property of the TICKET,
-   * not of the connection. A ticket whose repo this ship has no checkout for
+   * not of the route. A ticket whose repo this ship has no checkout for
    * is marked, because working it in the wrong directory is worse than
    * skipping it.
    */
@@ -67,7 +67,7 @@ export interface DigestInput {
    * The branch this ticket's work is actually on, or null when none exists.
    *
    * QA's "is there still a worktree to test?" column. Per ticket rather than
-   * one flat list of the connection directory's branches: an area spans
+   * one flat list of the route directory's branches: an area spans
    * several repos (ISSUE-331), and a branch in the second one is invisible
    * from the first. The single-repo version reported every cross-repo
    * ticket as having no branch, which QA reads as nothing to verify

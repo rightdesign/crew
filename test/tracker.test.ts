@@ -1,16 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Tracker } from '../src/tracker.ts';
-import type { Connection } from '../src/config.ts';
+import type { Route } from '../src/config.ts';
 
-function makeConnection(opts: { shipsModelId?: string } = {}): Connection {
+function makeRoute(opts: { shipsModelId?: string; reposModelId?: string; areaModelId?: string } = {}): Route {
   return {
-    name: 'test',
+    route: 'issues/test',
     enabled: true,
-    workspace: 'issues',
     dir: '/tmp/does-not-matter',
     repos: {},
-    platform: 'any',
     baseUrl: 'https://example.test',
     apiKey: 'sk_test',
     hooks: {},
@@ -23,8 +21,10 @@ function makeConnection(opts: { shipsModelId?: string } = {}): Connection {
       operator: 'operator-id',
       holds: [],
       shipsModelId: opts.shipsModelId,
+      reposModelId: opts.reposModelId,
+      areaModelId: opts.areaModelId,
     },
-  } as unknown as Connection;
+  } as unknown as Route;
 }
 
 test('terminalTickets() sorts by updatedAt descending, so a truncated page still holds the most-recently-closed tickets', async (t) => {
@@ -38,7 +38,7 @@ test('terminalTickets() sorts by updatedAt descending, so a truncated page still
     globalThis.fetch = originalFetch;
   });
 
-  const tracker = new Tracker(makeConnection(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
   await tracker.terminalTickets();
 
   assert.equal(requests.length, 1);
@@ -58,7 +58,7 @@ test('setCrewStatus(working, ticketId) patches status, the ticket reference, and
     globalThis.fetch = originalFetch;
   });
 
-  const tracker = new Tracker(makeConnection(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
   await tracker.setCrewStatus('member-1', 'working', 'ticket-uuid-1');
 
   assert.equal(bodies.length, 1);
@@ -80,7 +80,7 @@ test('setCrewStatus(idle) with no ticket id leaves current_issue_id untouched â€
     globalThis.fetch = originalFetch;
   });
 
-  const tracker = new Tracker(makeConnection(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
   await tracker.setCrewStatus('member-1', 'idle');
 
   assert.equal(bodies.length, 1);
@@ -94,7 +94,7 @@ test('beatShip() is a no-op when the workspace has no Ships table', async (t) =>
   globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify([]), { status: 200 }); }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeConnection(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
   await tracker.beatShip("Brad's Mac");
 
   assert.equal(calls, 0, 'no Ships table means nothing to list or patch');
@@ -110,7 +110,7 @@ test('beatShip() is a no-op when no row (or more than one) matches this ship\'s 
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
   await tracker.beatShip("Brad's Mac");
 
   assert.equal(patched, false, 'an unmatched ship name must not write to a row that isn\'t this ship\'s');
@@ -127,7 +127,7 @@ test('beatShip() patches last_seen/host/pid on this ship\'s own row, leaving eng
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
   await tracker.beatShip("Brad's Mac");
 
   assert.equal(bodies.length, 1);
@@ -137,7 +137,7 @@ test('beatShip() patches last_seen/host/pid on this ship\'s own row, leaving eng
   assert.equal('engaged' in bodies[0]!, false, 'a plain heartbeat must not touch engagement state');
 });
 
-test('beatEngaged() marks the ship engaged, naming the connection, ticket and since-when', async (t) => {
+test('beatEngaged() marks the ship engaged, naming the route, ticket and since-when', async (t) => {
   const bodies: Array<Record<string, unknown>> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -148,7 +148,7 @@ test('beatEngaged() marks the ship engaged, naming the connection, ticket and si
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
   await tracker.beatEngaged("Brad's Mac", 'synthesis', 'ticket-uuid-1');
 
   assert.equal(bodies.length, 1);
@@ -169,7 +169,7 @@ test('beatIdle() clears engagement back to idle', async (t) => {
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
   await tracker.beatIdle("Brad's Mac");
 
   assert.equal(bodies.length, 1);
@@ -177,4 +177,55 @@ test('beatIdle() clears engagement back to idle', async (t) => {
   assert.equal(bodies[0]!.engaged_since, null);
   assert.equal(bodies[0]!.engaged_connection, null);
   assert.equal(bodies[0]!.engaged_ticket_id, null);
+});
+
+test('repoRow() is undefined when the workspace has no Repos table', async (t) => {
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { calls++; return new Response('{}', { status: 200 }); }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  assert.equal(await tracker.repoRow('repo-1'), undefined);
+  assert.equal(calls, 0);
+});
+
+test('repoRow() returns the row, project_id included', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ id: 'repo-1', project_id: 'proj-1' }), { status: 200 })) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeRoute({ reposModelId: 'repos-model-id' }), { userAgent: 'crew-test' });
+  assert.deepEqual(await tracker.repoRow('repo-1'), { id: 'repo-1', project_id: 'proj-1' });
+});
+
+test('repoRow() is undefined, not thrown, when the row is gone', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeRoute({ reposModelId: 'repos-model-id' }), { userAgent: 'crew-test' });
+  assert.equal(await tracker.repoRow('repo-1'), undefined);
+});
+
+test('projectRow() is undefined when the workspace has no Projects table', async (t) => {
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { calls++; return new Response('{}', { status: 200 }); }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  assert.equal(await tracker.projectRow('proj-1'), undefined);
+  assert.equal(calls, 0);
+});
+
+test('projectRow() returns the row, issue_prefix included', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ id: 'proj-1', issue_prefix: 'CREW' }), { status: 200 })) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeRoute({ areaModelId: 'projects-model-id' }), { userAgent: 'crew-test' });
+  assert.deepEqual(await tracker.projectRow('proj-1'), { id: 'proj-1', issue_prefix: 'CREW' });
 });

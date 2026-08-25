@@ -32,10 +32,9 @@ function ship(tracker: FakeTracker, over: Record<string, string> = {}) {
   agent: { bin: /bin/echo }
   stateDir: state
   logFile: ${join(home, 'crew.log')}
-connections:
-  - name: proj
+routes:
+  - route: test/proj
     enabled: true
-    workspace: test
     dir: ${repo}
     worktreePrefix: proj-issue-
     baseUrl: ${tracker.baseUrl}
@@ -74,7 +73,7 @@ test('a real cycle PARKS a blocked ticket in the tracker, not just in the log', 
     .start();
   try {
     const s = ship(t);
-    await s.run('poll', 'proj');
+    await s.run('poll', 'test/proj');
     assert.equal(t.row(MODELS.issues, 'i1')?.status, 'blocked', 'the blocked ticket must actually be parked');
     assert.ok(t.writes.some((w) => w.method === 'PATCH' && w.id === 'i1' && w.body.status === 'blocked'));
     // and it explains itself
@@ -93,7 +92,7 @@ test('a real cycle RESTORES one whose blockers resolved', async () => {
     ])
     .start();
   try {
-    await ship(t).run('poll', 'proj');
+    await ship(t).run('poll', 'test/proj');
     assert.equal(t.row(MODELS.issues, 'i1')?.status, 'accepted');
   } finally { await t.stop(); }
 });
@@ -108,7 +107,7 @@ test('a dry run writes NOTHING to the tracker', async () => {
     ])
     .start();
   try {
-    const out = await ship(t).run('poll', 'proj', '--dry-run');
+    const out = await ship(t).run('poll', 'test/proj', '--dry-run');
     assert.match(out + '', /[\s\S]*/);
     assert.equal(t.writes.length, 0, 'a dry run must not write');
     assert.equal(t.row(MODELS.issues, 'i1')?.status, 'accepted');
@@ -133,8 +132,8 @@ test('ISSUE-385: a ticket whose epic is in progress digests ahead of an identica
     .start();
   try {
     const s = ship(t, { resolvedExtra: `      epicsModelId: ${EPICS}\n` });
-    await s.run('poll', 'proj');
-    const digest = readFileSync(join(s.home, 'state', 'digest-proj-dev.md'), 'utf8');
+    await s.run('poll', 'test/proj');
+    const digest = readFileSync(join(s.home, 'state', 'digest-test-proj-dev.md'), 'utf8');
     const i1 = digest.indexOf('ISSUE-1');
     const i2 = digest.indexOf('ISSUE-2');
     assert.ok(i2 >= 0 && i1 >= 0 && i2 < i1, 'the in-progress-epic ticket must digest first');
@@ -150,8 +149,8 @@ test('the poll writes a digest and advances the watermark on disk', async () => 
     .start();
   try {
     const s = ship(t);
-    await s.run('poll', 'proj');
-    const digest = join(s.home, 'state', 'digest-proj-dev.md');
+    await s.run('poll', 'test/proj');
+    const digest = join(s.home, 'state', 'digest-test-proj-dev.md');
     assert.ok(existsSync(digest), 'the digest must be written, or the agent refetches everything');
     assert.match(readFileSync(digest, 'utf8'), /ISSUE-1/);
     const wm = readFileSync(join(s.home, 'state', '.poll-watermark'), 'utf8').trim();
@@ -170,7 +169,7 @@ test('a second run of the SAME role is skipped while the first holds it (ISSUE-3
     // The role this ticket resolves to (dev) is locked by a live pid — a
     // role-distinct lock, not the old single blanket 'crew' one.
     writeFileSync(join(s.home, 'state', '.crew-role-dev.lock'), `${process.pid}\n`);
-    const out = await s.run('run', 'proj');
+    const out = await s.run('run', 'test/proj');
     assert.match(out, /dev skipped this cycle — dev is already running \(pid \d+\)/);
     // The rest of the cycle still runs — a locked role must not also block
     // the release phase, exactly as "no role to run" does not.
@@ -190,12 +189,12 @@ test('two DIFFERENT roles may run at once, up to the configured limit (ISSUE-381
     // ship is simply at capacity, distinct from a same-role collision.
     writeFileSync(join(s.home, 'state', '.crew-slot-1.lock'), `${process.pid}\n`);
     writeFileSync(join(s.home, 'state', '.crew-slot-2.lock'), `${process.pid}\n`);
-    const out = await s.run('run', 'proj');
+    const out = await s.run('run', 'test/proj');
     assert.match(out, /dev skipped this cycle — at capacity — 2 agent\(s\) already running/);
   } finally { await t.stop(); }
 });
 
-test('a disabled connection refuses to run but still reports', async () => {
+test('a disabled route refuses to run but still reports', async () => {
   const t = await new FakeTracker()
     .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
     .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
@@ -204,9 +203,9 @@ test('a disabled connection refuses to run but still reports', async () => {
     const s = ship(t, {});
     const cfg = join(s.home, 'crew.yaml');
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('enabled: true', 'enabled: false'));
-    const out = await s.run('run', 'proj');
+    const out = await s.run('run', 'test/proj');
     assert.match(out, /not enabled/);
-    assert.ok(!t.writes.some((w) => w.method === 'PATCH'), 'a disabled connection must not write');
+    assert.ok(!t.writes.some((w) => w.method === 'PATCH'), 'a disabled route must not write');
   } finally { await t.stop(); }
 });
 
@@ -222,7 +221,7 @@ test('a cycle with NO agent work still runs the release phase', async () => {
     .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
     .start();
   try {
-    const out = await ship(t).run('run', 'proj');
+    const out = await ship(t).run('run', 'test/proj');
     assert.match(out, /no role to run this cycle/);
     assert.match(out, /release:/, 'the release phase must still run');
   } finally { await t.stop(); }
@@ -238,10 +237,10 @@ test('a release held by another ship on the board is skipped, not merged twice (
   const t = await new FakeTracker()
     .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
     .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
-    .table(LOCKS, [{ id: 'lock-1', scope: 'proj/proj', holder: 'other-ship:999', updated_at: new Date().toISOString() }])
+    .table(LOCKS, [{ id: 'lock-1', scope: 'test/proj/project', holder: 'other-ship:999', updated_at: new Date().toISOString() }])
     .start();
   try {
-    const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'proj');
+    const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'test/proj');
     assert.match(out, /claimed by another ship|held by other-ship:999/);
     assert.ok(!t.writes.some((w) => w.model === MODELS.issues), 'a skipped release must not touch the ticket');
   } finally { await t.stop(); }
@@ -253,7 +252,7 @@ test('--role runs exactly that seat and does not release', async () => {
     .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
     .start();
   try {
-    const out = await ship(t).run('run', 'proj', '--role', 'dev');
+    const out = await ship(t).run('run', 'test/proj', '--role', 'dev');
     assert.doesNotMatch(out, /release:/);
   } finally { await t.stop(); }
 });
@@ -264,7 +263,7 @@ test('ISSUE-395: the winning ticket is claimed (in_progress + assignee) before t
     .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'accepted' })])
     .start();
   try {
-    await ship(t).run('run', 'proj', '--role', 'dev');
+    await ship(t).run('run', 'test/proj', '--role', 'dev');
     const claim = t.writes.find((w) => w.model === MODELS.issues && w.id === 'i1');
     assert.ok(claim, 'the poll itself must claim the ticket, not just the (here, no-op) agent');
     assert.equal(claim?.body.status, 'in_progress');
@@ -290,7 +289,7 @@ test('ISSUE-395: a ticket already claimed elsewhere is skipped for the next-rank
       const row = t.row(MODELS.issues, 'i1')!;
       row.updated_at = new Date(Date.parse(String(row.updated_at)) + 1).toISOString();
     });
-    const out = await ship(t).run('run', 'proj', '--role', 'dev');
+    const out = await ship(t).run('run', 'test/proj', '--role', 'dev');
     assert.match(out, /claim contended for ISSUE-1/);
     const claim = t.writes.find((w) => w.model === MODELS.issues);
     assert.equal(claim?.id, 'i2', 'the contended ticket must not be the one actually claimed');

@@ -25,7 +25,7 @@ function repoWith(subjects: string[]) {
   return { dir, from, to };
 }
 
-const emitter = (lines: string[]) => new Emitter({ connection: 'c', console: (l) => lines.push(l), cycleId: 'C' });
+const emitter = (lines: string[]) => new Emitter({ route: 'c', console: (l) => lines.push(l), cycleId: 'C' });
 
 test('only tickets named in the released range are stamped', () => {
   const { dir, from, to } = repoWith(['did a thing (ISSUE-1)', 'and another (ISSUE-2)']);

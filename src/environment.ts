@@ -5,14 +5,14 @@
  * pointed at, so they may not contain a path, a shell command, an id or a
  * person's name (ISSUE-293). What they CAN do is refer to things by role:
  * "the setup hook", "your worktree", "the Issues table". This module renders
- * what those refer to, for this connection and this repository, and the crew
+ * what those refer to, for this route and this repository, and the crew
  * injects it above the brief at run time.
  *
  * Everything here is derived. Nothing in this file knows what project it is
  * describing, which is the property that makes the briefs portable.
  */
 
-import type { Connection } from './config.ts';
+import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
 import { renderBranchName } from './repo-config.ts';
@@ -20,7 +20,7 @@ import { renderBranchName } from './repo-config.ts';
 /** The environment variable the crew hands the session its tracker key in. */
 export const API_KEY_VAR = 'CREW_API_KEY';
 
-/** One repository this connection serves, as the brief must describe it. */
+/** One repository this route serves, as the brief must describe it. */
 export interface EnvironmentRepo {
   /** The name the tracker's `Repos` table uses — the digest's `repo` column. */
   name: string;
@@ -31,17 +31,17 @@ export interface EnvironmentRepo {
    * This repo's row id in the tracker's `Repos` table — what a NEW ticket's
    * `repo` column must hold (ISSUE-411: a bug filed without this sits
    * unrouted, invisible to per-repo placement, until a person backfills it).
-   * Absent when the connection has no resolved id for this repo yet.
+   * Absent when the route has no resolved id for this repo yet.
    */
   id?: string;
 }
 
 export interface EnvironmentInput {
-  conn: Connection;
+  route: Route;
   /** From the ship: one identity for everything this machine sends. */
   userAgent: string;
   /**
-   * Every repository this connection serves, not just the first.
+   * Every repository this route serves, not just the first.
    *
    * An area spans several repos (ISSUE-331) and they do not share a branch
    * convention, a worktree name, or a test command. The environment is built
@@ -122,7 +122,7 @@ function branchExample(repo: EffectiveRepoConfig, key: string): string {
 /**
  * The part of the environment that is true of ONE repository.
  *
- * Split out because a connection may serve several, and everything in here —
+ * Split out because a route may serve several, and everything in here —
  * where the worktree goes, what the branch is called, which files to copy,
  * which commands may be run — differs between them.
  */
@@ -177,11 +177,11 @@ function repoSection(r: EnvironmentRepo, key: string, heading: string): string[]
 }
 
 export function renderEnvironment(i: EnvironmentInput): string {
-  const { conn, contract } = i;
+  const { route, contract } = i;
   const repos = i.repos;
   const only = repos.length === 1 ? repos[0]! : undefined;
-  const models = conn.resolved?.models;
-  const epicsModelId = conn.resolved?.epicsModelId;
+  const models = route.resolved?.models;
+  const epicsModelId = route.resolved?.epicsModelId;
   const key = 'ISSUE-000';
 
   const lines: string[] = [
@@ -193,7 +193,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
     '',
     '## The board',
     '',
-    `- Base URL: \`${conn.baseUrl}\``,
+    `- Base URL: \`${route.baseUrl}\``,
     `- Your key is in the \`${API_KEY_VAR}\` environment variable. Send it as`,
     `  \`Authorization: Bearer $${API_KEY_VAR}\`. **Do not read it out of any file**,`,
     '  and never write it into a comment, a commit or a log line.',
@@ -252,7 +252,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
     `\`${contract.statuses.verified}\` and the closed statuses are **never yours to set**.`,
   );
 
-  const areaId = conn.resolved?.areaId;
+  const areaId = route.resolved?.areaId;
   if (areaId || repos.some((r) => r.id)) {
     lines.push(
       '',
@@ -263,7 +263,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
       'the one you were on. A ticket filed without its project and repo sits unrouted',
       'until a person notices and fixes it by hand, so always set:',
       '',
-      ...(areaId ? [`- \`${contract.columns.slice}\`: \`${areaId}\` (this connection's project, for every ticket you file)`] : []),
+      ...(areaId ? [`- \`${contract.columns.slice}\`: \`${areaId}\` (this route's project, for every ticket you file)`] : []),
       ...(only?.id ? [`- \`${contract.columns.repo}\`: \`${only.id}\` (this repository)`] : repos.filter((r) => r.id).map(
         (r) => `- \`${contract.columns.repo}\`: \`${r.id}\` — when the new ticket belongs to ${r.name}`,
       )),

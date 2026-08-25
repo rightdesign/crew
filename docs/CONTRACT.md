@@ -5,8 +5,8 @@ has to know which column is the status, which value means *approved*, and
 whether `p0` beats `p3`. That knowledge is **the contract**.
 
 **A ship connects to several workspaces at once and follows each one's rules.**
-So the contract is resolved per connection, never held as a constant in the
-runner. Two connections on one machine may disagree about every value below
+So the contract is resolved per route, never held as a constant in the
+runner. Two routes on one machine may disagree about every value below
 and both be right.
 
 This document is the **default** — what an unmodified Issue Tracker template
@@ -85,14 +85,13 @@ supplies its own contract. It belongs **in one place per org**, and it is
 tracker data — it describes choices configured there, and only that workspace
 knows them.
 
-Until `crew connect` (ISSUE-285) reads it from the workspace, a connection may
+Until `crew connect` (ISSUE-285) reads it from the workspace, a route may
 carry the differences inline in `crew.yaml`. Anything omitted keeps the
 default, so an override states only what actually differs:
 
 ```yaml
-connections:
-  - name: acme
-    workspace: acme
+routes:
+  - route: acme/issues
     contract:
       statuses:
         approved: triaged          # this org calls it that

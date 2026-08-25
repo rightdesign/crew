@@ -225,7 +225,7 @@ export interface Worktrees {
    *
    * A fact about the repository, not about the ship or the board — the same
    * kind of convention as `branch.name`, and it lived on the CONNECTION until
-   * ISSUE-350. A connection spans several repos (ISSUE-331), so one prefix
+   * ISSUE-350. A route spans several repos (ISSUE-331), so one prefix
    * there told a session working the second repo to cut its worktree under
    * the first repo's name.
    *
@@ -645,9 +645,8 @@ export function renderBranchName(template: string, ctx: BranchContext): string {
  */
 export interface ShipRepoSettings {
   branch?: Partial<BranchNaming>;
-  /** The connection's `worktreePrefix`, if it declares one (ISSUE-350). */
+  /** The route's `worktreePrefix`, if it declares one (ISSUE-350). */
   worktrees?: { prefix?: string };
-  platform?: PlatformRequirement;
   shell?: string;
   hooks?: RepoHooks;
   labels?: Partial<Record<keyof RepoHooks, string>>;
@@ -733,6 +732,8 @@ export function resolveRepoConfig(
     else delete provenance[`labels.${h}`];
   }
 
+  provenance['platform'] = repo ? 'repo' : 'default';
+
   const mode = pick('release.mode', repo?.release.mode, ship?.release?.mode, DEFAULTS.mode);
   const provider = pick(
     'release.ci.provider',
@@ -749,7 +750,7 @@ export function resolveRepoConfig(
       // it.
       copy: repo?.worktrees.copy ?? [],
       // Merged, unlike `copy`: this one HAS a ship-level source, because it
-      // lived on the connection before it lived here (ISSUE-350). The default
+      // lived on the route before it lived here (ISSUE-350). The default
       // is derived from the checkout rather than fixed, so a repo that
       // declares nothing and a ship that declares nothing still get the
       // convention already in use.
@@ -767,7 +768,11 @@ export function resolveRepoConfig(
       remote: pick('branch.remote', repo?.branch.remote === 'origin' ? undefined : repo?.branch.remote,
         ship?.branch?.remote, 'origin'),
     },
-    platform: pick('platform', repo?.platform === 'any' ? undefined : repo?.platform, ship?.platform, DEFAULTS.platform),
+    // Unlike every other field here, platform has no ship-level fallback: what
+    // a repo needs of a host is a fact about that repo alone (its build
+    // tooling, its hooks), never about the crew that happens to be serving it
+    // — so only the repo's own `.crew.yaml` can say anything but the default.
+    platform: repo?.platform ?? DEFAULTS.platform,
     shell: pick('shell', repo?.shell, ship?.shell, undefined as string | undefined),
     hooks,
     labels,

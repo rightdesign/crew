@@ -71,11 +71,11 @@ the **machine**, so reinstalling or replacing the checkout does not lose it.
 `crew` looks in `$CREW_CONFIG`, then `$XDG_CONFIG_HOME/crew`, then
 `~/.config/crew/crew.yaml`, and only then beside the checkout.
 
-`crew connect` resolves a workspace's ids into the `resolved:` block so you do
+`crew connect` resolves a workspace/project's ids into the state tree so you do
 not have to look them up by hand. `doctor` then checks the config against
 reality: the checkouts, the tools on PATH, the agent binary, the repo's hooks,
 and whether the board answers. Nothing writes, wakes an agent or deploys until
-a connection has `enabled: true`.
+a route has `enabled: true`.
 
 Then put it on a timer:
 
@@ -102,22 +102,22 @@ cheap check finds something worth waking for.
 ## Commands
 
 ```
-crew poll [conn]              decide a cycle and report it; writes nothing
-crew run [conn] [--role R]    run the winning role's session, then release
-crew release [conn]           merge what QA verified, version it, ship it
-crew merge [conn]             merge verified branches and stop
-crew deploy [conn]            release now, even with nothing new to merge
-crew watch [conn]             live view of what the crew is doing
-crew status [conn]            paused/running state
-crew doctor [conn]            read-only preflight
-crew ports [conn]             which checkout owns which ports, and what is up
-crew reap [conn]              kill servers left behind by removed worktrees
-crew drop [conn] NNN          remove a merged ticket's worktree and branch
-crew sync [conn]              fast-forward the checkout and its worktrees from the remote
-crew pause|resume [conn] [R]  pause everything, or one role
-crew log [conn]               tail the log
+crew poll [route]              decide a cycle and report it; writes nothing
+crew run [route] [--role R]    run the winning role's session, then release
+crew release [route]           merge what QA verified, version it, ship it
+crew merge [route]             merge verified branches and stop
+crew deploy [route]            release now, even with nothing new to merge
+crew watch [route]             live view of what the crew is doing
+crew status [route]            paused/running state
+crew doctor [route]            read-only preflight
+crew ports [route]             which checkout owns which ports, and what is up
+crew reap [route]              kill servers left behind by removed worktrees
+crew drop [route] NNN          remove a merged ticket's worktree and branch
+crew sync [route]              fast-forward the checkout and its worktrees from the remote
+crew pause|resume [route] [R]  pause everything, or one role
+crew log [route]               tail the log
 crew inbox [--member NAME]    your tickets across every workspace
-crew connect                  resolve a workspace's ids into a crew.yaml block
+crew connect WS[/PROJECT]     resolve a workspace/project's ids into the state tree
 crew install                  write and load this platform's scheduler unit
 crew uninstall                unload and remove it
 ```
@@ -132,7 +132,7 @@ by `ship.name` matching a row in each board's Ships table; a crew member is
 identified by email, so the same person is recognised across workspaces.
 
 An area of development spans **several repositories**, so a checkout is a
-property of the ticket, not of the connection: `repos:` maps each name in the
+property of the ticket, not of the route: `repos:` maps each name in the
 board's Repos table to a directory on this machine. A ticket whose repository
 this ship has no clone of is marked `NO CHECKOUT` in the digest rather than
 left blank — blank would read as "work it here", which is the wrong directory.

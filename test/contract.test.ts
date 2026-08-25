@@ -22,7 +22,7 @@ test('no override at all is the default', () => {
   assert.deepEqual(resolveContract(null), DEFAULT_CONTRACT);
 });
 
-test('two connections can disagree about everything and both be right', () => {
+test('two routes can disagree about everything and both be right', () => {
   const acme = resolveContract({
     statuses: {
       ...DEFAULT_CONTRACT.statuses,

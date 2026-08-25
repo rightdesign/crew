@@ -20,9 +20,9 @@ function rig() {
     writeFileSync(join(home, 'prompts', `lane-${r}.md`), `BRIEF ${r}\n`);
   }
   const state = mkdtempSync(join(tmpdir(), 'crew-state-'));
-  const conn = { name: 'proj', dir: '/tmp/proj' } as any;
+  const route = { route: 'test/proj', dir: '/tmp/proj' } as any;
   const ship = { agent: { bin: '/bin/echo', model: 'claude-sonnet-5' } } as any;
-  return { home, state, conn, ship };
+  return { home, state, route, ship };
 }
 
 test('QA gets no Edit — bouncing back is the path of least resistance', () => {
@@ -62,8 +62,8 @@ test('the roster leads, then environment, then policy, then brief, then queue', 
 });
 
 test('a plan is fully decided without running anything', () => {
-  const { home, state, conn, ship } = rig();
-  const plan = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
   assert.deepEqual(plan.args, [
@@ -75,51 +75,51 @@ test('a plan is fully decided without running anything', () => {
   assert.match(describePlan(plan), /prompt:\s+\d+ bytes on stdin \(never argv\)/);
 });
 
-test('the stream path is derived from connection, role and cycle, and shown by --dry-run', () => {
-  const { home, state, conn, ship } = rig();
+test('the stream path is derived from route, role and cycle, and shown by --dry-run', () => {
+  const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV',
+    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV',
     cycle: '20260825120000', ticket: 'ISSUE-401',
   });
-  assert.equal(plan.streamPath, join(state, 'streams', 'proj-dev-20260825120000.jsonl'));
-  assert.equal(plan.eventsPath, join(state, 'streams', 'proj-dev-20260825120000.events.jsonl'));
-  assert.equal(plan.connection, 'proj');
+  assert.equal(plan.streamPath, join(state, 'streams', 'test-proj-dev-20260825120000.jsonl'));
+  assert.equal(plan.eventsPath, join(state, 'streams', 'test-proj-dev-20260825120000.events.jsonl'));
+  assert.equal(plan.route, 'test-proj');
   assert.equal(plan.ticket, 'ISSUE-401');
   assert.equal(plan.model, 'claude-sonnet-5');
-  assert.match(describePlan(plan), /stream:\s+.*proj-dev-20260825120000\.jsonl/);
+  assert.match(describePlan(plan), /stream:\s+.*test-proj-dev-20260825120000\.jsonl/);
 });
 
 test('a fresh digest is attached; a stale one is ignored', () => {
-  const { home, state, conn, ship } = rig();
-  const digest = join(state, 'digest-proj-dev.md');
+  const { home, state, route, ship } = rig();
+  const digest = join(state, 'digest-test-proj-dev.md');
   writeFileSync(digest, '## Current queue\n');
 
-  const fresh = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const fresh = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(fresh.digestAttached, true);
   assert.match(fresh.prompt, /## Current queue/);
 
   // age it past the cutoff — acting on a stale queue is worse than rebuilding
   const old = (Date.now() - (DIGEST_MAX_AGE_SECONDS + 60) * 1000) / 1000;
   utimesSync(digest, old, old);
-  const stale = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const stale = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(stale.digestAttached, false);
   assert.doesNotMatch(stale.prompt, /## Current queue/);
   assert.ok(stale.digestAgeSeconds! > DIGEST_MAX_AGE_SECONDS);
 });
 
-test('digests are per connection AND per role — one ship, several projects', () => {
-  const { home, state, conn, ship } = rig();
-  writeFileSync(join(state, 'digest-proj-qa.md'), 'QA QUEUE\n');
-  const qa = planAgentRun({ role: 'qa', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
-  const dev = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+test('digests are per route AND per role — one ship, several projects', () => {
+  const { home, state, route, ship } = rig();
+  writeFileSync(join(state, 'digest-test-proj-qa.md'), 'QA QUEUE\n');
+  const qa = planAgentRun({ role: 'qa', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const dev = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(qa.digestAttached, true);
   assert.equal(dev.digestAttached, false);   // not the other role's queue
 });
 
 test('a missing brief refuses the run rather than running unscoped', () => {
-  const { home, state, conn, ship } = rig();
+  const { home, state, route, ship } = rig();
   assert.throws(
-    () => planAgentRun({ role: 'triage', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
+    () => planAgentRun({ role: 'triage', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
     (e: Error) => {
       assert.ok(e instanceof AgentError);
       assert.match(e.message, /refusing to run an unscoped session/);
@@ -129,9 +129,9 @@ test('a missing brief refuses the run rather than running unscoped', () => {
 });
 
 test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink, and folds the result into the finish event', async () => {
-  const { home, state, conn, ship } = rig();
+  const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', conn, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
     crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'ISSUE-401',
   });
   plan.bin = process.execPath;
@@ -139,7 +139,7 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
   plan.cwd = state;   // real directory — /tmp/proj (from rig()) does not exist
 
   const lines: string[] = [];
-  const emit = new Emitter({ connection: 'proj', cycleId: 'c1', console: (l) => lines.push(l) });
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: (l) => lines.push(l) });
   emit.enter('agent', 'dev');
 
   const result = await spawnAgent(plan, emit);
@@ -171,7 +171,7 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
 
   // The sidecar is cheap to read without parsing the whole transcript.
   const meta = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
-  assert.equal(meta.connection, 'proj');
+  assert.equal(meta.route, 'test-proj');
   assert.equal(meta.role, 'dev');
   assert.equal(meta.ticket, 'ISSUE-401');
   assert.equal(meta.exitCode, 0);
@@ -184,14 +184,14 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
 });
 
 test('spawnAgent never dies on a malformed line, and closes cleanly', async () => {
-  const { home, state, conn, ship } = rig();
+  const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c2',
+    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c2',
   });
   plan.bin = process.execPath;
   plan.args = [FAKE_CLAUDE];
   plan.cwd = state;   // real directory — /tmp/proj (from rig()) does not exist
-  const emit = new Emitter({ connection: 'proj', cycleId: 'c2', console: () => {} });
+  const emit = new Emitter({ route: 'proj', cycleId: 'c2', console: () => {} });
   emit.enter('agent', 'dev');
   const result = await spawnAgent(plan, emit);
   assert.equal(result.code, 0);

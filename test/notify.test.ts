@@ -5,39 +5,39 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { notify, describeRelease } from '../src/notify.ts';
 import { Emitter } from '../src/events.ts';
-import type { Connection, Ship } from '../src/config.ts';
+import type { Route, Ship } from '../src/config.ts';
 
 const lines: string[] = [];
-const emitter = () => { lines.length = 0; return new Emitter({ connection: 'c', console: (l) => lines.push(l), cycleId: 'C' }); };
+const emitter = () => { lines.length = 0; return new Emitter({ route: 'c', console: (l) => lines.push(l), cycleId: 'C' }); };
 const SHIP = { name: 'Test Ship', shell: undefined } as unknown as Ship;
-const conn = (notifyHook?: string, dir = '/tmp'): Connection =>
-  ({ name: 'proj', dir, hooks: { notify: notifyHook } }) as unknown as Connection;
+const route = (notifyHook?: string, dir = '/tmp'): Route =>
+  ({ route: 'test/proj', dir, hooks: { notify: notifyHook } }) as unknown as Route;
 
-test('a connection with no notify hook is silent, not an error', async () => {
-  assert.equal(await notify(conn(undefined), SHIP, { level: 'ok', headline: 'x' }, emitter()), false);
+test('a route with no notify hook is silent, not an error', async () => {
+  assert.equal(await notify(route(undefined), SHIP, { level: 'ok', headline: 'x' }, emitter()), false);
   assert.deepEqual(lines, []);
 });
 
 test('the hook receives the level, headline and detail — and nothing else decides', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-notify-'));
   const out = join(dir, 'got.txt');
-  const c = conn(`printf '%s|%s|%s|%s|%s' "$CREW_LEVEL" "$CREW_HEADLINE" "$CREW_DETAIL" "$CREW_CONNECTION" "$CREW_SHIP" > ${out}`, dir);
+  const c = route(`printf '%s|%s|%s|%s|%s' "$CREW_LEVEL" "$CREW_HEADLINE" "$CREW_DETAIL" "$CREW_ROUTE" "$CREW_SHIP" > ${out}`, dir);
   await notify(c, SHIP, { level: 'fail', headline: 'it broke', detail: 'badly' }, emitter());
-  assert.equal(readFileSync(out, 'utf8'), 'fail|it broke|badly|proj|Test Ship');
+  assert.equal(readFileSync(out, 'utf8'), 'fail|it broke|badly|test/proj|Test Ship');
 });
 
 test('a broken notifier warns and never fails the release', async () => {
   // The release already happened by the time this runs. A hook that exits
   // non-zero, or does not exist at all, must not turn a good release bad.
   const emit = emitter();
-  assert.equal(await notify(conn('exit 3'), SHIP, { level: 'ok', headline: 'x' }, emit), true);
+  assert.equal(await notify(route('exit 3'), SHIP, { level: 'ok', headline: 'x' }, emit), true);
   assert.ok(lines.some((l) => /notify hook exited 3/.test(l)));
 });
 
 test('a dry run says what it would send and sends nothing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-notify-'));
   const out = join(dir, 'sent.txt');
-  await notify(conn(`touch ${out}`, dir), SHIP, { level: 'ok', headline: 'shipped 1.2.3' }, emitter(), true);
+  await notify(route(`touch ${out}`, dir), SHIP, { level: 'ok', headline: 'shipped 1.2.3' }, emitter(), true);
   assert.equal(existsSync(out), false);
   assert.ok(lines.some((l) => /would notify: \[ok\] shipped 1\.2\.3/.test(l)));
 });

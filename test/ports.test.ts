@@ -47,9 +47,9 @@ test('a custom port scheme is honoured', () => {
 });
 
 // ISSUE-350. Each repo names its worktrees after itself, so asking only the
-// connection's first directory answers "gone" for a worktree that is alive
+// route's first directory answers "gone" for a worktree that is alive
 // next door — and `reap` kills the processes of what it thinks is gone.
-test('a worktree counts as present when any of the connection\'s repos has it', () => {
+test('a worktree counts as present when any of the route\'s repos has it', () => {
   const parent = mkdtempSync(join(tmpdir(), 'crew-wt-'));
   mkdirSync(join(parent, 'crew-issue-350'), { recursive: true });
   writeFileSync(join(parent, 'crew-issue-350', '.git'), 'gitdir: elsewhere');

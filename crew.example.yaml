@@ -4,8 +4,9 @@
 # paths, machine facts and possibly a key.
 #
 # Two levels, because a ship is not a project:
-#   ship         facts about THIS MACHINE. One per file.
-#   connections  one per project this ship works. A machine may hold many.
+#   ship    facts about THIS MACHINE. One per file.
+#   routes  one per project this ship works — workspace/project pairs. A
+#           machine may hold many.
 
 ship:
   # Becomes the Ship record's name once ships exist (ISSUE-328).
@@ -31,49 +32,48 @@ ship:
   # (e.g. QA verifying while dev builds) — never two of the same role.
   # maxConcurrentAgents: 2
 
-connections:
-  - # A short local handle. `crew run <name>` addresses this connection, and
-    # its state files are namespaced by it, so it must be unique.
-    name: my-project
+routes:
+  - # workspace/project, both slugs — the same string `crew connect` takes
+    # and prints a paste-ready block for. This IS the route's address: `crew
+    # run <route>` matches it, and its state file is namespaced by it, so
+    # the pair must be unique on this ship.
+    route: my-workspace/my-project
 
-    # Per-connection safety interlock. Nothing polls, runs an agent, merges
-    # or deploys for this connection until true. One project can be armed
-    # while another stays parked.
+    # Per-route safety interlock. Nothing polls, runs an agent, merges or
+    # deploys for this route until true. One project can be armed while
+    # another stays parked.
     enabled: false
 
-    # The work source, named rather than numbered. `crew connect` resolves
-    # these to ids (see `resolved:` below).
-    workspace: my-workspace
-    # The Tablation project holding the tracker's tables.
-    project: Issues
-    # Which row of that project's `Projects` table this checkout works — one
-    # area of development. Two connections on one tracker stay out of each
+    # Which row of the project's `Projects` table this checkout works — one
+    # area of development. Two routes on one tracker stay out of each
     # other's queue because of this. Omit it to see every ticket, which is
     # right for a tracker nobody has sliced.
     area: My Area
 
-    # The checkout this connection works in — never the crew's own directory.
+    # The checkout this route works in — never the crew's own directory.
     dir: ~/src/my-project
     # Worktrees are created beside it as <prefix><issue number>.
     worktreePrefix: my-project-issue-
 
-    # How fast this connection's aging (ISSUE-383) erodes an unpicked
-    # ticket's rank toward the front of the queue. Omit it for 1 (pure
-    # aging) — this is the operator ranking their OWN commitments ("this is
-    # my salaried job, that's my hobby project"), not a property of the
-    # board, so it belongs here rather than on the tracker. A rate scalar,
-    # never a switch: to stop this connection's work being picked at all,
-    # set `enabled: false` instead — `weight` cannot starve a connection,
-    # only make its work surface less often.
+    # How fast this route's aging (ISSUE-383) erodes an unpicked ticket's
+    # rank toward the front of the queue. Omit it for 1 (pure aging) — this
+    # is the operator ranking their OWN commitments ("this is my salaried
+    # job, that's my hobby project"), not a property of the board, so it
+    # belongs here rather than on the tracker. A rate scalar, never a
+    # switch: to stop this route's work being picked at all, set
+    # `enabled: false` instead — `weight` cannot starve a route, only make
+    # its work surface less often.
     # weight: 1
 
-    # What THIS project needs of a host: any | unix | macos | linux | windows.
-    # "unix" suits POSIX-shell hooks on either macOS or Linux; name a single
-    # host when the project requires it (an Xcode build needs macos). A ship
-    # that cannot satisfy it will not take work from this connection.
-    platform: unix
+    # What a host must be to build a repo — any | unix | macos | linux |
+    # windows — is declared in THAT repo's own `.crew.yaml` (see
+    # docs/REPO_SPEC.md), never here: a route can span repos with different
+    # needs, and a repo's build requirements are a fact about the repo, not
+    # about whichever board happens to track its tickets.
 
-    baseUrl: https://app.tablation.com
+    # Defaults to https://app.tablation.com when omitted here and on `ship:`.
+    # Only needed for a self-hosted tracker.
+    # baseUrl: https://app.tablation.com
     # Either set apiKey directly, or point at a file with a KEY=value line.
     # apiKey: "sk_..."
     apiKeyFile: .env
@@ -94,10 +94,11 @@ connections:
         exit "$ok"
       build: pnpm build
       deploy: ./deploy.sh
-      # notify receives CREW_NOTIFY_LEVEL (ok|warn|fail), CREW_NOTIFY_HEADLINE
-      # and CREW_NOTIFY_DETAIL in its environment. Omit it and release state
-      # just goes to the log. Unlike the others this one is the SHIP's, not
-      # the repo's: where release state gets seen is a fact about the machine.
+      # notify receives CREW_LEVEL (ok|warn|fail), CREW_HEADLINE, CREW_DETAIL,
+      # CREW_ROUTE and CREW_SHIP in its environment. Omit it and release
+      # state just goes to the log. Unlike the others this one is the
+      # SHIP's, not the repo's: where release state gets seen is a fact
+      # about the machine.
       # notify: ~/bin/my-notifier
 
     labels:
@@ -110,23 +111,11 @@ connections:
       versionFiles: [package.json]
       changelog: CHANGELOG.md
 
-    # DISCOVERED, NOT AUTHORED. `crew connect` writes this block by resolving
-    # the workspace/project names above against the live project. Nothing here
+    # DISCOVERED, NOT AUTHORED, and NOT HERE: the uuids for this route's
+    # tracker tables and crew rows live in the state tree —
+    # <stateDir>/resolved/<workspace>/<project>.json, e.g.
+    # state/resolved/my-workspace/my-project.json — not in crew.yaml. `crew
+    # connect my-workspace/my-project` writes that file; it may also be
+    # hand-filled (see `ResolvedIds` in src/config.ts for the shape) until
+    # `crew connect` covers your workspace's needs (ISSUE-285). Nothing in it
     # should be edited to change behaviour — it is a cache, and regenerable.
-    # Hand-fill it only until `crew connect` exists (ISSUE-285).
-    resolved:
-      workspaceId: ""
-      projectId: ""
-      areaModelId: ""   # the Projects table
-      areaId: ""        # the row `area` names
-      models:
-        issues: ""
-        comments: ""
-        crew: ""
-      seats:
-        dev: ""
-        design: ""
-        qa: ""
-        triage: ""
-      operator: ""
-      holds: []

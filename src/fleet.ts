@@ -1,9 +1,9 @@
 /**
- * Many connections, one decision.
+ * Many routes, one decision.
  *
  * A ship serves several workspaces at once and must pick the single most
  * urgent piece of work across all of them (ISSUE-338). This is the layer that
- * makes that possible; `poll.ts` still decides one connection at a time and
+ * makes that possible; `poll.ts` still decides one route at a time and
  * knows nothing about the others.
  *
  * Ranks are comparable across workspaces because each board's contract turns
@@ -13,18 +13,18 @@
  * hard half of this and came free.
  */
 
-import type { Connection, RoleName, Ship } from './config.ts';
+import type { Route, RoleName, Ship } from './config.ts';
 import type { State } from './state.ts';
 import type { Emitter } from './events.ts';
 import { decideCycle, type CycleDecision } from './poll.ts';
 import { NOTHING_ACTIONABLE, agedRankScalar } from './priority.ts';
 
 export interface FleetEntry {
-  connection: Connection;
+  route: Route;
   decision?: CycleDecision;
   /**
-   * Best rank across this connection's pending roles, or NOTHING_ACTIONABLE —
-   * AFTER aging (ISSUE-383) has eroded it toward 0 if this connection's own
+   * Best rank across this route's pending roles, or NOTHING_ACTIONABLE —
+   * AFTER aging (ISSUE-383) has eroded it toward 0 if this route's own
    * top ticket has been sitting unpicked. QA/triage are exempt: their
    * `FIXED_RANK` is already the most urgent rank there is, and aging (which
    * only ever moves a rank TOWARD 0) can only make a building rank approach,
@@ -36,7 +36,7 @@ export interface FleetEntry {
 }
 
 /**
- * Aging (ISSUE-383) applied to one connection's winning rank for fleet-wide
+ * Aging (ISSUE-383) applied to one route's winning rank for fleet-wide
  * comparison. Only building roles (dev/design) age — QA/triage's negative
  * `FIXED_RANK` values are not on the same scale `agedRankScalar` erodes
  * toward 0, and eroding a negative number toward 0 would make it LESS
@@ -44,94 +44,94 @@ export interface FleetEntry {
  *
  * Reads the PRIOR cycle's fairness bookkeeping (`state.fairness(name)`,
  * ISSUE-382) — this cycle's own `record()` call happens after every
- * connection has been ranked, further down in `decideFleet`. Only applies
+ * route has been ranked, further down in `decideFleet`. Only applies
  * when the ticket that has actually been waiting is still this cycle's top
  * one; if a new ticket just took the front of the queue it has no history
  * yet, so it ages from nothing rather than inheriting the old ticket's wait.
  */
 function agedConnectionRank(
-  rawRank: number, role: RoleName, connection: Connection, decision: CycleDecision, state: State, now: number,
+  rawRank: number, role: RoleName, route: Route, decision: CycleDecision, state: State, now: number,
 ): number {
   if (role !== 'dev' && role !== 'design') return rawRank;
-  const waiting = state.fairness(connection.name).waiting();
+  const waiting = state.fairness(route.route).waiting();
   if (!waiting || waiting.ticket !== decision.actionable.top?.issue_id) return rawRank;
-  return agedRankScalar(rawRank, { since: waiting.since, weight: connection.weight }, now);
+  return agedRankScalar(rawRank, { since: waiting.since, weight: route.weight }, now);
 }
 
 export interface FleetDecision {
   entries: FleetEntry[];
-  /** The one connection and role that should run, or null. */
-  winner?: { connection: Connection; role: RoleName; decision: CycleDecision };
-  /** Connections that could not be reached this cycle. */
+  /** The one route and role that should run, or null. */
+  winner?: { route: Route; role: RoleName; decision: CycleDecision };
+  /** Routes that could not be reached this cycle. */
   unreachable: string[];
 }
 
 export interface FleetOptions {
-  connections: Connection[];
+  routes: Route[];
   ship: Ship;
   state: State;
   emit: Emitter;
-  /** Skip connections whose interlock is closed. Default true. */
+  /** Skip routes whose interlock is closed. Default true. */
   enabledOnly?: boolean;
   /** For aging (ISSUE-383) and tests that need a fixed clock. Defaults to Date.now(). */
   now?: number;
 }
 
 /**
- * Poll every connection and decide which one runs.
+ * Poll every route and decide which one runs.
  *
- * Connections are polled CONCURRENTLY and independently: one unreachable
+ * Routes are polled CONCURRENTLY and independently: one unreachable
  * tracker must not stop the others being served, which is the whole point of
- * a ship that holds several. A failure is reported and that connection simply
+ * a ship that holds several. A failure is reported and that route simply
  * does not compete this cycle.
  */
 export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
   const now = o.now ?? Date.now();
-  const eligible = o.connections.filter((c) => (o.enabledOnly === false ? true : c.enabled));
-  const entries: FleetEntry[] = await Promise.all(eligible.map(async (connection) => {
+  const eligible = o.routes.filter((c) => (o.enabledOnly === false ? true : c.enabled));
+  const entries: FleetEntry[] = await Promise.all(eligible.map(async (route) => {
     try {
-      const decision = await decideCycle({ conn: connection, ship: o.ship, state: o.state, emit: o.emit });
+      const decision = await decideCycle({ route: route, ship: o.ship, state: o.state, emit: o.emit });
       const sel = decision.selection;
-      if (!sel.selected) return { connection, decision, rank: NOTHING_ACTIONABLE };
+      if (!sel.selected) return { route, decision, rank: NOTHING_ACTIONABLE };
       const rawRank = sel.ranks[sel.selected] ?? NOTHING_ACTIONABLE;
       return {
-        connection,
+        route,
         decision,
         role: sel.selected,
-        rank: agedConnectionRank(rawRank, sel.selected, connection, decision, o.state, now),
+        rank: agedConnectionRank(rawRank, sel.selected, route, decision, o.state, now),
       };
     } catch (e) {
-      return { connection, rank: NOTHING_ACTIONABLE, error: (e as Error).message };
+      return { route, rank: NOTHING_ACTIONABLE, error: (e as Error).message };
     }
   }));
 
   for (const e of entries) {
-    if (e.error) o.emit.error(`${e.connection.name}: ${e.error}`, { step: 'poll' });
+    if (e.error) o.emit.error(`${e.route.route}: ${e.error}`, { step: 'poll' });
   }
 
   const contenders = entries.filter((e) => e.role && e.rank < NOTHING_ACTIONABLE);
-  // Lowest rank wins. Ties fall to the connection listed first, which is
+  // Lowest rank wins. Ties fall to the route listed first, which is
   // stable and lets an operator express preference by ordering crew.yaml.
   const best = contenders.reduce<FleetEntry | undefined>(
     (acc, e) => (!acc || e.rank < acc.rank ? e : acc), undefined,
   );
 
-  // Record what this cycle saw for every reachable connection (ISSUE-382),
-  // so a connection that keeps having work and never winning shows up
-  // without anyone going looking. An unreachable connection has no data to
+  // Record what this cycle saw for every reachable route (ISSUE-382),
+  // so a route that keeps having work and never winning shows up
+  // without anyone going looking. An unreachable route has no data to
   // record, not zero — recording it as idle would erase a real streak.
   for (const e of entries) {
     if (e.error || !e.decision) continue;
-    const won = best?.connection.name === e.connection.name;
-    o.state.fairness(e.connection.name).record(e.decision.actionable.count, e.decision.actionable.top?.issue_id, won);
+    const won = best?.route.route === e.route.route;
+    o.state.fairness(e.route.route).record(e.decision.actionable.count, e.decision.actionable.top?.issue_id, won);
   }
 
   return {
     entries,
     winner: best && best.role && best.decision
-      ? { connection: best.connection, role: best.role, decision: best.decision }
+      ? { route: best.route, role: best.role, decision: best.decision }
       : undefined,
-    unreachable: entries.filter((e) => e.error).map((e) => e.connection.name),
+    unreachable: entries.filter((e) => e.error).map((e) => e.route.route),
   };
 }
 
@@ -156,18 +156,18 @@ export function since(iso: string, now: number = Date.now()): string {
   return `${Math.round(hours / 24)}d`;
 }
 
-/** A one-line-per-connection summary, for `crew poll` with no name. */
+/** A one-line-per-route summary, for `crew poll` with no name. */
 export function renderFleet(f: FleetDecision, state?: State): string {
   const rows = f.entries.map((e) => {
-    if (e.error) return `  ${e.connection.name.padEnd(16)} unreachable — ${e.error}`;
-    if (!e.role) return `  ${e.connection.name.padEnd(16)} nothing pending`;
+    if (e.error) return `  ${e.route.route.padEnd(16)} unreachable — ${e.error}`;
+    if (!e.role) return `  ${e.route.route.padEnd(16)} nothing pending`;
     const pending = e.decision?.selection.pending.join(' ') ?? '';
-    const win = f.winner?.connection.name === e.connection.name ? '  <- runs this cycle' : '';
-    const streak = state?.fairness(e.connection.name).streak() ?? 0;
+    const win = f.winner?.route.route === e.route.route ? '  <- runs this cycle' : '';
+    const streak = state?.fairness(e.route.route).streak() ?? 0;
     const passedOver = !win && streak >= LOUD_STREAK ? `  ! passed over ${streak} cycles running` : '';
-    return `  ${e.connection.name.padEnd(16)} ${e.role.padEnd(7)} rank ${String(e.rank).padStart(12)}  pending: ${pending}${win}${passedOver}`;
+    return `  ${e.route.route.padEnd(16)} ${e.role.padEnd(7)} rank ${String(e.rank).padStart(12)}  pending: ${pending}${win}${passedOver}`;
   });
-  if (!rows.length) return 'no enabled connections\n';
+  if (!rows.length) return 'no enabled routes\n';
   return `${rows.join('\n')}\n`;
 }
 

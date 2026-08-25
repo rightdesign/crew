@@ -4,7 +4,7 @@
  * Tablation deliberately does not consolidate across workspaces, and that is
  * the right call for a product. But an operator running a crew against N
  * boards has no way to see their own queue, and the crew already holds the
- * one thing that makes a consolidated view possible: a connection per
+ * one thing that makes a consolidated view possible: a route per
  * workspace, each with its own contract.
  *
  * The crew normally *discards* these tickets — a ticket assigned to a person
@@ -14,7 +14,7 @@
  * Read-only. It schedules nothing and writes nothing.
  */
 
-import type { Connection, Ship } from './config.ts';
+import type { Route, Ship } from './config.ts';
 import { configuredMembers } from './config.ts';
 import { Tracker, type Ticket } from './tracker.ts';
 import { buildRoster, crewLabel, type Roster } from './roster.ts';
@@ -22,7 +22,7 @@ import { rankScalar, effectivePriority } from './priority.ts';
 import type { Contract } from './contract.ts';
 
 export interface InboxItem {
-  connection: string;
+  route: string;
   ticket: Ticket;
   assignee: string | null;
   /**
@@ -37,12 +37,12 @@ export interface InboxItem {
 
 export interface InboxOptions {
   /**
-   * Whose tickets. Defaults to each connection's own operator — the same row
+   * Whose tickets. Defaults to each route's own operator — the same row
    * the crew treats as a hold.
    */
   memberIds?: Set<string>;
   /**
-   * Who to look up, per connection, against that workspace's Crew table.
+   * Who to look up, per route, against that workspace's Crew table.
    *
    * **An email is an identity; a name is not.** Each workspace has its own
    * Crew table with its own rows, so matching `"chris"` across two boards can
@@ -85,9 +85,9 @@ export function matchMembers(
 
 export interface InboxResult {
   items: InboxItem[];
-  errors: Array<{ connection: string; error: string }>;
-  /** Per connection, who the query resolved to — or that it matched nobody. */
-  resolved: Array<{ connection: string; names: string[]; emails: string[]; by: 'email' | 'name' | null }>;
+  errors: Array<{ route: string; error: string }>;
+  /** Per route, who the query resolved to — or that it matched nobody. */
+  resolved: Array<{ route: string; names: string[]; emails: string[]; by: 'email' | 'name' | null }>;
   /**
    * True when a NAME query resolved to different people on different boards.
    * The queue shown is then a mixture, which is exactly the failure a name
@@ -97,31 +97,31 @@ export interface InboxResult {
 }
 
 export async function gatherInbox(
-  connections: Connection[], ship: Ship, opts: InboxOptions = {},
+  routes: Route[], ship: Ship, opts: InboxOptions = {},
 ): Promise<InboxResult> {
   const items: InboxItem[] = [];
-  const errors: Array<{ connection: string; error: string }> = [];
+  const errors: Array<{ route: string; error: string }> = [];
   const resolved: InboxResult['resolved'] = [];
 
-  // Connections are independent; one unreachable tracker must not hide the
+  // Routes are independent; one unreachable tracker must not hide the
   // rest, which is the whole point of a consolidated view.
-  await Promise.all(connections.map(async (conn) => {
+  await Promise.all(routes.map(async (route) => {
     try {
-      const tracker = new Tracker(conn, ship);
+      const tracker = new Tracker(route, ship);
       const [tickets, crewRows] = await Promise.all([tracker.openTickets(), tracker.crewRows()]);
-      const roster: Roster = buildRoster(configuredMembers(conn), crewRows);
+      const roster: Roster = buildRoster(configuredMembers(route), crewRows);
       let mine: Set<string>;
       if (opts.memberQuery) {
         const hits = matchMembers(crewRows, opts.memberQuery);
         resolved.push({
-          connection: conn.name,
+          route: route.route,
           names: hits.map((h) => h.name),
           emails: hits.map((h) => h.email).filter(Boolean),
           by: hits[0]?.by ?? null,
         });
         mine = new Set(hits.map((h) => h.id));
       } else {
-        mine = opts.memberIds ?? new Set([conn.resolved?.operator].filter(Boolean) as string[]);
+        mine = opts.memberIds ?? new Set([route.resolved?.operator].filter(Boolean) as string[]);
       }
       const c = tracker.contract;
 
@@ -130,7 +130,7 @@ export async function gatherInbox(
         if (opts.statuses && !opts.statuses.has(t.status)) continue;
         if (!opts.includeClosed && c.statuses.resolved.includes(t.status)) continue;
         items.push({
-          connection: conn.name,
+          route: route.route,
           ticket: t,
           assignee: crewLabel(roster.get(t.assignee_id)),
           rank: rankScalar(t, c),
@@ -139,7 +139,7 @@ export async function gatherInbox(
         });
       }
     } catch (e) {
-      errors.push({ connection: conn.name, error: (e as Error).message });
+      errors.push({ route: route.route, error: (e as Error).message });
     }
   }));
 
@@ -156,7 +156,7 @@ export function renderInbox(items: InboxItem[], byConnection = false, subject?: 
   // "nothing assigned to you" while looking at a colleague's queue is exactly
   // the misreading this view has to avoid.
   if (items.length === 0) return `nothing assigned to ${subject ?? 'you'}\n`;
-  const key = (i: InboxItem) => (byConnection ? i.connection : i.ticket.status);
+  const key = (i: InboxItem) => (byConnection ? i.route : i.ticket.status);
   const groups = new Map<string, InboxItem[]>();
   for (const i of items) {
     const g = groups.get(key(i));
@@ -168,7 +168,7 @@ export function renderInbox(items: InboxItem[], byConnection = false, subject?: 
     out.push(`${name}  (${group.length})`);
     for (const i of group) {
       const t = i.ticket;
-      const where = byConnection ? t.status : i.connection;
+      const where = byConnection ? t.status : i.route;
       out.push(
         `  ${t.issue_id.padEnd(10)} p${i.effective} ${(t.severity ?? '--').padEnd(3)} ` +
           `${where.padEnd(14)} ${(t.title ?? '').slice(0, 62)}`,

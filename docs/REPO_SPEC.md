@@ -179,7 +179,7 @@ release:
 | `hooks.isolate` | no | — | Prints `KEY=value` lines pointing this worktree at state of its own — typically its own database. Receives `CREW_TICKET`, `CREW_BRANCH`. Without it, a session that changes a schema has nowhere to run migrations except the operator's own data. |
 | `hooks.handoff` | no | — | Leaves the operator able to open what was built, and prints how. Receives `CREW_TICKET`, `CREW_BRANCH` and whatever `isolate` printed. Its output goes into the session's progress comment. |
 | `worktrees.copy` | no | `[]` | Gitignored paths to copy from the main checkout into a new worktree, before `setup` runs. Repo-relative; absolute paths and `..` are rejected. A ship cannot supply or override this. |
-| `worktrees.prefix` | no | `<checkout>-issue-` | What this repository's worktrees are called: a ticket's worktree is cut beside the checkout at `../<prefix><number>`. Defaults to the checkout's own directory name — `crew` gets `crew-issue-346`. No path separator: a worktree sits beside the checkout, not inside a directory of its own. A connection's `worktreePrefix` supplies it for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
+| `worktrees.prefix` | no | `<checkout>-issue-` | What this repository's worktrees are called: a ticket's worktree is cut beside the checkout at `../<prefix><number>`. Defaults to the checkout's own directory name — `crew` gets `crew-issue-346`. No path separator: a worktree sits beside the checkout, not inside a directory of its own. A route's `worktreePrefix` supplies it for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
 | `docs.triagePolicy` | no | — | The triage seat's contract for this project — what its statuses mean, when a ticket may be accepted. Where it and a brief disagree, it wins. |
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
@@ -249,10 +249,13 @@ in — so the hook prints that, and the crew carries it.
 - **The merged result is validated, not just the file.** A repo with no
   `.crew.yaml` does not escape the consistency rules (a `local` release still
   needs a deploy hook) just because its settings arrived from the ship.
-- **The repo is the source of truth for everything in this file.** Where the
-  tracker's `Repos` row caches `platform` so that work can be dispatched
-  without cloning first, `crew doctor` compares the two and reports drift; the
-  file wins.
+- **The repo is the source of truth for everything in this file, `platform`
+  included.** It used to also live on the route in `crew.yaml`, as a
+  fallback the ship could set before a repo had adopted this file — that
+  fallback is gone: what a host must be is a fact about the repo alone, and a
+  route spanning several repos with different needs could never
+  represent it as one value anyway. A repo with no `.crew.yaml` at all is
+  simply `any`.
 - `platform` and `shell` are separate on purpose: `linux` does not imply bash.
   But `shell` is a local execution detail and is deliberately **not** on the
   Ship record — see ISSUE-328.

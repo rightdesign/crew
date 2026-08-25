@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  loadConfig, connection, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
+  loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
+  resolvedPathFor,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -12,6 +13,13 @@ function withConfig(yaml: string) {
   const file = join(dir, 'crew.yaml');
   writeFileSync(file, yaml);
   return { dir, file };
+}
+
+function writeResolved(stateDir: string, route: string, data: unknown) {
+  const path = resolvedPathFor(stateDir, route);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(data));
+  return path;
 }
 
 const RESOLVED = `
@@ -25,125 +33,158 @@ const RESOLVED = `
 const ONE = `
 ship:
   agent: { bin: /bin/true }
-connections:
-  - name: synthesis
-    workspace: issues
-    project: Dev Crew
+routes:
+  - route: issues/dev-crew
     dir: /tmp/proj
     worktreePrefix: proj-issue-
     baseUrl: https://example.test/
 ${RESOLVED}
 `;
 
-const TWO = `${ONE}  - name: tablation-js
+const TWO = `${ONE}  - route: issues/tablation-js
     enabled: true
-    workspace: issues
     dir: /tmp/other
     worktreePrefix: js-issue-
     baseUrl: https://example.test
 ${RESOLVED}
 `;
 
-test('a ship holds many connections', () => {
+test('a ship holds many routes', () => {
   const { dir, file } = withConfig(TWO);
   const cfg = loadConfig(dir, file);
-  assert.equal(cfg.connections.length, 2);
-  assert.deepEqual(cfg.connections.map((c) => c.name), ['synthesis', 'tablation-js']);
+  assert.equal(cfg.routes.length, 2);
+  assert.deepEqual(cfg.routes.map((r) => r.route), ['issues/dev-crew', 'issues/tablation-js']);
 });
 
-test('ship-level settings are shared; connection settings are not', () => {
+test('ship-level settings are shared; route settings are not', () => {
   const { dir, file } = withConfig(TWO);
   const cfg = loadConfig(dir, file);
   assert.equal(cfg.ship.agent.model, 'claude-sonnet-5');
-  assert.equal(cfg.connections[0]!.worktreePrefix, 'proj-issue-');
-  assert.equal(cfg.connections[1]!.worktreePrefix, 'js-issue-');
+  assert.equal(cfg.routes[0]!.worktreePrefix, 'proj-issue-');
+  assert.equal(cfg.routes[1]!.worktreePrefix, 'js-issue-');
 });
 
-test('the platform this ship IS is detected; what a project NEEDS defaults to any', () => {
+test('the platform this ship IS is detected; routes no longer declare one', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);
   assert.ok(['macos', 'linux', 'windows'].includes(cfg.ship.platform));
-  assert.equal(cfg.connections[0]!.platform, 'any');
+  assert.ok(!('platform' in cfg.routes[0]!));
 });
 
-test('connections are addressed by name', () => {
-  const { dir, file } = withConfig(TWO);
-  const cfg = loadConfig(dir, file);
-  assert.equal(connection(cfg, 'tablation-js').dir, '/tmp/other');
-  assert.throws(() => connection(cfg, 'nope'), /no connection named "nope"/);
+test('a route that still declares platform is refused — it moved to the repo\'s own .crew.yaml', () => {
+  const { dir, file } = withConfig(ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    platform: unix'));
+  assert.throws(() => loadConfig(dir, file), /unknown routes\[0\] key: platform/);
 });
 
-test('with several connections and no name, the single enabled one is implied', () => {
+test('baseUrl defaults to the hosted tracker when neither route nor ship says otherwise', () => {
+  const noBaseUrl = ONE.replace(/^\s*baseUrl:.*\n/m, '');
+  const { dir, file } = withConfig(noBaseUrl);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.baseUrl, 'https://app.tablation.com');
+});
+
+test('apiKey falls back to the ship\'s, since one key can be valid for several workspaces', () => {
+  const noApiKey = ONE.replace('ship:\n  agent:', 'ship:\n  apiKey: ship-key\n  agent:');
+  const { dir, file } = withConfig(noApiKey);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.apiKey, 'ship-key');
+});
+
+test('a route\'s own apiKey wins over the ship\'s', () => {
+  const both = ONE.replace('ship:\n  agent:', 'ship:\n  apiKey: ship-key\n  agent:')
+    .replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    apiKey: route-key');
+  const { dir, file } = withConfig(both);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.apiKey, 'route-key');
+});
+
+test('userAgent defaults to a Cloudflare-safe value naming this checkout\'s version', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.match(cfg.ship.userAgent, /^Mozilla\/5\.0 CrewAgent\//);
+});
+
+test('a route is addressed by its workspace/project string', () => {
   const { dir, file } = withConfig(TWO);
   const cfg = loadConfig(dir, file);
-  assert.equal(connection(cfg).name, 'tablation-js'); // the only one enabled
+  assert.equal(findRoute(cfg, 'issues/tablation-js').dir, '/tmp/other');
+  assert.throws(() => findRoute(cfg, 'nope/nope'), /no route "nope\/nope"/);
+});
+
+test('with several routes and no name, the single enabled one is implied', () => {
+  const { dir, file } = withConfig(TWO);
+  const cfg = loadConfig(dir, file);
+  assert.equal(findRoute(cfg).route, 'issues/tablation-js'); // the only one enabled
 });
 
 test('ambiguity is refused rather than guessed', () => {
-  const both = TWO.replace('  - name: synthesis\n', '  - name: synthesis\n    enabled: true\n');
+  const both = TWO.replace('  - route: issues/dev-crew\n', '  - route: issues/dev-crew\n    enabled: true\n');
   const { dir, file } = withConfig(both);
-  assert.throws(() => connection(loadConfig(dir, file)), /name one: synthesis, tablation-js/);
+  assert.throws(() => findRoute(loadConfig(dir, file)), /name one: issues\/dev-crew, issues\/tablation-js/);
 });
 
-test('duplicate connection names are refused — a name is an address', () => {
-  const dup = TWO.replace('name: tablation-js', 'name: synthesis');
+test('duplicate routes are refused — a route addresses itself', () => {
+  const dup = TWO.replace('route: issues/tablation-js', 'route: issues/dev-crew');
   const { dir, file } = withConfig(dup);
-  assert.throws(() => loadConfig(dir, file), /duplicate name "synthesis"/);
+  assert.throws(() => loadConfig(dir, file), /duplicate route "issues\/dev-crew"/);
 });
 
-test('the interlock is per connection and opt-in', () => {
+test('a route must be "workspace/project" — not a bare name, not more than one slash', () => {
+  const { dir, file } = withConfig(ONE.replace('route: issues/dev-crew', 'route: issues'));
+  assert.throws(() => loadConfig(dir, file), /route must be "workspace\/project"/);
+});
+
+test('the interlock is per route and opt-in', () => {
   const { dir, file } = withConfig(TWO);
   const cfg = loadConfig(dir, file);
-  assert.equal(cfg.connections[0]!.enabled, false);
-  assert.equal(cfg.connections[1]!.enabled, true);
+  assert.equal(cfg.routes[0]!.enabled, false);
+  assert.equal(cfg.routes[1]!.enabled, true);
 });
 
-test('every missing setting is reported at once, named by connection index', () => {
-  const { dir, file } = withConfig('ship: {}\nconnections:\n  - name: x\n');
+test('every missing setting is reported at once, named by route index', () => {
+  const { dir, file } = withConfig('ship: {}\nroutes:\n  - route: issues/x\n');
   assert.throws(() => loadConfig(dir, file), (e: Error) => {
     assert.ok(e instanceof ConfigError);
-    for (const p of ['connections[0].workspace', 'connections[0].dir']) {
-      assert.match(e.message, new RegExp(p.replace(/[.[\]]/g, '\\$&')));
-    }
+    assert.match(e.message, /routes\[0\]\.dir/);
     return true;
   });
 });
 
-test('worktreePrefix is optional — a connection that says nothing gets no ship-level override', () => {
+test('worktreePrefix is optional — a route that says nothing gets no ship-level override', () => {
   const noPrefix = TWO.replace(/^\s*worktreePrefix:.*\n/m, '');
   const { dir, file } = withConfig(noPrefix);
   const cfg = loadConfig(dir, file);
-  assert.equal(cfg.connections[0]!.worktreePrefix, undefined);
+  assert.equal(cfg.routes[0]!.worktreePrefix, undefined);
 });
 
-test('a config with no connections is refused', () => {
+test('a config with no routes is refused', () => {
   const { dir, file } = withConfig('ship: {}\n');
-  assert.throws(() => loadConfig(dir, file), /connections \(at least one\)/);
+  assert.throws(() => loadConfig(dir, file), /routes \(at least one\)/);
 });
 
 test('weight is optional — undefined means pure aging (ISSUE-383)', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);
-  assert.equal(cfg.connections[0]!.weight, undefined);
+  assert.equal(cfg.routes[0]!.weight, undefined);
 });
 
-test('weight scales the aging rate when a connection sets one', () => {
+test('weight scales the aging rate when a route sets one', () => {
   const weighted = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    weight: 3');
   const { dir, file } = withConfig(weighted);
   const cfg = loadConfig(dir, file);
-  assert.equal(cfg.connections[0]!.weight, 3);
+  assert.equal(cfg.routes[0]!.weight, 3);
 });
 
 test('weight cannot be 0 or negative — that would silently starve, which is what enabled:false is honest about', () => {
   const zero = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    weight: 0');
   const { dir, file } = withConfig(zero);
-  assert.throws(() => loadConfig(dir, file), /connections\[0\]\.weight must be a positive number/);
+  assert.throws(() => loadConfig(dir, file), /routes\[0\]\.weight must be a positive number/);
 });
 
 test('configuredMembers reads the resolved ids, not authored ones', () => {
   const { dir, file } = withConfig(ONE);
-  const conn = connection(loadConfig(dir, file), 'synthesis');
-  assert.deepEqual(configuredMembers(conn), [
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.deepEqual(configuredMembers(r), [
     { id: 'dev-1', role: 'Dev', kind: 'seat' },
     { id: 'qa-1', role: 'QA', kind: 'seat' },
     { id: 'op-1', role: 'Operator', kind: 'hold' },
@@ -151,26 +192,56 @@ test('configuredMembers reads the resolved ids, not authored ones', () => {
   ]);
 });
 
-test('an unresolved connection says to run crew connect', () => {
+test('an unresolved route says to run crew connect', () => {
   const noIds = ONE.slice(0, ONE.indexOf('    resolved:'));
   const { dir, file } = withConfig(noIds);
-  const conn = connection(loadConfig(dir, file), 'synthesis');
-  assert.throws(() => configuredMembers(conn), /run `crew connect`/);
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.throws(() => configuredMembers(r), /run `crew connect`/);
 });
 
-test('a connection names one area of development, distinct from the Tablation project', () => {
-  const withArea = ONE.replace('    project: Dev Crew\n', '    project: Issues\n    area: Tablation\n');
+test('resolved ids are read from the state tree, not just from an authored `resolved:` block', () => {
+  const noIds = ONE.slice(0, ONE.indexOf('    resolved:'));
+  const { dir, file } = withConfig(noIds);
+  writeResolved(join(dir, 'state'), 'issues/dev-crew', {
+    workspaceId: 'ws-1', models: { issues: 'i', comments: 'c', crew: 'm' },
+    seats: {}, operator: 'op-1', holds: [],
+  });
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.equal(r.resolved?.workspaceId, 'ws-1');
+  assert.equal(r.resolved?.operator, 'op-1');
+});
+
+test('a state-tree resolved file wins over an authored `resolved:` block, when both exist', () => {
+  const { dir, file } = withConfig(ONE);
+  writeResolved(join(dir, 'state'), 'issues/dev-crew', {
+    workspaceId: 'from-state-file', models: { issues: 'i', comments: 'c', crew: 'm' },
+    seats: {}, operator: 'op-1', holds: [],
+  });
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.equal(r.resolved?.workspaceId, 'from-state-file');
+});
+
+test('a malformed resolved-ids state file is a config error, not a silent fallback', () => {
+  const { dir, file } = withConfig(ONE);
+  const path = resolvedPathFor(join(dir, 'state'), 'issues/dev-crew');
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, '{ not json');
+  assert.throws(() => loadConfig(dir, file), /not valid JSON/);
+});
+
+test('a route names one area of development, distinct from the Tablation project', () => {
+  const withArea = ONE.replace('    dir: /tmp/proj\n', '    dir: /tmp/proj\n    area: Tablation\n');
   const { dir, file } = withConfig(withArea);
-  const c = connection(loadConfig(dir, file), 'synthesis');
-  assert.equal(c.project, 'Issues');    // the container holding the tracker's tables
-  assert.equal(c.area, 'Tablation');    // a row of the Projects table inside it
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.equal(r.route, 'issues/dev-crew');
+  assert.equal(r.area, 'Tablation');    // a row of the Projects table inside the project
 });
 
 test('an unsliced tracker needs no area, and gets the whole queue', () => {
   const { dir, file } = withConfig(ONE);
-  const c = connection(loadConfig(dir, file), 'synthesis');
-  assert.equal(c.area, undefined);
-  assert.equal(c.resolved?.areaId, undefined);
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.equal(r.area, undefined);
+  assert.equal(r.resolved?.areaId, undefined);
 });
 
 test('the shipped example config still parses', () => {
@@ -179,29 +250,27 @@ test('the shipped example config still parses', () => {
   // thing a fresh install has to copy from. Failing here is the point.
   const example = join(import.meta.dirname, '..', 'crew.yaml.example');
   const cfg = loadConfig(process.cwd(), example);
-  assert.equal(cfg.connections.length, 1);
+  assert.equal(cfg.routes.length, 1);
   // Shipped disarmed: copying it must not start writing to someone's board.
-  assert.equal(cfg.connections[0]!.enabled, false);
+  assert.equal(cfg.routes[0]!.enabled, false);
 });
 
-test('reposOf covers every checkout, not just the connection dir', () => {
+test('reposOf covers every checkout, not just the route dir', () => {
   // Release, merge and sync are REPOSITORY operations. Treating `dir` as "the"
   // directory meant only the first repo on a board was ever released — the
   // others were configured, referenced by tickets, and silently never shipped.
   const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
   writeFileSync(join(dir, 'crew.yaml'), [
     'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
-    'connections:',
-    '  - name: multi',
-    '    workspace: w',
+    'routes:',
+    '  - route: w/multi',
     '    apiKey: k',
     '    worktreePrefix: m-',
     '    baseUrl: https://example.com',
     '    repos:',
     '      alpha: /tmp/alpha',
     '      beta: /tmp/beta',
-    '  - name: single',
-    '    workspace: w',
+    '  - route: w/single',
     '    apiKey: k',
     '    worktreePrefix: s-',
     '    baseUrl: https://example.com',
@@ -209,26 +278,27 @@ test('reposOf covers every checkout, not just the connection dir', () => {
   ].join('\n'));
   const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
 
-  assert.deepEqual(reposOf(connection(cfg, 'multi')).map((r) => r.name), ['alpha', 'beta']);
-  // A single-repo connection still yields exactly one target, so callers never
-  // need to special-case it.
-  assert.deepEqual(reposOf(connection(cfg, 'single')), [{ name: 'single', dir: '/tmp/only' }]);
+  assert.deepEqual(reposOf(findRoute(cfg, 'w/multi')).map((r) => r.name), ['alpha', 'beta']);
+  // A single-repo route still yields exactly one target, so callers never
+  // need to special-case it — named for its own checkout directory, not the
+  // route string (which would put a "/" in a repo name).
+  assert.deepEqual(reposOf(findRoute(cfg, 'w/single')), [{ name: 'only', dir: '/tmp/only' }]);
 
-  // A multi-repo connection's worktreePrefix fits none of its repos in
+  // A multi-repo route's worktreePrefix fits none of its repos in
   // particular, so it must not apply to any of them — each falls through to
   // its own `.crew.yaml` prefix or its checkout name (ISSUE-398). Only a
-  // single-repo connection has one unambiguous checkout for the value to
+  // single-repo route has one unambiguous checkout for the value to
   // describe.
-  assert.equal(shipWorktreePrefixFor(connection(cfg, 'multi')), undefined);
-  assert.equal(shipWorktreePrefixFor(connection(cfg, 'single')), 's-');
+  assert.equal(shipWorktreePrefixFor(findRoute(cfg, 'w/multi')), undefined);
+  assert.equal(shipWorktreePrefixFor(findRoute(cfg, 'w/single')), 's-');
 });
 
 test('tickets are partitioned by repo, and unplaceable ones are surfaced', () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
   writeFileSync(join(dir, 'crew.yaml'), [
     'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
-    'connections:',
-    '  - name: multi', '    workspace: w', '    apiKey: k',
+    'routes:',
+    '  - route: w/multi', '    apiKey: k',
     '    worktreePrefix: m-', '    baseUrl: https://example.com',
     '    repos:', '      alpha: /tmp/alpha', '      beta: /tmp/beta',
     '    resolved:',
@@ -239,9 +309,9 @@ test('tickets are partitioned by repo, and unplaceable ones are surfaced', () =>
     '      repoNames:',
     '        "r-a": alpha', '        "r-b": beta',
   ].join('\n'));
-  const c = connection(loadConfig(dir, join(dir, 'crew.yaml')), 'multi');
+  const r = findRoute(loadConfig(dir, join(dir, 'crew.yaml')), 'w/multi');
 
-  const { byRepo, unplaceable } = ticketsByRepo(c, [
+  const { byRepo, unplaceable } = ticketsByRepo(r, [
     { issue_id: 'A', repo_id: 'r-a' },
     { issue_id: 'B', repo_id: 'r-b' },
     { issue_id: 'C', repo_id: null },        // names no repo
@@ -262,8 +332,8 @@ test('an unplaceable ticket says WHY it could not be placed', () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-cfg-'));
   writeFileSync(join(dir, 'crew.yaml'), [
     'ship:', '  name: ship', '  agent:', '    bin: /bin/true',
-    'connections:',
-    '  - name: multi', '    enabled: true', '    workspace: w',
+    'routes:',
+    '  - route: w/multi', '    enabled: true',
     '    repos:', `      alpha: ${dir}`,
     '    worktreePrefix: wt-', '    baseUrl: https://b.example',
     '    apiKey: k',
@@ -274,9 +344,9 @@ test('an unplaceable ticket says WHY it could not be placed', () => {
     '      repoNames:',
     '        "r-a": alpha', '        "r-b": beta',
   ].join('\n'));
-  const c = connection(loadConfig(dir, join(dir, 'crew.yaml')), 'multi');
+  const r = findRoute(loadConfig(dir, join(dir, 'crew.yaml')), 'w/multi');
 
-  const { unplaceable } = ticketsByRepo(c, [
+  const { unplaceable } = ticketsByRepo(r, [
     { issue_id: 'C', repo_id: null },       // names none — a board problem
     { issue_id: 'D', repo_id: 'r-gone' },   // not in repoNames — stale config
     { issue_id: 'E', repo_id: 'r-b' },      // known repo, no checkout here

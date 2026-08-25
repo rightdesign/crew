@@ -36,14 +36,14 @@ const WORKING_STEPS = new Set<Step>(['worktree', 'agent', 'reconcile', 'merge', 
 export interface WatchFilter {
   role?: string;
   ticket?: string;
-  connection?: string;
+  route?: string;
   level?: 'warn' | 'error';
 }
 
 export function matches(e: CrewEvent, f: WatchFilter): boolean {
   if (f.role && e.role !== f.role) return false;
   if (f.ticket && e.ticket !== f.ticket) return false;
-  if (f.connection && e.connection !== f.connection) return false;
+  if (f.route && e.route !== f.route) return false;
   if (f.level === 'warn' && e.level === 'info') return false;
   if (f.level === 'error' && e.level !== 'error') return false;
   return true;
@@ -72,7 +72,7 @@ export function formatLine(e: CrewEvent): string {
 
 export interface CycleState {
   cycle: string;
-  connection: string;
+  route: string;
   step: Step;
   role?: string;
   ticket?: string;
@@ -92,7 +92,7 @@ export function foldCycle(events: CrewEvent[]): CycleState | null {
   const first = ofCycle[0]!;
   const state: CycleState = {
     cycle: last.cycle,
-    connection: last.connection,
+    route: last.route,
     step: last.step,
     role: last.role,
     ticket: [...ofCycle].reverse().find((e) => e.ticket && WORKING_STEPS.has(e.step))?.ticket,
@@ -114,7 +114,7 @@ export function renderHeader(s: CycleState | null, now = Date.now()): string {
   const elapsed = Math.max(0, Math.round((now - Date.parse(s.lastAt)) / 1000));
   const progress = STEP_ORDER.map((st) => (st === s.step ? bold(green(st)) : dim(st))).join(dim(' > '));
   const bits = [
-    `${bold(s.connection)}  cycle ${s.cycle}`,
+    `${bold(s.route)}  cycle ${s.cycle}`,
     s.role ? `role ${bold(s.role)}` : null,
     s.ticket ? `ticket ${bold(s.ticket)}` : null,
     s.rank !== undefined ? dim(`rank ${s.rank}`) : null,

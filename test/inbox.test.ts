@@ -5,8 +5,8 @@ import type { InboxItem } from '../src/inbox.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import type { Ticket } from '../src/tracker.ts';
 
-const item = (o: Partial<Ticket> & { issue_id: string }, connection = 'a', rank = 1): InboxItem => ({
-  connection,
+const item = (o: Partial<Ticket> & { issue_id: string }, route = 'a', rank = 1): InboxItem => ({
+  route,
   ticket: { id: o.issue_id, status: 'needs_info', updated_at: '', ...o } as Ticket,
   assignee: 'Brad C.', rank, effective: 2, contract: DEFAULT_CONTRACT,
 });
@@ -27,7 +27,7 @@ test('an empty queue names WHOSE queue it is', () => {
   assert.equal(renderInbox([], false, 'Dana R.'), 'nothing assigned to Dana R.\n');
 });
 
-test('items group by status by default and by connection on request', () => {
+test('items group by status by default and by route on request', () => {
   const items = [
     item({ issue_id: 'ISSUE-1', status: 'needs_info', title: 'one' }, 'alpha'),
     item({ issue_id: 'ISSUE-2', status: 'accepted', title: 'two' }, 'beta'),

@@ -29,7 +29,7 @@ import type { Contract } from './contract.ts';
 export interface ReleaseRunOptions {
   /**
    * Remembers a failed deploy and counts consecutive refusals, for THIS
-   * connection — `State#release(name)`. Scoped, because a ship releases each
+   * route — `State#release(name)`. Scoped, because a ship releases each
    * board's repo independently and one repo's broken deploy must not suppress
    * another's release.
    */

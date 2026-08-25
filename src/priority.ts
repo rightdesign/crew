@@ -137,9 +137,9 @@ export const NOTHING_ACTIONABLE = 999_999_999_999;
 
 /**
  * Aging (ISSUE-383): a ticket's effective rank improves the longer it has
- * sat at the front of its connection's queue without winning — the fairness
+ * sat at the front of its route's queue without winning — the fairness
  * bookkeeping ISSUE-382 already keeps (`state.fairness(name).waiting()`) is
- * both the trigger and the age input, so a quiet connection cannot be
+ * both the trigger and the age input, so a quiet route cannot be
  * starved by a busy one.
  *
  * **Saturating, not linear-forever**: the bonus grows with elapsed time but
@@ -148,10 +148,10 @@ export const NOTHING_ACTIONABLE = 999_999_999_999;
  * outranking QA would delay every release to start more work.
  *
  * **Weight scales the RATE, not the rank.** A rank multiplier could starve a
- * connection permanently, duplicating `enabled: false` badly; scaling the
- * rate means a heavily-weighted connection's work surfaces less often, never
+ * route permanently, duplicating `enabled: false` badly; scaling the
+ * rate means a heavily-weighted route's work surfaces less often, never
  * that a lightly-weighted one's stops happening. Weight defaults to 1 (pure
- * aging) when a connection configures none.
+ * aging) when a route configures none.
  *
  * `AGE_HOURS_TO_ERODE` — how long an ungrown ticket takes to fully erode to
  * rank 0 at weight 1 — is a placeholder default, not a tuned constant: this
@@ -164,7 +164,7 @@ const AGE_HOURS_TO_ERODE = 48;
 export interface AgingInput {
   /** ISO timestamp this ticket has sat at the front of its queue, unpicked. */
   since: string;
-  /** Per-connection multiplier on the aging RATE. Undefined means 1 (pure aging). */
+  /** Per-route multiplier on the aging RATE. Undefined means 1 (pure aging). */
   weight?: number;
 }
 

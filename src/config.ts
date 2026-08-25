@@ -3,30 +3,42 @@
  *
  * Two levels, because a ship is not a project (CREW_PRD §1.1, §15):
  *
- *   ship:        facts about this machine — the agent binary, the shell its
- *                hooks are written for, where state and logs go. One per file.
- *   connections: one entry per project this ship works. A **connection** binds
- *                one slice of one work source to one local directory, and a
- *                machine may hold many at once.
+ *   ship:   facts about this machine — the agent binary, the shell its hooks
+ *           are written for, where state and logs go. One per file.
+ *   routes: one entry per project this ship works. A **route** is
+ *           `workspace/project` — one slice of one work source, bound to one
+ *           local directory — and a machine may hold many at once.
  *
- * IDS ARE RESOLVED, NOT AUTHORED. A connection names its workspace and project
- * in words; the uuids for the tracker's data models and the crew's rows are
- * discovered from the project and cached under `resolved:`. `crew connect`
- * (ISSUE-285) is what writes that cache. Until it exists the cache may be
- * filled in by hand, which is why it is a distinct block rather than mixed in
- * with the settings a person actually authors — everything under `resolved:`
- * is derivable and regenerable, and nothing under it should be edited to
- * change behaviour.
+ * IDS ARE RESOLVED, NOT AUTHORED. A route names its workspace and project as
+ * one slug pair; the uuids for the tracker's data models and the crew's rows
+ * are discovered from that project and cached in the STATE tree, at
+ * `<stateDir>/resolved/<workspace>/<project>.json` (`resolvedPathFor`,
+ * below) — not in this file. `crew connect` (ISSUE-285) is what writes that
+ * cache; it may also be filled in by hand. Keeping it out of `crew.yaml`
+ * entirely, rather than in a distinct block within it, means the file a
+ * person actually authors and diffs never carries ids that are derivable and
+ * regenerable, and that nothing under it should be edited to change
+ * behaviour, on its face.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname, isAbsolute, join } from 'node:path';
+import { resolve, dirname, isAbsolute, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { parse } from 'yaml';
 import {
-  isPlatformRequirement, hostPlatform, isShipPlatform,
-  type PlatformRequirement, type ShipPlatform,
+  hostPlatform, isShipPlatform,
+  type ShipPlatform,
 } from './platform.ts';
+
+/**
+ * Where a route talks to when nothing more specific says otherwise.
+ *
+ * Every route this crew has ever served has pointed here — a self-hosted or
+ * otherwise different tracker is the override, not the common case — so a
+ * `crew.yaml` that omits `baseUrl` entirely (at both route and ship level)
+ * gets this rather than a hard config error.
+ */
+export const DEFAULT_BASE_URL = 'https://app.tablation.com';
 
 export type RoleName = 'dev' | 'design' | 'qa' | 'triage';
 export const ROLE_NAMES: RoleName[] = ['dev', 'design', 'qa', 'triage'];
@@ -36,11 +48,11 @@ export const ROLE_LABEL: Record<RoleName, string> = {
 
 export interface HoldConfig { id: string; role?: string }
 
-/** The ids a connection discovers from its project. Regenerable; never authored. */
+/** The ids a route discovers from its project. Regenerable; never authored. */
 export interface ResolvedIds {
   workspaceId: string;
   projectId?: string;
-  /** The `Projects` table, and the row this connection's `area` names. */
+  /** The `Projects` table, and the row this route's `area` names. */
   areaModelId?: string;
   areaId?: string;
   /** The `Repos` table, and repo id -> name, so a ticket's repo resolves. */
@@ -56,7 +68,7 @@ export interface ResolvedIds {
   epicsModelId?: string;
   /**
    * The `Locks` table, when this workspace has one (ISSUE-394) — rows this
-   * connection's ships CAS against for cross-machine exclusion (the release
+   * route's ships CAS against for cross-machine exclusion (the release
    * lock today; ISSUE-395's ticket-claim lock will share the mechanism).
    * Optional like Ships and Epics: a workspace without one just keeps the
    * local-only pid lock it always had.
@@ -68,40 +80,44 @@ export interface ResolvedIds {
   holds: HoldConfig[];
 }
 
-export interface Connection {
-  /** Short local handle, used in logs, state file names and `crew run <name>`. */
-  name: string;
+export interface Route {
   /**
-   * Which row of the work source's `Projects` table this connection works —
-   * one *area of development*, named rather than numbered.
+   * `workspace-slug/project-slug` — the work source, addressed the same way
+   * `crew connect` takes it. This is the route's own identity: what `crew run
+   * <route>` matches, what names its log lines, and what keys its state file
+   * (`resolvedPathFor`) — there is no separate `name:` to keep in sync with
+   * it.
+   */
+  route: string;
+  /**
+   * Which row of the work source's `Projects` table this route works — one
+   * *area of development*, named rather than numbered.
    *
-   * Note the deliberate word: `project` below is the **Tablation project**
-   * that contains the tracker's tables, while `area` is a **row in the
-   * Projects table inside it**. Both are called "project" in conversation and
-   * they are not the same thing; a connection binds one area to one checkout,
-   * and a ship holds many such connections.
+   * Note the deliberate word: the route's own project (half of `route`
+   * above) is the **Tablation project** that contains the tracker's tables,
+   * while `area` is a **row in the Projects table inside it**. Both are
+   * called "project" in conversation and they are not the same thing; a
+   * route binds one area to one checkout, and a ship holds many such routes.
    *
-   * Omit it and the connection sees every ticket, whatever its area — which
-   * is right for a tracker that has not been sliced.
+   * Omit it and the route sees every ticket, whatever its area — which is
+   * right for a tracker that has not been sliced.
    */
   area?: string;
-  /** Per-connection interlock: this one connection polls and runs. */
+  /** Per-route interlock: this one route polls and runs. */
   enabled: boolean;
-  workspace: string;
-  project?: string;
   /**
-   * How fast this connection's aging (ISSUE-383) erodes an unpicked
-   * ticket's rank toward 0 — "the operator maintains steering of their
-   * ship" (Brad), ranking their own commitments rather than a property of
-   * the board. Undefined means 1 (pure aging, the documented default). A
-   * SCALAR on the RATE, never on the rank itself: to stop a connection's
-   * work being picked at all, disable it — `weight` cannot starve one,
-   * only make its work surface less often.
+   * How fast this route's aging (ISSUE-383) erodes an unpicked ticket's
+   * rank toward 0 — "the operator maintains steering of their ship" (Brad),
+   * ranking their own commitments rather than a property of the board.
+   * Undefined means 1 (pure aging, the documented default). A SCALAR on the
+   * RATE, never on the rank itself: to stop a route's work being picked at
+   * all, disable it — `weight` cannot starve one, only make its work
+   * surface less often.
    */
   weight?: number;
   /**
-   * The checkout this connection works, when its area has exactly one repo.
-   * Kept for the common case; `repos` is what a multi-repo area needs.
+   * The checkout this route works, when its area has exactly one repo. Kept
+   * for the common case; `repos` is what a multi-repo area needs.
    */
   dir: string;
   /**
@@ -115,15 +131,13 @@ export interface Connection {
    */
   repos: Record<string, string>;
   /**
-   * A ship-level fallback for repos on this connection that declare no
-   * `worktrees.prefix` of their own (ISSUE-350). Optional: a connection that
+   * A ship-level fallback for repos on this route that declare no
+   * `worktrees.prefix` of their own (ISSUE-350). Optional: a route that
    * says nothing lets every repo fall through to its own derived default
    * instead of this one value overriding all of them regardless of which
    * repo it actually fits (ISSUE-400).
    */
   worktreePrefix?: string;
-  /** What this project needs of a host. Checked against the ship's platform. */
-  platform: PlatformRequirement;
   baseUrl: string;
   apiKey?: string;
   apiKeyFile?: string;
@@ -140,7 +154,7 @@ export interface Connection {
   /**
    * This workspace's own rules, where they differ from the default (see
    * docs/CONTRACT.md). Absent means the workspace means what the unmodified
-   * Issue Tracker template means. Belongs per connection, not per ship: one
+   * Issue Tracker template means. Belongs per route, not per ship: one
    * machine may serve several workspaces with different conventions.
    */
   contract?: Partial<import('./contract.ts').Contract> | null;
@@ -181,7 +195,7 @@ export interface Ship {
 
 export interface CrewConfig {
   ship: Ship;
-  connections: Connection[];
+  routes: Route[];
   crewHome: string;
   configFile: string;
 }
@@ -190,11 +204,11 @@ export class ConfigError extends Error {}
 
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
-  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'maxConcurrentAgents', 'streamRetentionDays',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
 ]);
-const CONNECTION_KEYS = new Set([
-  'name', 'enabled', 'workspace', 'project', 'area', 'dir', 'repos', 'worktreePrefix', 'weight',
-  'platform', 'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
+const ROUTE_KEYS = new Set([
+  'route', 'enabled', 'area', 'dir', 'repos', 'worktreePrefix', 'weight',
+  'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
 ]);
 
@@ -203,8 +217,8 @@ const CONNECTION_KEYS = new Set([
  * repo contract uses, and for the same reason.
  *
  * This exists because of a real mistake: removing a `hooks:` key left its
- * children (`test:`, `build:`, `deploy:`) dangling at connection level, where
- * they were silently dropped. The file still LOOKED like it configured a test
+ * children (`test:`, `build:`, `deploy:`) dangling at route level, where they
+ * were silently dropped. The file still LOOKED like it configured a test
  * command. Config that reads as meaningful and does nothing is worse than
  * config that is absent.
  */
@@ -256,6 +270,23 @@ class Missing {
  *   3. ~/.config/crew/crew.yaml  — the normal home
  *   4. <checkout>/crew.yaml      — legacy, for installs that predate this
  */
+/**
+ * This crew checkout's own version, for the default User-Agent.
+ *
+ * Read from `package.json` at runtime rather than baked in at build time —
+ * a global install and a checkout run from source should both report what
+ * they actually are. Falls back rather than throwing: a User-Agent that
+ * cannot be built is not a reason to refuse to run.
+ */
+function crewVersion(crewHome: string): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(crewHome, 'package.json'), 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 export function configSearchPath(crewHome: string): string[] {
   if (process.env.CREW_CONFIG) return [resolve(process.env.CREW_CONFIG)];
   const xdg = process.env.XDG_CONFIG_HOME;
@@ -274,6 +305,52 @@ export function findConfigFile(crewHome: string): string {
 /** Where a fresh install should write its config. */
 export const defaultConfigPath = (): string =>
   join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'crew', 'crew.yaml');
+
+/**
+ * A route's `workspace/project` string, in single-token form — for a log
+ * line, a digest filename, a stream directory entry, anywhere a `/` would
+ * be read as a path separator or make a label harder to grep for. There is
+ * no `name:` to use instead any more (that was the whole point), so this is
+ * what every place that used to read one now derives it from.
+ */
+export function routeSlug(route: string): string {
+  return route.replace(/\//g, '-');
+}
+
+/**
+ * Where `crew connect` writes one route's discovered ids, and where
+ * `loadConfig` reads them back from —
+ * `<stateDir>/resolved/<workspace>/<project>.json`, mirroring the route
+ * string's own `workspace/project` shape.
+ *
+ * Not in `crew.yaml`: the ids are a cache of what the tracker itself already
+ * says (ISSUE-285), regenerable by re-running `crew connect`, and belong
+ * beside the rest of this machine's derived state rather than in the file a
+ * person actually authors and reviews diffs of.
+ */
+export function resolvedPathFor(stateDir: string, route: string): string {
+  const [workspace, project] = splitRoute(route);
+  return join(stateDir, 'resolved', workspace, `${project}.json`);
+}
+
+/** `"workspace/project"` -> `["workspace", "project"]`, validated. */
+function splitRoute(route: string): [string, string] {
+  const parts = route.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new ConfigError(`route must be "workspace/project" (got "${route}")`);
+  }
+  return [parts[0], parts[1]];
+}
+
+function readResolvedFile(stateDir: string, route: string): any {
+  const path = resolvedPathFor(stateDir, route);
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new ConfigError(`${path}: not valid JSON — ${(e as Error).message}`);
+  }
+}
 
 function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undefined {
   if (!raw) return undefined;
@@ -325,7 +402,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   const base = dirname(file);
   const missing = new Missing();
 
-  rejectUnknownKeys(raw, new Set(['ship', 'connections']), 'top-level', file);
+  rejectUnknownKeys(raw, new Set(['ship', 'routes']), 'top-level', file);
   const shipRaw = raw.ship ?? {};
   rejectUnknownKeys(shipRaw, SHIP_KEYS, 'ship', file);
   const declaredPlatform = shipRaw.platform ? String(shipRaw.platform) : undefined;
@@ -340,16 +417,26 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
     missing.add(`ship.streamRetentionDays must be a positive integer (got "${shipRaw.streamRetentionDays}")`);
   }
+  // Relative to the CONFIG's directory, not the checkout: config and state
+  // belong to the machine and should travel together. Computed here, ahead
+  // of the ship object below, because the routes loop needs it too — each
+  // route's resolved ids are read from underneath it.
+  const stateDir = expand(shipRaw.stateDir ?? 'state', base);
 
-  const connRaw = raw.connections;
-  if (!Array.isArray(connRaw) || connRaw.length === 0) {
-    missing.add('connections (at least one)');
+  const routesRaw = raw.routes;
+  if (!Array.isArray(routesRaw) || routesRaw.length === 0) {
+    missing.add('routes (at least one)');
   }
 
-  const connections: Connection[] = (Array.isArray(connRaw) ? connRaw : []).map((c: any, i: number) => {
-    const where = `connections[${i}]`;
-    rejectUnknownKeys(c, CONNECTION_KEYS, `${where}`, file);
-    const name = missing.req(c?.name, `${where}.name`) as string;
+  const routes: Route[] = (Array.isArray(routesRaw) ? routesRaw : []).map((c: any, i: number) => {
+    const where = `routes[${i}]`;
+    rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
+    const route = missing.req(c?.route, `${where}.route`) as string;
+    const routeParts = route ? route.split('/') : [];
+    const routeWellFormed = routeParts.length === 2 && routeParts.every(Boolean);
+    if (route && !routeWellFormed) {
+      missing.add(`${where}.route must be "workspace/project" (got "${route}")`);
+    }
     // `repos` or `dir` — one of them must say where the code is.
     const repoDirs: Record<string, string> = {};
     if (c?.repos && typeof c.repos === 'object') {
@@ -363,13 +450,9 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       : hasRepos
         ? Object.values(repoDirs)[0]!
         : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
-    const platformRaw = String(c?.platform ?? 'any');
-    if (!isPlatformRequirement(platformRaw)) {
-      missing.add(`${where}.platform must be one of any|unix|macos|linux|windows (got "${platformRaw}")`);
-    }
     // A rate scalar, never a switch: 0 or below would let a weight silently
-    // starve the connection, exactly the misuse `enabled: false` exists to
-    // do honestly instead (see the Connection.weight doc comment).
+    // starve the route, exactly the misuse `enabled: false` exists to do
+    // honestly instead (see the Route.weight doc comment).
     const weight: number | undefined = c?.weight === undefined ? undefined : Number(c.weight);
     if (weight !== undefined && !(Number.isFinite(weight) && weight > 0)) {
       missing.add(`${where}.weight must be a positive number (got "${c?.weight}")`);
@@ -378,18 +461,19 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       ? c.release.versionFiles
       : c?.release?.versionFile ? [c.release.versionFile] : undefined;
     return {
-      name,
+      route,
       enabled: c?.enabled === true,
-      workspace: missing.req(c?.workspace, `${where}.workspace`) as string,
-      project: c?.project,
       area: c?.area,
       dir,
       repos: repoDirs,
       worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
       weight,
-      platform: platformRaw as PlatformRequirement,
-      baseUrl: (missing.req(c?.baseUrl ?? raw.ship?.baseUrl, `${where}.baseUrl`) as string).replace(/\/+$/, ''),
-      apiKey: c?.apiKey,
+      baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
+      // Keys are workspace-scoped in general, so a route normally brings its
+      // own — but nothing stops one key being valid for several workspaces
+      // (a personal account key, say), and a ship declaring it once is one
+      // fewer secret to keep in sync across routes.
+      apiKey: c?.apiKey ?? raw.ship?.apiKey,
       apiKeyFile: c?.apiKeyFile ? expand(c.apiKeyFile, dir) : undefined,
       apiKeyVar: c?.apiKeyVar,
       hooks: { test: c?.hooks?.test, build: c?.hooks?.build, deploy: c?.hooks?.deploy, notify: c?.hooks?.notify },
@@ -400,13 +484,18 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       },
       release: { versionFiles, changelog: c?.release?.changelog },
       contract: c?.contract ?? null,
-      resolved: parseResolved(c?.resolved, missing, where),
+      // The state-tree file wins when both exist: it's what `crew connect`
+      // manages going forward, and an authored `resolved:` block is only a
+      // legacy or hand-filled fallback (see the file comment at the top).
+      resolved: routeWellFormed
+        ? parseResolved(readResolvedFile(stateDir, route) ?? c?.resolved, missing, where)
+        : parseResolved(c?.resolved, missing, where),
     };
   });
 
-  const names = connections.map((c) => c.name);
-  const dupe = names.find((n, i) => n && names.indexOf(n) !== i);
-  if (dupe) missing.add(`connections: duplicate name "${dupe}" — names address a connection, so they must be unique`);
+  const seen = routes.map((r) => r.route);
+  const dupe = seen.find((n, i) => n && seen.indexOf(n) !== i);
+  if (dupe) missing.add(`routes: duplicate route "${dupe}" — a route addresses itself, so it must be unique`);
 
   missing.throwIfAny(file);
 
@@ -419,33 +508,35 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       extraPath: shipRaw.extraPath,
       useNvm: shipRaw.useNvm !== false,
       nvmSh: shipRaw.nvmSh,
-      // Relative to the CONFIG's directory, not the checkout: config and
-      // state belong to the machine and should travel together.
-      stateDir: expand(shipRaw.stateDir ?? 'state', base),
+      stateDir,
       logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'crew.log'), base),
-      userAgent: shipRaw.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+      // The `Mozilla/5.0` prefix is load-bearing, not decorative: a
+      // default curl/python/no-prefix User-Agent is blocked by Cloudflare
+      // before it reaches the tracker API, and the failure reads as a
+      // network problem rather than a rejected request.
+      userAgent: shipRaw.userAgent ?? `Mozilla/5.0 CrewAgent/${crewVersion(crewHome)}`,
       maxConcurrentAgents,
       streamRetentionDays,
     },
-    connections,
+    routes,
     crewHome,
     configFile: file,
   };
 }
 
-/** Look a connection up by name — how `crew run <name>` addresses one. */
-export function connection(cfg: CrewConfig, name?: string): Connection {
-  if (!name) {
-    const enabled = cfg.connections.filter((c) => c.enabled);
-    if (enabled.length === 1) return enabled[0] as Connection;
-    if (cfg.connections.length === 1) return cfg.connections[0] as Connection;
+/** Look a route up by its `workspace/project` string — how `crew run <route>` addresses one. */
+export function findRoute(cfg: CrewConfig, route?: string): Route {
+  if (!route) {
+    const enabled = cfg.routes.filter((r) => r.enabled);
+    if (enabled.length === 1) return enabled[0] as Route;
+    if (cfg.routes.length === 1) return cfg.routes[0] as Route;
     throw new ConfigError(
-      `this ship has ${cfg.connections.length} connections — name one: ${cfg.connections.map((c) => c.name).join(', ')}`,
+      `this ship has ${cfg.routes.length} routes — name one: ${cfg.routes.map((r) => r.route).join(', ')}`,
     );
   }
-  const found = cfg.connections.find((c) => c.name === name);
+  const found = cfg.routes.find((r) => r.route === route);
   if (!found) {
-    throw new ConfigError(`no connection named "${name}" (have: ${cfg.connections.map((c) => c.name).join(', ')})`);
+    throw new ConfigError(`no route "${route}" (have: ${cfg.routes.map((r) => r.route).join(', ')})`);
   }
   return found;
 }
@@ -454,53 +545,53 @@ export function connection(cfg: CrewConfig, name?: string): Connection {
  * Where a ticket's work happens on this machine.
  *
  * ticket.repo_id -> the Repos row's name -> the configured directory. Falls
- * back to the connection's single `dir` when the area has one repo, which is
- * the common case and what every connection looked like before areas could
- * span several.
+ * back to the route's single `dir` when the area has one repo, which is the
+ * common case and what every route looked like before areas could span
+ * several.
  *
  * Returns null when a ticket names a repo this ship has no checkout for —
  * that is a real state (another ship may serve it), and the caller reports it
  * rather than working the wrong directory.
  */
-export function dirForRepo(c: Connection, repoId?: string | null): string | null {
-  const names = c.resolved?.repoNames;
-  if (!repoId || !names) return Object.keys(c.repos).length ? null : c.dir;
+export function dirForRepo(r: Route, repoId?: string | null): string | null {
+  const names = r.resolved?.repoNames;
+  if (!repoId || !names) return Object.keys(r.repos).length ? null : r.dir;
   const name = names[repoId];
   if (!name) return null;
-  return c.repos[name] ?? (Object.keys(c.repos).length === 0 ? c.dir : null);
+  return r.repos[name] ?? (Object.keys(r.repos).length === 0 ? r.dir : null);
 }
 
 /**
  * The reverse of `resolved.repoNames` (id -> name): given a repo's name as
- * the connection's own `repos` map or `RepoTarget` uses it, find its row id
- * in the tracker's `Repos` table. Needed wherever a NEW ticket has to be
- * filed with a `repo` column pointing at an existing Repos row (ISSUE-411).
+ * the route's own `repos` map or `RepoTarget` uses it, find its row id in
+ * the tracker's `Repos` table. Needed wherever a NEW ticket has to be filed
+ * with a `repo` column pointing at an existing Repos row (ISSUE-411).
  */
-export function repoIdForName(c: Connection, name: string): string | undefined {
-  const names = c.resolved?.repoNames;
+export function repoIdForName(r: Route, name: string): string | undefined {
+  const names = r.resolved?.repoNames;
   if (!names) return undefined;
   for (const [id, n] of Object.entries(names)) if (n === name) return id;
   return undefined;
 }
 
-/** The API key for one connection. Never logged. */
-export function resolveApiKey(c: Connection): string {
-  if (c.apiKey) return c.apiKey;
-  if (c.apiKeyFile && c.apiKeyVar && existsSync(c.apiKeyFile)) {
-    for (const line of readFileSync(c.apiKeyFile, 'utf8').split('\n')) {
-      const m = line.match(new RegExp(`^${c.apiKeyVar}=(.*)$`));
+/** The API key for one route. Never logged. */
+export function resolveApiKey(r: Route): string {
+  if (r.apiKey) return r.apiKey;
+  if (r.apiKeyFile && r.apiKeyVar && existsSync(r.apiKeyFile)) {
+    for (const line of readFileSync(r.apiKeyFile, 'utf8').split('\n')) {
+      const m = line.match(new RegExp(`^${r.apiKeyVar}=(.*)$`));
       if (m) return (m[1] ?? '').trim().replace(/^["']|["']$/g, '');
     }
   }
   throw new ConfigError(
-    `connection "${c.name}": no API key (apiKey, or ${c.apiKeyVar ?? 'VAR'} in ${c.apiKeyFile ?? '<unset>'})`,
+    `route "${r.route}": no API key (apiKey, or ${r.apiKeyVar ?? 'VAR'} in ${r.apiKeyFile ?? '<unset>'})`,
   );
 }
 
 /** Seats and holds as the roster builder wants them. Requires resolved ids. */
-export function configuredMembers(c: Connection) {
-  const r = c.resolved;
-  if (!r) throw new ConfigError(`connection "${c.name}" has no resolved ids — run \`crew connect\``);
+export function configuredMembers(rt: Route) {
+  const r = rt.resolved;
+  if (!r) throw new ConfigError(`route "${rt.route}" has no resolved ids — run \`crew connect\``);
   const out: Array<{ id: string; role: string; kind: 'seat' | 'hold' }> = [];
   for (const role of ROLE_NAMES) {
     const id = r.seats[role];
@@ -513,41 +604,41 @@ export function configuredMembers(c: Connection) {
 
 /** One checkout the crew works in, and the name the board knows it by. */
 export interface RepoTarget {
-  /** The board's slug for it, or the connection name for a single-repo setup. */
+  /** The board's slug for it, or this checkout's own directory name for a single-repo setup. */
   name: string;
   dir: string;
 }
 
 /**
- * Every checkout this connection covers.
+ * Every checkout this route covers.
  *
- * A connection is a board; a board's area of development spans several
+ * A route is a board; a board's area of development spans several
  * repositories (ISSUE-331). Release, merge, deploy and sync are all
  * REPOSITORY operations, so they iterate this rather than using `dir` —
- * `conn.dir` is only the fallback for a connection that declares no `repos`
+ * `route.dir` is only the fallback for a route that declares no `repos`
  * map, and using it as "the" directory meant every repo but the first was
  * never released at all.
  */
-export function reposOf(c: Connection): RepoTarget[] {
-  const named = Object.entries(c.repos);
-  if (named.length === 0) return [{ name: c.name, dir: c.dir }];
+export function reposOf(r: Route): RepoTarget[] {
+  const named = Object.entries(r.repos);
+  if (named.length === 0) return [{ name: basename(r.dir), dir: r.dir }];
   return named.map(([name, dir]) => ({ name, dir }));
 }
 
 /**
- * The connection's `worktreePrefix`, but only where it is unambiguous.
+ * The route's `worktreePrefix`, but only where it is unambiguous.
  *
- * A single-repo connection has exactly one checkout to name, so the
- * connection-level value fits it and only it. An area with several repos
- * (ISSUE-331) has one `worktreePrefix` string for however many checkouts it
- * serves — passing it to `resolveRepoConfig` for every one of them made it
- * win for whichever repo it happened to match and shadow every other repo's
- * own derived default (ISSUE-398). Returning `undefined` here lets each of
- * those repos fall through to its own `.crew.yaml` prefix or
- * `defaultWorktreePrefix(dir)` instead.
+ * A single-repo route has exactly one checkout to name, so the route-level
+ * value fits it and only it. An area with several repos (ISSUE-331) has one
+ * `worktreePrefix` string for however many checkouts it serves — passing it
+ * to `resolveRepoConfig` for every one of them made it win for whichever
+ * repo it happened to match and shadow every other repo's own derived
+ * default (ISSUE-398). Returning `undefined` here lets each of those repos
+ * fall through to its own `.crew.yaml` prefix or `defaultWorktreePrefix(dir)`
+ * instead.
  */
-export function shipWorktreePrefixFor(c: Connection): string | undefined {
-  return reposOf(c).length === 1 ? c.worktreePrefix : undefined;
+export function shipWorktreePrefixFor(r: Route): string | undefined {
+  return reposOf(r).length === 1 ? r.worktreePrefix : undefined;
 }
 
 /**
@@ -575,21 +666,21 @@ export interface Unplaceable<T> {
 }
 
 /**
- * Split a connection's tickets by which repository they belong to.
+ * Split a route's tickets by which repository they belong to.
  *
- * A ticket with no repo set cannot be placed once a connection has more than
- * one checkout, and guessing would merge a branch into the wrong repository.
+ * A ticket with no repo set cannot be placed once a route has more than one
+ * checkout, and guessing would merge a branch into the wrong repository.
  * Those are returned separately so the caller can say so out loud rather than
  * silently dropping them.
  */
 export function ticketsByRepo<T extends { repo_id?: string | null | undefined }>(
-  c: Connection, tickets: T[],
+  r: Route, tickets: T[],
 ): { byRepo: Map<string, T[]>; unplaceable: Array<Unplaceable<T>> } {
-  const targets = reposOf(c);
+  const targets = reposOf(r);
   const byRepo = new Map<string, T[]>(targets.map((t) => [t.name, []]));
   const unplaceable: Array<Unplaceable<T>> = [];
-  const single = Object.keys(c.repos).length === 0;
-  const names = c.resolved?.repoNames ?? {};
+  const single = Object.keys(r.repos).length === 0;
+  const names = r.resolved?.repoNames ?? {};
 
   for (const t of tickets) {
     if (single) { byRepo.get(targets[0]!.name)!.push(t); continue; }

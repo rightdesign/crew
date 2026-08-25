@@ -6,8 +6,8 @@
  * than an approximation of one.
  */
 
-import type { Connection, RoleName, Ship } from './config.ts';
-import { configuredMembers } from './config.ts';
+import type { Route, RoleName, Ship } from './config.ts';
+import { configuredMembers, routeSlug } from './config.ts';
 import { Tracker, type Ticket, type Comment } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
@@ -49,7 +49,7 @@ export interface CycleDecision {
 }
 
 export interface CycleOptions {
-  conn: Connection;
+  route: Route;
   ship: Ship;
   state: State;
   emit: Emitter;
@@ -64,8 +64,8 @@ export interface CycleOptions {
  * computation would read a cross-role dependency as resolved.
  */
 export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
-  const { conn, ship, state, emit } = o;
-  const tracker = new Tracker(conn, ship);
+  const { route, ship, state, emit } = o;
+  const tracker = new Tracker(route, ship);
   emit.enter('poll');
 
   const [tickets, comments, crewRows, epicRows] = await Promise.all([
@@ -96,7 +96,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const blocked = computeBlockedIds(tickets, info);
 
   emit.enter('sweep');
-  const roster = buildRoster(configuredMembers(conn), crewRows);
+  const roster = buildRoster(configuredMembers(route), crewRows);
   const holds = new Set(holdIds(roster));
   const diag = sweepDiagnostics(tickets, info);
   for (const d of diag.dangling) emit.warn(`dangling blocked_by reference, ignored: ${d}`);
@@ -130,7 +130,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const selectionInput = {
     tickets, comments, watermark, blocked,
     holds,
-    seats: conn.resolved!.seats,
+    seats: route.resolved!.seats,
     paused: state.pausedRoles(['dev', 'design', 'qa']),
     contract: tracker.contract,
   };
@@ -168,11 +168,15 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
 }
 
 /**
- * Where a role's queue digest lives. Per connection AND per role: a ship
+ * Where a role's queue digest lives. Per route AND per role: a ship
  * serves several projects, and each seat gets its own slice.
+ *
+ * `route` here is already filename-safe (`routeSlug`'d by the caller) — a
+ * raw `workspace/project` string would put a `/` in what has to be one path
+ * segment.
  */
-export const digestPath = (stateDir: string, connection: string, role: RoleName): string =>
-  join(stateDir, `digest-${connection}-${role}.md`);
+export const digestPath = (stateDir: string, route: string, role: RoleName): string =>
+  join(stateDir, `digest-${route}-${role}.md`);
 
 /**
  * Write the digest the winning seat will be handed.
@@ -188,12 +192,12 @@ export const digestPath = (stateDir: string, connection: string, role: RoleName)
 export function writeDigest(
   o: CycleOptions, d: CycleDecision, role: RoleName, stateDir: string,
 ): boolean {
-  const me = o.conn.resolved?.seats[role];
+  const me = o.route.resolved?.seats[role];
   if (!me) return false;
   try {
     // The repo's own convention, not the crew's assumption — and each repo
     // has its own, so this is resolved per ticket rather than once for the
-    // connection's directory. Cached by directory: an area of a dozen repos
+    // route's directory. Cached by directory: an area of a dozen repos
     // must not re-read and re-parse the same .crew.yaml once per row.
     const repoCache = new Map<string, ReturnType<typeof resolveRepoConfig>>();
     const repoFor = (dir: string) => {
@@ -203,15 +207,15 @@ export function writeDigest(
       repoCache.set(dir, cfg);
       return cfg;
     };
-    const dirFor = (t: { repo_id?: string | null }) => dirForRepo(o.conn, t.repo_id);
+    const dirFor = (t: { repo_id?: string | null }) => dirForRepo(o.route, t.repo_id);
     const render = (t: { issue_id: string; title?: string | null }) => (template: string) =>
       renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role });
 
     const input = {
       dirFor,
       branchFor: (t: { issue_id: string; title?: string | null; repo_id?: string | null }) =>
-        render(t)(repoFor(dirFor(t) ?? o.conn.dir).branch.name),
-      // Looked for in the ticket's own repository. Asking the connection's
+        render(t)(repoFor(dirFor(t) ?? o.route.dir).branch.name),
+      // Looked for in the ticket's own repository. Asking the route's
       // directory whether a second repo's branch exists always answered no,
       // which QA reads as "no worktree to test" (ISSUE-349).
       existingBranchFor: (t: { issue_id: string; title?: string | null; repo_id?: string | null }) => {
@@ -221,7 +225,7 @@ export function writeDigest(
         return branchForIssue(dir, t.issue_id, { name, push }, render(t));
       },
       tickets: role === 'triage'
-        ? d.tickets.filter((t) => t.assignee_id === o.conn.resolved?.seats.triage)
+        ? d.tickets.filter((t) => t.assignee_id === o.route.resolved?.seats.triage)
         : sliceFor(d.tickets, role),
       comments: d.comments,
       me,
@@ -231,7 +235,7 @@ export function writeDigest(
       blockerInfo: d.info,
     };
     const text = role === 'qa' ? qaDigest(input) : buildingDigest(input);
-    const path = digestPath(stateDir, o.conn.name, role);
+    const path = digestPath(stateDir, routeSlug(o.route.route), role);
     writeFileSync(path, text);
     o.emit.emit(`queue digest written for ${role} (${Buffer.byteLength(text)} bytes)`, {
       data: { role, bytes: Buffer.byteLength(text) },
@@ -244,6 +248,6 @@ export function writeDigest(
 }
 
 /** The roster block the winning seat is handed. */
-export function rosterFor(d: CycleDecision, conn: Connection, role: RoleName): string {
-  return rosterMarkdown(d.roster, conn.resolved!.seats[role] ?? null);
+export function rosterFor(d: CycleDecision, route: Route, role: RoleName): string {
+  return rosterMarkdown(d.roster, route.resolved!.seats[role] ?? null);
 }

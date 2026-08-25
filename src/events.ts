@@ -31,7 +31,7 @@ export interface CrewEvent {
   at: string;
   /** Groups every event of one poll cycle, so a view can show "this cycle". */
   cycle: string;
-  connection: string;
+  route: string;
   step: Step;
   level: Level;
   message: string;
@@ -51,7 +51,7 @@ export function render(e: CrewEvent): string {
 }
 
 export interface EmitterOptions {
-  connection: string;
+  route: string;
   /** JSONL sink — what a view tails. */
   eventFile?: string;
   /** Text sink — the human log. */
@@ -92,7 +92,7 @@ export class Emitter {
     const e: CrewEvent = {
       at: this.now().toISOString(),
       cycle: this.cycle,
-      connection: this.opts.connection,
+      route: this.opts.route,
       step: extra.step ?? this.step,
       level: extra.level ?? 'info',
       message,

@@ -10,7 +10,7 @@
 
 import { hostname } from 'node:os';
 import { TablationClient } from '@tablation/client';
-import type { Connection, Ship } from './config.ts';
+import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
 import { DEFAULT_CONTRACT, resolveContract, type Contract } from './contract.ts';
 import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './board-lock.ts';
@@ -25,7 +25,7 @@ export interface Ticket {
    *
    * An area spans several repositories, so this is what decides the checkout:
    * without it a release looks for a branch in whichever directory the
-   * connection happened to name, which is the wrong one for every repo but
+   * route happened to name, which is the wrong one for every repo but
    * the first.
    */
   repo_id?: string | null;
@@ -86,7 +86,7 @@ export interface ShipRow {
 
 /**
  * Kept as the DEFAULT workspace's sets, for callers that have no contract to
- * hand. Anything serving a real connection must use that connection's
+ * hand. Anything serving a real route must use that route's
  * contract instead — a ship follows each workspace's own rules.
  */
 export const RESOLVED_STATUSES = new Set(DEFAULT_CONTRACT.statuses.resolved);
@@ -98,43 +98,43 @@ type Sort = { columnName: string; direction: 'asc' | 'desc' };
 const encodeSort = (s: Sort[]): string => JSON.stringify(s);
 
 /**
- * One tracker, for one connection. A ship holds several of these — one per
+ * One tracker, for one route. A ship holds several of these — one per
  * project it is connected to — which is why nothing here is ship-global.
  */
 export class Tracker {
   // NB: explicit fields, not TypeScript parameter properties — node's
   // --experimental-strip-types cannot transform those, and the test runner
   // uses it. The same rule applies everywhere in src/.
-  readonly conn: Connection;
-  /** This workspace's rules. A ship holds several, one per connection. */
+  readonly route: Route;
+  /** This workspace's rules. A ship holds several, one per route. */
   readonly contract: Contract;
   private readonly client: TablationClient;
   private readonly models: { issues: string; comments: string; crew: string };
 
-  constructor(conn: Connection, ship: Pick<Ship, 'userAgent'>) {
-    this.conn = conn;
-    if (!conn.resolved) {
+  constructor(route: Route, ship: Pick<Ship, 'userAgent'>) {
+    this.route = route;
+    if (!route.resolved) {
       throw new ConfigError(
-        `connection "${conn.name}" has no resolved ids — run \`crew connect\` to discover them from the project`,
+        `route "${route.route}" has no resolved ids — run \`crew connect\` to discover them from the project`,
       );
     }
-    this.models = conn.resolved.models;
-    this.contract = resolveContract(conn.contract);
+    this.models = route.resolved.models;
+    this.contract = resolveContract(route.contract);
     this.client = new TablationClient({
-      baseUrl: `${conn.baseUrl}/api`,
-      apiKey: resolveApiKey(conn),
+      baseUrl: `${route.baseUrl}/api`,
+      apiKey: resolveApiKey(route),
       // Cloudflare 403s (error 1010) default agents on this host.
       headers: { 'User-Agent': ship.userAgent },
     } as ConstructorParameters<typeof TablationClient>[0]);
   }
 
   /**
-   * Every non-terminal ticket for this connection's area, in one call.
+   * Every non-terminal ticket for this route's area, in one call.
    *
-   * The area filter is what keeps two connections on one tracker out of each
+   * The area filter is what keeps two routes on one tracker out of each
    * other's queue: a ship working `synthesis` and `tablation-js` from the same
    * Issues project must not have either seat pick up the other's tickets. A
-   * connection with no area sees everything, which is right for a tracker
+   * route with no area sees everything, which is right for a tracker
    * nobody has sliced yet.
    */
   async openTickets(): Promise<Ticket[]> {
@@ -142,7 +142,7 @@ export class Tracker {
     const filters: Filter[] = [
       { columnName: c.columns.status, operator: 'IN', value: c.statuses.open },
     ];
-    const areaId = this.conn.resolved?.areaId;
+    const areaId = this.route.resolved?.areaId;
     if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
     return this.client.records.list<Ticket>(this.models.issues, {
       filters: encodeFilters(filters),
@@ -174,7 +174,7 @@ export class Tracker {
     const filters: Filter[] = [
       { columnName: c.columns.status, operator: 'IN', value: statuses },
     ];
-    const areaId = this.conn.resolved?.areaId;
+    const areaId = this.route.resolved?.areaId;
     if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
     const params: { filters: string; limit: number; sort: string } = {
       filters: encodeFilters(filters),
@@ -209,13 +209,43 @@ export class Tracker {
   }
 
   /**
+   * One row of the `Repos` table, for whatever it can tell the crew that
+   * isn't in `.crew.yaml` — which `Projects` (area) row it belongs to, in
+   * particular. `undefined` on a workspace with no Repos table, or if the
+   * row is gone; neither is fatal to the caller.
+   */
+  async repoRow(id: string): Promise<{ id: string; project_id?: string | null } | undefined> {
+    const model = this.route.resolved?.reposModelId;
+    if (!model) return undefined;
+    try {
+      return await this.client.records.get<{ id: string; project_id?: string | null }>(model, id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * One row of the `Projects` (area) table. `undefined` on a workspace
+   * with no such table, or if the row is gone.
+   */
+  async projectRow(id: string): Promise<{ id: string; issue_prefix?: string | null } | undefined> {
+    const model = this.route.resolved?.areaModelId;
+    if (!model) return undefined;
+    try {
+      return await this.client.records.get<{ id: string; issue_prefix?: string | null }>(model, id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * The Ships rows of this workspace, if it has a Ships table.
    *
    * Optional by design: a workspace that has not adopted ships still works,
    * and the crew must not require a table it did not create.
    */
   async shipRows(): Promise<ShipRow[]> {
-    const model = this.conn.resolved?.shipsModelId;
+    const model = this.route.resolved?.shipsModelId;
     if (!model) return [];
     try {
       return await this.client.records.list<ShipRow>(model, { limit: 200 });
@@ -258,7 +288,7 @@ export class Tracker {
   async beatShip(shipName: string): Promise<void> {
     const row = await this.myShipRow(shipName);
     if (!row) return;
-    await this.client.records.update(this.conn.resolved!.shipsModelId!, row.id, {
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, {
       last_seen: new Date().toISOString(),
       host: hostname(),
       pid: process.pid,
@@ -275,7 +305,7 @@ export class Tracker {
   async beatEngaged(shipName: string, connectionName: string, ticketRecordId: string | null): Promise<void> {
     const row = await this.myShipRow(shipName);
     if (!row) return;
-    await this.client.records.update(this.conn.resolved!.shipsModelId!, row.id, {
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, {
       last_seen: new Date().toISOString(),
       host: hostname(),
       pid: process.pid,
@@ -290,7 +320,7 @@ export class Tracker {
   async beatIdle(shipName: string): Promise<void> {
     const row = await this.myShipRow(shipName);
     if (!row) return;
-    await this.client.records.update(this.conn.resolved!.shipsModelId!, row.id, {
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, {
       last_seen: new Date().toISOString(),
       host: hostname(),
       pid: process.pid,
@@ -309,7 +339,7 @@ export class Tracker {
    * did not create.
    */
   async epicRows(): Promise<Array<{ id: string; status?: string | null }>> {
-    const model = this.conn.resolved?.epicsModelId;
+    const model = this.route.resolved?.epicsModelId;
     if (!model) return [];
     try {
       return await this.client.records.list(model, { limit: 500 });
@@ -334,11 +364,11 @@ export class Tracker {
    * Claim a board-visible lock for `scope` (ISSUE-394) — see board-lock.ts
    * for the CAS mechanics. Resolves to `{ ok: true }` immediately, with a
    * no-op release, when this workspace has no Locks table or no row
-   * provisioned for `scope`: a connection that has not adopted board
+   * provisioned for `scope`: a route that has not adopted board
    * locking keeps behaving exactly as it always has.
    */
   acquireBoardLock(scope: string, holderLabel: string, ttlMs: number): Promise<BoardLockResult> {
-    return claimBoardLock(this.client.records, this.conn.resolved?.locksModelId, scope, holderLabel, ttlMs);
+    return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs);
   }
 
   /**

@@ -56,7 +56,7 @@ function project(crewYaml: string) {
 }
 
 const lines: string[] = [];
-const emitter = () => { lines.length = 0; return new Emitter({ connection: 'c', console: (l) => lines.push(l), cycleId: 'C' }); };
+const emitter = () => { lines.length = 0; return new Emitter({ route: 'c', console: (l) => lines.push(l), cycleId: 'C' }); };
 
 const LOCAL = `version: 1
 hooks:

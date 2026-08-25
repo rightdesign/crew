@@ -92,9 +92,9 @@ export function worktreeExists(parent: string, prefix: string, n: number): boole
 }
 
 /**
- * The same question across every repository a connection serves.
+ * The same question across every repository a route serves.
  *
- * A connection spans several repos (ISSUE-331) and each names its worktrees
+ * A route spans several repos (ISSUE-331) and each names its worktrees
  * after itself (ISSUE-350), so asking one directory whether ISSUE-346's
  * worktree exists answers "no" for a ticket whose worktree is alive next
  * door — and `reap` acts on that answer by killing processes.

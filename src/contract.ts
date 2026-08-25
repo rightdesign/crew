@@ -5,7 +5,7 @@
  * each one supplies. So none of this can be a constant in the runner — the
  * values below are only the DEFAULT, which is what an unmodified Issue
  * Tracker template ships with. A workspace that renames its statuses, adds
- * one, or orders priority differently supplies its own, and every connection
+ * one, or orders priority differently supplies its own, and every route
  * carries its own resolved contract.
  *
  * See docs/CONTRACT.md for the documented default and how to override it.

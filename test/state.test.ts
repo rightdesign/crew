@@ -68,7 +68,7 @@ test('the release-block counter is what makes a persistent refusal loud', () => 
   assert.equal(r.blockedCount(), 0);
 });
 
-test('release state is per connection, not per ship', () => {
+test('release state is per route, not per ship', () => {
   // A ship serves several boards and releases each repo independently. These
   // were single global files, so one repo's failed deploy suppressed releases
   // on every other board, and a dirty tree in one checkout counted blocked
@@ -89,7 +89,7 @@ test('release state is per connection, not per ship', () => {
   assert.equal(b.deployFailedSha(), 'cafe', 'clearing one must not clear the other');
 });
 
-test('a connection name that is not a safe filename still gets its own state', () => {
+test('a route name that is not a safe filename still gets its own state', () => {
   const s = fresh();
   const odd = s.release('my repo/v2');
   odd.noteDeployFailed('abc');
@@ -191,7 +191,7 @@ test('fairness: winning or running dry both clear the streak', () => {
   assert.equal(f.waiting()?.ticket, 'ISSUE-1');
   assert.equal(f.waiting()?.streak, 2);
 
-  f.record(2, 'ISSUE-1', true);   // this connection won this cycle
+  f.record(2, 'ISSUE-1', true);   // this route won this cycle
   assert.equal(f.streak(), 0);
   assert.equal(f.waiting(), undefined);
 
@@ -201,7 +201,7 @@ test('fairness: winning or running dry both clear the streak', () => {
   assert.equal(f.waiting(), undefined);
 });
 
-test('fairness: a new top ticket resets the per-ticket streak, not the connection streak', () => {
+test('fairness: a new top ticket resets the per-ticket streak, not the route streak', () => {
   const f = fresh().fairness('proj');
   f.record(2, 'ISSUE-1', false);
   f.record(2, 'ISSUE-1', false);
@@ -210,19 +210,19 @@ test('fairness: a new top ticket resets the per-ticket streak, not the connectio
   // ISSUE-1 got picked up by a person, or a higher-priority ticket landed —
   // either way a DIFFERENT ticket is now at the front of the queue.
   f.record(2, 'ISSUE-2', false);
-  assert.equal(f.streak(), 3, 'the connection is still being passed over');
+  assert.equal(f.streak(), 3, 'the route is still being passed over');
   assert.equal(f.waiting()?.ticket, 'ISSUE-2');
   assert.equal(f.waiting()?.streak, 1, 'but the new front-of-queue ticket starts fresh');
 });
 
-test('fairness state is per connection, not per ship', () => {
+test('fairness state is per route, not per ship', () => {
   const s = fresh();
   s.fairness('alpha').record(5, 'ISSUE-1', false);
   assert.equal(s.fairness('alpha').streak(), 1);
   assert.equal(s.fairness('beta').streak(), 0, 'beta must not inherit alpha\'s streak');
 });
 
-test('fairness: an unsafe connection name still gets its own state', () => {
+test('fairness: an unsafe route name still gets its own state', () => {
   const s = fresh();
   s.fairness('my repo/v2').record(1, 'ISSUE-9', false);
   assert.equal(s.fairness('my repo/v2').waiting()?.ticket, 'ISSUE-9');

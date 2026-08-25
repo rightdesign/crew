@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { renderEnvironment, type EnvironmentRepo } from '../src/environment.ts';
 import { resolveRepoConfig, parseRepoConfig } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
-import type { Connection } from '../src/config.ts';
+import type { Route } from '../src/config.ts';
 
-const conn = {
+const route = {
   name: 'synthesis', enabled: true, workspace: 'issues', dir: '/w/synthesis',
   repos: {}, worktreePrefix: 'synthesis-issue-', platform: 'unix',
   baseUrl: 'https://board.example', hooks: {}, labels: {},
   release: {}, contract: undefined,
-} as unknown as Connection;
+} as unknown as Route;
 
 const repo = (name: string, dir: string, yaml: string): EnvironmentRepo => ({
   name, dir,
@@ -21,7 +21,7 @@ const SYN = 'version: 1\nhooks:\n  test: pnpm test\n  build: pnpm build\n  deplo
 const CREW = 'version: 1\nrelease:\n  mode: integrate\nhooks:\n  test: node --test\n  build: tsc --noEmit\n';
 
 const render = (repos: EnvironmentRepo[]) =>
-  renderEnvironment({ conn, userAgent: 'crew/1', repos, contract: DEFAULT_CONTRACT });
+  renderEnvironment({ route, userAgent: 'crew/1', repos, contract: DEFAULT_CONTRACT });
 
 test('one repo reads exactly as it always did', () => {
   const out = render([repo('synthesis', '/w/synthesis', SYN)]);
@@ -32,7 +32,7 @@ test('one repo reads exactly as it always did', () => {
 
 // ISSUE-350. The environment is built before the session picks its ticket, so
 // it cannot know which repo applies — it has to describe them all. Rendering
-// only the connection's first told a crew ticket to cut
+// only the route's first told a crew ticket to cut
 // `../synthesis-issue-350` and to run Synthesis's test command.
 test('several repos each get their own worktree name, branch and hooks', () => {
   const out = render([
@@ -42,7 +42,7 @@ test('several repos each get their own worktree name, branch and hooks', () => {
   assert.match(out, /## The repositories this board covers/);
   assert.match(out, /### synthesis — `\/w\/synthesis`/);
   assert.match(out, /### crew — `\/w\/crew`/);
-  // Each repo's worktrees are named after that repo, not after the connection.
+  // Each repo's worktrees are named after that repo, not after the route.
   assert.match(out, /`\.\.\/synthesis-issue-<number>`/);
   assert.match(out, /`\.\.\/crew-issue-<number>`/);
   assert.doesNotMatch(out, /`\.\.\/synthesis-issue-<number>`[\s\S]*### crew[\s\S]*`\.\.\/synthesis-issue-<number>`/);
@@ -66,15 +66,15 @@ test('a workspace with no Epics table says nothing about epics', () => {
 
 test('a workspace with an Epics table lists it by id and names the column', () => {
   const withEpics = {
-    ...conn,
+    ...route,
     resolved: {
       models: { issues: 'i', comments: 'c', crew: 'w' },
       epicsModelId: 'epics-model-id',
       seats: {}, operator: 'op', holds: [],
     },
-  } as unknown as Connection;
+  } as unknown as Route;
   const out = renderEnvironment({
-    conn: withEpics, userAgent: 'crew/1',
+    route: withEpics, userAgent: 'crew/1',
     repos: [repo('synthesis', '/w/synthesis', SYN)], contract: DEFAULT_CONTRACT,
   });
   assert.match(out, /- Epics: `epics-model-id`/);

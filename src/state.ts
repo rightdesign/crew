@@ -90,8 +90,8 @@ export class State {
    */
   /**
    * Lock names become filenames, so anything that could be read as a path has
-   * to go. A scope like `connection/repo` otherwise produced
-   * `.release-conn/repo.lock` — a write into a directory that does not exist.
+   * to go. A scope like `route/repo` otherwise produced
+   * `.release-route/repo.lock` — a write into a directory that does not exist.
    */
   private static safe(name: string): string {
     return name.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -170,16 +170,16 @@ export class State {
    * blocked cycle is normal; the count is what makes a persistent one loud.
    */
   /**
-   * Release bookkeeping, scoped to one connection.
+   * Release bookkeeping, scoped to one route.
    *
    * Scoped because a ship serves several boards and releases each repo
    * independently (ISSUE-338). These were single global files, so a deploy
-   * failure on one connection suppressed releases on every other one, and a
+   * failure on one route suppressed releases on every other one, and a
    * release blocked in one repo counted cycles for all of them — a dirty tree
    * in one checkout would have silently held up an unrelated project.
    */
-  release(connection: string) {
-    const suffix = State.safe(connection);
+  release(route: string) {
+    const suffix = State.safe(route);
     const blocked = `.release-blocked-${suffix}`;
     const failed = `.deploy-failed-sha-${suffix}`;
     const read = (f: string): string | null => {
@@ -209,17 +209,17 @@ export class State {
   }
 
   /**
-   * Starvation bookkeeping, scoped to one connection (ISSUE-382).
+   * Starvation bookkeeping, scoped to one route (ISSUE-382).
    *
    * `decideFleet` already renders the winner and each role's rank; what it
-   * throws away is the other side — a connection that had work and did not
-   * win, and the same ticket sitting at the front of that connection's queue
+   * throws away is the other side — a route that had work and did not
+   * win, and the same ticket sitting at the front of that route's queue
    * cycle after cycle. This is state, not memory: a single process is one
    * cycle, so "how long has this been waiting" only exists if it survives
    * between them.
    */
-  fairness(connection: string) {
-    const suffix = State.safe(connection);
+  fairness(route: string) {
+    const suffix = State.safe(route);
     const streakFile = `.fairness-streak-${suffix}`;
     const ticketFile = `.fairness-ticket-${suffix}`;
     const sinceFile = `.fairness-since-${suffix}`;
@@ -231,10 +231,10 @@ export class State {
       for (const f of [streakFile, ticketFile, sinceFile, ticketStreakFile]) rmSync(this.path(f), { force: true });
     };
     return {
-      /** Consecutive cycles this connection had actionable work and did not win. */
+      /** Consecutive cycles this route had actionable work and did not win. */
       streak: (): number => Number.parseInt(read(streakFile) ?? '', 10) || 0,
       /**
-       * The ticket sitting at the front of this connection's queue, how long
+       * The ticket sitting at the front of this route's queue, how long
        * it has been there and its own consecutive-passed-over count — or
        * undefined if nothing is waiting.
        */
@@ -245,8 +245,8 @@ export class State {
         return { ticket, since, streak: Number.parseInt(read(ticketStreakFile) ?? '', 10) || 0 };
       },
       /**
-       * Record what one cycle saw for this connection: how many tickets were
-       * actionable, which one was most urgent, and whether this connection
+       * Record what one cycle saw for this route: how many tickets were
+       * actionable, which one was most urgent, and whether this route
        * won. Winning or running dry both reset the streak — there is nothing
        * left being passed over.
        */

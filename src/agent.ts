@@ -10,7 +10,8 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, type WriteStream } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { Connection, RoleName, Ship } from './config.ts';
+import type { Route, RoleName, Ship } from './config.ts';
+import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { mapStreamLine, extractResult } from './stream.ts';
@@ -71,7 +72,7 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
 export interface PromptParts {
   roster: string;
   /**
-   * Everything specific to this connection and repository — ids, hooks, the
+   * Everything specific to this route and repository — ids, hooks, the
    * worktree convention. The briefs name none of it (ISSUE-293), so without
    * this section they refer to things the session has no way to resolve.
    */
@@ -100,7 +101,7 @@ export function assemblePrompt(p: PromptParts): string {
 
 export interface AgentPlan {
   role: RoleName;
-  connection: string;
+  route: string;
   cwd: string;
   bin: string;
   args: string[];
@@ -135,7 +136,7 @@ export interface AgentPlan {
 
 export interface PlanOptions {
   role: RoleName;
-  conn: Connection;
+  route: Route;
   ship: Ship;
   crewHome: string;
   stateDir: string;
@@ -166,7 +167,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   if (!existsSync(commonPath)) throw new AgentError(`no shared policy at ${commonPath}`);
 
   const now = o.now ?? (() => Date.now());
-  const digestPath = join(o.stateDir, `digest-${o.conn.name}-${o.role}.md`);   // see poll.ts digestPath()
+  const routeLabel = routeSlug(o.route.route);
+  const digestPath = join(o.stateDir, `digest-${routeLabel}-${o.role}.md`);   // see poll.ts digestPath()
   let digest: string | undefined;
   let ageSeconds: number | undefined;
   if (existsSync(digestPath)) {
@@ -183,18 +185,18 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   });
 
   const streamsDir = join(o.stateDir, 'streams');
-  const base = `${o.conn.name}-${o.role}-${o.cycle}`;
+  const base = `${routeLabel}-${o.role}-${o.cycle}`;
 
   return {
     role: o.role,
-    connection: o.conn.name,
-    // The connection's directory, which is a STARTING POINT and not the
+    route: routeLabel,
+    // The route's directory, which is a STARTING POINT and not the
     // ticket's repo: the runner cannot know which ticket the session will
     // take, so it cannot know the checkout either. Where an area spans
     // several repos this is whichever one `repos` happened to list first
     // (config.ts), and the digest's `repo` column is what actually places
     // the work. Kept deliberately rather than guessed at (ISSUE-349).
-    cwd: o.conn.dir,
+    cwd: o.route.dir,
     bin: o.ship.agent.bin,
     args: [
       '-p', '--allowedTools', ...allowedTools(o.role), '--model', o.ship.agent.model,
@@ -296,7 +298,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
           const e = {
             at: new Date().toISOString(),
             cycle: emit.cycle,
-            connection: plan.connection,
+            route: plan.route,
             step: 'agent' as const,
             level: 'info' as const,
             message: ev.kind === 'tool' ? `${ev.tool ?? 'tool'}${ev.target ? ` ${ev.target}` : ''}` : ev.kind,
@@ -325,7 +327,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       eventsSink?.end();
       try {
         writeFileSync(`${plan.streamPath}.meta.json`, JSON.stringify({
-          connection: plan.connection, role: plan.role, ticket: plan.ticket ?? null,
+          route: plan.route, role: plan.role, ticket: plan.ticket ?? null,
           startedAt, exitCode: code ?? 1, model: plan.model,
           sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
           totalCostUsd: result?.totalCostUsd ?? null,

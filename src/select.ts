@@ -226,7 +226,7 @@ export interface ActionableSummary {
 }
 
 /**
- * A connection-wide view for fairness tracking (ISSUE-382): not "did the
+ * A route-wide view for fairness tracking (ISSUE-382): not "did the
  * winning role have work" but "how much work was waiting here at all, and
  * which piece of it is most overdue". `rankScalar` is the same comparator
  * the digest sorts every table with (queue, blocked, QA alike), so pooling

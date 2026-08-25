@@ -74,22 +74,21 @@ test('a repo with no contract is not an error', () => {
   assert.equal(loadRepoConfig(d), null);
 });
 
-test('a repo with no contract is driven entirely by the ship', () => {
+test('a repo with no contract is driven entirely by the ship, except platform: that has no ship fallback', () => {
   const eff = resolveRepoConfig(null, {
-    platform: 'unix',
     hooks: { test: 'make test', build: 'make', deploy: 'make ship' },
   }, '/tmp/x');
   assert.equal(eff.hooks.test, 'make test');
   assert.equal(eff.provenance['hooks.test'], 'ship');
-  assert.equal(eff.provenance['platform'], 'ship');
+  assert.equal(eff.platform, 'any');
+  assert.equal(eff.provenance['platform'], 'default');
   assert.deepEqual(validateEffective(eff), []);
   assert.match(eff.file, /no \.crew\.yaml — configured by this ship/);
 });
 
-test('the repo wins per field, and what it shadowed is reported not swallowed', () => {
+test('the repo wins per field; platform is repo-only, so there is nothing for it to shadow', () => {
   const repo = parseRepoConfig('version: 1\nplatform: macos\nhooks:\n  test: repo-test\n  build: b\n  deploy: d\n', '.crew.yaml');
   const eff = resolveRepoConfig(repo, {
-    platform: 'unix',
     hooks: { test: 'ship-test', setup: 'ship-setup' },
   }, '/tmp/x');
   assert.equal(eff.hooks.test, 'repo-test');       // repo wins
@@ -97,8 +96,9 @@ test('the repo wins per field, and what it shadowed is reported not swallowed', 
   assert.equal(eff.hooks.setup, 'ship-setup');     // ship fills a gap
   assert.equal(eff.provenance['hooks.setup'], 'ship');
   assert.equal(eff.platform, 'macos');
+  assert.equal(eff.provenance['platform'], 'repo');
   assert.ok(eff.shadowed.includes('hooks.test'));
-  assert.ok(eff.shadowed.includes('platform'));
+  assert.ok(!eff.shadowed.includes('platform'));
   assert.ok(!eff.shadowed.includes('hooks.setup'));
 });
 
@@ -382,7 +382,7 @@ test('the mode list is closed, and names itself in the error', () => {
   );
 });
 
-// ISSUE-350. `worktreePrefix` lived on the connection, which spans several
+// ISSUE-350. `worktreePrefix` lived on the route, which spans several
 // repos — so a session working the area's second repo was told to cut its
 // worktree under the first repo's name.
 test('a repo\'s worktree prefix defaults to its own directory name', () => {
@@ -403,7 +403,7 @@ test('the ship supplies a worktree prefix, and the repo overrides it', () => {
   assert.equal(both.worktrees.prefix, 'wt-');
   assert.equal(both.provenance['worktrees.prefix'], 'repo');
   // Reported rather than swallowed: a ship setting the repo overrides reads as
-  // if it were in use, which is how this went unnoticed on the connection.
+  // if it were in use, which is how this went unnoticed on the route.
   assert.ok(both.shadowed.includes('worktrees.prefix'));
 });
 

@@ -10,7 +10,7 @@ function rig() {
   const lines: string[] = [];
   let t = Date.parse('2026-08-23T12:00:00.000Z');
   const e = new Emitter({
-    connection: 'synthesis',
+    route: 'synthesis',
     eventFile: eventFileFor(dir),
     logFile: join(dir, 'crew.log'),
     console: (l) => lines.push(l),
@@ -25,7 +25,7 @@ test('an event carries structure, and the log line is rendered from it', () => {
   e.enter('select', 'dev');
   const ev = e.emit("'dev' wins this cycle", { data: { rank: 2020000299 } });
   assert.equal(ev.cycle, 'C1');
-  assert.equal(ev.connection, 'synthesis');
+  assert.equal(ev.route, 'synthesis');
   assert.equal(ev.step, 'select');
   assert.equal(ev.role, 'dev');
   assert.deepEqual(ev.data, { rank: 2020000299 });
@@ -79,7 +79,7 @@ test('a failing step is emitted as an error and still throws', async () => {
 test('an unwritable sink never takes the cycle down with it', () => {
   const lines: string[] = [];
   const e = new Emitter({
-    connection: 'x',
+    route: 'x',
     eventFile: '/proc/nonexistent/definitely/not/writable/events.jsonl',
     console: (l) => lines.push(l),
     cycleId: 'C1',
@@ -98,14 +98,14 @@ test('a dry run writes to the terminal and not to the ship history', () => {
   const seen: string[] = [];
 
   // How cli.ts constructs it under --dry-run: no eventFile, no logFile.
-  const dry = new Emitter({ connection: 'c', console: (l) => seen.push(l), cycleId: 'C' });
+  const dry = new Emitter({ route: 'c', console: (l) => seen.push(l), cycleId: 'C' });
   dry.emit('would release 1.2.3');
   assert.equal(existsSync(file), false, 'a dry run must leave no trace in the record');
   assert.equal(seen.length, 1, 'but the person who ran it still sees it');
 
   // ...and a real run does write it, so the absence above is the dry run's
   // doing rather than the emitter simply not working.
-  const real = new Emitter({ connection: 'c', eventFile: file, console: () => {}, cycleId: 'C' });
+  const real = new Emitter({ route: 'c', eventFile: file, console: () => {}, cycleId: 'C' });
   real.emit('released 1.2.3');
   assert.match(readFileSync(file, 'utf8'), /released 1\.2\.3/);
 });

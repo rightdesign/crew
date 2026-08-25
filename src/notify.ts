@@ -17,7 +17,7 @@
  * worse than one that does not exist, because there is no error to notice.
  */
 
-import type { Connection, Ship } from './config.ts';
+import type { Route, Ship } from './config.ts';
 import type { Emitter } from './events.ts';
 import { runScript, resolveShell } from './shell.ts';
 
@@ -32,7 +32,7 @@ export interface Notification {
 }
 
 /**
- * Run the connection's notify hook, if it has one.
+ * Run the route's notify hook, if it has one.
  *
  * Never throws and never fails a release. The work is already done by the time
  * this runs; a broken notifier must not turn a good release into a bad one,
@@ -40,9 +40,9 @@ export interface Notification {
  * its failures are warnings.
  */
 export async function notify(
-  conn: Connection, ship: Ship, n: Notification, emit: Emitter, dryRun = false,
+  route: Route, ship: Ship, n: Notification, emit: Emitter, dryRun = false,
 ): Promise<boolean> {
-  const script = conn.hooks.notify;
+  const script = route.hooks.notify;
   if (!script) return false;
 
   if (dryRun) {
@@ -52,12 +52,12 @@ export async function notify(
 
   try {
     const r = await runScript(script, {
-      cwd: conn.dir,
+      cwd: route.dir,
       env: {
         CREW_LEVEL: n.level,
         CREW_HEADLINE: n.headline,
         CREW_DETAIL: n.detail ?? '',
-        CREW_CONNECTION: conn.name,
+        CREW_ROUTE: route.route,
         CREW_SHIP: ship.name,
       },
       shell: resolveShell(ship.shell),
@@ -80,19 +80,19 @@ export async function notify(
 export function describeRelease(o: {
   deployed?: boolean; confirmed?: boolean; alreadyLive?: boolean; integrated?: boolean;
   version?: string; tag?: string; merged: unknown[]; stopped?: string;
-}, connection: string): Notification | null {
+}, route: string): Notification | null {
   if (o.integrated) {
     // Worth saying: something shipped, in the only sense this repo ships.
     return {
       level: 'ok',
-      headline: `${connection}: integrated ${o.version ?? o.merged.length + ' ticket(s)'}`,
+      headline: `${route}: integrated ${o.version ?? o.merged.length + ' ticket(s)'}`,
       detail: 'merged to the base branch — this repo has no deploy step',
     };
   }
   if (o.deployed) {
     return {
       level: o.confirmed === false ? 'warn' : 'ok',
-      headline: `${connection}: released ${o.version ?? 'a new version'}`,
+      headline: `${route}: released ${o.version ?? 'a new version'}`,
       detail: o.confirmed === false
         // Shipped, but the target never reported the new commit. Not a
         // failure — it may simply be slow — but not a clean success either.
@@ -104,12 +104,12 @@ export function describeRelease(o: {
   if (o.stopped === 'tests failed') {
     return {
       level: 'fail',
-      headline: `${connection}: release blocked — tests failed`,
+      headline: `${route}: release blocked — tests failed`,
       detail: 'the target stays on the previous release',
     };
   }
   if (o.stopped === 'deploy failed') {
-    return { level: 'fail', headline: `${connection}: deploy FAILED`, detail: 'nothing new is live' };
+    return { level: 'fail', headline: `${route}: deploy FAILED`, detail: 'nothing new is live' };
   }
   // Everything else — nothing to release, merge-only, external mode, a dirty
   // tree — is the normal state of most cycles and is not worth interrupting

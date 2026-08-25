@@ -7,7 +7,7 @@ import { foldCycle, renderHeader, formatLine, matches, readFrom, localTime } fro
 import type { CrewEvent } from '../src/events.ts';
 
 const E = (o: Partial<CrewEvent> & { step: CrewEvent['step']; message: string }): CrewEvent => ({
-  at: '2026-08-24T01:15:45.000Z', cycle: 'C1', connection: 'synthesis', level: 'info', ...o,
+  at: '2026-08-24T01:15:45.000Z', cycle: 'C1', route: 'synthesis', level: 'info', ...o,
 });
 
 test('a ticket merely REPORTED on is not shown as the one being worked', () => {
@@ -85,7 +85,7 @@ test('a partial final line is not parsed until it is complete', () => {
   assert.equal(second.events.length, 0);
   assert.equal(second.offset, first.offset);  // and the offset does not advance
 
-  appendFileSync(f, `"x","step":"poll","cycle":"C1","connection":"c","level":"info","at":"t","message":"two"}\n`);
+  appendFileSync(f, `"x","step":"poll","cycle":"C1","route":"c","level":"info","at":"t","message":"two"}\n`);
   const third = readFrom(f, second.offset);
   assert.equal(third.events.length, 1);
 });
