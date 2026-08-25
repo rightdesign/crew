@@ -37,6 +37,7 @@ export interface Discovered {
   areaName?: string;
   shipsModelId?: string;
   epicsModelId?: string;
+  locksModelId?: string;
   seats: Record<string, string>;
   operator?: string;
   holds: Array<{ id: string; name: string }>;
@@ -92,6 +93,10 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // Optional, like Ships: an unmodified Issue Tracker template has no Epics
   // table, and that is a legitimate shape, not a problem to report.
   out.epicsModelId = find('Epics');
+  // Optional, like Ships and Epics: a workspace that has not adopted a
+  // board-visible release lock (ISSUE-394) still works with the local-only
+  // pid lock it always had.
+  out.locksModelId = find('Locks');
 
   if (o.area) {
     if (!out.areaModelId) problems.push(`--area given but this project has no "Projects" table`);
@@ -143,7 +148,7 @@ ${d.projectName ? `    project: "${d.projectName}"\n` : ''}${opts.area ? `    ar
     # Discovered, not authored. Regenerate with \`crew connect\` rather than editing.
     resolved:
       workspaceId: "${d.workspaceId}"
-${d.projectId ? `      projectId: "${d.projectId}"\n` : ''}${d.areaModelId ? `      areaModelId: "${d.areaModelId}"\n` : ''}${d.areaId ? `      areaId: "${d.areaId}"\n` : ''}${d.shipsModelId ? `      shipsModelId: "${d.shipsModelId}"\n` : ''}${d.epicsModelId ? `      epicsModelId: "${d.epicsModelId}"\n` : ''}      models:
+${d.projectId ? `      projectId: "${d.projectId}"\n` : ''}${d.areaModelId ? `      areaModelId: "${d.areaModelId}"\n` : ''}${d.areaId ? `      areaId: "${d.areaId}"\n` : ''}${d.shipsModelId ? `      shipsModelId: "${d.shipsModelId}"\n` : ''}${d.epicsModelId ? `      epicsModelId: "${d.epicsModelId}"\n` : ''}${d.locksModelId ? `      locksModelId: "${d.locksModelId}"\n` : ''}      models:
         issues: "${d.models.issues ?? 'MISSING'}"
         comments: "${d.models.comments ?? 'MISSING'}"
         crew: "${d.models.crew ?? 'MISSING'}"

@@ -12,6 +12,7 @@ import { TablationClient } from '@tablation/client';
 import type { Connection, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
 import { DEFAULT_CONTRACT, resolveContract, type Contract } from './contract.ts';
+import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './board-lock.ts';
 
 export interface Ticket {
   id: string;
@@ -221,6 +222,17 @@ export class Tracker {
 
   async updateTicket(id: string, patch: Record<string, unknown>): Promise<Ticket> {
     return this.client.records.update<Ticket>(this.models.issues, id, patch);
+  }
+
+  /**
+   * Claim a board-visible lock for `scope` (ISSUE-394) — see board-lock.ts
+   * for the CAS mechanics. Resolves to `{ ok: true }` immediately, with a
+   * no-op release, when this workspace has no Locks table or no row
+   * provisioned for `scope`: a connection that has not adopted board
+   * locking keeps behaving exactly as it always has.
+   */
+  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number): Promise<BoardLockResult> {
+    return claimBoardLock(this.client.records, this.conn.resolved?.locksModelId, scope, holderLabel, ttlMs);
   }
 
   /**

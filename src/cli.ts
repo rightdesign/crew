@@ -30,6 +30,7 @@ import { planStamp, applyStamp } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { Tracker, type Ticket } from './tracker.ts';
+import type { BoardLockResult } from './board-lock.ts';
 import { validateContract } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
@@ -43,6 +44,15 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 
 const CREW_HOME = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * How long an unreleased board lock claim (ISSUE-394) stays valid before
+ * another ship may take it over as stale. Generous relative to a normal
+ * release (build, test, merge, deploy — minutes, not longer) so a slow but
+ * live release is never preempted by another ship; only a claim left behind
+ * by a crashed or network-lost run should ever go stale.
+ */
+const RELEASE_LOCK_TTL_MS = 20 * 60 * 1000;
 
 function usage(): never {
   process.stderr.write(`crew — a standing team of headless agents
@@ -326,6 +336,11 @@ async function releasePhase(
     emit.emit(`a previous release (pid ${relLock.heldBy}) is still running — skipping`, { step: 'release' });
     return;
   }
+  // Board-visible, cross-ship claim (ISSUE-394) — `relLock` above only ever
+  // excluded two processes on THIS machine. Taken after the local lock so a
+  // dry run and a machine with no other releasing process never pay for a
+  // network round trip; released in the `finally` below alongside it.
+  let boardLock: BoardLockResult | undefined;
   try {
 
     const repoFile = loadRepoConfig(target.dir);
@@ -340,6 +355,18 @@ async function releasePhase(
 
     if (!dryRun && !c.enabled) return;
     const tracker = new Tracker(c, cfg.ship);
+
+    if (!dryRun) {
+      const holderLabel = `${cfg.ship.name}:${process.pid}`;
+      const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS);
+      if (!got.ok) {
+        const why = got.reason === 'held' ? `held by ${got.heldBy ?? 'another ship'}` : 'claimed by another ship mid-check';
+        emit.emit(`release for ${scope} is ${why} on the board — skipping`, { step: 'release' });
+        return;
+      }
+      boardLock = got;
+    }
+
     const all = await tracker.openTickets();
 
     // Only this repository's tickets. Handing the whole board's tickets to a
@@ -445,6 +472,7 @@ async function releasePhase(
     }
 
   } finally {
+    if (boardLock && boardLock.ok) await boardLock.release();
     if (relLock && relLock.ok) relLock.release();
   }
 }

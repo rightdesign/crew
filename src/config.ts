@@ -54,6 +54,14 @@ export interface ResolvedIds {
   shipsModelId?: string;
   /** The `Epics` table, when this workspace has one (ISSUE-384). */
   epicsModelId?: string;
+  /**
+   * The `Locks` table, when this workspace has one (ISSUE-394) — rows this
+   * connection's ships CAS against for cross-machine exclusion (the release
+   * lock today; ISSUE-395's ticket-claim lock will share the mechanism).
+   * Optional like Ships and Epics: a workspace without one just keeps the
+   * local-only pid lock it always had.
+   */
+  locksModelId?: string;
   models: { issues: string; comments: string; crew: string };
   seats: Partial<Record<RoleName, string>>;
   operator: string;
@@ -281,6 +289,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     areaId: raw.areaId,
     shipsModelId: raw.shipsModelId,
     epicsModelId: raw.epicsModelId,
+    locksModelId: raw.locksModelId,
     reposModelId: raw.reposModelId,
     repoNames: raw.repoNames,
     models: {

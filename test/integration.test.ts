@@ -228,6 +228,25 @@ test('a cycle with NO agent work still runs the release phase', async () => {
   } finally { await t.stop(); }
 });
 
+test('a release held by another ship on the board is skipped, not merged twice (ISSUE-394)', async () => {
+  // `relLock` in cli.ts only ever excluded two processes on ONE machine.
+  // With a Locks table configured and its row already held (fresh, a
+  // different holder), the release must skip before touching the repo at
+  // all — proving the board-CAS check is actually wired into the CLI path,
+  // not just correct in isolation (that half is board-lock.test.ts).
+  const LOCKS = 'm-locks';
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
+    .table(LOCKS, [{ id: 'lock-1', scope: 'proj/proj', holder: 'other-ship:999', updated_at: new Date().toISOString() }])
+    .start();
+  try {
+    const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'proj');
+    assert.match(out, /claimed by another ship|held by other-ship:999/);
+    assert.ok(!t.writes.some((w) => w.model === MODELS.issues), 'a skipped release must not touch the ticket');
+  } finally { await t.stop(); }
+});
+
 test('--role runs exactly that seat and does not release', async () => {
   const t = await new FakeTracker()
     .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
