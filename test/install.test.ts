@@ -1,0 +1,119 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { planInstall, planUninstall, INTERVAL_SECONDS } from '../src/install.ts';
+import type { Ship } from '../src/config.ts';
+
+const ship = (over: Partial<Ship> = {}): Ship => ({
+  name: 'Test Ship',
+  platform: 'macos',
+  agent: { bin: '/usr/local/bin/claude', model: 'claude-sonnet-5' },
+  useNvm: true,
+  stateDir: '/tmp/crew-state',
+  logFile: '/tmp/crew.log',
+  userAgent: 'Mozilla/5.0 CrewAgent/1.0',
+  ...over,
+});
+
+test('macOS gets a launchd plist, never systemd or cron', () => {
+  const plan = planInstall(ship(), '/opt/crew', 'macos', true);
+  assert.equal(plan.mechanism, 'launchd');
+  assert.equal(plan.unitPaths.length, 1);
+  assert.match(plan.unitPaths[0]!, /Library\/LaunchAgents\/com\.tablation\.crew\.[0-9a-f]{8}\.plist$/);
+  assert.equal(plan.crontabLine, null);
+});
+
+test('the unit label is derived from crewHome, so two checkouts never collide', () => {
+  // Same checkout, planned twice: same label, so a reinstall targets the
+  // unit it wrote last time rather than minting a fresh name every run.
+  const a1 = planInstall(ship(), '/opt/crew-a', 'macos', true);
+  const a2 = planInstall(ship(), '/opt/crew-a', 'macos', true);
+  assert.equal(a1.unitPaths[0], a2.unitPaths[0]);
+
+  // Different checkouts: different labels on every mechanism, so one
+  // checkout's install/uninstall can never touch another's unit.
+  const b = planInstall(ship(), '/opt/crew-b', 'macos', true);
+  assert.notEqual(a1.unitPaths[0], b.unitPaths[0]);
+
+  const sdA = planInstall(ship({ platform: 'linux' }), '/opt/crew-a', 'linux', true);
+  const sdB = planInstall(ship({ platform: 'linux' }), '/opt/crew-b', 'linux', true);
+  assert.notEqual(sdA.unitPaths[0], sdB.unitPaths[0]);
+  assert.notEqual(sdA.unitPaths[1], sdB.unitPaths[1]);
+
+  const cronOutA = planUninstall(ship({ platform: 'linux' }), '/opt/crew-a', 'linux', false);
+  const cronOutB = planUninstall(ship({ platform: 'linux' }), '/opt/crew-b', 'linux', false);
+  assert.notEqual(cronOutA.crontabLine, cronOutB.crontabLine);
+});
+
+test('the plist names an absolute interpreter, never a bare "node"', () => {
+  const plan = planInstall(ship(), '/opt/crew', 'macos', true);
+  const xml = Object.values(plan.unitContent)[0]!;
+  assert.match(xml, /<string>\/.*<\/string>/); // process.execPath is absolute in this test runner
+  assert.ok(!xml.includes('<string>node</string>'));
+});
+
+test('the plist does not fire at load', () => {
+  const plan = planInstall(ship(), '/opt/crew', 'macos', true);
+  const xml = Object.values(plan.unitContent)[0]!;
+  assert.match(xml, /<key>RunAtLoad<\/key>\s*<false\/>/);
+  assert.match(xml, new RegExp(`<key>StartInterval</key>\\s*<integer>${INTERVAL_SECONDS}</integer>`));
+});
+
+test('the scheduler log is never the same file as the crew\'s own log', () => {
+  const plan = planInstall(ship({ logFile: '/tmp/crew.log' }), '/opt/crew', 'macos', true);
+  assert.notEqual(plan.schedulerLog, plan.crewLog);
+  assert.equal(plan.crewLog, '/tmp/crew.log');
+  assert.equal(plan.schedulerLog, '/tmp/crew.scheduler.log');
+});
+
+test('extraPath is prepended into the unit\'s own PATH, not left for the scheduler to guess', () => {
+  const plan = planInstall(ship({ extraPath: '/opt/homebrew/bin' }), '/opt/crew', 'macos', true);
+  const xml = Object.values(plan.unitContent)[0]!;
+  assert.match(xml, /\/opt\/homebrew\/bin/);
+});
+
+test('linux with systemd gets a user service+timer, not cron', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+  assert.equal(plan.mechanism, 'systemd');
+  assert.equal(plan.unitPaths.length, 2);
+  assert.ok(plan.unitPaths.every((p) => p.includes('.config/systemd/user/')));
+  assert.equal(plan.crontabLine, null);
+});
+
+test('the systemd timer does not fire at load either', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+  const timer = plan.unitContent[plan.unitPaths[1]!]!;
+  assert.ok(!timer.includes('OnBootSec'));
+  assert.ok(!/Persistent\s*=\s*true/i.test(timer));
+  assert.match(timer, new RegExp(`OnActiveSec=${INTERVAL_SECONDS}`));
+});
+
+test('linux without systemd falls back to a crontab line, not a unit file', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false);
+  assert.equal(plan.mechanism, 'cron');
+  assert.equal(plan.unitPaths.length, 0);
+  assert.ok(plan.crontabLine);
+  assert.match(plan.crontabLine!, /\*\/2 \* \* \* \*/);
+});
+
+test('the cron line redirects to the scheduler log, appended, not the crew log', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false);
+  assert.match(plan.crontabLine!, />> \/tmp\/crew\.scheduler\.log 2>&1$/);
+});
+
+test('windows has no plan yet — the ticket calls it "eventually"', () => {
+  assert.throws(() => planInstall(ship({ platform: 'windows' }), '/opt/crew', 'windows', false));
+});
+
+test('uninstall targets exactly what install would have written, on each mechanism', () => {
+  const macIn = planInstall(ship(), '/opt/crew', 'macos', true);
+  const macOut = planUninstall(ship(), '/opt/crew', 'macos', true);
+  assert.deepEqual(macOut.unitPaths, macIn.unitPaths);
+
+  const sdIn = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+  const sdOut = planUninstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+  assert.deepEqual(sdOut.unitPaths, sdIn.unitPaths);
+
+  const cronOut = planUninstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false);
+  assert.equal(cronOut.unitPaths.length, 0);
+  assert.ok(cronOut.crontabLine);
+});

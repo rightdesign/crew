@@ -22,6 +22,7 @@ import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
+import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
 import { runRelease } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
@@ -61,6 +62,8 @@ function usage(): never {
   crew log [conn]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
+  crew install                  write and load this platform's scheduler unit
+  crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
 
 Options:
@@ -809,6 +812,36 @@ switch (command) {
     if (command === 'pause') state.pause(role as RoleName | undefined);
     else state.resume(role as RoleName | undefined);
     process.stdout.write(`${command}d${role ? ` role ${role}` : ''}\n`);
+    break;
+  }
+
+  case 'install': {
+    const host = hostPlatform();
+    if (host === 'windows') {
+      process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
+      process.exit(2);
+    }
+    const plan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd());
+    process.stdout.write(`installing via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
+    await applyInstall(plan, CREW_HOME, dryRun, {
+      emit: (m) => process.stdout.write(`${m}\n`),
+      warn: (m) => process.stderr.write(`crew install: ${m}\n`),
+    });
+    break;
+  }
+
+  case 'uninstall': {
+    const host = hostPlatform();
+    if (host === 'windows') {
+      process.stdout.write('nothing installed on Windows\n');
+      break;
+    }
+    const plan = planUninstall(cfg.ship, CREW_HOME, host, detectSystemd());
+    process.stdout.write(`uninstalling ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
+    await applyUninstall(plan, CREW_HOME, dryRun, {
+      emit: (m) => process.stdout.write(`${m}\n`),
+      warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
+    });
     break;
   }
 

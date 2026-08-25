@@ -80,15 +80,24 @@ a connection has `enabled: true`.
 Then put it on a timer:
 
 ```sh
-$EDITOR launchd/com.tablation.crew.plist    # paths are placeholders
-cp launchd/com.tablation.crew.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.tablation.crew.plist
+bin/crew install           # writes and loads this platform's own unit
+bin/crew install --dry-run # see what it would do first
+bin/crew uninstall         # unload and remove it
 ```
 
-Use an **absolute** interpreter path in the plist — a timer runs with a minimal
-PATH and will not find a version-managed node otherwise. Each fire is a few API
-calls; a full agent session only starts when that cheap check finds something
-worth waking for.
+`install` picks the mechanism itself: a launchd user agent on macOS, a
+systemd **user** service+timer on Linux (falling back to a crontab line where
+`systemctl` is not usable), or an error on Windows (not built yet). It always
+uses an absolute interpreter path (`process.execPath`) and points the unit's
+own log at a *different* file than the crew's own — pointing both at one file
+was hit for real, and doubles every line. It never fires at load: the first
+poll happens one interval after `install` runs, same as every one after it.
+Each fire is a few API calls; a full agent session only starts when that
+cheap check finds something worth waking for.
+
+`launchd/com.tablation.crew.plist` is kept only as a reference for what
+`install` generates — hand-editing and loading it directly still works, but
+`crew install`/`crew uninstall` is the supported path now.
 
 ## Commands
 
@@ -109,6 +118,8 @@ crew pause|resume [conn] [R]  pause everything, or one role
 crew log [conn]               tail the log
 crew inbox [--member NAME]    your tickets across every workspace
 crew connect                  resolve a workspace's ids into a crew.yaml block
+crew install                  write and load this platform's scheduler unit
+crew uninstall                unload and remove it
 ```
 
 Every command that could change something takes `--dry-run`.
