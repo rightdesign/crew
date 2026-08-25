@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadConfig, connection, configuredMembers, reposOf, ticketsByRepo, ConfigError } from '../src/config.ts';
+import {
+  loadConfig, connection, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
+} from '../src/config.ts';
 
 function withConfig(yaml: string) {
   const dir = mkdtempSync(join(tmpdir(), 'crew-cfg-'));
@@ -211,6 +213,14 @@ test('reposOf covers every checkout, not just the connection dir', () => {
   // A single-repo connection still yields exactly one target, so callers never
   // need to special-case it.
   assert.deepEqual(reposOf(connection(cfg, 'single')), [{ name: 'single', dir: '/tmp/only' }]);
+
+  // A multi-repo connection's worktreePrefix fits none of its repos in
+  // particular, so it must not apply to any of them — each falls through to
+  // its own `.crew.yaml` prefix or its checkout name (ISSUE-398). Only a
+  // single-repo connection has one unambiguous checkout for the value to
+  // describe.
+  assert.equal(shipWorktreePrefixFor(connection(cfg, 'multi')), undefined);
+  assert.equal(shipWorktreePrefixFor(connection(cfg, 'single')), 's-');
 });
 
 test('tickets are partitioned by repo, and unplaceable ones are surfaced', () => {

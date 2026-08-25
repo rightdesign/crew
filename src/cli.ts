@@ -10,7 +10,7 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  loadConfig, connection, resolveApiKey, reposOf, ticketsByRepo,
+  loadConfig, connection, resolveApiKey, reposOf, shipWorktreePrefixFor, ticketsByRepo,
   type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
@@ -238,8 +238,10 @@ function resolvedRepos(c: typeof conn) {
       platform: c.platform,
       // The connection's prefix is a SHIP-level default for a repo that
       // declares none. A repo that declares its own shadows it, and `doctor`
-      // reports that the way it reports every other shadowed setting.
-      worktrees: { prefix: c.worktreePrefix },
+      // reports that the way it reports every other shadowed setting. Only
+      // meaningful for a single-repo connection — see shipWorktreePrefixFor
+      // (ISSUE-398).
+      worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, t.dir),
   }));
 }
@@ -317,7 +319,7 @@ async function releasePhase(
       hooks: c.hooks, labels: c.labels,
       release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
       platform: c.platform,
-      worktrees: { prefix: c.worktreePrefix },
+      worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, target.dir);
     const problems = validateEffective(repo);
     for (const p of problems) emit.warn(`${scope}: ${p}`);

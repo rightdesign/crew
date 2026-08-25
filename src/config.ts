@@ -500,6 +500,22 @@ export function reposOf(c: Connection): RepoTarget[] {
 }
 
 /**
+ * The connection's `worktreePrefix`, but only where it is unambiguous.
+ *
+ * A single-repo connection has exactly one checkout to name, so the
+ * connection-level value fits it and only it. An area with several repos
+ * (ISSUE-331) has one `worktreePrefix` string for however many checkouts it
+ * serves — passing it to `resolveRepoConfig` for every one of them made it
+ * win for whichever repo it happened to match and shadow every other repo's
+ * own derived default (ISSUE-398). Returning `undefined` here lets each of
+ * those repos fall through to its own `.crew.yaml` prefix or
+ * `defaultWorktreePrefix(dir)` instead.
+ */
+export function shipWorktreePrefixFor(c: Connection): string | undefined {
+  return reposOf(c).length === 1 ? c.worktreePrefix : undefined;
+}
+
+/**
  * Why a ticket could not be placed in one of this ship's checkouts.
  *
  * Three states that were one list until ISSUE-351, reported with a sentence
