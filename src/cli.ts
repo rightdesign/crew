@@ -1330,7 +1330,7 @@ switch (command) {
         process.stdout.write(
           `ship record:       ${row.name} (${declared ?? 'no platform'})` +
             `${declared && declared !== host ? ` — MISMATCH, this host is ${host}` : ''}\n` +
-            `seats on it:       ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
+            `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
       }
     }
