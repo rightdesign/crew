@@ -66,6 +66,9 @@ export const RESOLVED_STATUSES = new Set(DEFAULT_CONTRACT.statuses.resolved);
 type Filter = { columnName: string; operator: string; value: unknown };
 const encodeFilters = (f: Filter[]): string => JSON.stringify(f);
 
+type Sort = { columnName: string; direction: 'asc' | 'desc' };
+const encodeSort = (s: Sort[]): string => JSON.stringify(s);
+
 /**
  * One tracker, for one connection. A ship holds several of these — one per
  * project it is connected to — which is why nothing here is ship-global.
@@ -128,6 +131,13 @@ export class Tracker {
    * though the contract counts it as resolved for a *blocker*'s purposes —
    * it is still pre-release, and its worktree is exactly what the release
    * phase is about to merge.
+   *
+   * Sorted most-recently-updated first: a board can hold far more than
+   * `limit` closed tickets (this one already has), and an unordered fetch
+   * has no guarantee which ones a truncated page contains. Ordering by
+   * `updatedAt` descending means a truncated page still holds the tickets
+   * most likely to need their worktree swept — the ones that closed most
+   * recently — rather than an arbitrary, possibly stale slice (ISSUE-403).
    */
   async terminalTickets(): Promise<Ticket[]> {
     const c = this.contract;
@@ -138,10 +148,12 @@ export class Tracker {
     ];
     const areaId = this.conn.resolved?.areaId;
     if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
-    return this.client.records.list<Ticket>(this.models.issues, {
+    const params: { filters: string; limit: number; sort: string } = {
       filters: encodeFilters(filters),
       limit: 500,
-    });
+      sort: encodeSort([{ columnName: c.columns.updatedAt, direction: 'desc' }]),
+    };
+    return this.client.records.list<Ticket>(this.models.issues, params);
   }
 
   /**
