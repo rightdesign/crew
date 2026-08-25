@@ -8,11 +8,12 @@
  */
 
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, type WriteStream } from 'node:fs';
+import { join, dirname } from 'node:path';
 import type { Connection, RoleName, Ship } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
+import { mapStreamLine, extractResult } from './stream.ts';
 
 /**
  * A digest older than this is treated as absent. Acting on a stale queue is
@@ -99,6 +100,7 @@ export function assemblePrompt(p: PromptParts): string {
 
 export interface AgentPlan {
   role: RoleName;
+  connection: string;
   cwd: string;
   bin: string;
   args: string[];
@@ -113,6 +115,22 @@ export interface AgentPlan {
   setEnv: Record<string, string>;
   digestAttached: boolean;
   digestAgeSeconds?: number;
+  model: string;
+  /**
+   * Where the raw `stream-json` NDJSON for this run is saved, unmodified,
+   * as it is parsed (ISSUE-401) — the post-mortem artifact and what
+   * crew-macos will browse.
+   */
+  streamPath: string;
+  /**
+   * Fine-grained per-block (thought/text/tool) events, mapped from the
+   * stream but kept OUT of the shared `events.jsonl` that `crew status`
+   * scans — a long session is thousands of tool calls, and that file is
+   * not the place for them. A view opts in by tailing this file directly.
+   */
+  eventsPath: string;
+  /** Best-effort — the ticket this run is expected to work, if known yet. */
+  ticket?: string;
 }
 
 export interface PlanOptions {
@@ -125,6 +143,13 @@ export interface PlanOptions {
   environment: string;
   /** The tracker key, handed to the session in the environment. */
   apiKey?: string;
+  /**
+   * Groups this run with the rest of its poll cycle in the streams
+   * directory — same id as the `Emitter` driving the run (`emit.cycle`).
+   */
+  cycle: string;
+  /** Best-effort — the top actionable ticket the poll saw, if any. */
+  ticket?: string;
   /** Injected for testing; defaults to the real clock. */
   now?: () => number;
 }
@@ -157,8 +182,12 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     digest,
   });
 
+  const streamsDir = join(o.stateDir, 'streams');
+  const base = `${o.conn.name}-${o.role}-${o.cycle}`;
+
   return {
     role: o.role,
+    connection: o.conn.name,
     // The connection's directory, which is a STARTING POINT and not the
     // ticket's repo: the runner cannot know which ticket the session will
     // take, so it cannot know the checkout either. Where an area spans
@@ -167,13 +196,20 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     // the work. Kept deliberately rather than guessed at (ISSUE-349).
     cwd: o.conn.dir,
     bin: o.ship.agent.bin,
-    args: ['-p', '--allowedTools', ...allowedTools(o.role), '--model', o.ship.agent.model],
+    args: [
+      '-p', '--allowedTools', ...allowedTools(o.role), '--model', o.ship.agent.model,
+      '--output-format', 'stream-json', '--verbose',
+    ],
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
     unsetEnv: BILLING_VARS_TO_UNSET,
     setEnv: o.apiKey ? { [API_KEY_VAR]: o.apiKey } : {},
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,
+    model: o.ship.agent.model,
+    streamPath: join(streamsDir, `${base}.jsonl`),
+    eventsPath: join(streamsDir, `${base}.events.jsonl`),
+    ticket: o.ticket,
   };
 }
 
@@ -189,12 +225,28 @@ export function describePlan(p: AgentPlan): string {
     // The VALUE is deliberately absent: --dry-run output is pasted into
     // tickets and chat.
     `set:     ${Object.keys(p.setEnv).join(' ') || '(nothing)'}`,
+    `stream:  ${p.streamPath}`,
   ].join('\n');
 }
 
 export interface RunResult {
   code: number;
   ms: number;
+}
+
+/**
+ * Opens a sink for writing, or gives up quietly.
+ *
+ * Same rule as `Emitter.emit`'s own sinks: a stream that cannot be prepared
+ * degrades observability, it must never prevent the agent run itself.
+ */
+function openSink(path: string): WriteStream | undefined {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    return createWriteStream(path, { flags: 'a' });
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -205,19 +257,89 @@ export interface RunResult {
  * run — a full policy document, including credentials it tells the agent to
  * provision, once sat in every process listing on the machine. Stdin also
  * keeps the runner clear of ARG_MAX.
+ *
+ * Stdout is `--output-format stream-json`: NDJSON, one object per assistant
+ * turn/tool-call/tool-result plus a final `{type:"result"}`. It is piped
+ * rather than inherited (ISSUE-401) so the crew can both save it verbatim
+ * (`plan.streamPath` — the post-mortem artifact) and map it onto the crew's
+ * own event model (`plan.eventsPath` — see the module doc on `AgentPlan`
+ * for why that is a separate file from the shared `events.jsonl`).
  */
 export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
   const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const rawSink = openSink(plan.streamPath);
+  const eventsSink = openSink(plan.eventsPath);
+
   return new Promise((resolve, reject) => {
     const child = spawn(plan.bin, plan.args, {
       cwd: plan.cwd,
       env: { ...scrubbedEnv(), ...plan.setEnv },
-      stdio: ['pipe', 'inherit', 'inherit'],
+      stdio: ['pipe', 'pipe', 'inherit'],
     });
+
+    let buf = '';
+    let result: ReturnType<typeof extractResult>;
+
+    const handleLine = (line: string) => {
+      if (!line) return;
+      try { rawSink?.write(`${line}\n`); } catch { /* a lost stream copy must not stop the run */ }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return;   // not our schema's stability guarantee — drop and move on
+      }
+      try {
+        result = extractResult(parsed) ?? result;
+        for (const ev of mapStreamLine(parsed)) {
+          const e = {
+            at: new Date().toISOString(),
+            cycle: emit.cycle,
+            connection: plan.connection,
+            step: 'agent' as const,
+            level: 'info' as const,
+            message: ev.kind === 'tool' ? `${ev.tool ?? 'tool'}${ev.target ? ` ${ev.target}` : ''}` : ev.kind,
+            role: plan.role,
+            ...(plan.ticket ? { ticket: plan.ticket } : {}),
+            data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
+          };
+          eventsSink?.write(`${JSON.stringify(e)}\n`);
+        }
+      } catch {
+        /* a shape this run's mapping does not expect must not kill the cycle */
+      }
+    };
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('utf8');
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) handleLine(line);
+    });
+
     child.on('error', (err) => reject(new AgentError(`cannot run ${plan.bin}: ${err.message}`)));
     child.on('close', (code) => {
+      if (buf) handleLine(buf);
+      rawSink?.end();
+      eventsSink?.end();
+      try {
+        writeFileSync(`${plan.streamPath}.meta.json`, JSON.stringify({
+          connection: plan.connection, role: plan.role, ticket: plan.ticket ?? null,
+          startedAt, exitCode: code ?? 1, model: plan.model,
+          sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
+          totalCostUsd: result?.totalCostUsd ?? null,
+        }));
+      } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
       const ms = Date.now() - started;
-      emit.emit(`agent run finished (exit ${code ?? 1})`, { data: { ms, code: code ?? 1 } });
+      emit.emit(`agent run finished (exit ${code ?? 1})`, {
+        data: {
+          ms, code: code ?? 1,
+          ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
+          ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
+          ...(result?.totalCostUsd !== undefined ? { totalCostUsd: result.totalCostUsd } : {}),
+        },
+      });
       resolve({ code: code ?? 1, ms });
     });
     child.stdin.end(plan.prompt);

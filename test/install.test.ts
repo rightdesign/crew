@@ -12,6 +12,7 @@ const ship = (over: Partial<Ship> = {}): Ship => ({
   logFile: '/tmp/crew.log',
   userAgent: 'Mozilla/5.0 CrewAgent/1.0',
   maxConcurrentAgents: 2,
+  streamRetentionDays: 7,
   ...over,
 });
 

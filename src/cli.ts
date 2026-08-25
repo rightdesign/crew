@@ -38,6 +38,7 @@ import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from '.
 import { discover, renderConnection } from './connect.ts';
 import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
+import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 
@@ -212,6 +213,19 @@ async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {
     process.exit(2);
   }
   for (const t of chosen) await releasePhase(conn, t, opts);
+
+  // Ship-wide, not per-repo — one sweep per release cycle, alongside the
+  // worktree sweep each repo just ran above (ISSUE-401).
+  try {
+    const paths = planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays);
+    if (paths.length) {
+      emit.enter('worktree');
+      const removed = applyStreamSweep(paths, dryRun, emit);
+      emit.emit(`swept ${removed} stream artifact(s)`, { step: 'worktree' });
+    }
+  } catch (e) {
+    emit.warn(`stream sweep failed: ${(e as Error).message}`, { step: 'worktree' });
+  }
 }
 
 /**
@@ -490,6 +504,7 @@ switch (command) {
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
         environment: environmentFor(w.connection),
         apiKey: resolveApiKey(w.connection),
+        cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
       });
       if (dryRun) { process.stdout.write(`${describePlan(fleetPlan)}\n`); break; }
 
@@ -589,6 +604,7 @@ switch (command) {
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, conn, current),
         environment: environmentFor(conn),
         apiKey: resolveApiKey(conn),
+        cycle: emit.cycle, ticket: decision.actionable.top?.issue_id,
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);
@@ -771,6 +787,15 @@ switch (command) {
         `swept ${res.removed} worktree(s) for ${r.name}, kept ${res.keptBranches} branch(es)`,
         { step: 'worktree' },
       );
+    }
+
+    // Same retention rule the release phase applies on its own (ISSUE-401),
+    // available by hand here for the same reason the worktree sweep is.
+    const streamPaths = planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays);
+    if (streamPaths.length) {
+      anything = true;
+      const removed = applyStreamSweep(streamPaths, dryRun, emit);
+      emit.emit(`swept ${removed} stream artifact(s)`, { step: 'worktree' });
     }
 
     if (!anything) emit.emit('nothing to clean up');

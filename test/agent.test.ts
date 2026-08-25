@@ -1,12 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, writeFileSync, mkdirSync, utimesSync, readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import {
   allowedTools, scrubbedEnv, BILLING_VARS_TO_UNSET, assemblePrompt,
-  planAgentRun, describePlan, AgentError, DIGEST_MAX_AGE_SECONDS,
+  planAgentRun, describePlan, spawnAgent, AgentError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
+import { Emitter } from '../src/events.ts';
+
+const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
 
 function rig() {
   const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
@@ -59,13 +63,30 @@ test('the roster leads, then environment, then policy, then brief, then queue', 
 
 test('a plan is fully decided without running anything', () => {
   const { home, state, conn, ship } = rig();
-  const plan = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
+  const plan = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
-  assert.deepEqual(plan.args, ['-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', '--model', 'claude-sonnet-5']);
+  assert.deepEqual(plan.args, [
+    '-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', '--model', 'claude-sonnet-5',
+    '--output-format', 'stream-json', '--verbose',
+  ]);
   assert.match(plan.prompt, /R[\s\S]*SHARED POLICY[\s\S]*BRIEF dev/);
   assert.equal(plan.digestAttached, false);
   assert.match(describePlan(plan), /prompt:\s+\d+ bytes on stdin \(never argv\)/);
+});
+
+test('the stream path is derived from connection, role and cycle, and shown by --dry-run', () => {
+  const { home, state, conn, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV',
+    cycle: '20260825120000', ticket: 'ISSUE-401',
+  });
+  assert.equal(plan.streamPath, join(state, 'streams', 'proj-dev-20260825120000.jsonl'));
+  assert.equal(plan.eventsPath, join(state, 'streams', 'proj-dev-20260825120000.events.jsonl'));
+  assert.equal(plan.connection, 'proj');
+  assert.equal(plan.ticket, 'ISSUE-401');
+  assert.equal(plan.model, 'claude-sonnet-5');
+  assert.match(describePlan(plan), /stream:\s+.*proj-dev-20260825120000\.jsonl/);
 });
 
 test('a fresh digest is attached; a stale one is ignored', () => {
@@ -73,14 +94,14 @@ test('a fresh digest is attached; a stale one is ignored', () => {
   const digest = join(state, 'digest-proj-dev.md');
   writeFileSync(digest, '## Current queue\n');
 
-  const fresh = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
+  const fresh = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(fresh.digestAttached, true);
   assert.match(fresh.prompt, /## Current queue/);
 
   // age it past the cutoff — acting on a stale queue is worse than rebuilding
   const old = (Date.now() - (DIGEST_MAX_AGE_SECONDS + 60) * 1000) / 1000;
   utimesSync(digest, old, old);
-  const stale = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
+  const stale = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(stale.digestAttached, false);
   assert.doesNotMatch(stale.prompt, /## Current queue/);
   assert.ok(stale.digestAgeSeconds! > DIGEST_MAX_AGE_SECONDS);
@@ -89,8 +110,8 @@ test('a fresh digest is attached; a stale one is ignored', () => {
 test('digests are per connection AND per role — one ship, several projects', () => {
   const { home, state, conn, ship } = rig();
   writeFileSync(join(state, 'digest-proj-qa.md'), 'QA QUEUE\n');
-  const qa = planAgentRun({ role: 'qa', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
-  const dev = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' });
+  const qa = planAgentRun({ role: 'qa', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const dev = planAgentRun({ role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(qa.digestAttached, true);
   assert.equal(dev.digestAttached, false);   // not the other role's queue
 });
@@ -98,11 +119,81 @@ test('digests are per connection AND per role — one ship, several projects', (
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, conn, ship } = rig();
   assert.throws(
-    () => planAgentRun({ role: 'triage', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV' }),
+    () => planAgentRun({ role: 'triage', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
     (e: Error) => {
       assert.ok(e instanceof AgentError);
       assert.match(e.message, /refusing to run an unscoped session/);
       return true;
     },
   );
+});
+
+test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink, and folds the result into the finish event', async () => {
+  const { home, state, conn, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', conn, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
+    crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'ISSUE-401',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];
+  plan.cwd = state;   // real directory — /tmp/proj (from rig()) does not exist
+
+  const lines: string[] = [];
+  const emit = new Emitter({ connection: 'proj', cycleId: 'c1', console: (l) => lines.push(l) });
+  emit.enter('agent', 'dev');
+
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 0);
+
+  // The raw NDJSON is saved unmodified, malformed line included — it is
+  // the post-mortem artifact, not a filtered view.
+  const raw = readFileSync(plan.streamPath, 'utf8').trim().split('\n');
+  assert.equal(raw.length, 6);
+  assert.ok(raw.includes('not valid json — must not kill the run'));
+
+  // Thought/tool/text blocks landed on their OWN sink, not the shared one —
+  // a long session is thousands of these and events.jsonl is not the place.
+  const mapped = readFileSync(plan.eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(mapped.map((e) => e.data.kind), ['thought', 'tool', 'text']);
+  // The thought/text blocks must carry their actual content verbatim, not
+  // just a bare kind marker — a client tailing eventsPath live otherwise
+  // has to fall back to parsing the whole raw transcript.
+  assert.equal(mapped[0].data.text, 'let me look');
+  assert.equal(mapped[1].data.tool, 'Bash');
+  assert.equal(mapped[1].data.target, 'ls');
+  assert.equal(mapped[2].data.text, 'All done.');
+  for (const e of mapped) {
+    assert.equal(e.step, 'agent');
+    assert.equal(e.role, 'dev');
+    assert.equal(e.ticket, 'ISSUE-401');
+  }
+  assert.ok(!lines.some((l) => l.includes('let me look')), 'a thought must not reach the shared console/log sink');
+
+  // The sidecar is cheap to read without parsing the whole transcript.
+  const meta = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
+  assert.equal(meta.connection, 'proj');
+  assert.equal(meta.role, 'dev');
+  assert.equal(meta.ticket, 'ISSUE-401');
+  assert.equal(meta.exitCode, 0);
+  assert.equal(meta.sessionId, 'sess-1');
+  assert.equal(meta.numTurns, 2);
+
+  // The one shared, low-volume event this run does write carries the result.
+  const finish = lines.find((l) => l.includes('agent run finished'));
+  assert.ok(finish);
+});
+
+test('spawnAgent never dies on a malformed line, and closes cleanly', async () => {
+  const { home, state, conn, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', conn, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c2',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];
+  plan.cwd = state;   // real directory — /tmp/proj (from rig()) does not exist
+  const emit = new Emitter({ connection: 'proj', cycleId: 'c2', console: () => {} });
+  emit.enter('agent', 'dev');
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 0);
+  assert.ok(existsSync(plan.streamPath));
 });

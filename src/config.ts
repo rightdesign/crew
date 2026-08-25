@@ -161,6 +161,14 @@ export interface Ship {
    * 68-minute dev session that held the ship's one lock).
    */
   maxConcurrentAgents: number;
+  /**
+   * How many days of `<stateDir>/streams` artifacts (ISSUE-401 — the raw
+   * `stream-json` NDJSON, its mapped events, and per-run sidecars) to keep
+   * before the sweep deletes them. Default 7, same reasoning as the
+   * shared `events.jsonl` retention: unbounded per-run capture on a
+   * machine that runs agents constantly becomes real disk with no owner.
+   */
+  streamRetentionDays: number;
 }
 
 export interface CrewConfig {
@@ -174,7 +182,7 @@ export class ConfigError extends Error {}
 
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
-  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'maxConcurrentAgents',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'maxConcurrentAgents', 'streamRetentionDays',
 ]);
 const CONNECTION_KEYS = new Set([
   'name', 'enabled', 'workspace', 'project', 'area', 'dir', 'repos', 'worktreePrefix', 'weight',
@@ -319,6 +327,10 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   if (!Number.isInteger(maxConcurrentAgents) || maxConcurrentAgents < 1) {
     missing.add(`ship.maxConcurrentAgents must be a positive integer (got "${shipRaw.maxConcurrentAgents}")`);
   }
+  const streamRetentionDays = shipRaw.streamRetentionDays === undefined ? 7 : Number(shipRaw.streamRetentionDays);
+  if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
+    missing.add(`ship.streamRetentionDays must be a positive integer (got "${shipRaw.streamRetentionDays}")`);
+  }
 
   const connRaw = raw.connections;
   if (!Array.isArray(connRaw) || connRaw.length === 0) {
@@ -404,6 +416,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'crew.log'), base),
       userAgent: shipRaw.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
       maxConcurrentAgents,
+      streamRetentionDays,
     },
     connections,
     crewHome,
