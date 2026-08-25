@@ -8,6 +8,7 @@
  * make on its own behalf.
  */
 
+import { hostname } from 'node:os';
 import { TablationClient } from '@tablation/client';
 import type { Connection, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
@@ -61,6 +62,26 @@ export interface CrewRow {
   email?: string | null;
   /** The `Ships` row this member runs on. */
   ship_id?: string | null;
+}
+
+/**
+ * A row of the `Ships` table (ISSUE-380). The heartbeat fields
+ * (`last_seen` onward) are optional at the type level because a workspace
+ * may still be on the two-column Ships table `doctor` already tolerated
+ * before this ticket — reading one that hasn't adopted them yet must not
+ * throw.
+ */
+export interface ShipRow {
+  id: string;
+  name?: string | null;
+  platform?: string | null;
+  last_seen?: string | null;
+  engaged?: boolean | null;
+  engaged_since?: string | null;
+  engaged_connection?: string | null;
+  engaged_ticket_id?: string | null;
+  host?: string | null;
+  pid?: number | null;
 }
 
 /**
@@ -193,14 +214,91 @@ export class Tracker {
    * Optional by design: a workspace that has not adopted ships still works,
    * and the crew must not require a table it did not create.
    */
-  async shipRows(): Promise<Array<{ id: string; name?: string | null; platform?: string | null }>> {
+  async shipRows(): Promise<ShipRow[]> {
     const model = this.conn.resolved?.shipsModelId;
     if (!model) return [];
     try {
-      return await this.client.records.list(model, { limit: 200 });
+      return await this.client.records.list<ShipRow>(model, { limit: 200 });
     } catch {
       return [];   // the table may be absent or unreadable; neither is fatal
     }
+  }
+
+  /**
+   * This ship's own row on the `Ships` table, matched by name — the same
+   * exact-string match `doctor` has always used (see the callsign comment
+   * on ISSUE-380: name is what an operator recognises on the board).
+   * `undefined` when the workspace has no Ships table, no row named for
+   * this ship, or more than one — ambiguous is not a row to write to.
+   */
+  private async myShipRow(shipName: string): Promise<ShipRow | undefined> {
+    const rows = await this.shipRows();
+    const mine = rows.filter((r) => (r.name ?? '').trim() === shipName.trim());
+    return mine.length === 1 ? mine[0] : undefined;
+  }
+
+  /**
+   * Ship-level heartbeat (ISSUE-380): "is this ship online" — independent
+   * of any one seat's Working/Idle status (`setCrewStatus`), which only
+   * exists for the duration of an actual agent run. This one fires once
+   * per `crew run`/`poll` cycle **regardless of outcome**, including a
+   * cycle that finds nothing to do, so a ship that stops firing (powered
+   * off, asleep, closed for the weekend) simply stops updating `last_seen`
+   * — silence then means exactly one thing, rather than being ambiguous
+   * with "idle".
+   *
+   * Does not touch the `engaged*` columns — those are set only by
+   * `beatEngaged`/`beatIdle`, paired around the part of the cycle that
+   * actually spawns an agent, so a plain heartbeat mid-engagement can't
+   * blow away `engaged_since`.
+   *
+   * A no-op, like `shipRows()`, on a workspace with no Ships table or no
+   * row for this ship's name.
+   */
+  async beatShip(shipName: string): Promise<void> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return;
+    await this.client.records.update(this.conn.resolved!.shipsModelId!, row.id, {
+      last_seen: new Date().toISOString(),
+      host: hostname(),
+      pid: process.pid,
+    });
+  }
+
+  /**
+   * Marks this ship's row engaged, naming what it's working and since when
+   * (ISSUE-380's "an engaged ship names what it is working and since
+   * when"). Call once, right before `spawnAgent`, paired with
+   * `beatIdle` in a `finally` — the same shape as `setCrewStatus`'s
+   * working/idle pair, one level up (ship, not seat).
+   */
+  async beatEngaged(shipName: string, connectionName: string, ticketRecordId: string | null): Promise<void> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return;
+    await this.client.records.update(this.conn.resolved!.shipsModelId!, row.id, {
+      last_seen: new Date().toISOString(),
+      host: hostname(),
+      pid: process.pid,
+      engaged: true,
+      engaged_since: new Date().toISOString(),
+      engaged_connection: connectionName,
+      engaged_ticket_id: ticketRecordId,
+    });
+  }
+
+  /** The other half of `beatEngaged` — clears engagement back to idle. */
+  async beatIdle(shipName: string): Promise<void> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return;
+    await this.client.records.update(this.conn.resolved!.shipsModelId!, row.id, {
+      last_seen: new Date().toISOString(),
+      host: hostname(),
+      pid: process.pid,
+      engaged: false,
+      engaged_since: null,
+      engaged_connection: null,
+      engaged_ticket_id: null,
+    });
   }
 
   /**

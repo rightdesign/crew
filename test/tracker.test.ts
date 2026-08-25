@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Tracker } from '../src/tracker.ts';
 import type { Connection } from '../src/config.ts';
 
-function makeConnection(): Connection {
+function makeConnection(opts: { shipsModelId?: string } = {}): Connection {
   return {
     name: 'test',
     enabled: true,
@@ -22,6 +22,7 @@ function makeConnection(): Connection {
       seats: {},
       operator: 'operator-id',
       holds: [],
+      shipsModelId: opts.shipsModelId,
     },
   } as unknown as Connection;
 }
@@ -85,4 +86,95 @@ test('setCrewStatus(idle) with no ticket id leaves current_issue_id untouched â€
   assert.equal(bodies.length, 1);
   assert.equal(bodies[0]!.status, 'idle');
   assert.equal('current_issue_id' in bodies[0]!, false);
+});
+
+test('beatShip() is a no-op when the workspace has no Ships table', async (t) => {
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify([]), { status: 200 }); }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeConnection(), { userAgent: 'crew-test' });
+  await tracker.beatShip("Brad's Mac");
+
+  assert.equal(calls, 0, 'no Ships table means nothing to list or patch');
+});
+
+test('beatShip() is a no-op when no row (or more than one) matches this ship\'s name', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let patched = false;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (init?.method === 'PATCH' || url.includes('/records/')) patched = true;
+    return new Response(JSON.stringify([{ id: 'ship-1', name: 'Someone Else\'s Mac' }]), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  await tracker.beatShip("Brad's Mac");
+
+  assert.equal(patched, false, 'an unmatched ship name must not write to a row that isn\'t this ship\'s');
+});
+
+test('beatShip() patches last_seen/host/pid on this ship\'s own row, leaving engaged fields alone', async (t) => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (init?.body) bodies.push(JSON.parse(init.body as string));
+    if (url.includes('/records/ship-1')) return new Response(JSON.stringify({ id: 'ship-1' }), { status: 200 });
+    return new Response(JSON.stringify([{ id: 'ship-1', name: "Brad's Mac" }]), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  await tracker.beatShip("Brad's Mac");
+
+  assert.equal(bodies.length, 1);
+  assert.ok(typeof bodies[0]!.last_seen === 'string' && bodies[0]!.last_seen);
+  assert.ok(typeof bodies[0]!.host === 'string' && bodies[0]!.host);
+  assert.equal(bodies[0]!.pid, process.pid);
+  assert.equal('engaged' in bodies[0]!, false, 'a plain heartbeat must not touch engagement state');
+});
+
+test('beatEngaged() marks the ship engaged, naming the connection, ticket and since-when', async (t) => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (init?.body) bodies.push(JSON.parse(init.body as string));
+    if (url.includes('/records/ship-1')) return new Response(JSON.stringify({ id: 'ship-1' }), { status: 200 });
+    return new Response(JSON.stringify([{ id: 'ship-1', name: "Brad's Mac" }]), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  await tracker.beatEngaged("Brad's Mac", 'synthesis', 'ticket-uuid-1');
+
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0]!.engaged, true);
+  assert.equal(bodies[0]!.engaged_connection, 'synthesis');
+  assert.equal(bodies[0]!.engaged_ticket_id, 'ticket-uuid-1');
+  assert.ok(typeof bodies[0]!.engaged_since === 'string' && bodies[0]!.engaged_since);
+});
+
+test('beatIdle() clears engagement back to idle', async (t) => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (init?.body) bodies.push(JSON.parse(init.body as string));
+    if (url.includes('/records/ship-1')) return new Response(JSON.stringify({ id: 'ship-1' }), { status: 200 });
+    return new Response(JSON.stringify([{ id: 'ship-1', name: "Brad's Mac" }]), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const tracker = new Tracker(makeConnection({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  await tracker.beatIdle("Brad's Mac");
+
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0]!.engaged, false);
+  assert.equal(bodies[0]!.engaged_since, null);
+  assert.equal(bodies[0]!.engaged_connection, null);
+  assert.equal(bodies[0]!.engaged_ticket_id, null);
 });

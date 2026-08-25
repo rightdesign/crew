@@ -32,6 +32,7 @@ import { planStamp, applyStamp } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { Tracker, type Ticket } from './tracker.ts';
+import { StaleWriteError } from '@tablation/client';
 import type { BoardLockResult } from './board-lock.ts';
 import { validateContract, DEFAULT_CONTRACT } from './contract.ts';
 import { startWatch } from './watch.ts';
@@ -56,6 +57,42 @@ const CREW_HOME = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  */
 const RELEASE_LOCK_TTL_MS = 20 * 60 * 1000;
 
+/**
+ * The launchd fire interval (`launchd/com.tablation.crew.plist`'s
+ * `StartInterval`), in seconds — the natural unit for ship-heartbeat
+ * staleness (ISSUE-380). Judged in multiples of this, not absolute seconds,
+ * so a slower cycle does not read as a dead ship.
+ */
+const CYCLE_SECONDS = 120;
+
+/** A `last_seen` older than this many cycles reads as "not seen recently". */
+const STALE_CYCLES = 3;
+
+/**
+ * One `crew status` line for a `Ships` row (ISSUE-380) — distinguishes
+ * online-and-idle, online-and-engaged (naming what and since when), and
+ * not-seen-recently, per the ticket's own three-way `crew status` split.
+ */
+function renderShipLine(
+  s: import('./tracker.ts').ShipRow,
+  issueLabelById: Map<string, string | null | undefined>,
+): string {
+  const name = s.name ?? '(unnamed)';
+  if (!s.last_seen) return `${name.padEnd(20)} never seen`;
+  const staleAfterMs = STALE_CYCLES * CYCLE_SECONDS * 1000;
+  const ageMs = Date.now() - Date.parse(s.last_seen);
+  if (ageMs > staleAfterMs) {
+    return `${name.padEnd(20)} not seen recently — last seen ${since(s.last_seen)} ago`;
+  }
+  if (s.engaged) {
+    const ticketLabel = s.engaged_ticket_id ? issueLabelById.get(s.engaged_ticket_id) : undefined;
+    const what = [s.engaged_connection, ticketLabel].filter(Boolean).join(' / ');
+    const sinceText = s.engaged_since ? ` since ${since(s.engaged_since)} ago` : '';
+    return `${name.padEnd(20)} online, engaged${what ? ` — ${what}` : ''}${sinceText}`;
+  }
+  return `${name.padEnd(20)} online, idle (seen ${since(s.last_seen)} ago)`;
+}
+
 function usage(): never {
   process.stderr.write(`crew — a standing team of headless agents
 
@@ -70,6 +107,7 @@ function usage(): never {
   crew ports [conn]             which checkout owns which ports, and what is up
   crew reap [conn]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [conn] NNN          remove a merged ticket's worktree and branch
+  crew unassign [conn] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
   crew sync [conn]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [conn] [R]  pause everything, or one role
   crew log [conn]               tail the log
@@ -514,6 +552,27 @@ switch (command) {
       });
       process.stdout.write(renderFleet(fleet, state));
       if (command === 'poll') break;
+
+      // Ship-level heartbeat (ISSUE-380), once per `run` cycle regardless of
+      // outcome — including this exact "nothing to run" case, which is the
+      // one a task-progress-only heartbeat could never distinguish from a
+      // dead ship. "A ship has a Ships row per workspace... beats on each":
+      // every eligible connection gets its own write, not only the winner's,
+      // since this ship polled all of them successfully this cycle. Best
+      // effort — a workspace with no Ships table, or unreachable this cycle,
+      // must not stop the run itself. Skipped entirely for --dry-run, which
+      // "performs nothing" — see the matching guard on the single-connection
+      // path below.
+      if (!dryRun) {
+        await Promise.all(cfg.connections.filter((c) => c.enabled).map(async (c) => {
+          try {
+            await new Tracker(c, cfg.ship).beatShip(cfg.ship.name);
+          } catch (e) {
+            emit.warn(`could not beat ship for ${c.name}: ${(e as Error).message}`, { step: 'poll' });
+          }
+        }));
+      }
+
       if (!fleet.winner) {
         emit.emit('nothing to run across the fleet');
         await releaseFleet();
@@ -608,6 +667,11 @@ switch (command) {
         }
       }
       try {
+        await fleetTracker.beatEngaged(cfg.ship.name, w.connection.name, fleetWorkingId);
+      } catch (e) {
+        emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
+      }
+      try {
         await spawnAgent(fleetPlan, emit);
       } finally {
         dropLock();
@@ -617,6 +681,11 @@ switch (command) {
           } catch (e) {
             emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
           }
+        }
+        try {
+          await fleetTracker.beatIdle(cfg.ship.name);
+        } catch (e) {
+          emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
         }
       }
       await releaseFleet();
@@ -654,6 +723,18 @@ switch (command) {
 
     const role = (value('role') as RoleName | undefined) ?? decision.selection.selected;
     if (command === 'poll') break;
+
+    // Ship-level heartbeat (ISSUE-380) — see the matching fleet-wide comment
+    // above. Fires here, once, regardless of whether a role was found below.
+    // Skipped for --dry-run, which "performs nothing".
+    if (!dryRun) {
+      try {
+        await new Tracker(conn, cfg.ship).beatShip(cfg.ship.name);
+      } catch (e) {
+        emit.warn(`could not beat ship: ${(e as Error).message}`, { step: 'poll' });
+      }
+    }
+
     if (!role) {
       emit.emit('no role to run this cycle');
       // The release still has to happen. A cycle with no agent work is
@@ -757,6 +838,11 @@ switch (command) {
         }
       }
       try {
+        await tracker2.beatEngaged(cfg.ship.name, conn.name, workingId);
+      } catch (e) {
+        emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
+      }
+      try {
         await spawnAgent(plan, emit);
       } finally {
         dropLock();
@@ -766,6 +852,11 @@ switch (command) {
           } catch (e) {
             emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
           }
+        }
+        try {
+          await tracker2.beatIdle(cfg.ship.name);
+        } catch (e) {
+          emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
         }
       }
       ran.push(current);
@@ -1002,6 +1093,47 @@ switch (command) {
     break;
   }
 
+  case 'unassign': {
+    // ISSUE-380's "crew release": renamed here because `crew release` was
+    // already taken (merge/version/deploy, above) — a second meaning on the
+    // same word would be confusing on the command line, not just in this
+    // file. Needs no new state: select.ts already treats an in_progress
+    // ticket with no assignee as "back up for grabs" (the same hand-off
+    // protocol a seat's own worktree wrap-up uses), so this is purely
+    // clearing `assignee_id`.
+    emit.enter('select');   // closest existing step — this changes selection, not a worktree
+    const n = positional[2] ?? positional[1];
+    if (!n || !/^\d+$/.test(n)) { process.stderr.write('unassign: need a ticket number\n'); process.exit(2); }
+    const tracker3 = new Tracker(conn, cfg.ship);
+    const c = tracker3.contract;
+    const key = `ISSUE-${n}`;
+    const open = await tracker3.openTickets();
+    const ticket = open.find((t) => t[c.columns.key] === key);
+    if (!ticket) {
+      process.stderr.write(`unassign: no open ticket ${key} on ${conn.name} (already resolved, or not this connection's)\n`);
+      process.exit(2);
+    }
+    if (!ticket[c.columns.assignee]) {
+      process.stdout.write(`${key} already has no assignee\n`);
+      break;
+    }
+    if (dryRun) {
+      emit.emit(`would clear assignee on ${key} (status stays ${ticket[c.columns.status]})`);
+      break;
+    }
+    try {
+      await tracker3.updateTicket(ticket.id, { [c.columns.assignee]: null }, ticket.updated_at);
+      emit.emit(`cleared assignee on ${key} — back up for grabs next cycle`);
+    } catch (e) {
+      if (e instanceof StaleWriteError) {
+        process.stderr.write(`unassign: ${key} changed on the board since it was read — re-run to retry\n`);
+        process.exit(2);
+      }
+      throw e;
+    }
+    break;
+  }
+
   case 'sync': {
     // A reviewer's commits land on the remote; until a worktree takes them the
     // dev seat builds on stale code and QA verifies something nobody reviewed.
@@ -1103,6 +1235,26 @@ switch (command) {
         `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +
           ` (passed over ${fairness.streak()} cycle${fairness.streak() === 1 ? '' : 's'} running)\n`,
       );
+    }
+
+    // Ship liveness (ISSUE-380): every ship this connection's Ships table
+    // knows about, not only this one — "status ... what this ship (or the
+    // fleet) is doing" names both. Absent entirely on a workspace with no
+    // Ships table, same as `doctor`'s "this workspace has no Ships table
+    // (fine)".
+    const statusTracker = new Tracker(conn, cfg.ship);
+    const shipRows = await statusTracker.shipRows();
+    if (shipRows.length) {
+      // "An engaged ship names what it is working" — resolve the raw
+      // `engaged_ticket_id` references to their `issue_id` label, one call
+      // for every engaged ship rather than one call per ship.
+      const engagedTicketIds = shipRows.map((s) => s.engaged_ticket_id).filter((id): id is string => !!id);
+      const engagedTickets = await statusTracker.ticketsByIds(engagedTicketIds);
+      const issueLabelById = new Map(engagedTickets.map((t) => [t.id, t.issue_id]));
+      process.stdout.write('ships:\n');
+      for (const s of shipRows) {
+        process.stdout.write(`  ${renderShipLine(s, issueLabelById)}\n`);
+      }
     }
     break;
   }
