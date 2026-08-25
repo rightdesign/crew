@@ -520,10 +520,26 @@ switch (command) {
       lock = fleetLock;
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.connection.name}`);
+      const fleetTracker = new Tracker(w.connection, cfg.ship);
+      const fleetMemberId = w.connection.resolved?.seats[w.role];
+      if (fleetMemberId) {
+        try {
+          await fleetTracker.setCrewStatus(fleetMemberId, 'working', w.decision.actionable.top?.id ?? null);
+        } catch (e) {
+          emit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
+        }
+      }
       try {
         await spawnAgent(fleetPlan, emit);
       } finally {
         dropLock();
+        if (fleetMemberId) {
+          try {
+            await fleetTracker.setCrewStatus(fleetMemberId, 'idle');
+          } catch (e) {
+            emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
+          }
+        }
       }
       await releaseFleet();
       break;
@@ -613,10 +629,25 @@ switch (command) {
       const before = snapshot(await tracker2.openTickets());
       emit.enter('agent', current);
       emit.emit('starting agent run');
+      const memberId = conn.resolved?.seats[current];
+      if (memberId) {
+        try {
+          await tracker2.setCrewStatus(memberId, 'working', decision.actionable.top?.id ?? null);
+        } catch (e) {
+          emit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
+        }
+      }
       try {
         await spawnAgent(plan, emit);
       } finally {
         dropLock();
+        if (memberId) {
+          try {
+            await tracker2.setCrewStatus(memberId, 'idle');
+          } catch (e) {
+            emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
+          }
+        }
       }
       ran.push(current);
 

@@ -224,6 +224,26 @@ export class Tracker {
   }
 
   /**
+   * Reports one crew member's live status (ISSUE-325) — "Working" for the
+   * duration of an agent run, "Idle" once it ends.
+   *
+   * `ticketRecordId` is the ticket's own row id (`Ticket.id`), not its
+   * `issue_id` label — the field it fills is a Reference, not text.
+   * Omitted (as on the idle transition) leaves the column alone, so it
+   * keeps reading as "current/last issue" rather than clearing to blank
+   * the moment a run ends.
+   */
+  async setCrewStatus(
+    memberId: string,
+    status: 'working' | 'idle',
+    ticketRecordId?: string | null,
+  ): Promise<void> {
+    const patch: Record<string, unknown> = { status, status_updated_at: new Date().toISOString() };
+    if (ticketRecordId !== undefined) patch.current_issue_id = ticketRecordId;
+    await this.client.records.update(this.models.crew, memberId, patch);
+  }
+
+  /**
    * An `event` comment — the runner's own audit trail, distinct from a
    * seat's prose. `kind` is what keeps these out of the "new comment from
    * someone else" wake signal.
