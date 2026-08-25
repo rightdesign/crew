@@ -339,6 +339,55 @@ test('a verified branch already contained in main merges as a no-op', async () =
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).trim(), '');
 });
 
+test('a verified branch merged onto main out-of-band, then brought current by merging main back in, still merges as a no-op', async () => {
+  // ISSUE-397: found QA-verifying ISSUE-346, where the branch's content
+  // landed on main through a manual squash-merge outside the normal release
+  // flow, and a later merge-conflict bounce brought the branch current by
+  // merging main INTO it (rather than rebasing) — leaving the branch's tree
+  // byte-identical to main's tip, so `git merge --squash` stages nothing.
+  // Distinct from the sibling test above (independently-identical commits on
+  // each side): here the branch's own history actually contains main's tip,
+  // via a real merge commit.
+  const { dir, repo, g } = project(LOCAL);
+  g('checkout', '-qb', 'issue-346');
+  writeFileSync(join(dir, 'feature2.txt'), 'x'); g('add', '.');
+  g('commit', '-qm', 'built it\n\nChangelog: Widgets can now be starred\nBump: minor');
+
+  // Someone squash-merges the branch onto main by hand, outside the release
+  // phase — exactly what happened to ISSUE-346.
+  g('checkout', '-q', 'main');
+  g('merge', '--squash', 'issue-346');
+  g('commit', '-qm', 'manually landed issue-346');
+
+  // A later merge-conflict bounce brings the branch current by merging main
+  // back in, rather than rebasing — the branch's tree is now identical to
+  // main's.
+  g('checkout', '-q', 'issue-346');
+  g('merge', '-q', '-m', 'merge main back in', 'main');
+  assert.equal(
+    execFileSync('git', ['diff', 'main', 'issue-346'], { cwd: dir, encoding: 'utf8' }).trim(),
+    '',
+    'branch tree must be byte-identical to main before exercising the release',
+  );
+
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('checkout', '-q', 'main');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-346')],
+    emit: emitter(), dryRun: false, skipTests: true,
+  });
+
+  // Merged, because the work IS on main — the ticket must go on to be
+  // stamped rather than sitting at `verified` forever, and its Changelog/Bump
+  // trailers are still honoured even though the squash staged nothing.
+  assert.equal(out.merged.length, 1);
+  assert.ok(lines.some((l) => /issue-346 is already contained/.test(l)));
+  const log = execFileSync('git', ['log', '--oneline', `${head}..HEAD`], { cwd: dir, encoding: 'utf8' });
+  assert.doesNotMatch(log, /Closes ISSUE-346/);
+  assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).trim(), '');
+});
+
 test('a verified ticket with no branch and no commit on the base is carried out as unbuildable', async () => {
   // ISSUE-379: nobody ever built ISSUE-345, and nothing named its key on
   // main either — the `never-built` shape the release cannot place.
