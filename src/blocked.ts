@@ -160,6 +160,30 @@ export interface ParentRollup {
 }
 
 /**
+ * Which column and value a workspace uses to MARK a coordinating ticket
+ * (ISSUE-354) — carried like every other column/value name, since a
+ * workspace that renames `report_type` or spells the value differently
+ * still has to work.
+ */
+export interface CoordinatingOptions {
+  reportTypeColumn?: string;
+  coordinatingValue?: string;
+}
+
+const COORDINATING_DEFAULTS: Required<CoordinatingOptions> = {
+  reportTypeColumn: 'report_type',
+  coordinatingValue: 'coordinating',
+};
+
+/**
+ * A ticket is coordinating because it is MARKED so, not because a Repo is
+ * absent (ISSUE-354) — the absence was ambiguous between "epic" and
+ * "somebody forgot to set Repo", and the crew could not tell those apart.
+ */
+const isCoordinating = (t: Ticket, opts: Required<CoordinatingOptions>): boolean =>
+  (t as Record<string, unknown>)[opts.reportTypeColumn] === opts.coordinatingValue;
+
+/**
  * Roll a coordinating parent up from its children.
  *
  * Computed each cycle, never stored — the same discipline as blocked-ness, and
@@ -170,7 +194,10 @@ export interface ParentRollup {
  * coordinating ticket the moment it was filed, before anything was split out
  * of it.
  */
-export function rollUpParents(tickets: Ticket[], done = RESOLVED_STATUSES): ParentRollup[] {
+export function rollUpParents(
+  tickets: Ticket[], done = RESOLVED_STATUSES, opts: CoordinatingOptions = {},
+): ParentRollup[] {
+  const resolved = { ...COORDINATING_DEFAULTS, ...opts };
   const byParent = new Map<string, Ticket[]>();
   for (const t of tickets) {
     const p = (t as { parent_id?: string | null }).parent_id;
@@ -181,13 +208,27 @@ export function rollUpParents(tickets: Ticket[], done = RESOLVED_STATUSES): Pare
   }
   const rollups: ParentRollup[] = [];
   for (const t of tickets) {
-    const isCoordinating = !(t as { repo_id?: string | null }).repo_id;
     const children = byParent.get(t.id);
-    if (!isCoordinating || !children) continue;
+    if (!isCoordinating(t, resolved) || !children) continue;
     const outstanding = children.filter((c) => !done.has(c.status));
     rollups.push({ parent: t, children, outstanding, complete: outstanding.length === 0 });
   }
   return rollups;
+}
+
+/**
+ * A ticket naming no repo and carrying no coordinating marker: not an epic,
+ * a filing error. `rollUpParents` only ever looks at tickets that turn out to
+ * have children — this is the sibling check for the ISSUE-344 shape, a
+ * repo-less ticket that isn't rolling anything up either: fetched every
+ * cycle, placeable in no checkout, and silently never worked.
+ *
+ * Reported the way `strandedNeedsInfo` reports its case — every cycle, until
+ * a human fixes the filing (adds a Repo or marks it coordinating).
+ */
+export function filingErrors(tickets: Ticket[], opts: CoordinatingOptions = {}): Ticket[] {
+  const resolved = { ...COORDINATING_DEFAULTS, ...opts };
+  return tickets.filter((t) => !t.repo_id && !isCoordinating(t, resolved));
 }
 
 // ---------------------------------------------------------------------------

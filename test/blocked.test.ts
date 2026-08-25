@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, sweepDiagnostics,
-  planSweep, strandedNeedsInfo, rollUpParents, applySweep, sweepComment,
+  planSweep, strandedNeedsInfo, rollUpParents, filingErrors, applySweep, sweepComment,
 } from '../src/blocked.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -85,28 +85,52 @@ test('blockers outside the open set are identified for a bounded extra fetch', (
 });
 
 test('a coordinating parent rolls up from its children', () => {
-  const parent = T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' });            // no repo_id
+  const parent = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), report_type: 'coordinating' };
   const kid1 = { ...T({ id: 'k1', issue_id: 'ISSUE-2', status: 'closed_deployed' }), parent_id: 'p', repo_id: 'r1' };
   const kid2 = { ...T({ id: 'k2', issue_id: 'ISSUE-3', status: 'in_progress' }), parent_id: 'p', repo_id: 'r2' };
-  const partial = rollUpParents([parent, kid1 as Ticket, kid2 as Ticket]);
+  const partial = rollUpParents([parent as Ticket, kid1 as Ticket, kid2 as Ticket]);
   assert.equal(partial.length, 1);
   assert.equal(partial[0]!.complete, false);
   assert.deepEqual(partial[0]!.outstanding.map((t) => t.issue_id), ['ISSUE-3']);
 
   const kid2done = { ...kid2, status: 'verified' };
-  const full = rollUpParents([parent, kid1 as Ticket, kid2done as Ticket]);
+  const full = rollUpParents([parent as Ticket, kid1 as Ticket, kid2done as Ticket]);
   assert.equal(full[0]!.complete, true);
 });
 
 test('a parent with no children is not complete — vacuous truth would close it at birth', () => {
-  const lonely = T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' });
-  assert.deepEqual(rollUpParents([lonely]), []);
+  const lonely = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), report_type: 'coordinating' };
+  assert.deepEqual(rollUpParents([lonely as Ticket]), []);
 });
 
-test('a ticket with a repo is actionable, so it never rolls up even with children', () => {
-  const withRepo = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), repo_id: 'r1' };
+test('the marker decides — a marked ticket rolls up even if it also names a repo', () => {
+  const marked = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), repo_id: 'r1', report_type: 'coordinating' };
   const kid = { ...T({ id: 'k', issue_id: 'ISSUE-2', status: 'verified' }), parent_id: 'p' };
-  assert.deepEqual(rollUpParents([withRepo as Ticket, kid as Ticket]), []);
+  assert.equal(rollUpParents([marked as Ticket, kid as Ticket]).length, 1);
+});
+
+test('a repo-less parent with no marker does not roll up — that is a filing error, not an epic', () => {
+  const unmarked = T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }); // no repo_id, no report_type
+  const kid = { ...T({ id: 'k', issue_id: 'ISSUE-2', status: 'verified' }), parent_id: 'p' };
+  assert.deepEqual(rollUpParents([unmarked, kid as Ticket]), []);
+});
+
+test('a workspace can rename the marker column and value', () => {
+  const parent = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), issue_type: 'epic' };
+  const kid = { ...T({ id: 'k', issue_id: 'ISSUE-2', status: 'verified' }), parent_id: 'p' };
+  const opts = { reportTypeColumn: 'issue_type', coordinatingValue: 'epic' };
+  assert.equal(rollUpParents([parent as Ticket, kid as Ticket], undefined, opts).length, 1);
+  assert.deepEqual(rollUpParents([parent as Ticket, kid as Ticket]), []); // defaults don't match
+});
+
+test('a repo-less, unmarked ticket is a filing error', () => {
+  const noRepoNoMarker = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' });
+  const coordinating = { ...T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' }), report_type: 'coordinating' };
+  const withRepo = { ...T({ id: 'c', issue_id: 'ISSUE-3', status: 'accepted' }), repo_id: 'r1' };
+  assert.deepEqual(
+    filingErrors([noRepoNoMarker, coordinating as Ticket, withRepo as Ticket]).map((t) => t.issue_id),
+    ['ISSUE-1'],
+  );
 });
 
 test('a stranded ticket assigned to a human is NOT reported — the ball is in their court', () => {

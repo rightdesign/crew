@@ -12,7 +12,7 @@ import { Tracker, type Ticket, type Comment } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
-  sweepDiagnostics, strandedNeedsInfo, rollUpParents,
+  sweepDiagnostics, strandedNeedsInfo, rollUpParents, filingErrors,
   type BlockerInfo, type SweepStep,
 } from './blocked.ts';
 import { selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary } from './select.ts';
@@ -87,10 +87,19 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
       ticket: t.issue_id,
     });
   }
-  for (const r of rollUpParents(tickets)) {
+  const coordinating = {
+    reportTypeColumn: tracker.contract.columns.reportType,
+    coordinatingValue: tracker.contract.coordinatingValue,
+  };
+  for (const r of rollUpParents(tickets, undefined, coordinating)) {
     if (r.complete) {
       emit.emit(`every child is done — this coordinating ticket is too`, { ticket: r.parent.issue_id });
     }
+  }
+  for (const t of filingErrors(tickets, coordinating)) {
+    emit.warn('no repo and not marked coordinating — a filing error, not an epic, and unroutable as written', {
+      ticket: t.issue_id,
+    });
   }
 
   emit.enter('select');

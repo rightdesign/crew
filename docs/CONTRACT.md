@@ -31,6 +31,7 @@ to mean exactly this, and needs no configuration at all.
 | blocked by | `blocked_by` | |
 | updated at | `updated_at` | |
 | needs design | `needs_design` | |
+| report type | `report_type`, with `coordinating` marking a coordinating parent (ISSUE-354) | |
 | epic | `epic_id` | only rendered when the workspace has an `Epics` table (ISSUE-384) |
 | comment parent | `ticket_id` | Comments |
 | comment body / author | `body` / `team_member_id` | |

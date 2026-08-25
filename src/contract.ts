@@ -31,6 +31,8 @@ export interface ContractColumns {
   blockedBy: string;
   updatedAt: string;
   needsDesign: string;
+  /** Carries the ISSUE-354 coordinating marker — a ticket's report/issue type. */
+  reportType: string;
   /**
    * Which body of work a ticket belongs to, on a workspace that has an
    * Epics table (ISSUE-384). Meaningless — and never rendered — on one that
@@ -105,6 +107,12 @@ export interface Contract {
    * that asymmetry is deliberate and load-bearing.
    */
   unknownPriorityRank: number;
+  /**
+   * The `columns.reportType` value meaning "coordinating parent, not a
+   * filing error" (ISSUE-354) — exempt from needing a Repo, and what
+   * `rollUpParents` keys off instead of an absent `columns.repo`.
+   */
+  coordinatingValue: string;
 }
 
 /**
@@ -125,6 +133,7 @@ export const DEFAULT_CONTRACT: Contract = {
     blockedBy: 'blocked_by',
     updatedAt: 'updated_at',
     needsDesign: 'needs_design',
+    reportType: 'report_type',
     epic: 'epic_id',
   },
   comments: {
@@ -152,6 +161,7 @@ export const DEFAULT_CONTRACT: Contract = {
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
+  coordinatingValue: 'coordinating',
 };
 
 export class ContractError extends Error {}
@@ -166,6 +176,7 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
     priorityOrder: override.priorityOrder ?? DEFAULT_CONTRACT.priorityOrder,
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
+    coordinatingValue: override.coordinatingValue ?? DEFAULT_CONTRACT.coordinatingValue,
   };
 }
 
