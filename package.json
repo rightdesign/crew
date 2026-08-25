@@ -9,6 +9,7 @@
   "files": ["dist", "prompts", "README.md"],
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",
+    "build:binaries": "scripts/build-binaries.sh",
     "dev": "tsx src/cli.ts",
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "typecheck": "tsc --noEmit"

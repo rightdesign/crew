@@ -37,6 +37,17 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { Ship } from './config.ts';
 import type { ShipPlatform } from './platform.ts';
+import { isCompiledBinary } from './runtime-info.ts';
+
+/**
+ * The argv that launches crew: `node bin/crew` from a checkout, or just the
+ * binary itself when this is a `bun build --compile` executable — there is
+ * no separate script for a compiled binary's own `process.execPath` to run.
+ */
+function crewInvocation(crewHome: string): string[] {
+  if (isCompiledBinary(import.meta.url)) return [process.execPath];
+  return [process.execPath, join(crewHome, 'bin', 'crew')];
+}
 
 /** How often the timer fires. Matches the plist this replaces (2 minutes). */
 export const INTERVAL_SECONDS = 120;
@@ -117,7 +128,6 @@ function planLaunchd(ship: Ship, crewHome: string): InstallPlan {
   const unitPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog);
-  const crewBin = join(crewHome, 'bin', 'crew');
   const content = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Written by \`crew install\` — re-run it rather than hand-editing this file. -->
@@ -127,8 +137,7 @@ function planLaunchd(ship: Ship, crewHome: string): InstallPlan {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xmlEscape(process.execPath)}</string>
-    <string>${xmlEscape(crewBin)}</string>
+    ${crewInvocation(crewHome).map((a) => `<string>${xmlEscape(a)}</string>`).join('\n    ')}
     <string>run</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -167,7 +176,6 @@ function planSystemd(ship: Ship, crewHome: string): InstallPlan {
   const timerPath = join(unitDir, `${label}.timer`);
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog);
-  const crewBin = join(crewHome, 'bin', 'crew');
 
   const service = `# Written by \`crew install\` — re-run it rather than hand-editing this file.
 [Unit]
@@ -175,7 +183,7 @@ Description=Tablation crew — one poll cycle
 
 [Service]
 Type=oneshot
-ExecStart=${process.execPath} ${crewBin} run
+ExecStart=${crewInvocation(crewHome).join(' ')} run
 WorkingDirectory=${crewHome}
 Environment=PATH=${pathFor(ship)}
 StandardOutput=append:${schedulerLog}
@@ -215,11 +223,10 @@ WantedBy=timers.target
 function planCron(ship: Ship, crewHome: string): InstallPlan {
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog);
-  const crewBin = join(crewHome, 'bin', 'crew');
   const minutes = Math.max(1, Math.round(INTERVAL_SECONDS / 60));
   const line =
     `*/${minutes} * * * * ` +
-    `cd ${crewHome} && PATH=${pathFor(ship)} ${process.execPath} ${crewBin} run >> ${schedulerLog} 2>&1`;
+    `cd ${crewHome} && PATH=${pathFor(ship)} ${crewInvocation(crewHome).join(' ')} run >> ${schedulerLog} 2>&1`;
   return {
     mechanism: 'cron',
     unitPaths: [],

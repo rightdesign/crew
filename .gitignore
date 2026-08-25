@@ -9,4 +9,5 @@ crew.config.sh
 # Node
 node_modules/
 dist/
+dist-bin/
 crew.yaml

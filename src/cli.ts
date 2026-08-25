@@ -45,8 +45,11 @@ import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
+import { isCompiledBinary } from './runtime-info.ts';
 
-const CREW_HOME = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const CREW_HOME = isCompiledBinary(import.meta.url)
+  ? dirname(process.execPath)
+  : resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * How long an unreleased board lock claim (ISSUE-394) stays valid before
