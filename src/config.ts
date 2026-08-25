@@ -82,6 +82,16 @@ export interface Connection {
   workspace: string;
   project?: string;
   /**
+   * How fast this connection's aging (ISSUE-383) erodes an unpicked
+   * ticket's rank toward 0 — "the operator maintains steering of their
+   * ship" (Brad), ranking their own commitments rather than a property of
+   * the board. Undefined means 1 (pure aging, the documented default). A
+   * SCALAR on the RATE, never on the rank itself: to stop a connection's
+   * work being picked at all, disable it — `weight` cannot starve one,
+   * only make its work surface less often.
+   */
+  weight?: number;
+  /**
    * The checkout this connection works, when its area has exactly one repo.
    * Kept for the common case; `repos` is what a multi-repo area needs.
    */
@@ -167,7 +177,7 @@ const SHIP_KEYS = new Set([
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'maxConcurrentAgents',
 ]);
 const CONNECTION_KEYS = new Set([
-  'name', 'enabled', 'workspace', 'project', 'area', 'dir', 'repos', 'worktreePrefix',
+  'name', 'enabled', 'workspace', 'project', 'area', 'dir', 'repos', 'worktreePrefix', 'weight',
   'platform', 'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
 ]);
@@ -336,6 +346,13 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
     if (!isPlatformRequirement(platformRaw)) {
       missing.add(`${where}.platform must be one of any|unix|macos|linux|windows (got "${platformRaw}")`);
     }
+    // A rate scalar, never a switch: 0 or below would let a weight silently
+    // starve the connection, exactly the misuse `enabled: false` exists to
+    // do honestly instead (see the Connection.weight doc comment).
+    const weight: number | undefined = c?.weight === undefined ? undefined : Number(c.weight);
+    if (weight !== undefined && !(Number.isFinite(weight) && weight > 0)) {
+      missing.add(`${where}.weight must be a positive number (got "${c?.weight}")`);
+    }
     const versionFiles: string[] | undefined = Array.isArray(c?.release?.versionFiles)
       ? c.release.versionFiles
       : c?.release?.versionFile ? [c.release.versionFile] : undefined;
@@ -348,6 +365,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       dir,
       repos: repoDirs,
       worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
+      weight,
       platform: platformRaw as PlatformRequirement,
       baseUrl: (missing.req(c?.baseUrl ?? raw.ship?.baseUrl, `${where}.baseUrl`) as string).replace(/\/+$/, ''),
       apiKey: c?.apiKey,

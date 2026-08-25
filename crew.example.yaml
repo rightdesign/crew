@@ -57,6 +57,16 @@ connections:
     # Worktrees are created beside it as <prefix><issue number>.
     worktreePrefix: my-project-issue-
 
+    # How fast this connection's aging (ISSUE-383) erodes an unpicked
+    # ticket's rank toward the front of the queue. Omit it for 1 (pure
+    # aging) — this is the operator ranking their OWN commitments ("this is
+    # my salaried job, that's my hobby project"), not a property of the
+    # board, so it belongs here rather than on the tracker. A rate scalar,
+    # never a switch: to stop this connection's work being picked at all,
+    # set `enabled: false` instead — `weight` cannot starve a connection,
+    # only make its work surface less often.
+    # weight: 1
+
     # What THIS project needs of a host: any | unix | macos | linux | windows.
     # "unix" suits POSIX-shell hooks on either macOS or Linux; name a single
     # host when the project requires it (an Xcode build needs macos). A ship

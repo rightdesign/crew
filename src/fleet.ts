@@ -17,15 +17,45 @@ import type { Connection, RoleName, Ship } from './config.ts';
 import type { State } from './state.ts';
 import type { Emitter } from './events.ts';
 import { decideCycle, type CycleDecision } from './poll.ts';
-import { NOTHING_ACTIONABLE } from './priority.ts';
+import { NOTHING_ACTIONABLE, agedRankScalar } from './priority.ts';
 
 export interface FleetEntry {
   connection: Connection;
   decision?: CycleDecision;
-  /** Best rank across this connection's pending roles, or NOTHING_ACTIONABLE. */
+  /**
+   * Best rank across this connection's pending roles, or NOTHING_ACTIONABLE —
+   * AFTER aging (ISSUE-383) has eroded it toward 0 if this connection's own
+   * top ticket has been sitting unpicked. QA/triage are exempt: their
+   * `FIXED_RANK` is already the most urgent rank there is, and aging (which
+   * only ever moves a rank TOWARD 0) can only make a building rank approach,
+   * never pass, that floor.
+   */
   rank: number;
   role?: RoleName;
   error?: string;
+}
+
+/**
+ * Aging (ISSUE-383) applied to one connection's winning rank for fleet-wide
+ * comparison. Only building roles (dev/design) age — QA/triage's negative
+ * `FIXED_RANK` values are not on the same scale `agedRankScalar` erodes
+ * toward 0, and eroding a negative number toward 0 would make it LESS
+ * urgent, backwards.
+ *
+ * Reads the PRIOR cycle's fairness bookkeeping (`state.fairness(name)`,
+ * ISSUE-382) — this cycle's own `record()` call happens after every
+ * connection has been ranked, further down in `decideFleet`. Only applies
+ * when the ticket that has actually been waiting is still this cycle's top
+ * one; if a new ticket just took the front of the queue it has no history
+ * yet, so it ages from nothing rather than inheriting the old ticket's wait.
+ */
+function agedConnectionRank(
+  rawRank: number, role: RoleName, connection: Connection, decision: CycleDecision, state: State, now: number,
+): number {
+  if (role !== 'dev' && role !== 'design') return rawRank;
+  const waiting = state.fairness(connection.name).waiting();
+  if (!waiting || waiting.ticket !== decision.actionable.top?.issue_id) return rawRank;
+  return agedRankScalar(rawRank, { since: waiting.since, weight: connection.weight }, now);
 }
 
 export interface FleetDecision {
@@ -43,6 +73,8 @@ export interface FleetOptions {
   emit: Emitter;
   /** Skip connections whose interlock is closed. Default true. */
   enabledOnly?: boolean;
+  /** For aging (ISSUE-383) and tests that need a fixed clock. Defaults to Date.now(). */
+  now?: number;
 }
 
 /**
@@ -54,17 +86,19 @@ export interface FleetOptions {
  * does not compete this cycle.
  */
 export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
+  const now = o.now ?? Date.now();
   const eligible = o.connections.filter((c) => (o.enabledOnly === false ? true : c.enabled));
   const entries: FleetEntry[] = await Promise.all(eligible.map(async (connection) => {
     try {
       const decision = await decideCycle({ conn: connection, ship: o.ship, state: o.state, emit: o.emit });
       const sel = decision.selection;
       if (!sel.selected) return { connection, decision, rank: NOTHING_ACTIONABLE };
+      const rawRank = sel.ranks[sel.selected] ?? NOTHING_ACTIONABLE;
       return {
         connection,
         decision,
         role: sel.selected,
-        rank: sel.ranks[sel.selected] ?? NOTHING_ACTIONABLE,
+        rank: agedConnectionRank(rawRank, sel.selected, connection, decision, o.state, now),
       };
     } catch (e) {
       return { connection, rank: NOTHING_ACTIONABLE, error: (e as Error).message };

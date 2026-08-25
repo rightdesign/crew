@@ -119,6 +119,25 @@ test('a config with no connections is refused', () => {
   assert.throws(() => loadConfig(dir, file), /connections \(at least one\)/);
 });
 
+test('weight is optional — undefined means pure aging (ISSUE-383)', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.connections[0]!.weight, undefined);
+});
+
+test('weight scales the aging rate when a connection sets one', () => {
+  const weighted = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    weight: 3');
+  const { dir, file } = withConfig(weighted);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.connections[0]!.weight, 3);
+});
+
+test('weight cannot be 0 or negative — that would silently starve, which is what enabled:false is honest about', () => {
+  const zero = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    weight: 0');
+  const { dir, file } = withConfig(zero);
+  assert.throws(() => loadConfig(dir, file), /connections\[0\]\.weight must be a positive number/);
+});
+
 test('configuredMembers reads the resolved ids, not authored ones', () => {
   const { dir, file } = withConfig(ONE);
   const conn = connection(loadConfig(dir, file), 'synthesis');
