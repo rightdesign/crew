@@ -10,7 +10,7 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  loadConfig, connection, resolveApiKey, reposOf, shipWorktreePrefixFor, ticketsByRepo,
+  loadConfig, connection, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
   type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
@@ -296,6 +296,7 @@ function resolvedRepos(c: typeof conn) {
   return reposOf(c).map((t) => ({
     name: t.name,
     dir: t.dir,
+    id: repoIdForName(c, t.name),
     config: resolveRepoConfig(loadRepoConfig(t.dir), {
       hooks: c.hooks, labels: c.labels,
       release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
@@ -317,13 +318,16 @@ const worktreeLocations = (c: typeof conn) =>
     prefix: r.config.worktrees.prefix,
   }));
 
-function environmentFor(c: typeof conn): string {
+function environmentFor(c: typeof conn, ticket?: string | null): string {
   const contract = new Tracker(c, cfg.ship).contract;
-  // Every repository the connection serves, not just the first. The session
-  // has not picked its ticket yet, so which one it will work is unknowable
-  // here — the brief describes them all (ISSUE-350).
+  // Every repository the connection serves, not just the first. Which one
+  // THIS ticket's work happens in is unknowable here — the brief describes
+  // them all (ISSUE-350). `ticket`, when the caller already resolved one
+  // before building the environment, is only used for filing guidance
+  // (ISSUE-411) — it names the ticket a spotted-bug report should reference,
+  // never which repo section applies.
   return renderEnvironment({
-    conn: c, userAgent: cfg.ship.userAgent, repos: resolvedRepos(c), contract,
+    conn: c, userAgent: cfg.ship.userAgent, repos: resolvedRepos(c), contract, sourceTicket: ticket,
   });
 }
 
@@ -592,7 +596,7 @@ switch (command) {
         const fleetPlan = planAgentRun({
           role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
           stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
-          environment: environmentFor(w.connection),
+          environment: environmentFor(w.connection, w.decision.actionable.top?.issue_id),
           apiKey: resolveApiKey(w.connection),
           cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
         });
@@ -652,7 +656,7 @@ switch (command) {
       const fleetPlan = planAgentRun({
         role: w.role, conn: w.connection, ship: cfg.ship, crewHome: CREW_HOME,
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.connection, w.role),
-        environment: environmentFor(w.connection),
+        environment: environmentFor(w.connection, fleetTicketHint),
         apiKey: resolveApiKey(w.connection),
         cycle: emit.cycle, ticket: fleetTicketHint,
       });
@@ -818,7 +822,7 @@ switch (command) {
       const plan = planAgentRun({
         role: current, conn, ship: cfg.ship, crewHome: CREW_HOME,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, conn, current),
-        environment: environmentFor(conn),
+        environment: environmentFor(conn, ticketHint),
         apiKey: resolveApiKey(conn),
         cycle: emit.cycle, ticket: ticketHint,
       });

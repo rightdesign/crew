@@ -470,6 +470,19 @@ export function dirForRepo(c: Connection, repoId?: string | null): string | null
   return c.repos[name] ?? (Object.keys(c.repos).length === 0 ? c.dir : null);
 }
 
+/**
+ * The reverse of `resolved.repoNames` (id -> name): given a repo's name as
+ * the connection's own `repos` map or `RepoTarget` uses it, find its row id
+ * in the tracker's `Repos` table. Needed wherever a NEW ticket has to be
+ * filed with a `repo` column pointing at an existing Repos row (ISSUE-411).
+ */
+export function repoIdForName(c: Connection, name: string): string | undefined {
+  const names = c.resolved?.repoNames;
+  if (!names) return undefined;
+  for (const [id, n] of Object.entries(names)) if (n === name) return id;
+  return undefined;
+}
+
 /** The API key for one connection. Never logged. */
 export function resolveApiKey(c: Connection): string {
   if (c.apiKey) return c.apiKey;

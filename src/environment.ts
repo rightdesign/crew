@@ -27,6 +27,13 @@ export interface EnvironmentRepo {
   /** The checkout on this machine. */
   dir: string;
   config: EffectiveRepoConfig;
+  /**
+   * This repo's row id in the tracker's `Repos` table — what a NEW ticket's
+   * `repo` column must hold (ISSUE-411: a bug filed without this sits
+   * unrouted, invisible to per-repo placement, until a person backfills it).
+   * Absent when the connection has no resolved id for this repo yet.
+   */
+  id?: string;
 }
 
 export interface EnvironmentInput {
@@ -46,6 +53,8 @@ export interface EnvironmentInput {
   contract: Contract;
   /** Where this ticket's work happens, when the cycle knows it. */
   repoDir?: string | null;
+  /** The ticket this session was spawned to work, when the cycle knows it. */
+  sourceTicket?: string | null;
 }
 
 /**
@@ -219,6 +228,8 @@ export function renderEnvironment(i: EnvironmentInput): string {
     `| priority | \`${contract.columns.priority}\` |`,
     `| blocked by | \`${contract.columns.blockedBy}\` |`,
     `| needs design | \`${contract.columns.needsDesign}\` |`,
+    `| project | \`${contract.columns.slice}\` |`,
+    `| repo | \`${contract.columns.repo}\` |`,
     ...(epicsModelId ? [`| epic | \`${contract.columns.epic}\` |`] : []),
     '',
     ...(epicsModelId
@@ -240,6 +251,34 @@ export function renderEnvironment(i: EnvironmentInput): string {
     '',
     `\`${contract.statuses.verified}\` and the closed statuses are **never yours to set**.`,
   );
+
+  const areaId = conn.resolved?.areaId;
+  if (areaId || repos.some((r) => r.id)) {
+    lines.push(
+      '',
+      '## Filing a new ticket',
+      '',
+      'Something broken that is out of scope for the ticket you are working is not',
+      'yours to fix inline — file it as its own new ticket instead, and keep working',
+      'the one you were on. A ticket filed without its project and repo sits unrouted',
+      'until a person notices and fixes it by hand, so always set:',
+      '',
+      ...(areaId ? [`- \`${contract.columns.slice}\`: \`${areaId}\` (this connection's project, for every ticket you file)`] : []),
+      ...(only?.id ? [`- \`${contract.columns.repo}\`: \`${only.id}\` (this repository)`] : repos.filter((r) => r.id).map(
+        (r) => `- \`${contract.columns.repo}\`: \`${r.id}\` — when the new ticket belongs to ${r.name}`,
+      )),
+      '',
+      ...(i.sourceTicket
+        ? [
+            `Name ${i.sourceTicket} — the ticket you were working when you noticed this — in the new`,
+            'ticket\'s description. Only put it in the new ticket\'s `blockedBy` if your own ticket',
+            'genuinely cannot proceed without the new one being fixed first; merely having noticed it',
+            'nearby is not a dependency.',
+            '',
+          ]
+        : []),
+    );
+  }
 
   if (only) {
     lines.push(...repoSection(only, key, '## Your worktree'));

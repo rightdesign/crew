@@ -420,6 +420,24 @@ work around it. The loop never parks an `in_progress` ticket.
    reads first — say what you changed, how you verified it, which ports and
    database the worktree uses, and anything you could not test yourself.
 
+## Filing a ticket for something you spot along the way
+
+If you notice something broken that is out of scope for the ticket you're
+working — a failing build, a flaky test, an unrelated bug in code you
+passed through — **do not fix it inline.** File it as its own new ticket
+via the Issues table and keep working the one you were on.
+
+The Environment section's "Filing a new ticket" block names the exact
+`project` and `repo` column values to set. **Always set both.** A ticket
+filed without them has nowhere to route to — it sits unclaimed by any
+per-repo queue until a person notices and fixes it by hand, however
+urgent its priority.
+
+Name the ticket you were working when you noticed it in the new ticket's
+description. Only put it in the new ticket's `blocked by` column if your
+own ticket genuinely cannot proceed without the new one being fixed
+first — merely having noticed it nearby is not a dependency.
+
 ## Step 4 — you never merge, and you never deploy
 
 **Nothing you do touches `main`.** Merging is the release phase's job now,
