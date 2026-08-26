@@ -726,6 +726,29 @@ test('a base that has diverged from the remote refuses to release', async () => 
   assert.ok(lines.some((l) => /refusing to release/.test(l)));
 });
 
+test('a "refusing to release" message names which route/repo it is about, when told one', async () => {
+  // A route with several repos produces one of these per repo per cycle —
+  // with no scope, they were indistinguishable from one another (a person
+  // watching the log had no way to tell which repo needed attention).
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(LOCAL, bare);
+  const other = mkdtempSync(join(tmpdir(), 'crew-rel-other3-'));
+  const o = (...a: string[]) => execFileSync('git', a, { cwd: other, stdio: 'pipe' });
+  execFileSync('git', ['clone', '-q', bare, other], { stdio: 'pipe' });
+  o('config', 'user.email', 't@t'); o('config', 'user.name', 'T');
+  writeFileSync(join(other, 'theirs.txt'), 'x');
+  o('add', '.'); o('commit', '-qm', 'theirs'); o('push', '-q', 'origin', 'main');
+  writeFileSync(join(dir, 'ours.txt'), 'x');
+  g('add', '.'); g('commit', '-qm', 'ours');
+
+  await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false, scope: 'paradium/issues/raven',
+  });
+
+  assert.ok(lines.some((l) => /paradium\/issues\/raven: refusing to release/.test(l)));
+});
+
 test('a repo with no remote at all releases exactly as before', async () => {
   const { dir, repo } = project(LOCAL);          // no origin configured
   const e = emitter();

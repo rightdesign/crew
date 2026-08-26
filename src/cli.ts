@@ -386,6 +386,7 @@ async function resolvedRepos(c: typeof route) {
       config: resolveRepoConfig(loadRepoConfig(t.dir), {
         hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
         release: mergeRouteRelease(c.release, o?.release),
+        branch: { ...c.branch, ...o?.branch },
         // The route's own prefix is a SHIP-level default for a repo
         // that declares none (ISSUE-398, single-repo only). Next, the
         // repo's own area may name an issue-key prefix of its own (its
@@ -504,6 +505,7 @@ async function releasePhase(
     const repo = resolveRepoConfig(repoFile, {
       hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
       release: mergeRouteRelease(c.release, o?.release),
+      branch: { ...c.branch, ...o?.branch },
       worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, target.dir);
     const problems = validateEffective(repo);
@@ -542,7 +544,7 @@ async function releasePhase(
     reportUnplaceable(c, unplaceable, tracker.contract.statuses.verified, emit);
 
     const outcome = await runRelease({
-      cwd: target.dir, repo, contract: tracker.contract, tickets, emit,
+      cwd: target.dir, repo, contract: tracker.contract, tickets, emit, scope,
       state: state.release(scope),
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',

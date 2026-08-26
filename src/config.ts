@@ -31,7 +31,7 @@ import {
 } from './platform.ts';
 import {
   MODES as RELEASE_MODES, PROVIDERS as CI_PROVIDERS, MATCHES as VERIFY_MATCHES, VERSIONINGS,
-  type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning,
+  type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning, type BranchNaming,
 } from './repo-config.ts';
 
 /**
@@ -168,22 +168,34 @@ export interface Route {
     tagPattern?: string;
   };
   /**
-   * Per-repo overrides of `hooks`/`labels`/`release`, keyed the same as
-   * `repos` — a hook is a fact about a REPO (its test/build/deploy commands,
-   * its release mode), not about the route, and a route with several repos
-   * of wildly different tooling (a multi-repo area) had no way to say that
-   * other than giving every one of them the same commands or pushing each
-   * into its own `.crew.yaml`. Authored as `repos: <name>: { dir, hooks,
-   * labels, release }` instead of a bare dir string; a name absent here (or a
-   * bare-string repo) falls straight through to the route-wide
-   * `hooks`/`labels`/`release` above. Still only a FALLBACK at every level —
-   * a repo's own `.crew.yaml` wins over this, which wins over the route-wide
-   * block, which wins over the built-in default.
+   * A ship-level fallback for a repo that has no `.crew.yaml` of its own —
+   * same shape and same reasoning as `release` above (mirrors
+   * `ShipRepoSettings['branch']` in repo-config.ts field for field). A repo
+   * synced some OTHER way than the tracker's own naming convention (a
+   * Synology-shared checkout, say, where `master` is the real base and
+   * always will be) has no reason to also carry a `.crew.yaml` just to say
+   * one field — this is that one field, on the ship.
+   */
+  branch?: Partial<BranchNaming>;
+  /**
+   * Per-repo overrides of `hooks`/`labels`/`release`/`branch`, keyed the same
+   * as `repos` — a hook is a fact about a REPO (its test/build/deploy
+   * commands, its release mode, its base branch), not about the route, and a
+   * route with several repos of wildly different tooling (a multi-repo area)
+   * had no way to say that other than giving every one of them the same
+   * commands or pushing each into its own `.crew.yaml`. Authored as `repos:
+   * <name>: { dir, hooks, labels, release, branch }` instead of a bare dir
+   * string; a name absent here (or a bare-string repo) falls straight
+   * through to the route-wide `hooks`/`labels`/`release`/`branch` above.
+   * Still only a FALLBACK at every level — a repo's own `.crew.yaml` wins
+   * over this, which wins over the route-wide block, which wins over the
+   * built-in default.
    */
   repoOverrides: Record<string, {
     hooks?: { test?: string; build?: string; deploy?: string; notify?: string };
     labels?: { test?: string; build?: string; deploy?: string };
     release?: Route['release'];
+    branch?: Partial<BranchNaming>;
   }>;
   /**
    * This workspace's own rules, where they differ from the default (see
@@ -255,7 +267,8 @@ const ROUTE_KEYS = new Set([
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
-const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release']);
+const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch']);
+const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
 // `versionFile` (singular) is a ship-level-only alias for a one-entry
 // `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
 const RELEASE_OVERRIDE_KEYS = new Set([
@@ -345,6 +358,26 @@ function parseReleaseOverride(raw: any, where: string, file: string): Route['rel
     tag: raw.tag !== undefined ? String(raw.tag) : undefined,
     tagPattern: raw.tagPattern !== undefined ? String(raw.tagPattern) : undefined,
   };
+}
+
+/**
+ * A ship-level `branch:` block — the route-wide one, or one repo's own
+ * `repos: <name>: branch:` override. A FALLBACK like `release` above: only
+ * ever read when the repo has no `.crew.yaml` of its own to say it there
+ * (repo-config.ts's `pick()`), so an absent field here must stay absent
+ * rather than defaulting to `main` — that default belongs to whichever layer
+ * actually resolves the effective config, not to every layer that merely
+ * contributes to it.
+ */
+function parseBranchOverride(raw: any, where: string, file: string): Partial<BranchNaming> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  rejectUnknownKeys(raw, BRANCH_OVERRIDE_KEYS, `${where}.branch`, file);
+  const base = raw.base !== undefined ? String(raw.base) : undefined;
+  const name = raw.name !== undefined ? String(raw.name) : undefined;
+  const push = raw.push !== undefined ? String(raw.push) : undefined;
+  const remote = raw.remote !== undefined ? String(raw.remote) : undefined;
+  if (base === undefined && name === undefined && push === undefined && remote === undefined) return undefined;
+  return { base, name, push, remote };
 }
 
 /**
@@ -643,10 +676,15 @@ function parseOneRoute(
         const e = entry as Record<string, any>;
         rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
         repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
-        if (e.hooks || e.labels || e.release) {
+        if (e.hooks || e.labels || e.release || e.branch) {
           repoOverrides[name] = {
             hooks: e.hooks, labels: e.labels,
             release: e.release ? parseReleaseOverride(e.release, `${where}.repos.${name}`, file) : undefined,
+            // Omitted entirely rather than `branch: undefined` when absent —
+            // an explicit key with an undefined value is not the same object
+            // shape as one that never had the key, and existing callers
+            // compare this literally.
+            ...(e.branch ? { branch: parseBranchOverride(e.branch, `${where}.repos.${name}`, file) } : {}),
           };
         }
       } else {
@@ -691,6 +729,7 @@ function parseOneRoute(
       deploy: c?.labels?.deploy ?? c?.hooks?.deploy,
     },
     release: parseReleaseOverride(c?.release, where, file),
+    branch: parseBranchOverride(c?.branch, where, file),
     contract: c?.contract ?? null,
     // The state-tree file wins when both exist: it's what `crew connect`
     // manages going forward, and an authored `resolved:` block is only a

@@ -395,6 +395,76 @@ test('release.mode is validated against the same enum a repo\'s own .crew.yaml u
   });
 });
 
+test('route-level branch.base parses and is exposed on the route — it used to be accepted and silently discarded', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/single',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/only',
+    '    branch:',
+    '      base: master',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  assert.deepEqual(findRoute(cfg, 'w/single').branch, { base: 'master', name: undefined, push: undefined, remote: undefined });
+});
+
+test('a repo\'s own repos: <name>: branch: override is distinct from the route-wide one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/multi',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    branch:',
+    '      base: master',
+    '    repos:',
+    '      a:',
+    '        dir: /tmp/a',
+    '      b:',
+    '        dir: /tmp/b',
+    '        branch:',
+    '          base: trunk',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  const route = findRoute(cfg, 'w/multi');
+  assert.deepEqual(route.branch, { base: 'master', name: undefined, push: undefined, remote: undefined });
+  assert.equal(route.repoOverrides['a'], undefined, 'repo a declared no override — nothing to shadow the route-wide one with');
+  assert.deepEqual(route.repoOverrides['b']!.branch, { base: 'trunk', name: undefined, push: undefined, remote: undefined });
+});
+
+test('branch.base is left completely undefined when nothing at all declares one — no invented "main" default at this layer', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/single',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/only',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  assert.equal(findRoute(cfg, 'w/single').branch, undefined);
+});
+
+test('an unknown branch: key is refused, the same as an unknown release: key', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/single',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/only',
+    '    branch:',
+    '      bogus: nope',
+  ].join('\n'));
+  assert.throws(() => loadConfig(dir, join(dir, 'crew.yaml')), /unknown routes\[0\]\.branch key: bogus/);
+});
+
 test('mergeRouteRelease: an override naming only mode still inherits the route\'s other release fields', () => {
   const route = {
     mode: 'local' as const, ci: { provider: 'none' as const, ref: undefined },

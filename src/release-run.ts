@@ -46,6 +46,15 @@ export interface ReleaseRunOptions {
   contract: Contract;
   tickets: Ticket[];
   emit: Emitter;
+  /**
+   * `route/repo`, prefixed onto a message that would otherwise read the same
+   * whether this ship has one repo or a dozen — `emit`'s own `route` field
+   * (on the underlying JSONL event) never told you WHICH of a route's
+   * several repos a refusal was about, only which route. Optional: a caller
+   * exercising this against a scratch repo with no real route/repo identity
+   * (most of this file's own tests) has nothing meaningful to put here.
+   */
+  scope?: string;
   dryRun: boolean;
   /** Skip the test gate — a hotfix that cannot wait on a red suite. */
   skipTests?: boolean;
@@ -366,6 +375,7 @@ function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: str
 }
 
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
+  const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
 
   // Before anything is decided: what does the remote have? Every number the
@@ -381,7 +391,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   if (!fresh.ok) {
     // Deliberately not `--force`-able: `crew deploy` exists to retry a deploy
     // that failed, not to release over another ship's work.
-    o.emit.error(`refusing to release — ${fresh.why}; a person has to reconcile the two`);
+    o.emit.error(scoped(`refusing to release — ${fresh.why}; a person has to reconcile the two`));
     return { merged: [], conflicts: [], deployed: false, stopped: fresh.why, decision };
   }
 
@@ -390,7 +400,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     // unreleased behind one untracked file (ISSUE-174). One blocked cycle is
     // normal — someone is mid-edit — so the alarm starts at two.
     const n = o.state?.noteBlocked() ?? 1;
-    const msg = `refusing to release — ${decision.block.detail}`;
+    const msg = scoped(`refusing to release — ${decision.block.detail}`);
     // `cycles`/`reason` go out on both branches, not only the LOUD one: a
     // watcher folding this cycle's events needs to tell "release blocked
     // since cycle 1" from "release in progress" from its very first cycle,

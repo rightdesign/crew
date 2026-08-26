@@ -277,6 +277,30 @@ test('a pushed branch may be named differently from the local one', () => {
   assert.equal(c.branch.push, 'crew/{key}');
 });
 
+test('a repo with no .crew.yaml of its own takes branch.base from the ship\'s fallback, not the "main" default', () => {
+  // The ship-level `branch:` fallback (crew.yaml's `routes[].branch` or a
+  // repo's own `repos: <name>: branch:` override) used to be accepted by
+  // the YAML parser and then silently discarded — never reaching here, so
+  // this always fell through to the "main" default no matter what a ship
+  // declared. Regression coverage for that.
+  const eff = resolveRepoConfig(null, { branch: { base: 'master' } }, '/tmp/x');
+  assert.equal(eff.branch.base, 'master');
+  assert.equal(eff.provenance['branch.base'], 'ship');
+});
+
+test('a repo\'s own .crew.yaml branch.base still wins over the ship\'s fallback', () => {
+  const repo = parseRepoConfig(MIN + 'branch:\n  base: develop\n', 'f');
+  const eff = resolveRepoConfig(repo, { branch: { base: 'master' } }, '/tmp/x');
+  assert.equal(eff.branch.base, 'develop');
+  assert.equal(eff.provenance['branch.base'], 'repo');
+});
+
+test('with no branch.base declared anywhere, "main" is still the default', () => {
+  const eff = resolveRepoConfig(null, {}, '/tmp/x');
+  assert.equal(eff.branch.base, 'main');
+  assert.equal(eff.provenance['branch.base'], 'default');
+});
+
 test('a template naming no placeholder is refused — every ticket would collide', () => {
   assert.throws(() => parseRepoConfig(MIN + 'branch: { name: "work" }\n', 'f'), (e: Error) => {
     assert.match(e.message, /names no placeholder/);
