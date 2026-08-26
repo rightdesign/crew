@@ -86,6 +86,19 @@ routes:
     # What follows is the FALLBACK for a repo that has no such file, and it
     # is merged per field: the repo wins wherever it speaks, the ship fills
     # the gaps, and `crew doctor` reports anything the repo shadowed.
+    #
+    # An area with several repos (`repos:` instead of a single `dir:`) can
+    # give any one of them its OWN fallback hooks/labels/release, since those
+    # are a fact about a repo, not about the route:
+    #   repos:
+    #     frontend: ~/src/my-project-frontend
+    #     backend:
+    #       dir: ~/src/my-project-backend
+    #       hooks: { test: pytest, build: python -m build }
+    # `backend`'s override wins over the route-wide `hooks:` below, field by
+    # field — an override naming only `test` still inherits this block's
+    # `build`/`deploy` — and is itself still only a fallback under whatever
+    # `backend`'s own `.crew.yaml` says.
     hooks:
       test: |
         ok=0

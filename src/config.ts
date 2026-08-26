@@ -152,6 +152,24 @@ export interface Route {
    */
   release: { versionFiles?: string[]; changelog?: string };
   /**
+   * Per-repo overrides of `hooks`/`labels`/`release`, keyed the same as
+   * `repos` — a hook is a fact about a REPO (its test/build/deploy commands),
+   * not about the route, and a route with several repos of wildly different
+   * tooling (a multi-repo area) had no way to say that other than giving
+   * every one of them the same commands or pushing each into its own
+   * `.crew.yaml`. Authored as `repos: <name>: { dir, hooks, labels, release }`
+   * instead of a bare dir string; a name absent here (or a bare-string repo)
+   * falls straight through to the route-wide `hooks`/`labels`/`release`
+   * above. Still only a FALLBACK at every level — a repo's own `.crew.yaml`
+   * wins over this, which wins over the route-wide block, which wins over
+   * the built-in default.
+   */
+  repoOverrides: Record<string, {
+    hooks?: { test?: string; build?: string; deploy?: string; notify?: string };
+    labels?: { test?: string; build?: string; deploy?: string };
+    release?: { versionFiles?: string[]; changelog?: string };
+  }>;
+  /**
    * This workspace's own rules, where they differ from the default (see
    * docs/CONTRACT.md). Absent means the workspace means what the unmodified
    * Issue Tracker template means. Belongs per route, not per ship: one
@@ -211,6 +229,8 @@ const ROUTE_KEYS = new Set([
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
 ]);
+/** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
+const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release']);
 
 /**
  * An unknown key is an ERROR, not something to ignore — the same rule the
@@ -437,11 +457,29 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
     if (route && !routeWellFormed) {
       missing.add(`${where}.route must be "workspace/project" (got "${route}")`);
     }
-    // `repos` or `dir` — one of them must say where the code is.
+    // `repos` or `dir` — one of them must say where the code is. An entry may
+    // be a bare dir string, or an object naming its dir plus its own
+    // hooks/labels/release overrides — see Route.repoOverrides.
     const repoDirs: Record<string, string> = {};
+    const repoOverrides: Route['repoOverrides'] = {};
     if (c?.repos && typeof c.repos === 'object') {
-      for (const [name, d] of Object.entries(c.repos as Record<string, string>)) {
-        repoDirs[name] = expand(String(d), base);
+      for (const [name, entry] of Object.entries(c.repos as Record<string, unknown>)) {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          const e = entry as Record<string, any>;
+          rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
+          repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
+          if (e.hooks || e.labels || e.release) {
+            repoOverrides[name] = {
+              hooks: e.hooks, labels: e.labels,
+              release: e.release
+                ? { versionFiles: Array.isArray(e.release.versionFiles) ? e.release.versionFiles : undefined,
+                  changelog: e.release.changelog }
+                : undefined,
+            };
+          }
+        } else {
+          repoDirs[name] = expand(String(entry), base);
+        }
       }
     }
     const hasRepos = Object.keys(repoDirs).length > 0;
@@ -466,6 +504,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       area: c?.area,
       dir,
       repos: repoDirs,
+      repoOverrides,
       worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
       weight,
       baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),

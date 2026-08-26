@@ -293,6 +293,81 @@ test('reposOf covers every checkout, not just the route dir', () => {
   assert.equal(shipWorktreePrefixFor(findRoute(cfg, 'w/single')), 's-');
 });
 
+test('a repos: entry may be an object naming its own dir plus hook/label/release overrides', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/multi',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    hooks: { test: "route test", build: "route build" }',
+    '    repos:',
+    '      frontend: /tmp/frontend',
+    '      backend:',
+    '        dir: /tmp/backend',
+    '        hooks: { test: "backend test" }',
+    '        labels: { test: "pytest" }',
+    '        release: { versionFiles: [pyproject.toml] }',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  const route = findRoute(cfg, 'w/multi');
+
+  assert.deepEqual(reposOf(route).map((r) => ({ name: r.name, dir: r.dir })), [
+    { name: 'frontend', dir: '/tmp/frontend' },
+    { name: 'backend', dir: '/tmp/backend' },
+  ]);
+  assert.equal(route.repoOverrides.frontend, undefined);
+  assert.deepEqual(route.repoOverrides.backend, {
+    hooks: { test: 'backend test' },
+    labels: { test: 'pytest' },
+    release: { versionFiles: ['pyproject.toml'], changelog: undefined },
+  });
+  // The route-wide fallback is untouched — resolvedRepos()/releasePhase() are
+  // what merge an override with it, not loadConfig() itself.
+  assert.equal(route.hooks.test, 'route test');
+  assert.equal(route.hooks.build, 'route build');
+});
+
+test('an object-shaped repos: entry with no dir is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/multi',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    repos:',
+    '      backend:',
+    '        hooks: { test: "backend test" }',
+  ].join('\n'));
+  assert.throws(() => loadConfig(dir, join(dir, 'crew.yaml')), (e) => {
+    assert.ok(e instanceof ConfigError);
+    assert.match((e as Error).message, /repos\.backend\.dir is required/);
+    return true;
+  });
+});
+
+test('an object-shaped repos: entry rejects an unknown key, same as a route', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/multi',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    repos:',
+    '      backend:',
+    '        dir: /tmp/backend',
+    '        platform: unix',
+  ].join('\n'));
+  assert.throws(() => loadConfig(dir, join(dir, 'crew.yaml')), (e) => {
+    assert.ok(e instanceof ConfigError);
+    assert.match((e as Error).message, /unknown routes\[0\]\.repos\.backend key: platform/);
+    return true;
+  });
+});
+
 test('tickets are partitioned by repo, and unplaceable ones are surfaced', () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
   writeFileSync(join(dir, 'crew.yaml'), [

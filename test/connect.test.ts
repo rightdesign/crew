@@ -143,6 +143,46 @@ test('discover() carries the resolved workspace and project slugs, not just thei
   assert.equal(found.projectSlug, 'bar');
 });
 
+test('discover() auto-matches operator to the hold whose email matches this key\'s own identity', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'brad@example.test' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'seat-dev', name: 'Developer' },
+      { id: 'hold-pair', name: 'Pair agent', email: 'pair@example.test' },
+      { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.operator, 'hold-brad');
+});
+
+test('discover() leaves operator unset when no hold email matches (or two do)', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'nobody@example.test' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'hold-pair', name: 'Pair agent', email: 'pair@example.test' },
+      { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.operator, undefined);
+  assert.equal(found.holds.length, 2);
+});
+
 test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces list', async (t) => {
   const { restore, seen } = mockFetch({
     '/api/auth/my-workspaces': {

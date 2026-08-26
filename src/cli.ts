@@ -41,11 +41,12 @@ import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
-import { discover, listWorkspaces, renderConnection } from './connect.ts';
+import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
 import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 
@@ -96,6 +97,27 @@ function renderShipLine(
     return `${name.padEnd(20)} online, engaged${what ? ` — ${what}` : ''}${sinceText}`;
   }
   return `${name.padEnd(20)} online, idle (seen ${since(s.last_seen)} ago)`;
+}
+
+/**
+ * Asks, on a real terminal, which Crew row is the human running `crew
+ * connect` — the fallback for when `discover()` couldn't match this key's
+ * own identity email to exactly one hold. Returns `undefined` on a blank
+ * answer or an out-of-range number, leaving the caller to fall back to the
+ * "edit the state file by hand" instructions.
+ */
+async function pickOperator(holds: Array<{ id: string; name: string }>): Promise<string | undefined> {
+  process.stderr.write('\nWhich of these Crew rows is you?\n');
+  holds.forEach((h, i) => process.stderr.write(`  ${i + 1}. ${h.name || h.id}\n`));
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = (await rl.question('Enter a number (blank to skip): ')).trim();
+    const n = Number(answer);
+    if (!answer || !Number.isInteger(n) || n < 1 || n > holds.length) return undefined;
+    return holds[n - 1]!.id;
+  } finally {
+    rl.close();
+  }
 }
 
 function usage(): never {
@@ -342,13 +364,22 @@ async function areaWorktreePrefix(c: typeof route, repoId: string | undefined): 
 async function resolvedRepos(c: typeof route) {
   return Promise.all(reposOf(c).map(async (t) => {
     const id = repoIdForName(c, t.name);
+    // This repo's own entry under `repos:` (if it named hooks/labels/release
+    // of its own) sits between the route-wide fallback and the repo's own
+    // `.crew.yaml` — only the fields it actually set shadow the route-wide
+    // ones, so an override naming just `hooks.test` still inherits the
+    // route's `build`/`deploy`/`notify`.
+    const o = c.repoOverrides[t.name];
     return {
       name: t.name,
       dir: t.dir,
       id,
       config: resolveRepoConfig(loadRepoConfig(t.dir), {
-        hooks: c.hooks, labels: c.labels,
-        release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
+        hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
+        release: {
+          versionFiles: o?.release?.versionFiles ?? c.release.versionFiles,
+          changelog: o?.release?.changelog ?? c.release.changelog,
+        },
         // The route's own prefix is a SHIP-level default for a repo
         // that declares none (ISSUE-398, single-repo only). Next, the
         // repo's own area may name an issue-key prefix of its own (its
@@ -463,9 +494,13 @@ async function releasePhase(
   try {
 
     const repoFile = loadRepoConfig(target.dir);
+    const o = c.repoOverrides[target.name];
     const repo = resolveRepoConfig(repoFile, {
-      hooks: c.hooks, labels: c.labels,
-      release: { versionFiles: c.release.versionFiles, changelog: c.release.changelog },
+      hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
+      release: {
+        versionFiles: o?.release?.versionFiles ?? c.release.versionFiles,
+        changelog: o?.release?.changelog ?? c.release.changelog,
+      },
       worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, target.dir);
     const problems = validateEffective(repo);
@@ -1054,12 +1089,21 @@ switch (command) {
       // route string and a state-file path segment cannot.
       const route = `${found.workspaceSlug}/${found.projectSlug ?? found.projectId}`;
       const resolvedPath = resolvedPathFor(cfg.ship.stateDir, route);
+      // `discover()` already tried to match this key's own identity email
+      // against a Crew row; ask interactively only when that came up empty
+      // (or ambiguous) AND there is a person on the other end of a terminal
+      // to ask — a script piping stdin gets the old file-editing fallback.
+      let operator = found.operator;
+      if (!operator && found.holds.length > 0 && process.stdin.isTTY && process.stdout.isTTY) {
+        operator = await pickOperator(found.holds);
+      }
       const resolved = {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
         shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, locksModelId: found.locksModelId,
         reposModelId: found.reposModelId, repoNames: found.repoNames,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
+        ...(operator ? { operator } : {}),
       };
       if (dryRun) {
         process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
@@ -1077,35 +1121,61 @@ switch (command) {
         process.stderr.write('\n  Unresolved — fix these before arming it:\n');
         for (const p of found.problems) process.stderr.write(`    - ${p}\n`);
       }
-      // `resolved.operator` has no source: which Crew row is the human
-      // running this is not inferable from the workspace's data, and
-      // (unlike a seat or a hold) never will be — a person decides it once,
-      // by hand, in the state file `resolvedPath` names above.
-      process.stderr.write(
-        `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there\n` +
-        `  already), set operator in ${resolvedPath}, then: crew doctor ${route}\n`,
-      );
+      if (operator) {
+        process.stderr.write(
+          `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there already), then: ` +
+            `crew doctor ${route}\n`,
+        );
+      } else {
+        // Nothing to infer this from (no email match) and nowhere to ask
+        // (piped/non-interactive) — which Crew row is the human running
+        // this is left for a person to decide once, by hand, in the state
+        // file `resolvedPath` names above.
+        process.stderr.write(
+          `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there\n` +
+          `  already), set operator in ${resolvedPath}, then: crew doctor ${route}\n`,
+        );
+      }
     };
 
-    if (!workspace) {
-      const workspaces = await listWorkspaces(authOpts);
-      if (workspaces.length === 0) {
-        process.stderr.write('crew connect: this key\'s identity has no workspace memberships.\n');
-        process.exit(2);
-      } else if (workspaces.length === 1) {
-        // Only one candidate — same reasoning as an unnamed route with only
-        // one enabled: nothing to disambiguate, so proceed with it directly
-        // rather than making the operator retype what there was no choice in.
-        await runConnect(workspaces[0]!.slug, project);
+    try {
+      if (!workspace) {
+        const workspaces = await listWorkspaces(authOpts);
+        if (workspaces.length === 0) {
+          process.stderr.write('crew connect: this key\'s identity has no workspace memberships.\n');
+          process.exit(2);
+        } else if (workspaces.length === 1) {
+          // Only one candidate — same reasoning as an unnamed route with only
+          // one enabled: nothing to disambiguate, so proceed with it directly
+          // rather than making the operator retype what there was no choice in.
+          await runConnect(workspaces[0]!.slug, project);
+        } else {
+          process.stderr.write(
+            `${workspaces.length} workspaces reachable by this key — name one:\n` +
+            workspaces.map((w) => `  ${w.slug.padEnd(24)} ${w.name} (${w.role})\n`).join(''),
+          );
+          process.exit(2);
+        }
       } else {
-        process.stderr.write(
-          `${workspaces.length} workspaces reachable by this key — name one:\n` +
-          workspaces.map((w) => `  ${w.slug.padEnd(24)} ${w.name} (${w.role})\n`).join(''),
-        );
+        await runConnect(workspace, project);
+      }
+    } catch (e) {
+      // A bad key/workspace pairing is an operator mistake, not a crash —
+      // same reasoning as the crew.yaml ConfigError handling above main().
+      if (e instanceof ConnectHttpError) {
+        if (e.status === 401 || e.status === 403) {
+          process.stderr.write(
+            `crew connect: ${e.path} — ${e.status} ${e.status === 401 ? '(bad or expired key)' : '(this key is not a member of that workspace)'}\n` +
+              '  A key only sees the workspace it was minted in, whatever role it holds there\n' +
+              '  (platform admin included) — pass one minted inside the target workspace: --key K\n' +
+              '  (or CREW_CONNECT_KEY).\n',
+          );
+        } else {
+          process.stderr.write(`crew connect: ${e.message}\n`);
+        }
         process.exit(2);
       }
-    } else {
-      await runConnect(workspace, project);
+      throw e;
     }
     break;
   }

@@ -56,6 +56,10 @@ export interface Discovered {
    * no-qualifying-project message: an admin can install a template, a plain
    * member cannot. */
   role?: string;
+  /** This key's own identity, from the same `/auth/me` call as `role` — used
+   * to auto-match `operator` against a Crew row's email; not otherwise
+   * rendered or written anywhere. */
+  meEmail?: string;
   projectId?: string;
   /** The canonical slug, when the resolved project has one — building the
    * `route:` string (`workspaceSlug/projectSlug`) needs this, not the
@@ -73,6 +77,9 @@ export interface Discovered {
   epicsModelId?: string;
   locksModelId?: string;
   seats: Record<string, string>;
+  /** The Crew row that is the human running this — auto-matched by email
+   * against `meEmail` when possible. Left unset when no hold's email matches
+   * (or none is on file): the caller decides then, by asking. */
   operator?: string;
   holds: Array<{ id: string; name: string }>;
   /**
@@ -86,6 +93,23 @@ export interface Discovered {
   problems: string[];
 }
 
+/**
+ * A failed `discover()` call, typed by HTTP status so the CLI can tell a bad
+ * key/permission (401/403 — worth a specific "is this key a member of that
+ * workspace?" hint) from anything else, instead of the caller pattern-matching
+ * a plain Error's message.
+ */
+export class ConnectHttpError extends Error {
+  status: number;
+  path: string;
+  constructor(status: number, path: string, statusText: string) {
+    super(`${path}: ${status} ${statusText}`);
+    this.name = 'ConnectHttpError';
+    this.status = status;
+    this.path = path;
+  }
+}
+
 async function get<T>(o: AuthOptions, path: string): Promise<T> {
   const res = await fetch(`${o.baseUrl.replace(/\/+$/, '')}/api${path}`, {
     headers: {
@@ -94,7 +118,7 @@ async function get<T>(o: AuthOptions, path: string): Promise<T> {
       'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
     },
   });
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
+  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
   return (await res.json()) as T;
 }
 
@@ -143,8 +167,9 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // API key as for a session, and is the only "am I an admin here" a plain
   // member's own key can ask without a 403 (no admin-only membership list).
   try {
-    const me = await get<{ role?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
+    const me = await get<{ role?: string; email?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
     out.role = me.role;
+    out.meEmail = me.email;
   } catch { /* not fatal — the no-qualifying-project message just stays generic */ }
 
   if (o.project) {
@@ -248,7 +273,17 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // Anything that is not one of the seats is a person or a session: a hold.
     const seatIds = new Set(Object.values(out.seats));
     out.holds = rows.filter((r) => !seatIds.has(r.id)).map((r) => ({ id: r.id, name: r.name ?? '' }));
-    if (out.holds.length === 0) problems.push('no non-seat Crew rows — which row is the operator?');
+    if (out.holds.length === 0) {
+      problems.push('no non-seat Crew rows — which row is the operator?');
+    } else if (out.meEmail) {
+      // The key's own identity email against each hold's Crew-row email —
+      // when exactly one matches, that IS the operator, with no digging for
+      // a uuid required. Ambiguous (0 or 2+ matches) is left for the caller
+      // to ask about instead of guessing.
+      const holdRows = rows.filter((r) => !seatIds.has(r.id));
+      const matches = holdRows.filter((r) => eq(r.email, out.meEmail!));
+      if (matches.length === 1) out.operator = matches[0]!.id;
+    }
   }
   return out;
 }
