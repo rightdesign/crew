@@ -50,6 +50,8 @@ test('only outcomes worth interrupting someone for produce a notification', () =
   assert.equal(n({ deployed: true, confirmed: false, version: '1.2.3', merged: [1] })?.level, 'warn');
   assert.equal(n({ deployed: false, merged: [], stopped: 'tests failed' })?.level, 'fail');
   assert.equal(n({ deployed: false, merged: [], stopped: 'deploy failed' })?.level, 'fail');
+  assert.equal(n({ deployed: false, merged: [], stopped: 'build failed' })?.level, 'fail');
+  assert.equal(n({ deployed: false, merged: [], stopped: 'build failed' })?.headline, 'proj: build FAILED');
   // The quiet cases. Most cycles are these, and waking someone for them would
   // train them to ignore the ones that matter.
   assert.equal(n({ deployed: false, merged: [], stopped: 'nothing to release' }), null);

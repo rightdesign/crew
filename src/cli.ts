@@ -32,6 +32,7 @@ import { describeUnplaceable } from './release.ts';
 import { planStamp, applyStamp } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
+import { applyFailureAlert } from './failure-alert.ts';
 import { Tracker, type Ticket } from './tracker.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { BoardLockResult } from './board-lock.ts';
@@ -532,7 +533,21 @@ async function releasePhase(
     // Last, and non-fatal: whatever happened has happened, and telling someone
     // about it must not be able to change the outcome.
     const news = describeRelease(outcome, scope);
-    if (news) await notify(c, cfg.ship, news, emit, dryRun);
+    if (news) {
+      const notified = await notify(c, cfg.ship, news, emit, dryRun);
+      // No `hooks.notify` configured on this route — the common case, since
+      // the key has existed since the Node port and nobody has wired it
+      // (notify.ts's own header). A failure must not go silent just because
+      // nobody has hooked up a notifier: fall back to filing/updating a
+      // tracker ticket directly, the same way synthesis's bash dev-loop.sh
+      // has always done for a deploy failure.
+      if (!notified && news.level === 'fail') {
+        const memberId = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+        await applyFailureAlert(tracker, news, scope, all, memberId, emit, dryRun).catch((e) => {
+          emit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
+        });
+      }
+    }
 
     // A verified branch that would not merge, or a verified ticket with
     // nothing to merge at all. Non-fatal like everything else down here —

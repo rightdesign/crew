@@ -111,6 +111,13 @@ export function describeRelease(o: {
   if (o.stopped === 'deploy failed') {
     return { level: 'fail', headline: `${route}: deploy FAILED`, detail: 'nothing new is live' };
   }
+  if (o.stopped === 'build failed') {
+    return {
+      level: 'fail',
+      headline: `${route}: build FAILED`,
+      detail: 'the target stays on the previous release — nothing was deployed',
+    };
+  }
   // Everything else — nothing to release, merge-only, external mode, a dirty
   // tree — is the normal state of most cycles and is not worth interrupting
   // anyone for.

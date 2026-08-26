@@ -401,4 +401,17 @@ export class Tracker {
       ticket_id: ticketId, body, team_member_id: memberId, kind: 'event',
     });
   }
+
+  /**
+   * File a brand new ticket. Unlike every other write on this class, the
+   * field names are the fixed Bug Reports schema (`title`, `description`,
+   * `report_type`, `severity`, `reporter_name`) rather than anything in
+   * `Contract.columns` — that contract only names the lifecycle fields a
+   * workspace can rename, and creation-only fields like `description` are
+   * not among them (`postEvent` above hardcodes its own fields the same
+   * way).
+   */
+  async fileTicket(fields: Record<string, unknown>): Promise<Ticket> {
+    return this.client.records.create<Ticket>(this.models.issues, fields);
+  }
 }
