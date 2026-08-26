@@ -11,7 +11,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor,
+  DEFAULT_BASE_URL, resolvedPathFor, dirForRepo,
   type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
@@ -767,11 +767,18 @@ switch (command) {
             fleetTracker, candidates, seat,
             contract.statuses.approved,
             contract.statuses.building,
+            (t) => dirForRepo(w.route, t.repo_id) !== null,
           );
           if (result.contended.length) {
             emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: w.role,
             });
+          }
+          if (result.unservable.length) {
+            emit.emit(
+              `skipped ${result.unservable.join(', ')} — no local checkout for their repo`,
+              { step: 'select', role: w.role },
+            );
           }
           if (!result.ticket) {
             emit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
@@ -933,11 +940,18 @@ switch (command) {
             tracker2, candidates, seat,
             contract.statuses.approved,
             contract.statuses.building,
+            (t) => dirForRepo(route, t.repo_id) !== null,
           );
           if (result.contended.length) {
             emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: current,
             });
+          }
+          if (result.unservable.length) {
+            emit.emit(
+              `skipped ${result.unservable.join(', ')} — no local checkout for their repo`,
+              { step: 'select', role: current },
+            );
           }
           if (!result.ticket) {
             emit.emit(`${current} skipped this cycle — every candidate was already claimed elsewhere`);

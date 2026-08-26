@@ -37,12 +37,27 @@ export interface ClaimResult {
   claimed: boolean;
   /** `issue_id`s tried and lost, in the order they were tried. */
   contended: string[];
+  /**
+   * `issue_id`s skipped because `isServable` rejected them — this ship has
+   * no local checkout for the ticket's repo (ISSUE-445). Distinct from
+   * `contended`: nobody else claimed these, this ship just cannot work them.
+   */
+  unservable: string[];
 }
 
 /**
  * Walk `candidates` (already ranked most-urgent-first, see
  * `select.ts#rankedCandidates`) and either claim the first `approvedStatus`
  * one or hand back the first candidate that needs no claim at all.
+ *
+ * `isServable`, when given, gates every candidate regardless of status
+ * BEFORE any write or hand-back — a ticket whose repo this ship has no
+ * local checkout for is walked past rather than claimed (setting it
+ * `in_progress` with nowhere to work it) or handed back for resumption
+ * (same trap for a ticket some earlier, differently-configured run already
+ * claimed). ISSUE-445: a missing `crew.yaml` repo entry let the runner claim
+ * ISSUE-402 and ISSUE-420 and then have no worktree to open, leaving both
+ * stuck `in_progress` indefinitely with no error surfaced.
  */
 export async function resolveTopCandidate(
   tracker: ClaimableTracker,
@@ -50,17 +65,23 @@ export async function resolveTopCandidate(
   seat: string,
   approvedStatus: string,
   buildingStatus: string,
+  isServable?: (t: Ticket) => boolean,
 ): Promise<ClaimResult> {
   const contended: string[] = [];
+  const unservable: string[] = [];
   for (const t of candidates) {
-    if (t.status !== approvedStatus) return { ticket: t, claimed: false, contended };
+    if (isServable && !isServable(t)) {
+      unservable.push(t.issue_id);
+      continue;
+    }
+    if (t.status !== approvedStatus) return { ticket: t, claimed: false, contended, unservable };
     try {
       const claimed = await tracker.updateTicket(
         t.id,
         { status: buildingStatus, assignee_id: seat },
         t.updated_at,
       );
-      return { ticket: { ...t, ...claimed }, claimed: true, contended };
+      return { ticket: { ...t, ...claimed }, claimed: true, contended, unservable };
     } catch (e) {
       if (e instanceof StaleWriteError) {
         contended.push(t.issue_id);
@@ -69,5 +90,5 @@ export async function resolveTopCandidate(
       throw e;
     }
   }
-  return { ticket: null, claimed: false, contended };
+  return { ticket: null, claimed: false, contended, unservable };
 }

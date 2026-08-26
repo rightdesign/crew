@@ -81,6 +81,46 @@ test('every accepted candidate contended — this role has nothing this cycle', 
   assert.deepEqual(result.contended, ['ISSUE-1']);
 });
 
+test('an unservable candidate is skipped without a write, in favour of the next one', async () => {
+  const a = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', repo_id: 'no-checkout-repo' } as never);
+  const b = T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' });
+  const { tracker, calls } = fakeTracker([a, b]);
+  const result = await resolveTopCandidate(
+    tracker, [a, b], 'dev-1', 'accepted', 'in_progress',
+    (t) => (t as unknown as { repo_id?: string }).repo_id !== 'no-checkout-repo',
+  );
+  assert.deepEqual(result.unservable, ['ISSUE-1']);
+  assert.deepEqual(result.contended, []);
+  assert.equal(result.claimed, true);
+  assert.equal(result.ticket?.id, 'b');
+  assert.equal(calls.length, 1);
+});
+
+test('an unservable resumption ticket is walked past, not handed back for the session to discover', async () => {
+  const a = T({
+    id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1',
+    repo_id: 'no-checkout-repo',
+  } as never);
+  const { tracker, calls } = fakeTracker([a]);
+  const result = await resolveTopCandidate(
+    tracker, [a], 'dev-1', 'accepted', 'in_progress',
+    (t) => (t as unknown as { repo_id?: string }).repo_id !== 'no-checkout-repo',
+  );
+  assert.deepEqual(result.unservable, ['ISSUE-1']);
+  assert.equal(result.ticket, null);
+  assert.equal(result.claimed, false);
+  assert.equal(calls.length, 0);
+});
+
+test('every candidate unservable — this role has nothing this cycle, and nothing is claimed', async () => {
+  const a = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', repo_id: 'x' } as never);
+  const { tracker, calls } = fakeTracker([a]);
+  const result = await resolveTopCandidate(tracker, [a], 'dev-1', 'accepted', 'in_progress', () => false);
+  assert.equal(result.ticket, null);
+  assert.deepEqual(result.unservable, ['ISSUE-1']);
+  assert.equal(calls.length, 0);
+});
+
 test('an unrelated error is not swallowed as a contended claim', async () => {
   const a = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' });
   const tracker: ClaimableTracker = {
