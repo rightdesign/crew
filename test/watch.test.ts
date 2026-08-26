@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { foldCycle, renderHeader, formatLine, matches, readFrom, localTime } from '../src/watch.ts';
+import { foldCycle, foldCycles, renderHeader, renderHeaders, formatLine, matches, readFrom, localTime } from '../src/watch.ts';
 import type { CrewEvent } from '../src/events.ts';
 
 const E = (o: Partial<CrewEvent> & { step: CrewEvent['step']; message: string }): CrewEvent => ({
@@ -151,4 +151,43 @@ test('the view shows local time, though events are stamped in UTC', () => {
 
 test('an unparseable timestamp is shown rather than swallowed', () => {
   assert.equal(localTime('not-a-date'), 'not-a-date'.slice(11, 19));
+});
+
+test('formatLine omits the route by default, and shows it when asked', () => {
+  const e = E({ route: 'paradium/issues', step: 'poll', message: 'x' });
+  assert.doesNotMatch(formatLine(e), /paradium\/issues/);
+  assert.match(formatLine(e, true), /paradium\/issues/);
+});
+
+test('foldCycles gives each route its own cycle, so two routes running at once are both visible', () => {
+  const states = foldCycles([
+    E({ route: 'issues/issues', cycle: 'C1', step: 'agent', role: 'dev', ticket: 'ISSUE-1', message: 'a' }),
+    E({ route: 'paradium/issues', cycle: 'C2', step: 'release', message: 'b' }),
+  ]);
+  assert.equal(states.length, 2);
+  assert.deepEqual(states.map((s) => s.route).sort(), ['issues/issues', 'paradium/issues']);
+  const synthesis = states.find((s) => s.route === 'issues/issues')!;
+  assert.equal(synthesis.ticket, 'ISSUE-1');
+});
+
+test('foldCycles still only folds the LATEST cycle within each route', () => {
+  const states = foldCycles([
+    E({ route: 'issues/issues', cycle: 'OLD', step: 'agent', role: 'qa', ticket: 'ISSUE-1', message: 'old' }),
+    E({ route: 'issues/issues', cycle: 'NEW', step: 'poll', message: 'new' }),
+  ]);
+  assert.equal(states.length, 1);
+  assert.equal(states[0]!.cycle, 'NEW');
+  assert.equal(states[0]!.ticket, undefined);
+});
+
+test('renderHeaders renders one block per route, and the "waiting" line when there is nothing yet', () => {
+  assert.match(renderHeaders([]), /waiting for the crew to run/);
+  const states = foldCycles([
+    E({ route: 'issues/issues', cycle: 'C1', step: 'agent', role: 'dev', ticket: 'ISSUE-1', message: 'a' }),
+    E({ route: 'paradium/issues', cycle: 'C2', step: 'release', message: 'b' }),
+  ]);
+  const h = renderHeaders(states);
+  assert.match(h, /issues\/issues/);
+  assert.match(h, /paradium\/issues/);
+  assert.match(h, /ISSUE-1/);
 });

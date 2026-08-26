@@ -40,6 +40,16 @@ export interface WatchFilter {
   level?: 'warn' | 'error';
 }
 
+/**
+ * The header shows a route's true cycle state, so it is scoped by `--route`
+ * alone — a `--role`/`--ticket`/`--level` filter narrows which LINES print,
+ * not which cycle the header folds, the same distinction `matches` already
+ * draws for per-line rendering.
+ */
+function byRoute(events: CrewEvent[], route: string | undefined): CrewEvent[] {
+  return route ? events.filter((e) => e.route === route) : events;
+}
+
 export function matches(e: CrewEvent, f: WatchFilter): boolean {
   if (f.role && e.role !== f.role) return false;
   if (f.ticket && e.ticket !== f.ticket) return false;
@@ -61,13 +71,20 @@ export function localTime(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** One event as a line: local time, step[role], ticket, message. */
-export function formatLine(e: CrewEvent): string {
+/**
+ * One event as a line: local time, [route], step[role], ticket, message.
+ *
+ * `showRoute` defaults off — a single-route ship never needs the label, and
+ * every existing caller/test expects the old shape. `startWatch` turns it on
+ * once more than one route has actually appeared in the stream.
+ */
+export function formatLine(e: CrewEvent, showRoute = false): string {
   const t = dim(localTime(e.at));
   const scope = e.role ? `${e.step}[${e.role}]` : e.step;
   const paint = e.level === 'error' ? red : e.level === 'warn' ? yellow : cyan;
+  const route = showRoute ? `${dim(e.route)} ` : '';
   const ticket = e.ticket ? ` ${bold(e.ticket)}` : '';
-  return `${t} ${paint(scope.padEnd(14))}${ticket} ${e.message}`;
+  return `${t} ${route}${paint(scope.padEnd(14))}${ticket} ${e.message}`;
 }
 
 export interface CycleState {
@@ -121,6 +138,24 @@ export function foldCycle(events: CrewEvent[]): CycleState | null {
   return state;
 }
 
+/**
+ * Fold an event stream into "where is EACH route's cycle now".
+ *
+ * A ship with more than one route runs them concurrently (`cli.ts`'s
+ * `Promise.all` over `cfg.routes`), all writing into the same shared event
+ * file — so `foldCycle`'s "last event wins" can only ever represent ONE
+ * route's in-flight cycle. The other route's concurrent work would
+ * otherwise be invisible from `watch`, not just unlabeled. One `CycleState`
+ * per route that has emitted at least one event, most recently active first.
+ */
+export function foldCycles(events: CrewEvent[]): CycleState[] {
+  const routes = [...new Set(events.map((e) => e.route))];
+  return routes
+    .map((r) => foldCycle(events.filter((e) => e.route === r)))
+    .filter((s): s is CycleState => s !== null)
+    .sort((a, b) => Date.parse(b.lastAt) - Date.parse(a.lastAt));
+}
+
 /** The header: what is happening right now, and how long it has been. */
 export function renderHeader(s: CycleState | null, now = Date.now()): string {
   if (!s) return dim('no cycle seen yet - waiting for the crew to run\n');
@@ -151,6 +186,12 @@ export function renderHeader(s: CycleState | null, now = Date.now()): string {
   ].filter(Boolean);
   const extraLines = extra.length ? `${extra.join('\n')}\n` : '';
   return `${bits.join(dim('  |  '))}\n${extraLines}${progress}\n${dim('-'.repeat(72))}\n`;
+}
+
+/** Every route's header, one block each — see `foldCycles`. */
+export function renderHeaders(states: CycleState[], now = Date.now()): string {
+  if (!states.length) return dim('no cycle seen yet - waiting for the crew to run\n');
+  return states.map((s) => renderHeader(s, now)).join('');
 }
 
 /** Read whole lines appended since `from`; returns the new offset. */
@@ -190,11 +231,16 @@ export function startWatch(o: WatchOptions): () => void {
   let offset = 0;
   let paused = false;
 
+  // Filtered to one route, a per-line label would only ever repeat what the
+  // caller already asked for; shown only once several routes actually
+  // appear in the stream this ship is producing.
+  const showRoute = () => !filter.route && new Set(all.map((e) => e.route)).size > 1;
+
   const seed = readFrom(o.file, 0);
   all = seed.events;
   offset = seed.offset;
-  for (const e of all.slice(-(o.tail ?? 20)).filter((x) => matches(x, filter))) out(`${formatLine(e)}\n`);
-  out(renderHeader(foldCycle(all)));
+  for (const e of all.slice(-(o.tail ?? 20)).filter((x) => matches(x, filter))) out(`${formatLine(e, showRoute())}\n`);
+  out(renderHeaders(foldCycles(byRoute(all, filter.route))));
 
   const pump = () => {
     const { events, offset: next } = readFrom(o.file, offset);
@@ -202,8 +248,8 @@ export function startWatch(o: WatchOptions): () => void {
     if (!events.length) return;
     all = [...all, ...events].slice(-5000);
     if (paused) return;   // scrollback stays readable; nothing is lost
-    for (const e of events) if (matches(e, filter)) out(`${formatLine(e)}\n`);
-    out(renderHeader(foldCycle(all)));
+    for (const e of events) if (matches(e, filter)) out(`${formatLine(e, showRoute())}\n`);
+    out(renderHeaders(foldCycles(byRoute(all, filter.route))));
   };
 
   const timer = setInterval(pump, 1000);
