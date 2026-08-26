@@ -29,6 +29,10 @@ import {
   hostPlatform, isShipPlatform,
   type ShipPlatform,
 } from './platform.ts';
+import {
+  MODES as RELEASE_MODES, PROVIDERS as CI_PROVIDERS, MATCHES as VERIFY_MATCHES, VERSIONINGS,
+  type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning,
+} from './repo-config.ts';
 
 /**
  * Where a route talks to when nothing more specific says otherwise.
@@ -146,28 +150,40 @@ export interface Route {
   labels: { test?: string; build?: string; deploy?: string };
   /**
    * Release settings the SHIP declares for a repo that has no `.crew.yaml`.
-   * Undefined when nothing was declared — a synthesised default here would be
-   * passed on as though the operator had written it, and would silently
-   * shadow the repo's own contract.
+   * Every field undefined when nothing was declared — a synthesised default
+   * here would be passed on as though the operator had written it, and would
+   * silently shadow the repo's own contract. Mirrors
+   * `Partial<RepoConfig['release']>` (see `ShipRepoSettings` in
+   * repo-config.ts) field for field, since that is exactly what this becomes
+   * once `resolveRepoConfig` merges it with a repo's own `.crew.yaml`.
    */
-  release: { versionFiles?: string[]; changelog?: string };
+  release: {
+    mode?: ReleaseMode;
+    ci?: { provider?: CiProvider; ref?: string };
+    verify?: { match?: VerifyMatch; timeoutSeconds?: number; intervalSeconds?: number };
+    versioning?: Versioning;
+    versionFiles?: string[];
+    changelog?: string;
+    tag?: string;
+    tagPattern?: string;
+  };
   /**
    * Per-repo overrides of `hooks`/`labels`/`release`, keyed the same as
-   * `repos` — a hook is a fact about a REPO (its test/build/deploy commands),
-   * not about the route, and a route with several repos of wildly different
-   * tooling (a multi-repo area) had no way to say that other than giving
-   * every one of them the same commands or pushing each into its own
-   * `.crew.yaml`. Authored as `repos: <name>: { dir, hooks, labels, release }`
-   * instead of a bare dir string; a name absent here (or a bare-string repo)
-   * falls straight through to the route-wide `hooks`/`labels`/`release`
-   * above. Still only a FALLBACK at every level — a repo's own `.crew.yaml`
-   * wins over this, which wins over the route-wide block, which wins over
-   * the built-in default.
+   * `repos` — a hook is a fact about a REPO (its test/build/deploy commands,
+   * its release mode), not about the route, and a route with several repos
+   * of wildly different tooling (a multi-repo area) had no way to say that
+   * other than giving every one of them the same commands or pushing each
+   * into its own `.crew.yaml`. Authored as `repos: <name>: { dir, hooks,
+   * labels, release }` instead of a bare dir string; a name absent here (or a
+   * bare-string repo) falls straight through to the route-wide
+   * `hooks`/`labels`/`release` above. Still only a FALLBACK at every level —
+   * a repo's own `.crew.yaml` wins over this, which wins over the route-wide
+   * block, which wins over the built-in default.
    */
   repoOverrides: Record<string, {
     hooks?: { test?: string; build?: string; deploy?: string; notify?: string };
     labels?: { test?: string; build?: string; deploy?: string };
-    release?: { versionFiles?: string[]; changelog?: string };
+    release?: Route['release'];
   }>;
   /**
    * This workspace's own rules, where they differ from the default (see
@@ -216,6 +232,15 @@ export interface CrewConfig {
   routes: Route[];
   crewHome: string;
   configFile: string;
+  /**
+   * Routes that failed to parse and were dropped (ISSUE tbd) — a bad key or
+   * missing field in one route's block used to `process.exit` the whole
+   * ship, taking every OTHER route down with it. One malformed route is now
+   * that route's own problem: it's excluded from `routes` and reported here
+   * so the caller can warn loudly without refusing to start. Empty unless
+   * something was actually dropped.
+   */
+  warnings: string[];
 }
 
 export class ConfigError extends Error {}
@@ -231,6 +256,13 @@ const ROUTE_KEYS = new Set([
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release']);
+// `versionFile` (singular) is a ship-level-only alias for a one-entry
+// `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
+const RELEASE_OVERRIDE_KEYS = new Set([
+  'mode', 'ci', 'verify', 'versioning', 'versionFiles', 'versionFile', 'changelog', 'tag', 'tagPattern',
+]);
+const CI_OVERRIDE_KEYS = new Set(['provider', 'ref']);
+const VERIFY_OVERRIDE_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
 
 /**
  * An unknown key is an ERROR, not something to ignore — the same rule the
@@ -250,6 +282,96 @@ function rejectUnknownKeys(obj: unknown, allowed: Set<string>, where: string, fi
     `${file}: unknown ${where} ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}\n` +
       `  allowed: ${[...allowed].sort().join(', ')}`,
   );
+}
+
+/**
+ * A ship-level `release:` block — the route-wide one, or one repo's own
+ * `repos: <name>: release:` override. Every field is genuinely optional here
+ * (unlike a repo's own `.crew.yaml`, parsed by repo-config.ts's
+ * `parseRepoConfig`): this is a FALLBACK, so an enum is validated when given
+ * but never defaulted, and mode/hook consistency (e.g. "local needs a
+ * deploy hook") is left to `validateEffective` once this is merged with
+ * whatever hooks the repo actually declares.
+ */
+function parseReleaseOverride(raw: any, where: string, file: string): Route['release'] {
+  if (!raw || typeof raw !== 'object') return {};
+  rejectUnknownKeys(raw, RELEASE_OVERRIDE_KEYS, `${where}.release`, file);
+  if (raw.ci !== undefined) rejectUnknownKeys(raw.ci, CI_OVERRIDE_KEYS, `${where}.release.ci`, file);
+  if (raw.verify !== undefined) rejectUnknownKeys(raw.verify, VERIFY_OVERRIDE_KEYS, `${where}.release.verify`, file);
+
+  const mode = raw.mode === undefined ? undefined : (String(raw.mode) as ReleaseMode);
+  if (mode !== undefined && !RELEASE_MODES.includes(mode)) {
+    throw new ConfigError(`${file}: ${where}.release.mode must be one of ${RELEASE_MODES.join('|')} (got "${raw.mode}")`);
+  }
+  const provider = raw.ci?.provider === undefined ? undefined : (String(raw.ci.provider) as CiProvider);
+  if (provider !== undefined && !CI_PROVIDERS.includes(provider)) {
+    throw new ConfigError(
+      `${file}: ${where}.release.ci.provider must be one of ${CI_PROVIDERS.join('|')} (got "${raw.ci.provider}")`,
+    );
+  }
+  const match = raw.verify?.match === undefined ? undefined : (String(raw.verify.match) as VerifyMatch);
+  if (match !== undefined && !VERIFY_MATCHES.includes(match)) {
+    throw new ConfigError(`${file}: ${where}.release.verify.match must be commit|version (got "${raw.verify.match}")`);
+  }
+  const versioning = raw.versioning === undefined ? undefined : (String(raw.versioning) as Versioning);
+  if (versioning !== undefined && !VERSIONINGS.includes(versioning)) {
+    throw new ConfigError(`${file}: ${where}.release.versioning must be auto|none (got "${raw.versioning}")`);
+  }
+  const num = (v: unknown, key: string): number | undefined => {
+    if (v === undefined || v === null) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new ConfigError(`${file}: ${where}.release.verify.${key} must be a positive number (got "${v}")`);
+    }
+    return n;
+  };
+  const timeoutSeconds = num(raw.verify?.timeoutSeconds, 'timeoutSeconds');
+  const intervalSeconds = num(raw.verify?.intervalSeconds, 'intervalSeconds');
+  const versionFiles: string[] | undefined = Array.isArray(raw.versionFiles)
+    ? raw.versionFiles
+    : raw.versionFile ? [String(raw.versionFile)] : undefined;
+
+  return {
+    mode,
+    ci: (provider !== undefined || raw.ci?.ref !== undefined)
+      ? { provider, ref: raw.ci?.ref !== undefined ? String(raw.ci.ref) : undefined }
+      : undefined,
+    verify: (match !== undefined || timeoutSeconds !== undefined || intervalSeconds !== undefined)
+      ? { match, timeoutSeconds, intervalSeconds }
+      : undefined,
+    versioning,
+    versionFiles,
+    changelog: raw.changelog !== undefined ? String(raw.changelog) : undefined,
+    tag: raw.tag !== undefined ? String(raw.tag) : undefined,
+    tagPattern: raw.tagPattern !== undefined ? String(raw.tagPattern) : undefined,
+  };
+}
+
+/**
+ * A repo's own `repos: <name>: release:` override, merged onto the
+ * route-wide `release:` fallback field by field — same precedence as
+ * `hooks`/`labels`: an override naming only `mode` still inherits the
+ * route's `versionFiles`/`changelog`/etc. What `resolveRepoConfig` receives
+ * as ITS ship-level fallback, in `resolvedRepos()`/`releasePhase()`.
+ */
+export function mergeRouteRelease(route: Route['release'], override?: Route['release']): Route['release'] {
+  const provider = override?.ci?.provider ?? route.ci?.provider;
+  const ref = override?.ci?.ref ?? route.ci?.ref;
+  const match = override?.verify?.match ?? route.verify?.match;
+  const timeoutSeconds = override?.verify?.timeoutSeconds ?? route.verify?.timeoutSeconds;
+  const intervalSeconds = override?.verify?.intervalSeconds ?? route.verify?.intervalSeconds;
+  return {
+    mode: override?.mode ?? route.mode,
+    ci: (provider !== undefined || ref !== undefined) ? { provider, ref } : undefined,
+    verify: (match !== undefined || timeoutSeconds !== undefined || intervalSeconds !== undefined)
+      ? { match, timeoutSeconds, intervalSeconds }
+      : undefined,
+    versioning: override?.versioning ?? route.versioning,
+    versionFiles: override?.versionFiles ?? route.versionFiles,
+    changelog: override?.changelog ?? route.changelog,
+    tag: override?.tag ?? route.tag,
+    tagPattern: override?.tagPattern ?? route.tagPattern,
+  };
 }
 
 function expand(p: string, base: string): string {
@@ -448,89 +570,28 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
     missing.add('routes (at least one)');
   }
 
-  const routes: Route[] = (Array.isArray(routesRaw) ? routesRaw : []).map((c: any, i: number) => {
+  // Each route gets its OWN `Missing` and its own try/catch: a route is
+  // someone else's project on this same ship, so a typo in ITS block (an
+  // unknown key, a missing dir) must not `process.exit` a ship that is also
+  // mid-release for every other route. See the `warnings` doc comment.
+  const routeWarnings: string[] = [];
+  const routes: Route[] = (Array.isArray(routesRaw) ? routesRaw : []).flatMap((c: any, i: number) => {
     const where = `routes[${i}]`;
-    rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
-    const route = missing.req(c?.route, `${where}.route`) as string;
-    const routeParts = route ? route.split('/') : [];
-    const routeWellFormed = routeParts.length === 2 && routeParts.every(Boolean);
-    if (route && !routeWellFormed) {
-      missing.add(`${where}.route must be "workspace/project" (got "${route}")`);
+    const routeMissing = new Missing();
+    try {
+      return [parseOneRoute(c, where, file, base, stateDir, raw, routeMissing)];
+    } catch (e) {
+      const label = typeof c?.route === 'string' && c.route ? `"${c.route}"` : where;
+      routeWarnings.push(`route ${label} dropped — ${(e as Error).message}`);
+      return [];
     }
-    // `repos` or `dir` — one of them must say where the code is. An entry may
-    // be a bare dir string, or an object naming its dir plus its own
-    // hooks/labels/release overrides — see Route.repoOverrides.
-    const repoDirs: Record<string, string> = {};
-    const repoOverrides: Route['repoOverrides'] = {};
-    if (c?.repos && typeof c.repos === 'object') {
-      for (const [name, entry] of Object.entries(c.repos as Record<string, unknown>)) {
-        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-          const e = entry as Record<string, any>;
-          rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
-          repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
-          if (e.hooks || e.labels || e.release) {
-            repoOverrides[name] = {
-              hooks: e.hooks, labels: e.labels,
-              release: e.release
-                ? { versionFiles: Array.isArray(e.release.versionFiles) ? e.release.versionFiles : undefined,
-                  changelog: e.release.changelog }
-                : undefined,
-            };
-          }
-        } else {
-          repoDirs[name] = expand(String(entry), base);
-        }
-      }
-    }
-    const hasRepos = Object.keys(repoDirs).length > 0;
-    const dir = c?.dir
-      ? expand(String(c.dir), base)
-      : hasRepos
-        ? Object.values(repoDirs)[0]!
-        : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
-    // A rate scalar, never a switch: 0 or below would let a weight silently
-    // starve the route, exactly the misuse `enabled: false` exists to do
-    // honestly instead (see the Route.weight doc comment).
-    const weight: number | undefined = c?.weight === undefined ? undefined : Number(c.weight);
-    if (weight !== undefined && !(Number.isFinite(weight) && weight > 0)) {
-      missing.add(`${where}.weight must be a positive number (got "${c?.weight}")`);
-    }
-    const versionFiles: string[] | undefined = Array.isArray(c?.release?.versionFiles)
-      ? c.release.versionFiles
-      : c?.release?.versionFile ? [c.release.versionFile] : undefined;
-    return {
-      route,
-      enabled: c?.enabled === true,
-      area: c?.area,
-      dir,
-      repos: repoDirs,
-      repoOverrides,
-      worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
-      weight,
-      baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
-      // Keys are workspace-scoped in general, so a route normally brings its
-      // own — but nothing stops one key being valid for several workspaces
-      // (a personal account key, say), and a ship declaring it once is one
-      // fewer secret to keep in sync across routes.
-      apiKey: c?.apiKey ?? raw.ship?.apiKey,
-      apiKeyFile: c?.apiKeyFile ? expand(c.apiKeyFile, dir) : undefined,
-      apiKeyVar: c?.apiKeyVar,
-      hooks: { test: c?.hooks?.test, build: c?.hooks?.build, deploy: c?.hooks?.deploy, notify: c?.hooks?.notify },
-      labels: {
-        test: c?.labels?.test ?? c?.hooks?.test,
-        build: c?.labels?.build ?? c?.hooks?.build,
-        deploy: c?.labels?.deploy ?? c?.hooks?.deploy,
-      },
-      release: { versionFiles, changelog: c?.release?.changelog },
-      contract: c?.contract ?? null,
-      // The state-tree file wins when both exist: it's what `crew connect`
-      // manages going forward, and an authored `resolved:` block is only a
-      // legacy or hand-filled fallback (see the file comment at the top).
-      resolved: routeWellFormed
-        ? parseResolved(readResolvedFile(stateDir, route) ?? c?.resolved, missing, where)
-        : parseResolved(c?.resolved, missing, where),
-    };
   });
+
+  // Every declared route failed — there is nothing this ship could run, so
+  // this IS fatal, same as declaring no routes at all.
+  if (Array.isArray(routesRaw) && routesRaw.length > 0 && routes.length === 0) {
+    throw new ConfigError(routeWarnings.join('\n'));
+  }
 
   const seen = routes.map((r) => r.route);
   const dupe = seen.find((n, i) => n && seen.indexOf(n) !== i);
@@ -549,10 +610,6 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       nvmSh: shipRaw.nvmSh,
       stateDir,
       logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'crew.log'), base),
-      // The `Mozilla/5.0` prefix is load-bearing, not decorative: a
-      // default curl/python/no-prefix User-Agent is blocked by Cloudflare
-      // before it reaches the tracker API, and the failure reads as a
-      // network problem rather than a rejected request.
       userAgent: shipRaw.userAgent ?? `Mozilla/5.0 CrewAgent/${crewVersion(crewHome)}`,
       maxConcurrentAgents,
       streamRetentionDays,
@@ -560,7 +617,90 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
     routes,
     crewHome,
     configFile: file,
+    warnings: routeWarnings,
   };
+}
+
+function parseOneRoute(
+  c: any, where: string, file: string, base: string, stateDir: string, raw: Record<string, any>,
+  missing: Missing,
+): Route {
+  rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
+  const route = missing.req(c?.route, `${where}.route`) as string;
+  const routeParts = route ? route.split('/') : [];
+  const routeWellFormed = routeParts.length === 2 && routeParts.every(Boolean);
+  if (route && !routeWellFormed) {
+    missing.add(`${where}.route must be "workspace/project" (got "${route}")`);
+  }
+  // `repos` or `dir` — one of them must say where the code is. An entry may
+  // be a bare dir string, or an object naming its dir plus its own
+  // hooks/labels/release overrides — see Route.repoOverrides.
+  const repoDirs: Record<string, string> = {};
+  const repoOverrides: Route['repoOverrides'] = {};
+  if (c?.repos && typeof c.repos === 'object') {
+    for (const [name, entry] of Object.entries(c.repos as Record<string, unknown>)) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        const e = entry as Record<string, any>;
+        rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
+        repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
+        if (e.hooks || e.labels || e.release) {
+          repoOverrides[name] = {
+            hooks: e.hooks, labels: e.labels,
+            release: e.release ? parseReleaseOverride(e.release, `${where}.repos.${name}`, file) : undefined,
+          };
+        }
+      } else {
+        repoDirs[name] = expand(String(entry), base);
+      }
+    }
+  }
+  const hasRepos = Object.keys(repoDirs).length > 0;
+  const dir = c?.dir
+    ? expand(String(c.dir), base)
+    : hasRepos
+      ? Object.values(repoDirs)[0]!
+      : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
+  // A rate scalar, never a switch: 0 or below would let a weight silently
+  // starve the route, exactly the misuse `enabled: false` exists to do
+  // honestly instead (see the Route.weight doc comment).
+  const weight: number | undefined = c?.weight === undefined ? undefined : Number(c.weight);
+  if (weight !== undefined && !(Number.isFinite(weight) && weight > 0)) {
+    missing.add(`${where}.weight must be a positive number (got "${c?.weight}")`);
+  }
+  const result: Route = {
+    route,
+    enabled: c?.enabled === true,
+    area: c?.area,
+    dir,
+    repos: repoDirs,
+    repoOverrides,
+    worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
+    weight,
+    baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    // Keys are workspace-scoped in general, so a route normally brings its
+    // own — but nothing stops one key being valid for several workspaces
+    // (a personal account key, say), and a ship declaring it once is one
+    // fewer secret to keep in sync across routes.
+    apiKey: c?.apiKey ?? raw.ship?.apiKey,
+    apiKeyFile: c?.apiKeyFile ? expand(c.apiKeyFile, dir) : undefined,
+    apiKeyVar: c?.apiKeyVar,
+    hooks: { test: c?.hooks?.test, build: c?.hooks?.build, deploy: c?.hooks?.deploy, notify: c?.hooks?.notify },
+    labels: {
+      test: c?.labels?.test ?? c?.hooks?.test,
+      build: c?.labels?.build ?? c?.hooks?.build,
+      deploy: c?.labels?.deploy ?? c?.hooks?.deploy,
+    },
+    release: parseReleaseOverride(c?.release, where, file),
+    contract: c?.contract ?? null,
+    // The state-tree file wins when both exist: it's what `crew connect`
+    // manages going forward, and an authored `resolved:` block is only a
+    // legacy or hand-filled fallback (see the file comment at the top).
+    resolved: routeWellFormed
+      ? parseResolved(readResolvedFile(stateDir, route) ?? c?.resolved, missing, where)
+      : parseResolved(c?.resolved, missing, where),
+  };
+  missing.throwIfAny(file);
+  return result;
 }
 
 /** Look a route up by its `workspace/project` string — how `crew run <route>` addresses one. */

@@ -123,6 +123,14 @@ routes:
       # Every file the version is written into. The first is also read from.
       versionFiles: [package.json]
       changelog: CHANGELOG.md
+      # Any other release setting a repo with no `.crew.yaml` needs is also a
+      # valid ship-level fallback here — see docs/REPO_SPEC.md's `release.*`
+      # field reference:
+      # mode: local            # local | integrate | ci_manual | ci_auto | external
+      # ci: { provider: github, ref: .github/workflows/release.yml }
+      # verify: { match: commit, timeoutSeconds: 600, intervalSeconds: 15 }
+      # versioning: auto       # auto | none
+      # tag: "v{version}"
 
     # DISCOVERED, NOT AUTHORED, and NOT HERE: the uuids for this route's
     # tracker tables and crew rows live in the state tree —

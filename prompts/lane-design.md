@@ -69,5 +69,5 @@ alongside the mockup you posted in 3.4b, so the operator can compare intent agai
 outcome in one place. Call out any deliberate divergence. Throwaway scripts
 go to a scratch dir outside the repository — not the worktree root either.
 
-The full backend and frontend test suites and typechecks still have to be
-clean. A design ticket is not exempt.
+This repo's full test suite(s) and typechecks still have to be clean. A
+design ticket is not exempt.

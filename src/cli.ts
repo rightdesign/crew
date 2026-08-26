@@ -11,7 +11,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor, dirForRepo,
+  DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
@@ -189,6 +189,10 @@ try {
   }
   throw e;
 }
+// A route that failed to parse is dropped, not fatal (config.ts) — surface
+// it loudly so a broken route doesn't sit silently unnoticed, but every
+// OTHER route still runs.
+for (const w of cfg.warnings) process.stderr.write(`crew: warning: ${w}\n`);
 // `inbox` spans every route, so it must not demand one be named.
 // `inbox` spans every route; `poll`/`run` do too when none is named.
 // `connect` is neither — its positional argument is a workspace[/project]
@@ -376,10 +380,7 @@ async function resolvedRepos(c: typeof route) {
       id,
       config: resolveRepoConfig(loadRepoConfig(t.dir), {
         hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
-        release: {
-          versionFiles: o?.release?.versionFiles ?? c.release.versionFiles,
-          changelog: o?.release?.changelog ?? c.release.changelog,
-        },
+        release: mergeRouteRelease(c.release, o?.release),
         // The route's own prefix is a SHIP-level default for a repo
         // that declares none (ISSUE-398, single-repo only). Next, the
         // repo's own area may name an issue-key prefix of its own (its
@@ -497,10 +498,7 @@ async function releasePhase(
     const o = c.repoOverrides[target.name];
     const repo = resolveRepoConfig(repoFile, {
       hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
-      release: {
-        versionFiles: o?.release?.versionFiles ?? c.release.versionFiles,
-        changelog: o?.release?.changelog ?? c.release.changelog,
-      },
+      release: mergeRouteRelease(c.release, o?.release),
       worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, target.dir);
     const problems = validateEffective(repo);

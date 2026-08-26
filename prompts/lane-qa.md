@@ -60,8 +60,9 @@ human review, so "probably fine" is not a pass.
    narrow-width screenshots and attach them via the Comments table's
    `screenshot` field — your evidence is the deliverable, not your opinion.
    **Always stop the servers you started before you finish.**
-6. **Re-run the suites yourself** — full backend and frontend tests plus
-   the typechecks, in that worktree, on that branch. Do not take the
+6. **Re-run the suites yourself** — this repo's full test suite(s) plus
+   its typechecks, whatever that means for its stack, in that worktree, on
+   that branch. Do not take the
    builder's word for it: a run has claimed "suite clean" while 48 tests
    were failing (ISSUE-105). Judge by exit code and summary line, and quote
    the summary in your comment. Red text in a run that exits 0 with every

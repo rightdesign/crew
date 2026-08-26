@@ -109,6 +109,12 @@ test('merged config is validated too — ship settings do not escape the rules',
   assert.ok(validateEffective(ci).some((p) => /needs a CI provider/.test(p)));
 });
 
+test('external needs no CI provider — it never touches CI at all, unlike ci_manual/ci_auto', () => {
+  const c = parseRepoConfig('version: 1\nhooks:\n  test: t\n  build: b\n  merged: m\nrelease:\n  mode: external\n', 'f');
+  const eff = resolveRepoConfig(c, undefined, '/tmp/x');
+  assert.deepEqual(validateEffective(eff), []);
+});
+
 test('hookLabel prefers the readable name over eight lines of shell', () => {
   const c = parseRepoConfig('version: 1\nhooks:\n  test: |\n    a\n    b\n  build: b\n  deploy: d\nlabels:\n  test: the suite\n', 'f');
   assert.equal(hookLabel(c, 'test'), 'the suite');

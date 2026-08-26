@@ -306,12 +306,13 @@ const PLACEHOLDER = /\{(key|number|slug|role)\}/g;
 const RELEASE_KEYS = new Set([
   'mode', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
-const VERSIONINGS: Versioning[] = ['auto', 'none'];
+/** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
+export const VERSIONINGS: Versioning[] = ['auto', 'none'];
 const CI_KEYS = new Set(['provider', 'ref']);
 const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
-const MATCHES: VerifyMatch[] = ['commit', 'version'];
-const MODES: ReleaseMode[] = ['local', 'integrate', 'ci_manual', 'ci_auto', 'external'];
-const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
+export const MATCHES: VerifyMatch[] = ['commit', 'version'];
+export const MODES: ReleaseMode[] = ['local', 'integrate', 'ci_manual', 'ci_auto', 'external'];
+export const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
 
 /** The path of the repo contract in `dir`, or null if it has none. */
 export function findRepoConfig(dir: string): string | null {
@@ -650,7 +651,15 @@ export interface ShipRepoSettings {
   shell?: string;
   hooks?: RepoHooks;
   labels?: Partial<Record<keyof RepoHooks, string>>;
-  release?: Partial<RepoConfig['release']>;
+  // `Partial<RepoConfig['release']>` alone still leaves `ci`/`verify`
+  // themselves non-optional-field-wise (RepoConfig['release'] is the fully
+  // RESOLVED shape, where e.g. `ci.provider` always has a concrete value) —
+  // a ship's fallback may reasonably know a release's `ci.ref` without its
+  // `provider`, so those two need their own fields optional too.
+  release?: Partial<Omit<RepoConfig['release'], 'ci' | 'verify'>> & {
+    ci?: Partial<RepoConfig['release']['ci']>;
+    verify?: Partial<RepoConfig['release']['verify']>;
+  };
 }
 
 /**
@@ -819,7 +828,7 @@ export function resolveRepoConfig(
 export function validateEffective(cfg: EffectiveRepoConfig): string[] {
   const problems: string[] = [];
   if (
-    cfg.release.mode !== 'local' && cfg.release.mode !== 'integrate'
+    cfg.release.mode !== 'local' && cfg.release.mode !== 'integrate' && cfg.release.mode !== 'external'
     && cfg.release.ci.provider === 'none'
   ) {
     problems.push(`release.mode "${cfg.release.mode}" needs a CI provider`);

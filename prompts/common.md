@@ -359,56 +359,65 @@ work around it. The loop never parks an `in_progress` ticket.
      subject and ships undocumented.
    See `CHANGELOG.md`'s own "How this file is maintained" header for the
    full mechanics of how the release phase turns these into the entry.
-6. Run the full backend and frontend test suites and typechecks; both must
-   be clean before proceeding.
+6. Run this repo's full test suite and build (`hooks.test`, `hooks.build` —
+   whatever those mean for this repo's own stack and toolchain) and its
+   typechecks, if it has them; all must be clean before proceeding.
 
    **Judge a run by its exit code and its summary line, never by whether the
-   output looks alarming.** Quote the summary (`Tests: 531 passed, 531
-   total`, `Tests 143 passed (143)`) in your progress comment so the claim is
+   output looks alarming.** Quote the summary your own suite prints (a test
+   count, `ok`, whatever it reports) in your progress comment so the claim is
    checkable. A passing suite can still print stack traces: several services
    log an error and carry on by design, and the tests covering those paths
-   trigger them deliberately. Backend logs are silenced by default now
-   (`NEST_TEST_LOGS=1` restores them), but the general rule stands — red text
-   in a run that exits 0 with every test passing is not a failure, and
-   reporting it as one has twice sent people chasing a suite that was green.
+   trigger them deliberately — red text in a run that exits 0 with every test
+   passing is not a failure. Check this repo's own docs or `docs.triagePolicy`
+   for whether it silences expected-error logging by default before treating
+   red text as a signal either way; reporting alarming-looking output as a
+   failure without checking has twice sent people chasing a suite that was
+   green.
 
    Equally, **do not report a suite as clean without having run it in this
    worktree on this branch.** If something blocked you (a port in use, a
-   missing database), say which check you skipped and why, rather than
-   implying a clean run.
+   missing database, a runtime you couldn't provision), say which check you
+   skipped and why, rather than implying a clean run.
 
-   Use the project's Node (`.nvmrc`, currently 24 — `nvm use` in this
-   worktree). The frontend suite's result is Node-dependent, and running it
-   on a different major has already produced a phantom 48-test failure.
+   Match whatever runtime version this repo pins for itself (`.nvmrc`,
+   `.python-version`, `go.mod`, a lockfile's engines field — whatever this
+   repo actually uses) rather than whatever happens to be active in your
+   shell. A suite run against the wrong runtime major has already produced a
+   phantom test failure on one Node/Vite project here that had nothing to do
+   with the change under test — the same risk applies to any stack.
 
-   If you need to verify UI behavior, write any throwaway
-   Playwright/verification scripts to `/tmp` or a scratch dir, never inside
-   the repository — not in the worktree root either.
+   If you need to verify UI behavior and this repo has one, write any
+   throwaway Playwright/verification scripts to `/tmp` or a scratch dir, never
+   inside the repository — not in the worktree root either.
 7. This worktree is a fully separate checkout, so — unlike the old
-   shared-directory setup — starting your own backend/frontend dev servers
-   here does NOT race the operator's own dev stack. **Get your ports from the
-   `ports` hook** — `eval` its output, run from this worktree: it derives
-   them from the worktree's own directory name (`PORT=30000+<number>`,
-   `VITE_PORT=40000+<number>`, plus `VITE_API_PROXY` pointing Vite's `/api`
-   proxy at your own backend) and exports all three. `vite.config.ts` reads
-   those env vars, so **there is nothing to edit and nothing to remember not
-   to commit** — the old instruction here was to hand-edit the proxy target
-   in this worktree's copy of the file, which is gone; if you find yourself
-   editing `vite.config.ts`, you're doing it the old way.
+   shared-directory setup — starting your own dev server(s) here does NOT
+   race the operator's own dev stack, if this repo runs as a live server at
+   all (a CLI, a library, or a batch pipeline has nothing to boot, and
+   step 6 is this step for those). **If it does, get your ports from the
+   `ports` hook** — `eval` its output, run from this worktree.
 
-   Because the ports are derived from the ticket number, they're yours
-   alone: no other worktree can collide with them, and **anything already
-   listening on them is a dead process from an earlier run of this same
-   ticket — kill it.** (Under the old shared `:3901` that wasn't safe to
-   assume, so every run politely deferred instead, and one leaked server
-   blocked live verification for hours.) **Always stop your servers before
-   finishing this run** — a stateless invocation has no later chance to
-   clean up, and `crew reap` only catches servers whose worktree is
-   already gone.
+   What that hook prints is entirely this repo's own convention, not a crew
+   universal: one Node/Vite project here derives `PORT`/`VITE_PORT` from the
+   worktree's directory name and a `VITE_API_PROXY` its own `vite.config.ts`
+   reads, so that project's worktrees need nothing hand-edited and nothing
+   remembered not to commit — but another repo's `ports` hook may print
+   completely different variables for a completely different stack. Read
+   THIS repo's own `.crew.yaml`/docs for what its hook actually gives you,
+   and use its conventions, not another project's.
 
-   Include the frontend URL, the login, and which database it's on in your
-   progress comment (Step 3.2b) so the operator can pick the stack up themselves
-   without working out the port.
+   However your repo derives them, **anything already listening on ports this
+   worktree considers its own is a dead process from an earlier run of this
+   same ticket — kill it** (an unscoped shared port was never safe to assume
+   free, which is why a hook that derives per-worktree ports matters), and
+   **always stop your own server(s) before finishing this run** — a stateless
+   invocation has no later chance to clean up, and `crew reap` only catches
+   servers whose worktree is already gone.
+
+   Include however the operator would reach what you built (a URL and a login
+   if it serves one, a command if it doesn't) and which database it's on, in
+   your progress comment (Step 3.2b), so they can pick the stack up
+   themselves without working out the port.
 8. Commit your work on the `issue-<number>` branch (normal commits, this is
    your own isolated worktree — no special permission needed for this
    part).

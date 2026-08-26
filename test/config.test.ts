@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
-  resolvedPathFor,
+  resolvedPathFor, mergeRouteRelease,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -73,6 +73,24 @@ test('the platform this ship IS is detected; routes no longer declare one', () =
 
 test('a route that still declares platform is refused — it moved to the repo\'s own .crew.yaml', () => {
   const { dir, file } = withConfig(ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    platform: unix'));
+  assert.throws(() => loadConfig(dir, file), /unknown routes\[0\] key: platform/);
+});
+
+test('a malformed route is dropped, not fatal, when another route on the same ship is fine', () => {
+  const broken = TWO.replace('worktreePrefix: js-issue-', 'worktreePrefix: js-issue-\n    platform: unix');
+  const { dir, file } = withConfig(broken);
+  const cfg = loadConfig(dir, file);
+  assert.deepEqual(cfg.routes.map((r) => r.route), ['issues/dev-crew']);
+  assert.equal(cfg.warnings.length, 1);
+  assert.match(cfg.warnings[0]!, /route "issues\/tablation-js" dropped/);
+  assert.match(cfg.warnings[0]!, /unknown routes\[1\] key: platform/);
+});
+
+test('every route malformed is still fatal — there is nothing left for this ship to run', () => {
+  const broken = TWO
+    .replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    platform: unix')
+    .replace('worktreePrefix: js-issue-', 'worktreePrefix: js-issue-\n    platform: unix');
+  const { dir, file } = withConfig(broken);
   assert.throws(() => loadConfig(dir, file), /unknown routes\[0\] key: platform/);
 });
 
@@ -321,12 +339,83 @@ test('a repos: entry may be an object naming its own dir plus hook/label/release
   assert.deepEqual(route.repoOverrides.backend, {
     hooks: { test: 'backend test' },
     labels: { test: 'pytest' },
-    release: { versionFiles: ['pyproject.toml'], changelog: undefined },
+    release: {
+      mode: undefined, ci: undefined, verify: undefined, versioning: undefined,
+      versionFiles: ['pyproject.toml'], changelog: undefined, tag: undefined, tagPattern: undefined,
+    },
   });
   // The route-wide fallback is untouched — resolvedRepos()/releasePhase() are
   // what merge an override with it, not loadConfig() itself.
   assert.equal(route.hooks.test, 'route test');
   assert.equal(route.hooks.build, 'route build');
+});
+
+test('route-level release.mode (and ci/verify/versioning/tag) parse as a ship-level fallback', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/single',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/only',
+    '    release:',
+    '      mode: ci_auto',
+    '      ci: { provider: github, ref: .github/workflows/release.yml }',
+    '      verify: { match: version, timeoutSeconds: 900, intervalSeconds: 30 }',
+    '      versioning: none',
+    '      tag: "v{version}"',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  const release = findRoute(cfg, 'w/single').release;
+
+  assert.equal(release.mode, 'ci_auto');
+  assert.deepEqual(release.ci, { provider: 'github', ref: '.github/workflows/release.yml' });
+  assert.deepEqual(release.verify, { match: 'version', timeoutSeconds: 900, intervalSeconds: 30 });
+  assert.equal(release.versioning, 'none');
+  assert.equal(release.tag, 'v{version}');
+});
+
+test('release.mode is validated against the same enum a repo\'s own .crew.yaml uses', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/single',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/only',
+    '    release:',
+    '      mode: yolo',
+  ].join('\n'));
+  assert.throws(() => loadConfig(dir, join(dir, 'crew.yaml')), (e) => {
+    assert.ok(e instanceof ConfigError);
+    assert.match((e as Error).message, /release\.mode must be one of local\|integrate\|ci_manual\|ci_auto\|external \(got "yolo"\)/);
+    return true;
+  });
+});
+
+test('mergeRouteRelease: an override naming only mode still inherits the route\'s other release fields', () => {
+  const route = {
+    mode: 'local' as const, ci: { provider: 'none' as const, ref: undefined },
+    verify: { match: 'commit' as const, timeoutSeconds: 600, intervalSeconds: 15 },
+    versioning: 'auto' as const, versionFiles: ['package.json'], changelog: 'CHANGELOG.md',
+    tag: 'v{version}', tagPattern: 'v*',
+  };
+  const merged = mergeRouteRelease(route, { mode: 'ci_auto' });
+  assert.equal(merged.mode, 'ci_auto');
+  assert.deepEqual(merged.ci, { provider: 'none', ref: undefined });
+  assert.deepEqual(merged.verify, { match: 'commit', timeoutSeconds: 600, intervalSeconds: 15 });
+  assert.equal(merged.versionFiles?.[0], 'package.json');
+  assert.equal(merged.changelog, 'CHANGELOG.md');
+});
+
+test('mergeRouteRelease: no route-wide release and no override yields every field undefined', () => {
+  const merged = mergeRouteRelease({});
+  assert.deepEqual(merged, {
+    mode: undefined, ci: undefined, verify: undefined, versioning: undefined,
+    versionFiles: undefined, changelog: undefined, tag: undefined, tagPattern: undefined,
+  });
 });
 
 test('an object-shaped repos: entry with no dir is refused', () => {
