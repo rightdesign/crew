@@ -728,12 +728,30 @@ test('a base that has diverged from the remote refuses to release', async () => 
 
 test('a repo with no remote at all releases exactly as before', async () => {
   const { dir, repo } = project(LOCAL);          // no origin configured
+  const e = emitter();
   const out = await runRelease({
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
-    emit: emitter(), dryRun: false,
+    emit: e, dryRun: false,
   });
   assert.equal(out.merged.length, 1);
   assert.equal(out.deployed, true);
+  // No remote at all is the documented, fault-free case (release.ts: "three
+  // of the repos on this ship are exactly that") — warning every cycle about
+  // a fetch nobody expected to succeed would train an operator to ignore the
+  // warning, which is worse than not having one for a REAL fetch failure.
+  assert.ok(!lines.some((l) => l.includes('could not fetch')), 'no warning for a repo synced some other way');
+});
+
+test('a remote that IS configured but genuinely unreachable still warns', async () => {
+  const { dir, g, repo } = project(LOCAL);
+  g('remote', 'add', 'origin', join(tmpdir(), 'crew-rel-nonexistent-remote-path'));
+  const e = emitter();
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: e, dryRun: false,
+  });
+  assert.equal(out.merged.length, 1);   // still releases from what it already has
+  assert.ok(lines.some((l) => l.includes('could not fetch')), 'a real fetch failure is still worth a warning');
 });
 
 test('a conflicting branch is reported rather than silently skipped', async () => {

@@ -198,6 +198,18 @@ export function fetchRemote(cwd: string, remote = 'origin'): boolean {
   return gitOk(cwd, ['fetch', '--prune', '--quiet', remote]) !== null;
 }
 
+/**
+ * Whether `remote` is even configured — a repo synced some other way (a
+ * Synology-shared folder, say) legitimately has none, which `refreshBase`
+ * treats as "nothing to take, carry on" rather than a fault. Checking this
+ * FIRST is what lets that case stay quiet: a fetch attempted anyway would
+ * fail the same way a real network/auth problem does, and the two are not
+ * the same thing to a person reading the log.
+ */
+export function remoteConfigured(cwd: string, remote = 'origin'): boolean {
+  return gitOk(cwd, ['remote', 'get-url', remote]) !== null;
+}
+
 export function remoteBranchExists(cwd: string, remote: string, branch: string): boolean {
   return gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/remotes/${remote}/${branch}`]) !== null;
 }

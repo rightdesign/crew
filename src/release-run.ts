@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createReleaseTag, currentBranch, fetchRemote, git, gitOk, GitError, headSha,
-  pushTag, remoteBranchExists, status, tagExists,
+  pushTag, remoteBranchExists, remoteConfigured, status, tagExists,
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
@@ -318,6 +318,12 @@ function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: str
   // function's job to report — `checkGuards` says it better a moment later —
   // but fast-forwarding from anywhere else would move the wrong branch.
   if (currentBranch(o.cwd) !== base || status(o.cwd).length > 0) return { ok: true };
+
+  // No remote at all is the documented "nothing to take" case above, not a
+  // fault — warning about it every cycle would train an operator to ignore
+  // the warning, which is worse than not having one for the cycle a REAL
+  // fetch failure (network, auth) needs it.
+  if (!remoteConfigured(o.cwd, remote)) return { ok: true };
 
   // A fetch touches only remote-tracking refs, so it runs in a dry run too:
   // without it a dry run would report drift that is merely unobserved, which
