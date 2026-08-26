@@ -700,6 +700,34 @@ switch (command) {
         routes: cfg.routes, ship: cfg.ship, state, emit,
         enabledOnly: !dryRun,
       });
+
+      // The single-route path below applies its sweep before doing
+      // anything else; the fleet-wide path must too, and for EVERY
+      // reachable route, not just the winner — otherwise a route that
+      // never wins (lower weight, or consistently out-ranked) never
+      // parks or restores a blocked ticket at all, silently, forever.
+      for (const e of fleet.entries) {
+        if (e.error || !e.decision || !e.decision.sweep.length) continue;
+        if (dryRun) {
+          for (const s of e.decision.sweep) {
+            emit.emit(`would ${s.action} -> ${s.to} (blockers: ${s.blockers})`, {
+              ticket: s.ticket.issue_id, step: 'sweep',
+            });
+          }
+          continue;
+        }
+        const seat = e.route.resolved?.seats.qa ?? e.route.resolved?.seats.dev;
+        try {
+          const r = await applySweep(new Tracker(e.route, cfg.ship), e.decision.sweep, seat ?? '', emit);
+          emit.emit(
+            `swept ${r.parked} parked, ${r.restored} restored${r.failed ? `, ${r.failed} failed` : ''} (${e.route.route})`,
+            { step: 'sweep', data: r },
+          );
+        } catch (err) {
+          emit.warn(`could not sweep ${e.route.route}: ${(err as Error).message}`, { step: 'sweep' });
+        }
+      }
+
       process.stdout.write(renderFleet(fleet, state));
       if (command === 'poll') break;
 
