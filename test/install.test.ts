@@ -106,6 +106,52 @@ test('windows has no plan yet — the ticket calls it "eventually"', () => {
   assert.throws(() => planInstall(ship({ platform: 'windows' }), '/opt/crew', 'windows', false));
 });
 
+test('the release job gets its own unit, distinct from run\'s — same checkout, two labels', () => {
+  const runPlan = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
+  const releasePlan = planInstall(ship(), '/opt/crew', 'macos', true, 'release');
+  assert.notEqual(runPlan.unitPaths[0], releasePlan.unitPaths[0]);
+  assert.match(releasePlan.unitPaths[0]!, /com\.tablation\.crew-release\.[0-9a-f]{8}\.plist$/);
+  // Two units on one machine must not share a scheduler log, or a crash in
+  // one is unreadable interleaved with the other's normal output.
+  assert.notEqual(runPlan.schedulerLog, releasePlan.schedulerLog);
+});
+
+test('the run unit passes itself --no-release; the release unit runs `release --fleet`', () => {
+  const runXml = Object.values(planInstall(ship(), '/opt/crew', 'macos', true, 'run').unitContent)[0]!;
+  const releaseXml = Object.values(planInstall(ship(), '/opt/crew', 'macos', true, 'release').unitContent)[0]!;
+  assert.match(runXml, /<string>run<\/string>\s*<string>--no-release<\/string>/);
+  assert.match(releaseXml, /<string>release<\/string>\s*<string>--fleet<\/string>/);
+});
+
+test('planInstall defaults to the run job — every pre-release-lane caller is unaffected', () => {
+  const explicit = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
+  const defaulted = planInstall(ship(), '/opt/crew', 'macos', true);
+  assert.deepEqual(defaulted, explicit);
+});
+
+test('on systemd, the release job gets its own service+timer pair', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'release');
+  assert.equal(plan.mechanism, 'systemd');
+  assert.ok(plan.unitPaths.every((p) => p.includes('crew-release')));
+  const service = plan.unitContent[plan.unitPaths[0]!]!;
+  assert.match(service, /release --fleet/);
+});
+
+test('on cron, run and release get distinct markers, so a reinstall of one never clobbers the other\'s line', () => {
+  const runPlan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false, 'run');
+  const releasePlan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false, 'release');
+  assert.notEqual(runPlan.cronMarker, releasePlan.cronMarker);
+  assert.match(releasePlan.crontabLine!, /release --fleet/);
+});
+
+test('uninstalling the release job targets only the release unit, never run\'s', () => {
+  const releaseIn = planInstall(ship(), '/opt/crew', 'macos', true, 'release');
+  const releaseOut = planUninstall(ship(), '/opt/crew', 'macos', true, 'release');
+  assert.deepEqual(releaseOut.unitPaths, releaseIn.unitPaths);
+  const runOut = planUninstall(ship(), '/opt/crew', 'macos', true, 'run');
+  assert.notDeepEqual(runOut.unitPaths, releaseOut.unitPaths);
+});
+
 test('uninstall targets exactly what install would have written, on each mechanism', () => {
   const macIn = planInstall(ship(), '/opt/crew', 'macos', true);
   const macOut = planUninstall(ship(), '/opt/crew', 'macos', true);

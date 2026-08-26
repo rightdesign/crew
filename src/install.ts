@@ -53,16 +53,30 @@ function crewInvocation(crewHome: string): string[] {
 export const INTERVAL_SECONDS = 120;
 
 /**
- * A launchd label / systemd unit stem / cron marker unique to this
- * checkout. Hashing the checkout's own real path — rather than a fixed
+ * `run` (poll, select, one agent session) and `release` (test, build,
+ * deploy) are now two SEPARATE scheduler units, each on its own timer — see
+ * the release-lane comment on `case 'run'` in cli.ts. A release is minutes,
+ * not seconds, and used to run inline at the end of `run`, so every board
+ * sat idle behind whichever one's release was slow. `install` writes both
+ * units by default; `run`'s own gets `--no-release` appended, since the
+ * `release` unit now owns that.
+ */
+export type InstallJob = 'run' | 'release';
+
+/**
+ * A launchd label / systemd unit stem / cron marker unique to this checkout
+ * AND job. Hashing the checkout's own real path — rather than a fixed
  * constant — is what keeps two checkouts (a real production install and a
  * ticket worktree testing this very file, say) from writing, loading or
- * unloading each other's scheduler unit. `crewHome`, not `process.cwd()`:
- * the label must stay the same across `install` and a later `uninstall` run
- * from anywhere within the checkout. `realpathSync` collapses symlinks so a
- * checkout reached two different ways still hashes to one label.
+ * unloading each other's scheduler unit; the job suffix does the same
+ * between `run` and `release` on the SAME checkout, which would otherwise
+ * hash identically and silently overwrite one another's unit file.
+ * `crewHome`, not `process.cwd()`: the label must stay the same across
+ * `install` and a later `uninstall` run from anywhere within the checkout.
+ * `realpathSync` collapses symlinks so a checkout reached two different ways
+ * still hashes to one label.
  */
-function labelFor(crewHome: string): string {
+function labelFor(crewHome: string, job: InstallJob): string {
   const real = (() => {
     try {
       return realpathSync(crewHome);
@@ -71,11 +85,17 @@ function labelFor(crewHome: string): string {
     }
   })();
   const hash = createHash('sha1').update(real).digest('hex').slice(0, 8);
-  return `com.tablation.crew.${hash}`;
+  const stem = job === 'release' ? 'com.tablation.crew-release' : 'com.tablation.crew';
+  return `${stem}.${hash}`;
 }
 
 function cronMarkerFor(label: string): string {
   return `# crew:${label} — managed by \`crew install\`, do not edit by hand`;
+}
+
+/** The subcommand a unit actually runs, per job. */
+function subcommandFor(job: InstallJob): string[] {
+  return job === 'release' ? ['release', '--fleet'] : ['run', '--no-release'];
 }
 
 export type InstallMechanism = 'launchd' | 'systemd' | 'cron';
@@ -94,6 +114,15 @@ export interface InstallPlan {
   crewLog: string;
   /** Where the scheduler's own stdout/stderr goes — always a DIFFERENT file. */
   schedulerLog: string;
+  /**
+   * The crontab marker this plan's job/checkout owns, when `crontabLine` is
+   * set. Carried on the plan (rather than recomputed by `apply*` from
+   * `crewHome` alone) so `applyInstall`/`applyUninstall` never have to know
+   * which job they were handed — `run` and `release` on the same checkout
+   * need DIFFERENT markers, or one job's crontab entry would silently
+   * replace the other's on every reinstall.
+   */
+  cronMarker: string | null;
 }
 
 export interface UninstallPlan {
@@ -103,11 +132,18 @@ export interface UninstallPlan {
   unloadCommands: string[][];
 }
 
-/** The scheduler's own log, derived from the crew's so the two never collide. */
-function schedulerLogFor(crewLog: string): string {
+/**
+ * The scheduler's own log, derived from the crew's so the two never collide.
+ * The `release` job gets its own suffix too — same reasoning as `labelFor`'s
+ * job suffix: two units on one checkout must not share a file the way `run`
+ * alone always has, or one job's crash-before-crew's-own-emitter-starts
+ * output is unreadable interleaved with the other's.
+ */
+function schedulerLogFor(crewLog: string, job: InstallJob): string {
   const ext = extname(crewLog);
   const stem = ext ? crewLog.slice(0, -ext.length) : crewLog;
-  return `${stem}.scheduler${ext || '.log'}`;
+  const suffix = job === 'release' ? 'release-scheduler' : 'scheduler';
+  return `${stem}.${suffix}${ext || '.log'}`;
 }
 
 /** `PATH` a launched unit needs to find both node and whatever hooks use. */
@@ -123,11 +159,11 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function planLaunchd(ship: Ship, crewHome: string): InstallPlan {
-  const label = labelFor(crewHome);
+function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
+  const label = labelFor(crewHome, job);
   const unitPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   const crewLog = ship.logFile;
-  const schedulerLog = schedulerLogFor(crewLog);
+  const schedulerLog = schedulerLogFor(crewLog, job);
   const content = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Written by \`crew install\` — re-run it rather than hand-editing this file. -->
@@ -138,7 +174,7 @@ function planLaunchd(ship: Ship, crewHome: string): InstallPlan {
   <key>ProgramArguments</key>
   <array>
     ${crewInvocation(crewHome).map((a) => `<string>${xmlEscape(a)}</string>`).join('\n    ')}
-    <string>run</string>
+    ${subcommandFor(job).map((a) => `<string>${xmlEscape(a)}</string>`).join('\n    ')}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -163,27 +199,29 @@ function planLaunchd(ship: Ship, crewHome: string): InstallPlan {
     unitPaths: [unitPath],
     unitContent: { [unitPath]: content },
     crontabLine: null,
+    cronMarker: null,
     loadCommands: [['launchctl', 'load', unitPath]],
     crewLog,
     schedulerLog,
   };
 }
 
-function planSystemd(ship: Ship, crewHome: string): InstallPlan {
-  const label = labelFor(crewHome);
+function planSystemd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
+  const label = labelFor(crewHome, job);
   const unitDir = join(homedir(), '.config', 'systemd', 'user');
   const servicePath = join(unitDir, `${label}.service`);
   const timerPath = join(unitDir, `${label}.timer`);
   const crewLog = ship.logFile;
-  const schedulerLog = schedulerLogFor(crewLog);
+  const schedulerLog = schedulerLogFor(crewLog, job);
+  const description = job === 'release' ? 'Tablation crew — release' : 'Tablation crew — one poll cycle';
 
   const service = `# Written by \`crew install\` — re-run it rather than hand-editing this file.
 [Unit]
-Description=Tablation crew — one poll cycle
+Description=${description}
 
 [Service]
 Type=oneshot
-ExecStart=${crewInvocation(crewHome).join(' ')} run
+ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job)].join(' ')}
 WorkingDirectory=${crewHome}
 Environment=PATH=${pathFor(ship)}
 StandardOutput=append:${schedulerLog}
@@ -195,7 +233,7 @@ StandardError=append:${schedulerLog}
   // repeats it every interval after that fire finishes.
   const timer = `# Written by \`crew install\` — re-run it rather than hand-editing this file.
 [Unit]
-Description=Tablation crew — poll timer
+Description=${description} — timer
 
 [Timer]
 OnActiveSec=${INTERVAL_SECONDS}
@@ -211,6 +249,7 @@ WantedBy=timers.target
     unitPaths: [servicePath, timerPath],
     unitContent: { [servicePath]: service, [timerPath]: timer },
     crontabLine: null,
+    cronMarker: null,
     loadCommands: [
       ['systemctl', '--user', 'daemon-reload'],
       ['systemctl', '--user', 'enable', '--now', `${label}.timer`],
@@ -220,18 +259,20 @@ WantedBy=timers.target
   };
 }
 
-function planCron(ship: Ship, crewHome: string): InstallPlan {
+function planCron(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
+  const label = labelFor(crewHome, job);
   const crewLog = ship.logFile;
-  const schedulerLog = schedulerLogFor(crewLog);
+  const schedulerLog = schedulerLogFor(crewLog, job);
   const minutes = Math.max(1, Math.round(INTERVAL_SECONDS / 60));
   const line =
     `*/${minutes} * * * * ` +
-    `cd ${crewHome} && PATH=${pathFor(ship)} ${crewInvocation(crewHome).join(' ')} run >> ${schedulerLog} 2>&1`;
+    `cd ${crewHome} && PATH=${pathFor(ship)} ${[...crewInvocation(crewHome), ...subcommandFor(job)].join(' ')} >> ${schedulerLog} 2>&1`;
   return {
     mechanism: 'cron',
     unitPaths: [],
     unitContent: {},
     crontabLine: line,
+    cronMarker: cronMarkerFor(label),
     loadCommands: [],
     crewLog,
     schedulerLog,
@@ -241,21 +282,23 @@ function planCron(ship: Ship, crewHome: string): InstallPlan {
 /**
  * Which mechanism this host gets. `hasSystemd` is supplied by the caller
  * (a real check against this machine) rather than probed in here, so the
- * choice stays a pure function of its inputs.
+ * choice stays a pure function of its inputs. `job` defaults to `'run'` so
+ * every existing caller (and every test written before the release lane
+ * existed) keeps behaving exactly as it did.
  */
 export function planInstall(
-  ship: Ship, crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean,
+  ship: Ship, crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean, job: InstallJob = 'run',
 ): InstallPlan {
-  if (hostShip === 'macos') return planLaunchd(ship, crewHome);
-  if (hostShip === 'linux' && hasSystemd) return planSystemd(ship, crewHome);
-  if (hostShip === 'linux') return planCron(ship, crewHome);
+  if (hostShip === 'macos') return planLaunchd(ship, crewHome, job);
+  if (hostShip === 'linux' && hasSystemd) return planSystemd(ship, crewHome, job);
+  if (hostShip === 'linux') return planCron(ship, crewHome, job);
   throw new Error(`crew install: no scheduler support yet for ${hostShip} (Windows is planned, not built)`);
 }
 
 export function planUninstall(
-  ship: Ship, crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean,
+  ship: Ship, crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean, job: InstallJob = 'run',
 ): UninstallPlan {
-  const label = labelFor(crewHome);
+  const label = labelFor(crewHome, job);
   if (hostShip === 'macos') {
     const unitPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
     return {
@@ -316,7 +359,7 @@ export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: 
     if (dryRun) {
       log.emit(`would add to crontab: ${plan.crontabLine}`);
     } else {
-      addCrontabLine(cronMarkerFor(labelFor(crewHome)), plan.crontabLine);
+      addCrontabLine(plan.cronMarker!, plan.crontabLine);
       log.emit('added crontab entry');
     }
   }
@@ -360,7 +403,10 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
     if (dryRun) {
       log.emit('would remove crontab entry');
     } else {
-      removeCrontabLine(cronMarkerFor(labelFor(crewHome)));
+      // For uninstall, `crontabLine` on a cron plan IS the marker itself
+      // (see `planUninstall`'s cron branch) — there is no separate line to
+      // remove, only the marked block `addCrontabLine` wrote.
+      removeCrontabLine(plan.crontabLine);
       log.emit('removed crontab entry');
     }
   }

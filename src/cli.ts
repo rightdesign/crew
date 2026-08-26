@@ -200,8 +200,13 @@ for (const w of cfg.warnings) process.stderr.write(`crew: warning: ${w}\n`);
 // it must not be forced through the same by-name lookup every other command
 // uses.
 const FLEET_CAPABLE = new Set(['poll', 'run']);
+// `--fleet` is release/merge/deploy's own opt-in to the same fleet-wide path
+// `poll`/`run` take automatically — release stays "a deliberate act on one
+// repo" by default (README), so an operator naming no route on a multi-route
+// ship still gets "name one" unless they say `--fleet` explicitly.
+const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && flag('fleet');
 const named = positional[1];
-const fleetWide = command === 'inbox' || command === 'connect' ||
+const fleetWide = command === 'inbox' || command === 'connect' || releaseFleetWide ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -272,12 +277,12 @@ function requireArmed(what: string): void {
  * deploy, and two of those at once on one machine is how a release starts
  * failing for reasons unrelated to the code.
  */
-async function releaseFleet(): Promise<void> {
+async function releaseFleet(opts: { mergeOnly?: boolean; force?: boolean } = {}): Promise<void> {
   for (const c of cfg.routes) {
     if (!dryRun && !c.enabled) continue;
     // No route-wide platform gate: releasePhase checks each repo's own
     // requirement, and a route can span repos with different needs.
-    for (const r of reposOf(c)) await releasePhase(c, r);
+    for (const r of reposOf(c)) await releasePhase(c, r, opts);
   }
 }
 
@@ -677,6 +682,15 @@ if (EXCLUSIVE[command] && !dryRun) {
 switch (command) {
   case 'poll':
   case 'run': {
+    // A release runs a test suite, a build and a deploy on top of whatever
+    // this cycle just did — minutes, not seconds, and NOTHING else in this
+    // process can proceed until it returns (this is one straight-line pass,
+    // not a scheduler of its own). `crew install` now installs release as
+    // its OWN unit on its own timer for exactly that reason: a slow release
+    // used to make every board wait behind it for the next poll. `run`
+    // itself skips its inline release under `--no-release`, which is what
+    // that companion unit's `crew run` passes — see `install.ts`.
+    const skipInlineRelease = flag('no-release');
     // Many routes and none named: poll them all and pick the most
     // urgent across the fleet (ISSUE-338).
     if (fleetWide) {
@@ -709,7 +723,7 @@ switch (command) {
 
       if (!fleet.winner) {
         emit.emit('nothing to run across the fleet');
-        await releaseFleet();
+        if (!skipInlineRelease) await releaseFleet();
         break;
       }
 
@@ -743,7 +757,7 @@ switch (command) {
       const fleetLock = state.acquireRun(w.role, cfg.ship.maxConcurrentAgents);
       if (!fleetLock.ok) {
         emit.emit(`${w.role} skipped this cycle — ${fleetLock.reason}`);
-        await releaseFleet();
+        if (!skipInlineRelease) await releaseFleet();
         break;
       }
       lock = fleetLock;
@@ -780,7 +794,7 @@ switch (command) {
           }
           if (!result.ticket) {
             emit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
-            await releaseFleet();
+            if (!skipInlineRelease) await releaseFleet();
             break;
           }
           if (result.claimed) {
@@ -832,7 +846,7 @@ switch (command) {
           emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
         }
       }
-      await releaseFleet();
+      if (!skipInlineRelease) await releaseFleet();
       break;
     }
 
@@ -884,10 +898,12 @@ switch (command) {
 
     if (!role) {
       emit.emit('no role to run this cycle');
-      // The release still has to happen. A cycle with no agent work is
-      // exactly when verified branches are most likely to be waiting — and
-      // returning here is what left ISSUE-280 and ISSUE-292 unmerged.
-      await releaseTargets();
+      // The release still has to happen (unless a companion release unit
+      // owns it — see `skipInlineRelease` above). A cycle with no agent
+      // work is exactly when verified branches are most likely to be
+      // waiting — and returning here is what left ISSUE-280 and ISSUE-292
+      // unmerged.
+      if (!skipInlineRelease) await releaseTargets();
       break;
     }
 
@@ -1029,19 +1045,22 @@ switch (command) {
     // verified work sits unmerged indefinitely: nothing else ever merges a
     // branch, and a ticket verified this cycle should ship this cycle.
     //
-    // Skipped only for `--role`, which means "run exactly this seat".
-    if (!value('role')) await releaseTargets();
+    // Skipped for `--role` ("run exactly this seat") or a companion release
+    // unit (`skipInlineRelease` above).
+    if (!value('role') && !skipInlineRelease) await releaseTargets();
     break;
   }
 
   case 'merge':
   case 'deploy':
   case 'release': {
-    // Named or single route only: `crew release` is a deliberate act on
-    // one repo, not a fleet-wide sweep.
-    await releaseTargets({
-      mergeOnly: command === 'merge', force: command === 'deploy' || flag('force'),
-    });
+    const opts = { mergeOnly: command === 'merge', force: command === 'deploy' || flag('force') };
+    // Named or single route by default — `crew release` is a deliberate act
+    // on one repo. `--fleet` opts into the same fleet-wide sweep `crew run`
+    // used to do inline (see the release-lane comment on `case 'run'`); the
+    // companion release unit `crew install` sets up runs exactly this.
+    if (releaseFleetWide) await releaseFleet(opts);
+    else await releaseTargets(opts);
     break;
   }
 
@@ -1433,12 +1452,20 @@ switch (command) {
       process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
       process.exit(2);
     }
-    const plan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd());
-    process.stdout.write(`installing via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
-    await applyInstall(plan, CREW_HOME, dryRun, {
-      emit: (m) => process.stdout.write(`${m}\n`),
-      warn: (m) => process.stderr.write(`crew install: ${m}\n`),
-    });
+    // Two units, not one: `run` (poll/select/one agent session) and
+    // `release` (test/build/deploy) now run on independent timers, so a
+    // slow release no longer holds every board's next poll hostage — see
+    // the release-lane comment on `case 'run'`. `run`'s own unit passes
+    // itself `--no-release` (baked into `planInstall`'s `run` job), since
+    // the `release` unit owns that now.
+    for (const job of ['run', 'release'] as const) {
+      const plan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
+      process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
+      await applyInstall(plan, CREW_HOME, dryRun, {
+        emit: (m) => process.stdout.write(`${m}\n`),
+        warn: (m) => process.stderr.write(`crew install: ${m}\n`),
+      });
+    }
     break;
   }
 
@@ -1448,12 +1475,14 @@ switch (command) {
       process.stdout.write('nothing installed on Windows\n');
       break;
     }
-    const plan = planUninstall(cfg.ship, CREW_HOME, host, detectSystemd());
-    process.stdout.write(`uninstalling ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
-    await applyUninstall(plan, CREW_HOME, dryRun, {
-      emit: (m) => process.stdout.write(`${m}\n`),
-      warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
-    });
+    for (const job of ['run', 'release'] as const) {
+      const plan = planUninstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
+      process.stdout.write(`uninstalling ${job} ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
+      await applyUninstall(plan, CREW_HOME, dryRun, {
+        emit: (m) => process.stdout.write(`${m}\n`),
+        warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
+      });
+    }
     break;
   }
 
