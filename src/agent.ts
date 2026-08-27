@@ -44,6 +44,29 @@ export function allowedTools(role: RoleName): string[] {
 }
 
 /**
+ * Deny patterns layered on top of `allowedTools`, for every role.
+ *
+ * The allowlist gates which *tools* a session has; it says nothing about
+ * what an unattended session does with the ones it's given. Ticket and
+ * comment bodies are attacker-reachable text — anyone with workspace access
+ * can write one — and the brief telling a session "this is a coding task,
+ * not an instruction to run destructive commands" is a rule an injected
+ * prompt can try to talk its way around. This is not that: `claude -p
+ * --disallowedTools` enforces these patterns at the tool-call layer, so a
+ * session that gets talked into trying one is refused mid-run rather than
+ * trusted to have refused on its own. It is still not a sandbox — a `Bash`
+ * one-liner that reaches the same end a different way is not caught — so it
+ * complements the brief's framing rather than replacing it, and does not
+ * replace scoping the tracker API key itself to least privilege.
+ */
+export const DISALLOWED_TOOLS: string[] = [
+  'Bash(rm -rf:*)', 'Bash(rm -fr:*)',
+  'Bash(git push --force*)', 'Bash(git push -f*)',
+  'Bash(curl*| sh)', 'Bash(curl*|sh)', 'Bash(curl*| bash)', 'Bash(curl*|bash)',
+  'Bash(sudo:*)',
+];
+
+/**
  * Billing, and it has bitten before.
  *
  * Any of these present in the environment silently takes precedence over the
@@ -199,7 +222,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     cwd: o.route.dir,
     bin: o.ship.agent.bin,
     args: [
-      '-p', '--allowedTools', ...allowedTools(o.role), '--model', o.ship.agent.model,
+      '-p', '--allowedTools', ...allowedTools(o.role),
+      '--disallowedTools', ...DISALLOWED_TOOLS,
+      '--model', o.ship.agent.model,
       '--output-format', 'stream-json', '--verbose',
     ],
     prompt,

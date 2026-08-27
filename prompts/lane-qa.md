@@ -62,11 +62,11 @@ human review, so "probably fine" is not a pass.
    **Always stop the servers you started before you finish.**
 6. **Re-run the suites yourself** — this repo's full test suite(s) plus
    its typechecks, whatever that means for its stack, in that worktree, on
-   that branch. Do not take the
-   builder's word for it: a run has claimed "suite clean" while 48 tests
-   were failing (ISSUE-105). Judge by exit code and summary line, and quote
-   the summary in your comment. Red text in a run that exits 0 with every
-   test passing is not a failure.
+   that branch. Do not take the builder's word for it: a "suite clean" claim
+   has turned out wrong before, with dozens of failing tests behind it.
+   Judge by exit code and summary line, and quote the summary in your
+   comment. Red text in a run that exits 0 with every test passing is not a
+   failure.
 7. **Ask whether the fix is covered.** A behaviour change with no test that
    would catch its regression is worth naming in your comment; whether it
    is worth bouncing the ticket over is your judgement, and depends on how
@@ -79,9 +79,10 @@ human review, so "probably fine" is not a pass.
      bump the version, and deploy this cycle or the next. Say in
      the comment what you exercised, so the record shows what "verified"
      covered.
-   - **It doesn't** → `status` = `in_progress`, `assignee_id` = the lane
-     that built it (dev `80e3e513-...` if `needs_design` is false or null,
-     design `ef201a7e-...` if true). The comment must be actionable:
+   - **It doesn't** → `status` = `in_progress`, `assignee_id` = the building
+     lane's own Crew row id from the roster above — the dev seat if
+     `needs_design` is false or null, the design seat if true. The comment
+     must be actionable:
      exactly what you did, what you expected, what happened, with a
      screenshot or the failing output. This includes a red suite, a
      typecheck error, or a fix that works but breaks something next to it.

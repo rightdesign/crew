@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import {
-  allowedTools, scrubbedEnv, BILLING_VARS_TO_UNSET, assemblePrompt,
+  allowedTools, DISALLOWED_TOOLS, scrubbedEnv, BILLING_VARS_TO_UNSET, assemblePrompt,
   planAgentRun, describePlan, spawnAgent, AgentError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
@@ -40,6 +40,13 @@ test('only the design role gets Skill and Artifact', () => {
   }
 });
 
+test('the deny list blocks the obvious destructive/exfiltration shapes', () => {
+  assert.ok(DISALLOWED_TOOLS.some((p) => p.startsWith('Bash(rm -rf')));
+  assert.ok(DISALLOWED_TOOLS.some((p) => p.includes('git push --force')));
+  assert.ok(DISALLOWED_TOOLS.some((p) => p.includes('| sh')));
+  assert.ok(DISALLOWED_TOOLS.some((p) => p.includes('sudo')));
+});
+
 test('every billing variable is removed, not merely unset in config', () => {
   const dirty = {
     PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-leak', ANTHROPIC_AUTH_TOKEN: 't',
@@ -67,7 +74,9 @@ test('a plan is fully decided without running anything', () => {
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
   assert.deepEqual(plan.args, [
-    '-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', '--model', 'claude-sonnet-5',
+    '-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob',
+    '--disallowedTools', ...DISALLOWED_TOOLS,
+    '--model', 'claude-sonnet-5',
     '--output-format', 'stream-json', '--verbose',
   ]);
   assert.match(plan.prompt, /R[\s\S]*SHARED POLICY[\s\S]*BRIEF dev/);
