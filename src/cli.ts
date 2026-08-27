@@ -122,6 +122,38 @@ async function pickOperator(holds: Array<{ id: string; name: string }>): Promise
   }
 }
 
+/**
+ * Asks, on a real terminal, which of this workspace's own status values
+ * (that DEFAULT_CONTRACT doesn't already name) mean the ticket is resolved —
+ * ISSUE-467. Only "resolved" is asked about, deliberately: a blocker only
+ * ever needs to know which statuses stop it counting (docs/CONTRACT.md), and
+ * anything answered "no" is left unclassified exactly as it already was
+ * before this value existed — never added to `open`, since guessing that a
+ * custom status means "live, pollable work" (a pre-triage `draft`, say) is a
+ * worse mistake than asking again next connect. A blank/no answer is simply
+ * not recorded as "resolved"; the caller still remembers it was asked, via
+ * `reviewedStatuses`, so it isn't re-asked forever.
+ */
+async function pickResolvedStatuses(unrecognized: Array<{ value: string; label?: string }>): Promise<string[]> {
+  process.stderr.write(
+    '\nThis workspace has status values the default contract doesn\'t know the meaning of.\n' +
+      'For each: does it mean the ticket is DONE — resolved/terminal (shipped, closed, won\'t-fix) — ' +
+      'so a ticket blocked by it should stop being blocked?\n',
+  );
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const resolved: string[] = [];
+  try {
+    for (const s of unrecognized) {
+      const label = s.label && s.label !== s.value ? ` ("${s.label}")` : '';
+      const answer = (await rl.question(`  "${s.value}"${label} — resolved/terminal? [y/N] `)).trim();
+      if (/^y/i.test(answer)) resolved.push(s.value);
+    }
+  } finally {
+    rl.close();
+  }
+  return resolved;
+}
+
 function usage(): never {
   process.stderr.write(`crew — a standing team of headless agents
 
@@ -1191,6 +1223,52 @@ switch (command) {
       if (!operator && found.holds.length > 0 && process.stdin.isTTY && process.stdout.isTTY) {
         operator = await pickOperator(found.holds);
       }
+      // Read whatever this route already had — a re-run must not clobber a
+      // hand-authored `contract` block (column renames, priority order, an
+      // earlier hand-added `resolved` entry), and must not re-ask about a
+      // status value this route was already asked about last time, whichever
+      // way it was answered (`reviewedStatuses`, ISSUE-467).
+      let previous: { contract?: { statuses?: { resolved?: string[] } } | null; reviewedStatuses?: string[] } | undefined;
+      if (existsSync(resolvedPath)) {
+        try { previous = JSON.parse(readFileSync(resolvedPath, 'utf8')); } catch { /* treated as no previous file below */ }
+      }
+      const alreadyReviewed = new Set(previous?.reviewedStatuses ?? []);
+      const stillUnrecognized = (found.unrecognizedStatuses ?? []).filter((s) => !alreadyReviewed.has(s.value));
+      const canPrompt = stillUnrecognized.length > 0 && process.stdin.isTTY && process.stdout.isTTY;
+      const newlyResolved = canPrompt ? await pickResolvedStatuses(stillUnrecognized) : [];
+      // Every value actually ASKED about — asked-and-declined counts as
+      // reviewed too, so a `draft`-like status answered "no" isn't asked
+      // about again and again on every future connect. A script run
+      // (piped/non-interactive) never asked, so it must not mark them
+      // reviewed — that would silently bury them until someone edits the
+      // state file by hand, the same trap `operator` already avoids above.
+      const reviewedStatuses = canPrompt
+        ? [...new Set([...(previous?.reviewedStatuses ?? []), ...stillUnrecognized.map((s) => s.value)])].sort()
+        : (previous?.reviewedStatuses ?? []);
+      // Only the CUSTOM values, not the whole previously-written array — that
+      // array already carries DEFAULT_CONTRACT's own entries too (it's
+      // written in full below, same as the hand-authored precedent in
+      // docs/CONTRACT.md), and re-prepending the defaults onto themselves
+      // every run would grow duplicate entries in `resolved` forever.
+      const previouslyResolvedCustom = (previous?.contract?.statuses?.resolved ?? [])
+        .filter((v) => !DEFAULT_CONTRACT.statuses.resolved.includes(v));
+      const resolvedStatusValues = [...new Set([...previouslyResolvedCustom, ...newlyResolved])];
+      // Only `statuses.resolved` is ever written here — `resolveContract`
+      // deep-merges per top-level key, so this alone would silently drop
+      // any OTHER hand-authored contract field (columns, priorityOrder,
+      // statuses.approved, ...) unless everything else from `previous` is
+      // carried forward untouched.
+      const contract = previous?.contract || resolvedStatusValues.length > 0
+        ? {
+            ...(previous?.contract ?? {}),
+            statuses: {
+              ...(previous?.contract?.statuses ?? {}),
+              ...(resolvedStatusValues.length > 0
+                ? { resolved: [...DEFAULT_CONTRACT.statuses.resolved, ...resolvedStatusValues] }
+                : {}),
+            },
+          }
+        : undefined;
       const resolved = {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
@@ -1198,6 +1276,8 @@ switch (command) {
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(operator ? { operator } : {}),
+        ...(contract ? { contract } : {}),
+        ...(reviewedStatuses.length > 0 ? { reviewedStatuses } : {}),
       };
       if (dryRun) {
         process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
@@ -1214,6 +1294,18 @@ switch (command) {
       if (found.problems.length) {
         process.stderr.write('\n  Unresolved — fix these before arming it:\n');
         for (const p of found.problems) process.stderr.write(`    - ${p}\n`);
+      }
+      if (!canPrompt && stillUnrecognized.length > 0) {
+        // Nowhere to ask (piped/non-interactive) — same reasoning as the
+        // operator fallback below. Left unclassified rather than guessed;
+        // a blocker sitting at one of these won't be recognised as resolved
+        // until a person runs `crew connect` from a real terminal, or adds
+        // it to contract.statuses.resolved in resolvedPath by hand.
+        process.stderr.write(
+          `\n  ${stillUnrecognized.length} status value(s) this workspace has that the default contract\n` +
+          `  doesn't know the meaning of (${stillUnrecognized.map((s) => s.value).join(', ')}) — ` +
+          `re-run from a terminal to classify them, or edit ${resolvedPath} by hand.\n`,
+        );
       }
       if (operator) {
         process.stderr.write(

@@ -16,6 +16,8 @@
  * about the difference rather than pretending to be `crew connect`.
  */
 
+import { DEFAULT_CONTRACT } from './contract.ts';
+
 export interface AuthOptions {
   baseUrl: string;
   apiKey: string;
@@ -47,6 +49,13 @@ export interface ProjectOption {
   missing: string[];
 }
 
+/** One status CHOICE option DEFAULT_CONTRACT's own status names don't cover. */
+export interface UnrecognizedStatus {
+  value: string;
+  label?: string;
+  position?: number;
+}
+
 export interface Discovered {
   workspaceId: string;
   /** The canonical slug, whatever form (slug/uuid) `workspace` was given in. */
@@ -67,6 +76,19 @@ export interface Discovered {
   projectSlug?: string;
   projectName?: string;
   models: Record<string, string>;
+  /**
+   * Status CHOICE values this project's Issues table defines that
+   * DEFAULT_CONTRACT's own status names don't cover (ISSUE-467) — e.g. a
+   * workspace-added terminal status like `closed_completed`, which used to
+   * require hand-editing `contract.statuses.resolved` in the resolved state
+   * file to be recognised as resolving a blocker. Ordered by the field's
+   * own `position`. The caller (`crew connect`, interactively) asks once
+   * per value whether it means resolved/terminal, and folds the answer into
+   * `contract.statuses.resolved`. Undefined when the Issues model's fields
+   * couldn't be read (not fatal — ids still resolve); empty when every
+   * value already matches the default.
+   */
+  unrecognizedStatuses?: UnrecognizedStatus[];
   areaModelId?: string;
   areaId?: string;
   areaName?: string;
@@ -233,6 +255,31 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     if (id) out.models[key] = id;
     else problems.push(`no "${name}" table — have: ${models.map((m) => m.name).join(', ')}`);
   }
+  // Read the Issues model's own status field to find any CHOICE value
+  // DEFAULT_CONTRACT doesn't already name (ISSUE-467) — the discovery
+  // half of what used to require hand-editing the resolved state file's
+  // `contract.statuses.resolved` (see docs/CONTRACT.md). Best-effort: a key
+  // that cannot read field metadata still gets everything else `discover()`
+  // found, just no status classification prompt.
+  if (out.models.issues) {
+    try {
+      const issuesModel = await get<{
+        fields: Array<{
+          columnName: string;
+          fieldType?: { choiceOptions?: Array<{ value: string; label?: string; position?: number | null }> };
+        }>;
+      }>(o, `/data-models/${out.models.issues}`);
+      const statusField = issuesModel.fields.find((f) => f.columnName === DEFAULT_CONTRACT.columns.status);
+      const known = new Set([...DEFAULT_CONTRACT.statuses.open, ...DEFAULT_CONTRACT.statuses.resolved]);
+      out.unrecognizedStatuses = (statusField?.fieldType?.choiceOptions ?? [])
+        .filter((opt) => !known.has(opt.value))
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+        .map((opt) => ({ value: opt.value, label: opt.label ?? undefined, position: opt.position ?? undefined }));
+    } catch {
+      // Silent, not added to `problems` — see the field's own doc comment.
+    }
+  }
+
   out.areaModelId = find('Projects');
   out.reposModelId = find('Repos');
   out.shipsModelId = find('Ships');

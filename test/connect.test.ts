@@ -183,6 +183,79 @@ test('discover() leaves operator unset when no hold email matches (or two do)', 
   assert.equal(found.holds.length, 2);
 });
 
+test('discover() flags a status CHOICE value the default contract does not name (ISSUE-467)', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'issues-model', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/issues-model': {
+      fields: [
+        {
+          columnName: 'status',
+          fieldType: {
+            choiceOptions: [
+              { value: 'new', label: 'New', position: 0 },
+              { value: 'accepted', label: 'Approved', position: 1 },
+              { value: 'closed_completed', label: 'Completed', position: 2 },
+              { value: 'draft', label: 'Draft', position: 3 },
+            ],
+          },
+        },
+      ],
+    },
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.deepEqual(
+    found.unrecognizedStatuses,
+    [{ value: 'closed_completed', label: 'Completed', position: 2 }, { value: 'draft', label: 'Draft', position: 3 }],
+  );
+});
+
+test('discover() reports no unrecognized statuses when every value matches DEFAULT_CONTRACT', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'issues-model', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/issues-model': {
+      fields: [
+        { columnName: 'status', fieldType: { choiceOptions: [{ value: 'new', position: 0 }, { value: 'verified', position: 1 }] } },
+      ],
+    },
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.deepEqual(found.unrecognizedStatuses, []);
+});
+
+test('discover() leaves unrecognizedStatuses undefined rather than failing the whole connect when the Issues model cannot be read', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'issues-model', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+    // No '/api/data-models/issues-model' route registered — mockFetch 404s it.
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.unrecognizedStatuses, undefined);
+  assert.equal(found.projectId, 'proj-1');
+});
+
 test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces list', async (t) => {
   const { restore, seen } = mockFetch({
     '/api/auth/my-workspaces': {

@@ -85,9 +85,10 @@ supplies its own contract. It belongs **in one place per org**, and it is
 tracker data — it describes choices configured there, and only that workspace
 knows them.
 
-Until `crew connect` (ISSUE-285) reads it from the workspace, a route may
-carry the differences inline in `crew.yaml`. Anything omitted keeps the
-default, so an override states only what actually differs:
+A route may carry the differences inline in `crew.yaml`, or (once `crew
+connect` has resolved a route at all) in the resolved state file's own
+`contract` field — see `resolvedPathFor` in config.ts. Anything omitted keeps
+the default, so an override states only what actually differs:
 
 ```yaml
 routes:
@@ -100,6 +101,19 @@ routes:
         deployed: shipped
       priorityOrder: [urgent, high, normal, low]
 ```
+
+**`statuses.resolved` is discovered, not just authored.** A workspace-added
+terminal status (a `closed_completed`, say) can't be inferred from its name
+alone, so `crew connect` reads the Issues table's own status CHOICE options,
+compares them against this document's default names, and — on a real
+terminal — asks once per value it doesn't recognise whether it means
+resolved/terminal. A "yes" folds it into `contract.statuses.resolved` in the
+resolved state file; a "no" (or a value nobody has answered about yet) is
+left unclassified, same as before this existed, rather than guessed into
+`open` or any other role. Re-running `crew connect` only asks about values it
+hasn't asked about before (`reviewedStatuses`, alongside `contract` in the
+same file) — it never re-asks, and never overwrites what a hand-authored
+override already said about columns, priority order, or anything else.
 
 ## Rules
 
