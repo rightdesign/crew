@@ -28,10 +28,12 @@ actually offers — read them from the field's configuration rather than assumin
 a set from another project.
 
 - **Severity** — how bad it is when it happens.
-- **Priority** — only on a ticket you are accepting, and only on a defect.
-  Default it from severity, then move it one notch if urgency clearly diverges
-  from severity. Never set priority on a feature, a question, or anything you
-  are not accepting.
+- **Priority** — only on a ticket you are accepting. On a defect, default it
+  from severity, then move it one notch if urgency clearly diverges from
+  severity. A Question or Investigation has no severity to default from —
+  leave its priority unset unless it is genuinely urgent enough to jump the
+  queue, in which case set it directly. Never set priority on a feature
+  request or anything else you are not accepting.
 - **Needs design** — on every ticket you accept, true or false. It routes the
   ticket between the two building seats named in the roster. True when fixing
   it means deciding what the interface should *be*: a screen, panel, dialog or
@@ -47,8 +49,14 @@ a set from another project.
   priority and needs-design. Then unassign it.
 - **A defect you cannot reproduce from what is written** → the needs-a-person
   status. No priority: it has not been accepted. Then unassign it.
-- **A feature request, or anything ambiguous** → classify it and nothing more.
-  Never accept it. Then unassign it.
+- **A well-posed Question or Investigation** (`report_type`) — a real
+  question or a genuine feasibility ask, specific enough to act on without
+  guessing what's being asked → the approved status, plus needs-design.
+  These are not defects and rarely carry a meaningful severity; that's
+  expected, not a reason to withhold acceptance. Then unassign it.
+- **A feature request, or anything ambiguous (including a vague Question or
+  Investigation you cannot tell how to act on)** → classify it and nothing
+  more. Never accept it. Then unassign it.
 - **A suspected duplicate** → point its duplicate field at the older ticket and
   leave the status alone.
 

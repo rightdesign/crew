@@ -299,6 +299,13 @@ work around it. The loop never parks an `in_progress` ticket.
 
 ## Step 3 — do the work
 
+**Check `report_type` first.** Everything below is written for a ticket
+that ends in code someone ships (`bug`, `feature`, or anything else this
+workspace's `report_type` field offers). A `question` or `investigation`
+ticket follows the shorter path in "Question and Investigation tickets"
+below instead — read that section before starting Step 3's numbered list
+if `report_type` is either of those.
+
 1. From the primary checkout, `git worktree add` a sibling worktree for this
    ticket, on a new branch cut from the base branch's current HEAD — the
    location, the branch name and the base are all in the Environment section.
@@ -428,6 +435,70 @@ work around it. The loop never parks an `in_progress` ticket.
    would leave QA nothing to test. Your last progress comment is what QA
    reads first — say what you changed, how you verified it, which ports and
    database the worktree uses, and anything you could not test yourself.
+
+## Question and Investigation tickets
+
+These two `report_type` values ask for an answer, not a fix. Neither one
+ever reaches `fixed` or QA — both end back with the operator, at
+`needs_info`, for a decision only they can make. Where this section
+conflicts with Step 3 or 4 above for these two report types, this section
+wins.
+
+**`question`** — a request for discussion or research. It results in no
+worktree and no code changes, only an answer.
+
+1. Set `status` to `in_progress` and `assignee_id` to yourself, and post a
+   short comment on what you're looking into — same as the normal Step 3.3
+   and 3.4.
+2. Answer it. Read whatever the question needs — code, docs, tracker
+   history — directly from the primary checkout; that's fine here
+   specifically because you are only ever reading it, never writing to it,
+   so Step 4's "nothing you do touches the primary checkout" is not in
+   tension with this. If answering it genuinely turns out to require
+   running or changing code — at that point it has outgrown what a
+   Question is for — say so in your comment and stop rather than quietly
+   doing investigation-shaped work under a question's label; recognizing a
+   ticket is bigger than its own type is exactly what `needs_info` is for.
+3. Post the answer as its own comment, citing the specific files, lines or
+   tickets it rests on, the way a normal closing comment cites what changed.
+4. Set `status` to `needs_info` and `assignee_id` to the operator's Crew
+   row id (see the roster). This is the expected, designed ending for every
+   Question ticket, not a fallback for ones that went wrong — it should
+   read as "answered, awaiting a person to decide what's next," the same
+   spirit as QA's "you genuinely can't tell" path.
+
+**`investigation`** — a feasibility assessment, which may genuinely need
+code to answer honestly (a prototype, a spike, a proof of concept).
+
+1. Follow Step 3.1–3.4 as written — worktree, `setup`/`isolate`/`handoff`
+   as applicable, claim, opening comment — an investigation may need to
+   actually run something, so it gets a worktree like any other ticket.
+2. Prototype only as much as the question needs. This code is evidence,
+   not a candidate fix: it is never taken to `fixed`, this ticket never
+   reaches QA, and Step 3.6's full-suite-clean gate is not the bar here —
+   run whatever slice of the suite is useful evidence for your assessment,
+   not the whole thing for its own sake. Still commit your work on the
+   branch, so the operator can read the actual diff behind your conclusion
+   rather than only your prose.
+3. Post your findings as a comment: what you tried, what you found, and a
+   concrete assessment — worth doing, not worth it, or worth doing
+   differently — rather than a hedge. If the answer is "yes, but as real
+   work," name what follow-on ticket(s) should be filed; file them
+   yourself per "Filing a ticket for something you spot along the way"
+   below rather than folding the real implementation into this ticket.
+4. Set `status` to `needs_info` and `assignee_id` to the operator's Crew
+   row id, same as Question. Leave the worktree and branch in place — they
+   are the evidence behind your assessment. They stay until the operator
+   closes the ticket (`closed_completed` once the assessment stands on its
+   own, `closed_wont_fix` if the answer was no, or whatever else fits) —
+   the same worktree-sweep rule that cleans up any other resolved ticket
+   applies from there, nothing special to do yourself.
+
+**Both:** `report_type` is not yours to change, however clearly a ticket
+seems mis-typed — say so in a comment instead. And Step 2's "skip a
+large/ambiguous feature" guidance does not apply to an `investigation`
+ticket for being open-ended — that scoping conversation is exactly what an
+Investigation ticket already is; don't skip it as if it needed one first.
 
 ## Filing a ticket for something you spot along the way
 
