@@ -60,7 +60,7 @@ workspace has to override if it names things differently.
 ```sh
 git clone <this repo> crew
 cd crew
-cp crew.yaml.example ~/.config/crew/crew.yaml
+cp crew.example.yaml ~/.config/crew/crew.yaml
 chmod 600 ~/.config/crew/crew.yaml     # it holds an API key
 $EDITOR ~/.config/crew/crew.yaml
 bin/crew doctor                        # read-only preflight
@@ -133,9 +133,20 @@ identified by email, so the same person is recognised across workspaces.
 
 An area of development spans **several repositories**, so a checkout is a
 property of the ticket, not of the route: `repos:` maps each name in the
-board's Repos table to a directory on this machine. A ticket whose repository
-this ship has no clone of is marked `NO CHECKOUT` in the digest rather than
-left blank — blank would read as "work it here", which is the wrong directory.
+board's Repos table to a directory on this machine. Naming even one repo
+there makes it a closed list — several ships can divide a multi-repo area's
+work between them, and anything not named is deliberately another ship's,
+marked `NO CHECKOUT` in the digest rather than left blank (blank would read
+as "work it here", which is the wrong directory).
+
+Leaving `repos:` out entirely means the opposite: this ship serves
+*everything* the board's Repos table lists, each checkout defaulting to
+`<reposBasePath>/<workspace>/<repoName>` — `reposBasePath` is `~/Crew`
+unless a `ship:` or route-level `reposBasePath:` says otherwise. A repo
+that doesn't exist yet at its derived path is cloned there automatically
+the first time a ticket actually needs it (from the Repos table's own
+`remote` column, `owner/repo` over SSH) — not up front on `crew connect`,
+which only discovers names and remotes, never fetches anything itself.
 
 ## What lives where
 
@@ -146,7 +157,7 @@ test/             its tests, including a fake board for integration runs
 prompts/          the shared policy, plus one brief per role
 docs/             CONTRACT.md, REPO_SPEC.md, MIGRATION.md
 launchd/          timer templates (edit the paths before installing)
-crew.yaml.example copy to ~/.config/crew/crew.yaml
+crew.example.yaml copy to ~/.config/crew/crew.yaml
 ```
 
 The crew carries no ids, no absolute paths, no project commands and no device

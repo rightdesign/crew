@@ -44,6 +44,17 @@ import {
  */
 export const DEFAULT_BASE_URL = 'https://app.tablation.com';
 
+/**
+ * Where a repo's checkout lives when `repos:` doesn't say so explicitly —
+ * `<reposBasePath>/<workspace>/<repoName>`. `repos:` stays for the repos
+ * that live somewhere else (an existing checkout, a shared location), but a
+ * route no longer has to enumerate every repo its area covers just to be
+ * usable: anything the tracker's own `Repos` table knows about that isn't
+ * named here falls through to this convention, and gets cloned into it on
+ * demand if nothing is there yet (see `ensureRepoCheckout` in git.ts).
+ */
+export const DEFAULT_REPOS_BASE_PATH = '~/Crew';
+
 export type RoleName = 'dev' | 'design' | 'qa' | 'triage';
 export const ROLE_NAMES: RoleName[] = ['dev', 'design', 'qa', 'triage'];
 export const ROLE_LABEL: Record<RoleName, string> = {
@@ -62,6 +73,12 @@ export interface ResolvedIds {
   /** The `Repos` table, and repo id -> name, so a ticket's repo resolves. */
   reposModelId?: string;
   repoNames?: Record<string, string>;
+  /**
+   * The `Repos` table's own `remote` column (`owner/repo`, GitHub-shaped),
+   * keyed the same as `repoNames` — what `defaultRepoDir`'s auto-clone
+   * clones from when a repo's derived checkout doesn't exist yet locally.
+   */
+  repoRemotes?: Record<string, string>;
   /**
    * The `Ships` table, when this workspace has one. The ship is matched by
    * NAME (`ship.name`) rather than by a stored id: a machine's name is what
@@ -82,6 +99,15 @@ export interface ResolvedIds {
   seats: Partial<Record<RoleName, string>>;
   operator: string;
   holds: HoldConfig[];
+  /**
+   * What this workspace's own status/priority/severity choices mean — see
+   * `contract.ts`. Workspace data, same as everything else in this file: it
+   * describes choices made on the tracker (a status renamed, a new terminal
+   * status added), not anything about this machine, so it belongs in the
+   * discovered state tree rather than requiring a person to hand-maintain a
+   * copy in `crew.yaml` every time the workspace's own choices change.
+   */
+  contract?: Partial<import('./contract.ts').Contract>;
 }
 
 export interface Route {
@@ -134,6 +160,13 @@ export interface Route {
    * verifying a repo's remote against the local origin.
    */
   repos: Record<string, string>;
+  /**
+   * Resolved: route's own `reposBasePath:` if given, else the ship's, else
+   * `DEFAULT_REPOS_BASE_PATH` — always has a value, never re-derived at a
+   * call site. Used for any repo `repos` doesn't explicitly place; see
+   * `DEFAULT_REPOS_BASE_PATH`'s own doc comment.
+   */
+  reposBasePath: string;
   /**
    * A ship-level fallback for repos on this route that declare no
    * `worktrees.prefix` of their own (ISSUE-350). Optional: a route that
@@ -260,9 +293,10 @@ export class ConfigError extends Error {}
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
+  'reposBasePath',
 ]);
 const ROUTE_KEYS = new Set([
-  'route', 'enabled', 'area', 'dir', 'repos', 'worktreePrefix', 'weight',
+  'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
 ]);
@@ -544,6 +578,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     locksModelId: raw.locksModelId,
     reposModelId: raw.reposModelId,
     repoNames: raw.repoNames,
+    repoRemotes: raw.repoRemotes,
     models: {
       issues: m.req(raw.models?.issues, `${where}.resolved.models.issues`),
       comments: m.req(raw.models?.comments, `${where}.resolved.models.comments`),
@@ -552,6 +587,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     seats,
     operator: m.req(raw.operator, `${where}.resolved.operator`),
     holds,
+    contract: raw.contract ?? undefined,
   };
 }
 
@@ -711,6 +747,7 @@ function parseOneRoute(
     area: c?.area,
     dir,
     repos: repoDirs,
+    reposBasePath: expand(String(c?.reposBasePath ?? raw.ship?.reposBasePath ?? DEFAULT_REPOS_BASE_PATH), base),
     repoOverrides,
     worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
     weight,
@@ -730,14 +767,17 @@ function parseOneRoute(
     },
     release: parseReleaseOverride(c?.release, where, file),
     branch: parseBranchOverride(c?.branch, where, file),
-    contract: c?.contract ?? null,
-    // The state-tree file wins when both exist: it's what `crew connect`
-    // manages going forward, and an authored `resolved:` block is only a
-    // legacy or hand-filled fallback (see the file comment at the top).
-    resolved: routeWellFormed
-      ? parseResolved(readResolvedFile(stateDir, route) ?? c?.resolved, missing, where)
-      : parseResolved(c?.resolved, missing, where),
   };
+  // The state-tree file wins when both exist: it's what `crew connect`
+  // manages going forward, and an authored `resolved:`/`contract:` block in
+  // crew.yaml is only a legacy or hand-filled fallback (see the file
+  // comment at the top) — a workspace's own status/priority/severity
+  // choices are tracker data, not a fact about this machine, so once
+  // discovery can populate them the state file is the source of truth and
+  // `crew.yaml` is the escape hatch, not the primary path.
+  const resolvedFile = routeWellFormed ? readResolvedFile(stateDir, route) : undefined;
+  result.resolved = parseResolved(resolvedFile ?? c?.resolved, missing, where);
+  result.contract = resolvedFile?.contract ?? c?.contract ?? null;
   missing.throwIfAny(file);
   return result;
 }
@@ -772,11 +812,21 @@ export function findRoute(cfg: CrewConfig, route?: string): Route {
  * rather than working the wrong directory.
  */
 export function dirForRepo(r: Route, repoId?: string | null): string | null {
+  return repoTargetFor(r, repoId)?.dir ?? null;
+}
+
+/**
+ * The full target (dir, and a `remote` when the dir is a derived one that
+ * may not exist yet) for the repo a ticket names — what `ensureRepoCheckout`
+ * (git.ts) needs before handing that ticket to an agent, one step up from
+ * `dirForRepo`'s bare path.
+ */
+export function repoTargetFor(r: Route, repoId?: string | null): RepoTarget | null {
   const names = r.resolved?.repoNames;
-  if (!repoId || !names) return Object.keys(r.repos).length ? null : r.dir;
+  if (!repoId || !names) return Object.keys(r.repos).length ? null : { name: basename(r.dir), dir: r.dir };
   const name = names[repoId];
   if (!name) return null;
-  return r.repos[name] ?? (Object.keys(r.repos).length === 0 ? r.dir : null);
+  return reposOf(r).find((t) => t.name === name) ?? null;
 }
 
 /**
@@ -825,6 +875,23 @@ export interface RepoTarget {
   /** The board's slug for it, or this checkout's own directory name for a single-repo setup. */
   name: string;
   dir: string;
+  /**
+   * `owner/repo`, when `crew connect` discovered one for it (`resolved.
+   * repoRemotes`) and `dir` was DERIVED rather than explicit — absent for an
+   * explicit `repos:` entry, since an operator-placed checkout is never
+   * something crew decides to clone into. `ensureRepoCheckout` (git.ts)
+   * reads this to clone `dir` into existence the first time it's needed.
+   */
+  remote?: string;
+}
+
+/**
+ * `<basePath>/<workspace>/<repoName>` — see `DEFAULT_REPOS_BASE_PATH`.
+ * `basePath` is `Route.reposBasePath`, already `~`-expanded and absolute by
+ * the time a `Route` exists, so this is only ever a join.
+ */
+export function defaultRepoDir(basePath: string, workspace: string, repoName: string): string {
+  return join(basePath, workspace, repoName);
 }
 
 /**
@@ -836,11 +903,35 @@ export interface RepoTarget {
  * `route.dir` is only the fallback for a route that declares no `repos`
  * map, and using it as "the" directory meant every repo but the first was
  * never released at all.
+ *
+ * `repos:` listing anything at all is still a closed enumeration, exactly
+ * as before: several ships can divide a multi-repo area's work between
+ * them, and a repo the tracker knows about that isn't named here is
+ * deliberately another ship's, not an oversight — `not-served-here`
+ * (`ticketsByRepo`) depends on that staying true. The new behaviour only
+ * applies when `repos:` is left out ENTIRELY: every repo the tracker's own
+ * `Repos` table lists (`resolved.repoNames`) then gets a target at its
+ * `defaultRepoDir`, so a route that wants "just work everything this area
+ * covers" no longer has to enumerate it by hand. A route with one repo (or
+ * none resolved yet) is unaffected either way — it keeps using `route.dir`,
+ * which an operator may have placed anywhere.
  */
 export function reposOf(r: Route): RepoTarget[] {
   const named = Object.entries(r.repos);
-  if (named.length === 0) return [{ name: basename(r.dir), dir: r.dir }];
-  return named.map(([name, dir]) => ({ name, dir }));
+  if (named.length > 0) return named.map(([name, dir]) => ({ name, dir }));
+
+  const trackerNames = r.resolved?.repoNames ? Object.values(r.resolved.repoNames) : [];
+  if (trackerNames.length <= 1) return [{ name: basename(r.dir), dir: r.dir }];
+
+  const remotes = r.resolved?.repoRemotes ?? {};
+  const remoteByName: Record<string, string> = {};
+  for (const [id, name] of Object.entries(r.resolved!.repoNames!)) {
+    if (remotes[id]) remoteByName[name] = remotes[id];
+  }
+  const [workspace] = splitRoute(r.route);
+  return trackerNames.map((name) => ({
+    name, dir: defaultRepoDir(r.reposBasePath, workspace, name), remote: remoteByName[name],
+  }));
 }
 
 /**
@@ -897,7 +988,11 @@ export function ticketsByRepo<T extends { repo_id?: string | null | undefined }>
   const targets = reposOf(r);
   const byRepo = new Map<string, T[]>(targets.map((t) => [t.name, []]));
   const unplaceable: Array<Unplaceable<T>> = [];
-  const single = Object.keys(r.repos).length === 0;
+  // An empty `repos:` map with more than one tracker-known repo is now
+  // genuinely multi-repo (`reposOf` derives a target per repo) and must
+  // route by repo_id like any other multi-repo route, rather than dumping
+  // everything into targets[0] the way a true single-repo route does.
+  const single = Object.keys(r.repos).length === 0 && targets.length === 1;
   const names = r.resolved?.repoNames ?? {};
 
   for (const t of tickets) {

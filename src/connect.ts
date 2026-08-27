@@ -73,6 +73,8 @@ export interface Discovered {
   /** The `Repos` table, and repo id -> name, for ticket-repo routing. */
   reposModelId?: string;
   repoNames?: Record<string, string>;
+  /** The `Repos` table's own `remote` column, id -> `owner/repo`, for auto-clone. */
+  repoRemotes?: Record<string, string>;
   shipsModelId?: string;
   epicsModelId?: string;
   locksModelId?: string;
@@ -245,10 +247,14 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // Optional, like Ships/Epics/Locks: a workspace with only one repo, or one
   // that has not sliced its board by repository at all, has no Repos table.
   if (out.reposModelId) {
-    const repos = await get<Array<{ id: string; name?: string | null }>>(
+    const repos = await get<Array<{ id: string; name?: string | null; remote?: string | null }>>(
       o, `/data-models/${out.reposModelId}/records?limit=200`,
     );
     out.repoNames = Object.fromEntries(repos.map((r) => [r.id, r.name ?? '']));
+    const remotes = Object.fromEntries(
+      repos.filter((r) => r.remote).map((r) => [r.id, r.remote as string]),
+    );
+    if (Object.keys(remotes).length > 0) out.repoRemotes = remotes;
   }
 
   if (o.area) {

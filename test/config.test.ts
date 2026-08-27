@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
-  resolvedPathFor, mergeRouteRelease,
+  resolvedPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -239,6 +239,61 @@ test('a state-tree resolved file wins over an authored `resolved:` block, when b
   assert.equal(r.resolved?.workspaceId, 'from-state-file');
 });
 
+test('a contract in the state-tree resolved file is read the same way as ids', () => {
+  const noIds = ONE.slice(0, ONE.indexOf('    resolved:'));
+  const { dir, file } = withConfig(noIds);
+  writeResolved(join(dir, 'state'), 'issues/dev-crew', {
+    workspaceId: 'ws-1', models: { issues: 'i', comments: 'c', crew: 'm' },
+    seats: {}, operator: 'op-1', holds: [],
+    contract: { statuses: { resolved: ['verified', 'closed_deployed', 'closed_completed'] } },
+  });
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.deepEqual(r.contract?.statuses?.resolved, ['verified', 'closed_deployed', 'closed_completed']);
+});
+
+test('a state-tree contract wins over an authored `contract:` block in crew.yaml, when both exist', () => {
+  const withInline = `
+ship:
+  agent: { bin: /bin/true }
+routes:
+  - route: issues/dev-crew
+    dir: /tmp/proj
+    baseUrl: https://example.test/
+    contract:
+      statuses: { resolved: [from-yaml] }
+${RESOLVED}
+`;
+  const { dir, file } = withConfig(withInline);
+  writeResolved(join(dir, 'state'), 'issues/dev-crew', {
+    workspaceId: 'ws-1', models: { issues: 'i', comments: 'c', crew: 'm' },
+    seats: {}, operator: 'op-1', holds: [],
+    contract: { statuses: { resolved: ['from-state'] } },
+  });
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.deepEqual(r.contract?.statuses?.resolved, ['from-state']);
+});
+
+test('an authored `contract:` block still applies when no state-tree contract exists', () => {
+  const withInline = `
+ship:
+  agent: { bin: /bin/true }
+routes:
+  - route: issues/dev-crew
+    dir: /tmp/proj
+    baseUrl: https://example.test/
+    contract:
+      statuses: { resolved: [from-yaml] }
+${RESOLVED}
+`;
+  const { dir, file } = withConfig(withInline);
+  writeResolved(join(dir, 'state'), 'issues/dev-crew', {
+    workspaceId: 'ws-1', models: { issues: 'i', comments: 'c', crew: 'm' },
+    seats: {}, operator: 'op-1', holds: [],
+  });
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.deepEqual(r.contract?.statuses?.resolved, ['from-yaml']);
+});
+
 test('a malformed resolved-ids state file is a config error, not a silent fallback', () => {
   const { dir, file } = withConfig(ONE);
   const path = resolvedPathFor(join(dir, 'state'), 'issues/dev-crew');
@@ -266,7 +321,7 @@ test('the shipped example config still parses', () => {
   // The loader rejects unknown keys, so a renamed or removed setting turns the
   // example into a file that cannot be used — and the example is the only
   // thing a fresh install has to copy from. Failing here is the point.
-  const example = join(import.meta.dirname, '..', 'crew.yaml.example');
+  const example = join(import.meta.dirname, '..', 'crew.example.yaml');
   const cfg = loadConfig(process.cwd(), example);
   assert.equal(cfg.routes.length, 1);
   // Shipped disarmed: copying it must not start writing to someone's board.
@@ -309,6 +364,64 @@ test('reposOf covers every checkout, not just the route dir', () => {
   // describe.
   assert.equal(shipWorktreePrefixFor(findRoute(cfg, 'w/multi')), undefined);
   assert.equal(shipWorktreePrefixFor(findRoute(cfg, 'w/single')), 's-');
+});
+
+test('an omitted repos: map derives every tracker-known repo from the base-path convention', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: acme/proj',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    dir: /tmp/whatever',
+    '    resolved:',
+    '      workspaceId: ws', '      operator: op-1',
+    '      models: { issues: i, comments: c, crew: m }',
+    '      repoNames: { r-a: alpha, r-b: beta }',
+    '      repoRemotes: { r-a: acme/alpha, r-b: acme/beta }',
+  ].join('\n'));
+  const r = findRoute(loadConfig(dir, join(dir, 'crew.yaml')), 'acme/proj');
+  const targets = reposOf(r);
+  assert.deepEqual(targets.map((t) => t.name).sort(), ['alpha', 'beta']);
+  const alpha = targets.find((t) => t.name === 'alpha')!;
+  assert.equal(alpha.dir, defaultRepoDir(homedir() + '/Crew', 'acme', 'alpha'));
+  assert.equal(alpha.remote, 'acme/alpha');
+});
+
+test('reposBasePath defaults to ~/Crew, and a route override wins over a ship-level one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    '  reposBasePath: /ship/base',
+    'routes:',
+    '  - route: acme/default', '    apiKey: k', '    baseUrl: https://example.com', '    dir: /tmp/x',
+    '  - route: acme/override', '    apiKey: k', '    baseUrl: https://example.com', '    dir: /tmp/x',
+    '    reposBasePath: /route/base',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  assert.equal(findRoute(cfg, 'acme/default').reposBasePath, '/ship/base');
+  assert.equal(findRoute(cfg, 'acme/override').reposBasePath, '/route/base');
+});
+
+test('a non-empty repos: map is still a closed enumeration — an unlisted tracker repo stays out, for multi-ship division of labor', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: acme/proj',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    repos:',
+    '      alpha: /tmp/alpha',
+    '    resolved:',
+    '      workspaceId: ws', '      operator: op-1',
+    '      models: { issues: i, comments: c, crew: m }',
+    '      repoNames: { r-a: alpha, r-b: beta }',
+  ].join('\n'));
+  const r = findRoute(loadConfig(dir, join(dir, 'crew.yaml')), 'acme/proj');
+  assert.deepEqual(reposOf(r), [{ name: 'alpha', dir: '/tmp/alpha' }]);
+  assert.equal(dirForRepo(r, 'r-b'), null);
 });
 
 test('a repos: entry may be an object naming its own dir plus hook/label/release overrides', () => {

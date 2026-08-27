@@ -11,7 +11,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, mergeRouteRelease,
+  DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
   ConfigError, type RoleName, type RepoTarget,
 } from './config.ts';
@@ -42,7 +42,9 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
-import { worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue } from './git.ts';
+import {
+  worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
+} from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -834,6 +836,20 @@ switch (command) {
           }
           fleetTicketHint = result.ticket.issue_id;
           fleetWorkingId = result.ticket.id;
+
+          // Lazy: only the repo THIS ticket actually names, only now that
+          // it's the one about to be worked — not every repo `reposOf`
+          // could derive a path for. See `ensureRepoCheckout`'s own doc.
+          const target = repoTargetFor(w.route, result.ticket.repo_id);
+          try {
+            if (target && ensureRepoCheckout(target.dir, target.remote)) {
+              emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
+            }
+          } catch (e) {
+            emit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
+            if (!skipInlineRelease) await releaseFleet();
+            break;
+          }
         }
       }
 
@@ -1012,6 +1028,23 @@ switch (command) {
           }
           ticketHint = result.ticket.issue_id;
           workingId = result.ticket.id;
+
+          // Lazy: only the repo THIS ticket names, only now that it's the
+          // one about to be worked. See the matching fleet-path comment
+          // above and `ensureRepoCheckout`'s own doc in git.ts.
+          const target = repoTargetFor(route, result.ticket.repo_id);
+          try {
+            if (target && ensureRepoCheckout(target.dir, target.remote)) {
+              emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
+            }
+          } catch (e) {
+            emit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
+            dropLock();
+            if (explicitRole) { current = undefined; break; }
+            const remaining = nextRoles(decision, [...ran, current]);
+            current = remaining[0];
+            continue;
+          }
         }
       }
 
@@ -1162,7 +1195,7 @@ switch (command) {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
         shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, locksModelId: found.locksModelId,
-        reposModelId: found.reposModelId, repoNames: found.repoNames,
+        reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(operator ? { operator } : {}),
       };

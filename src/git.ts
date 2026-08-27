@@ -7,6 +7,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 export class GitError extends Error {}
 
@@ -397,4 +399,49 @@ export function worktrees(cwd: string): WorktreeInfo[] {
   }
   if (current.path) list.push({ path: current.path, branch: current.branch ?? null });
   return list;
+}
+
+/**
+ * `owner/repo` (the tracker's `Repos.remote` shape) -> a real clone URL.
+ *
+ * SSH over GitHub, matching what every checkout actually observed on this
+ * fleet uses (no ship here authenticates over HTTPS) — not configurable
+ * per-workspace yet because nothing has needed it to be; revisit if a repo
+ * genuinely lives somewhere else.
+ */
+export function cloneUrlFor(remote: string): string {
+  return `git@github.com:${remote}.git`;
+}
+
+/**
+ * Clones `remote` into `dir` if `dir` isn't a real checkout yet — the lazy
+ * half of the base-path convention (`config.ts`'s `defaultRepoDir`): a
+ * route can name every repo its area covers without every ship needing a
+ * pre-existing clone of each one, at the cost of doing the clone on first
+ * need instead of up front. `crew connect` deliberately does NOT call this
+ * for every repo it discovers — that would fetch repos this ship may never
+ * actually be asked to work, for no benefit over doing it when a ticket
+ * first needs it.
+ *
+ * A no-op, not an error, when `dir` already has a `.git` — an operator-
+ * placed checkout (explicit `repos:` entry) or one this function already
+ * cloned on an earlier run.
+ */
+export function ensureRepoCheckout(dir: string, remote: string | undefined): boolean {
+  if (existsSync(`${dir}/.git`)) return false;
+  if (!remote) {
+    throw new GitError(
+      `${dir} does not exist and this repo has no discovered remote to clone from — ` +
+      `re-run \`crew connect\`, or check out the repository yourself and point \`repos:\` at it`,
+    );
+  }
+  mkdirSync(dirname(dir), { recursive: true });
+  try {
+    execFileSync('git', ['clone', cloneUrlFor(remote), dir], { stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    const err = e as { stderr?: string; stdout?: string; message: string };
+    const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
+    throw new GitError(`git clone ${cloneUrlFor(remote)} ${dir}: ${why || err.message.trim()}`);
+  }
+  return true;
 }
