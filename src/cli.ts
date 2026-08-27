@@ -1228,10 +1228,17 @@ switch (command) {
       // earlier hand-added `resolved` entry), and must not re-ask about a
       // status value this route was already asked about last time, whichever
       // way it was answered (`reviewedStatuses`, ISSUE-467).
-      let previous: { contract?: { statuses?: { resolved?: string[] } } | null; reviewedStatuses?: string[] } | undefined;
+      let previous:
+        | { contract?: { statuses?: { resolved?: string[] } } | null; reviewedStatuses?: string[]; operator?: string }
+        | undefined;
       if (existsSync(resolvedPath)) {
         try { previous = JSON.parse(readFileSync(resolvedPath, 'utf8')); } catch { /* treated as no previous file below */ }
       }
+      // Same "never clobber what a previous run/hand-edit wrote" rule
+      // `contract`/`reviewedStatuses` already follow (ISSUE-467) — a skipped
+      // picker (blank answer, or no TTY to ask at all) must not wipe an
+      // operator a prior run or a hand-edit already resolved.
+      if (!operator) operator = previous?.operator;
       const alreadyReviewed = new Set(previous?.reviewedStatuses ?? []);
       const stillUnrecognized = (found.unrecognizedStatuses ?? []).filter((s) => !alreadyReviewed.has(s.value));
       const canPrompt = stillUnrecognized.length > 0 && process.stdin.isTTY && process.stdout.isTTY;
