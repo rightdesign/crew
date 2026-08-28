@@ -58,3 +58,33 @@ test('only outcomes worth interrupting someone for produce a notification', () =
   assert.equal(n({ deployed: false, merged: [], stopped: 'external' }), null);
   assert.equal(n({ alreadyLive: true, merged: [1], stopped: 'already contained in the base branch' }), null);
 });
+
+test('a dirty tree or wrong-branch checkout stays quiet for one cycle, then escalates', () => {
+  const n = (o: Parameters<typeof describeRelease>[0]) => describeRelease(o, 'proj');
+  // One blocked cycle is normal — someone is mid-edit.
+  assert.equal(n({ deployed: false, merged: [], stopped: 'working tree has 1 change(s)', blockKind: 'dirty' }), null);
+  assert.equal(
+    n({ deployed: false, merged: [], stopped: 'working tree has 1 change(s)', blockKind: 'dirty', blockedCycles: 1 }),
+    null,
+  );
+  // Past that, it must be as loud as a build/test/deploy failure — this is
+  // ISSUE-174's silent eight-commits-behind-one-untracked-file case.
+  const persisting = n({
+    deployed: false, merged: [], stopped: 'working tree has 1 change(s): stray.png', blockKind: 'dirty', blockedCycles: 2,
+  });
+  assert.equal(persisting?.level, 'fail');
+  assert.equal(persisting?.headline, 'proj: release blocked — working tree is not clean');
+  // The headline must stay stable across cycles (no file names, no counts) so
+  // failure-alert.ts's exact-headline dedup comments on one ticket instead of
+  // filing a new one every cycle.
+  const laterCycle = n({
+    deployed: false, merged: [], stopped: 'working tree has 2 change(s): other.png', blockKind: 'dirty', blockedCycles: 9,
+  });
+  assert.equal(laterCycle?.headline, persisting?.headline);
+
+  const wrongBranch = n({
+    deployed: false, merged: [], stopped: "primary checkout is on 'foo', not main", blockKind: 'branch', blockedCycles: 2,
+  });
+  assert.equal(wrongBranch?.level, 'fail');
+  assert.equal(wrongBranch?.headline, 'proj: release blocked — checkout is not on the base branch');
+});

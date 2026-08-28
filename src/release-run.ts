@@ -17,7 +17,7 @@ import {
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
-  type MergeCandidate, type ReleaseDecision,
+  type MergeCandidate, type ReleaseBlock, type ReleaseDecision,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { hookLabel } from './repo-config.ts';
@@ -115,6 +115,19 @@ export interface ReleaseOutcome {
    */
   unbuildable?: MergeCandidate[];
   decision: ReleaseDecision;
+  /**
+   * Consecutive cycles `decision.block` has refused this release, from
+   * `state.release(route).noteBlocked()`. Only set when a block just
+   * happened — `describeRelease` uses it to escalate a persisting block
+   * (ISSUE-174 made it loud in the log; this is what makes it loud beyond
+   * the log too, once it has had more than one cycle to resolve itself).
+   */
+  blockedCycles?: number;
+  /**
+   * `decision.block.kind`, alongside `blockedCycles` — a stable (no file
+   * names) category `describeRelease` can put in a dedupable headline.
+   */
+  blockKind?: ReleaseBlock['kind'];
 }
 
 const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'bump' | 'released',
@@ -408,7 +421,10 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     const data = { cycles: n, reason: decision.block.detail };
     if (n >= 2) o.emit.error(`${msg} (blocked ${n} cycles running)`, { data });
     else o.emit.warn(msg, { data });
-    return { merged: [], deployed: false, stopped: decision.block.detail, decision };
+    return {
+      merged: [], deployed: false, stopped: decision.block.detail, decision,
+      blockedCycles: n, blockKind: decision.block.kind,
+    };
   }
   o.state?.clearBlocked();
 

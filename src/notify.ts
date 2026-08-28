@@ -80,6 +80,7 @@ export async function notify(
 export function describeRelease(o: {
   deployed?: boolean; confirmed?: boolean; alreadyLive?: boolean; integrated?: boolean;
   version?: string; tag?: string; merged: unknown[]; stopped?: string;
+  blockedCycles?: number; blockKind?: 'branch' | 'dirty';
 }, route: string): Notification | null {
   if (o.integrated) {
     // Worth saying: something shipped, in the only sense this repo ships.
@@ -118,8 +119,25 @@ export function describeRelease(o: {
       detail: 'the target stays on the previous release — nothing was deployed',
     };
   }
+  // A dirty tree or a non-main checkout is normal for one cycle — someone is
+  // mid-edit — and not worth interrupting anyone for. But it used to stay
+  // silent no matter how long it persisted, and eight commits once sat
+  // unreleased behind a single untracked file with nothing saying so
+  // (ISSUE-174 made this loud in the log; a log line nobody was tailing
+  // wasn't enough — this is what routes it through the same alert path as a
+  // build/test/deploy failure once it has had more than one cycle to clear).
+  if (o.blockedCycles && o.blockedCycles >= 2) {
+    return {
+      level: 'fail',
+      headline: `${route}: release blocked — ${
+        o.blockKind === 'branch' ? 'checkout is not on the base branch' : 'working tree is not clean'
+      }`,
+      detail: `${o.stopped ?? 'blocked'} (blocked ${o.blockedCycles} cycles running) — a person has to clear it`,
+    };
+  }
+
   // Everything else — nothing to release, merge-only, external mode, a dirty
-  // tree — is the normal state of most cycles and is not worth interrupting
-  // anyone for.
+  // tree that just started — is the normal state of most cycles and is not
+  // worth interrupting anyone for.
   return null;
 }
