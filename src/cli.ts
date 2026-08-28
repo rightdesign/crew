@@ -756,7 +756,8 @@ switch (command) {
         try {
           const r = await applySweep(new Tracker(e.route, cfg.ship), e.decision.sweep, seat ?? '', emit);
           emit.emit(
-            `swept ${r.parked} parked, ${r.restored} restored${r.failed ? `, ${r.failed} failed` : ''} (${e.route.route})`,
+            `swept ${r.parked} parked, ${r.restored} restored` +
+              `${r.failed ? `, ${r.failed} failed` : ''}${r.contended ? `, ${r.contended} contended` : ''} (${e.route.route})`,
             { step: 'sweep', data: r },
           );
         } catch (err) {
@@ -956,7 +957,8 @@ switch (command) {
         const seat = route.resolved?.seats.qa ?? route.resolved?.seats.dev;
         const r = await applySweep(new Tracker(route, cfg.ship), decision.sweep, seat ?? '', emit);
         emit.emit(
-          `swept ${r.parked} parked, ${r.restored} restored${r.failed ? `, ${r.failed} failed` : ''}`,
+          `swept ${r.parked} parked, ${r.restored} restored` +
+            `${r.failed ? `, ${r.failed} failed` : ''}${r.contended ? `, ${r.contended} contended` : ''}`,
           { step: 'sweep', data: r },
         );
       }

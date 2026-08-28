@@ -25,6 +25,7 @@
  * to anyone's tracker.
  */
 
+import { StaleWriteError } from '@tablation/client';
 import type { Ticket } from './tracker.ts';
 import { RESOLVED_STATUSES } from './tracker.ts';
 
@@ -253,16 +254,32 @@ This restores the status it was approved at before being parked; it is back in t
 }
 
 export interface SweepWriter {
-  updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
+  updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown>;
   postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
 }
 
 /**
  * Perform the plan.
  *
- * A ticket whose status write fails is skipped and reported — the next poll
- * recomputes blocked-ness from scratch and will try again, because nothing
- * here is read back off the `blocked` status.
+ * `expectedUpdatedAt` (ISSUE-495) makes each write conditional on the ticket
+ * row not having moved since `decideCycle` read it. Three lanes each compute
+ * and apply their own sweep independently, on their own cadence — without
+ * this, a lane whose fetch predates a `needs_info` hand-off (a design reply,
+ * an in-progress claim) blindly overwrites that fresher status with the plan
+ * it computed from its own stale snapshot, and does it silently: the write
+ * "succeeds", so there is nothing in the log to say a person's status change
+ * was clobbered. This is the same conditional-write primitive claim.ts
+ * already uses to arbitrate a contended claim between ships.
+ *
+ * A ticket whose write is rejected as stale is neither `parked`/`restored`
+ * nor `failed` — it is `contended`: something else has already changed this
+ * ticket more recently than the plan, so leaving it alone is correct, not an
+ * error. The next poll recomputes blocked-ness from scratch against the
+ * ticket's current state and will act on it then if it still applies.
+ *
+ * A ticket whose status write fails for any other reason is skipped and
+ * reported — the next poll recomputes blocked-ness from scratch and will try
+ * again, because nothing here is read back off the `blocked` status.
  *
  * A comment that fails to post does NOT undo the status change: the ticket
  * being in the right state matters more than the note explaining why.
@@ -270,13 +287,14 @@ export interface SweepWriter {
 export async function applySweep(
   writer: SweepWriter, steps: SweepStep[], memberId: string,
   log: { emit(msg: string, extra?: Record<string, unknown>): unknown; warn(msg: string, extra?: Record<string, unknown>): unknown },
-): Promise<{ parked: number; restored: number; failed: number }> {
+): Promise<{ parked: number; restored: number; failed: number; contended: number }> {
   let parked = 0;
   let restored = 0;
   let failed = 0;
+  let contended = 0;
   for (const step of steps) {
     try {
-      await writer.updateTicket(step.ticket.id, { status: step.to });
+      await writer.updateTicket(step.ticket.id, { status: step.to }, step.ticket.updated_at);
       if (step.action === 'park') parked++;
       else restored++;
       log.emit(
@@ -291,9 +309,16 @@ export async function applySweep(
         log.warn('status changed but the note failed to post', { ticket: step.ticket.issue_id, step: 'sweep' });
       }
     } catch (e) {
+      if (e instanceof StaleWriteError) {
+        contended++;
+        log.warn(`skipped ${step.action} — ticket changed since the sweep was planned`, {
+          ticket: step.ticket.issue_id, step: 'sweep',
+        });
+        continue;
+      }
       failed++;
       log.warn(`could not ${step.action}: ${(e as Error).message}`, { ticket: step.ticket.issue_id, step: 'sweep' });
     }
   }
-  return { parked, restored, failed };
+  return { parked, restored, failed, contended };
 }

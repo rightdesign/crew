@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { StaleWriteError } from '@tablation/client';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, sweepDiagnostics,
   planSweep, strandedNeedsInfo, rollUpParents, filingErrors, applySweep, sweepComment,
@@ -159,10 +160,12 @@ test('the sweep is APPLIED, not merely announced', async () => {
   // The bug this pins: planSweep was computed and logged, and nothing ever
   // wrote it — so a parked ticket stayed in the pool and a ready one stayed
   // invisible, on every cycle, silently.
-  const writes: Array<[string, unknown]> = [];
+  const writes: Array<[string, unknown, string | undefined]> = [];
   const events: string[] = [];
   const writer = {
-    updateTicket: async (id: string, patch: Record<string, unknown>) => { writes.push([id, patch]); return {}; },
+    updateTicket: async (id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string) => {
+      writes.push([id, patch, expectedUpdatedAt]); return {};
+    },
     postEvent: async (id: string, body: string) => { events.push(`${id}:${body.slice(0, 20)}`); },
   };
   const log = { emit: () => {}, warn: () => {} };
@@ -171,9 +174,35 @@ test('the sweep is APPLIED, not merely announced', async () => {
     { action: 'restore' as const, ticket: T({ id: 'b', issue_id: 'ISSUE-2', status: 'blocked' }), blockers: 'ISSUE-8 (verified)', to: 'accepted' as const },
   ];
   const r = await applySweep(writer, steps, 'seat-1', log);
-  assert.deepEqual(r, { parked: 1, restored: 1, failed: 0 });
-  assert.deepEqual(writes, [['a', { status: 'blocked' }], ['b', { status: 'accepted' }]]);
+  assert.deepEqual(r, { parked: 1, restored: 1, failed: 0, contended: 0 });
+  assert.deepEqual(writes, [
+    ['a', { status: 'blocked' }, '2026-08-23T00:00:00.000Z'],
+    ['b', { status: 'accepted' }, '2026-08-23T00:00:00.000Z'],
+  ]);
   assert.equal(events.length, 2);
+});
+
+test('a stale write is contention, not failure — something else already changed this ticket', async () => {
+  // The bug this pins (ISSUE-495): the sweep's plan is computed from a
+  // snapshot, but three lanes each apply their own sweep independently. A
+  // lane whose snapshot predates a fresher status change (a needs_info
+  // hand-off, an in-progress claim) must not silently stomp it — the write
+  // has to be conditional on the row not having moved.
+  const writes: Array<[string, unknown, string | undefined]> = [];
+  const writer = {
+    updateTicket: async (id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string) => {
+      writes.push([id, patch, expectedUpdatedAt]);
+      throw new StaleWriteError({});
+    },
+    postEvent: async () => { throw new Error('must not be called — nothing was actually changed'); },
+  };
+  const warned: string[] = [];
+  const r = await applySweep(writer, [
+    { action: 'restore' as const, ticket: T({ id: 'a', issue_id: 'ISSUE-1', status: 'blocked' }), blockers: 'x', to: 'accepted' as const },
+  ], 's', { emit: () => {}, warn: (m: string) => warned.push(m) });
+  assert.deepEqual(r, { parked: 0, restored: 0, failed: 0, contended: 1 });
+  assert.equal(writes.length, 1);
+  assert.ok(warned.some((w) => /changed since the sweep was planned/.test(w)));
 });
 
 test('a failed status write is reported and does not stop the rest', async () => {
@@ -192,7 +221,7 @@ test('a failed status write is reported and does not stop the rest', async () =>
     { action: 'park' as const, ticket: T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' }), blockers: 'x', to: 'blocked' as const },
   ], 's', { emit: () => {}, warn: (m: string) => warned.push(m) });
   assert.deepEqual(writes, ['a', 'b']);
-  assert.deepEqual(r, { parked: 1, restored: 0, failed: 1 });
+  assert.deepEqual(r, { parked: 1, restored: 0, failed: 1, contended: 0 });
   assert.ok(warned.some((w) => /could not park/.test(w)));
 });
 
