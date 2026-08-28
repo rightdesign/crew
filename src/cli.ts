@@ -688,6 +688,16 @@ async function releasePhase(
       emit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
     }
 
+  } catch (e) {
+    // Last resort: every step above already treats a tracker blip as
+    // non-fatal on its own (stamping, notify, the conflict/unbuildable
+    // loops, the worktree sweep), but this phase talks to the tracker in a
+    // few other places too (openTickets, acquireBoardLock, comments) that
+    // don't have their own try/catch. Whatever escapes here would otherwise
+    // reach the top of the process as an uncaught exception — crashing a
+    // release that may already be live — so it gets the same "warn, don't
+    // fail" treatment as everything else in this function.
+    emit.warn(`release phase failed: ${(e as Error).message}`, { step: 'release' });
   } finally {
     if (boardLock && boardLock.ok) await boardLock.release();
     if (relLock && relLock.ok) relLock.release();
