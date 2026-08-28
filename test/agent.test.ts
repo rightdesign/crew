@@ -125,6 +125,44 @@ test('digests are per route AND per role — one ship, several projects', () => 
   assert.equal(dev.digestAttached, false);   // not the other role's queue
 });
 
+test('a plan carries no agentLog target when the route has never been connected', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV',
+    apiKey: 'k', cycle: 'c1',
+  });
+  assert.equal(plan.agentLog, undefined);
+});
+
+test('a resolved route with a synced persona carries a full agentLog target', () => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    resolved: { workspaceId: 'ws-1', agentPersonas: { dev: { agentId: 'agent-9', lastSyncedUpdatedAt: 't' } } },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, crewHome: home, stateDir: state,
+    roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1',
+  });
+  assert.deepEqual(plan.agentLog, {
+    baseUrl: 'https://example.test', workspaceId: 'ws-1', apiKey: 'k', userAgent: 'crew-test', agentId: 'agent-9',
+  });
+});
+
+test('a resolved route with no synced persona for this role still reports, with no agentId', () => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    resolved: { workspaceId: 'ws-1' },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, crewHome: home, stateDir: state,
+    roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1',
+  });
+  assert.equal(plan.agentLog?.agentId, undefined);
+  assert.equal(plan.agentLog?.workspaceId, 'ws-1');
+});
+
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, route, ship } = rig();
   assert.throws(
@@ -190,6 +228,84 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
   // The one shared, low-volume event this run does write carries the result.
   const finish = lines.find((l) => l.includes('agent run finished'));
   assert.ok(finish);
+});
+
+/** Same mockFetch shape as connect.test.ts / agent-log.test.ts, keyed by method+pathname. */
+function mockFetch(routes: Record<string, unknown>) {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ key: string; body: unknown }> = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const key = `${init?.method ?? 'GET'} ${url.pathname}`;
+    calls.push({ key, body: init?.body ? JSON.parse(init.body as string) : undefined });
+    if (!(key in routes)) return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+    return new Response(JSON.stringify(routes[key]), { status: 200 });
+  }) as typeof fetch;
+  return { restore: () => { globalThis.fetch = originalFetch; }, calls };
+}
+
+test('spawnAgent reports the run as one Agent Log row, and its one thinking block as one cycle', async (t) => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    resolved: { workspaceId: 'ws-1', agentPersonas: { dev: { agentId: 'agent-9', lastSyncedUpdatedAt: 't' } } },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-401',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];
+  plan.cwd = state;
+
+  const { restore, calls } = mockFetch({
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { id: 'cycle-1' },
+  });
+  t.after(restore);
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 0);
+
+  assert.equal(calls.length, 2);
+  const logCall = calls[0]!;
+  assert.equal(logCall.key, 'POST /api/workspaces/ws-1/agents/log');
+  assert.deepEqual(logCall.body, {
+    agentId: 'agent-9', ticketReference: 'ISSUE-401', outcome: 'success',
+    startedAt: (logCall.body as any).startedAt, finishedAt: (logCall.body as any).finishedAt,
+  });
+  const cycleCall = calls[1]!;
+  assert.equal(cycleCall.key, 'POST /api/workspaces/ws-1/agents/log/log-1/cycles');
+  assert.deepEqual(cycleCall.body, {
+    cycleIndex: 0, occurredAt: (cycleCall.body as any).occurredAt, thinking: 'let me look',
+  });
+});
+
+test('spawnAgent warns but still resolves when reporting the agent log fails', async (t) => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    resolved: { workspaceId: 'ws-1' },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c2',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];
+  plan.cwd = state;
+
+  const { restore } = mockFetch({});   // every call 404s
+  t.after(restore);
+
+  const lines: string[] = [];
+  const emit = new Emitter({ route: 'proj', cycleId: 'c2', console: (l) => lines.push(l) });
+  emit.enter('agent', 'dev');
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 0);
+  assert.ok(lines.some((l) => l.includes('could not report agent log')));
 });
 
 test('spawnAgent never dies on a malformed line, and closes cleanly', async () => {

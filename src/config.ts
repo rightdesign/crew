@@ -108,6 +108,16 @@ export interface ResolvedIds {
    * copy in `crew.yaml` every time the workspace's own choices change.
    */
   contract?: Partial<import('./contract.ts').Contract>;
+  /**
+   * The workspace Agents-table row backing each of crew's four personas, and
+   * the row `updated_at` `crew agents sync` (agents.ts) last wrote itself —
+   * ISSUE-416. Absent entirely until that command has been run once; a role
+   * missing from the map just hasn't been synced yet. `lastSyncedUpdatedAt`
+   * is what makes a later sync's divergence check possible: if the row's
+   * current `updated_at` no longer matches, a workspace admin edited the
+   * prompt since crew last wrote it, and the sync must not clobber that.
+   */
+  agentPersonas?: Partial<Record<RoleName, { agentId: string; lastSyncedUpdatedAt: string }>>;
 }
 
 export interface Route {
@@ -568,6 +578,11 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
   const holds: HoldConfig[] = Array.isArray(raw.holds)
     ? raw.holds.map((h: any) => (typeof h === 'string' ? { id: h } : { id: h?.id, role: h?.role ?? '' }))
     : [];
+  const agentPersonas: ResolvedIds['agentPersonas'] = {};
+  for (const role of ROLE_NAMES) {
+    const p = raw.agentPersonas?.[role];
+    if (p?.agentId && p?.lastSyncedUpdatedAt) agentPersonas[role] = { agentId: p.agentId, lastSyncedUpdatedAt: p.lastSyncedUpdatedAt };
+  }
   return {
     workspaceId: m.req(raw.workspaceId, `${where}.resolved.workspaceId`),
     projectId: raw.projectId,
@@ -588,6 +603,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     operator: m.req(raw.operator, `${where}.resolved.operator`),
     holds,
     contract: raw.contract ?? undefined,
+    ...(Object.keys(agentPersonas).length > 0 ? { agentPersonas } : {}),
   };
 }
 

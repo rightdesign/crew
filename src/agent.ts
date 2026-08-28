@@ -15,6 +15,7 @@ import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { mapStreamLine, extractResult } from './stream.ts';
+import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 
 /**
  * A digest older than this is treated as absent. Acting on a stale queue is
@@ -155,6 +156,13 @@ export interface AgentPlan {
   eventsPath: string;
   /** Best-effort — the ticket this run is expected to work, if known yet. */
   ticket?: string;
+  /**
+   * Where to report this run's Agent Log / Agent Log Cycles rows
+   * (ISSUE-416/ISSUE-457), when the route has a resolved workspace to
+   * report into and a key to report with. Undefined skips reporting
+   * entirely — same as a route `crew connect` hasn't run on yet.
+   */
+  agentLog?: AgentLogTarget;
 }
 
 export interface PlanOptions {
@@ -210,6 +218,21 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
 
+  // Reporting needs a resolved workspace (`crew connect`) and a key to call
+  // it with — either is missing for a route that hasn't been connected, or
+  // in tests that build a bare Route by hand. `agentId` is best-effort on
+  // top of that: absent until `crew agents sync` has run once for this
+  // role, and the endpoint accepts a run with no Agent reference.
+  const agentLog: AgentPlan['agentLog'] = o.route.resolved && o.apiKey
+    ? {
+        baseUrl: o.route.baseUrl,
+        workspaceId: o.route.resolved.workspaceId,
+        apiKey: o.apiKey,
+        userAgent: o.ship.userAgent,
+        agentId: o.route.resolved.agentPersonas?.[o.role]?.agentId,
+      }
+    : undefined;
+
   return {
     role: o.role,
     route: routeLabel,
@@ -237,6 +260,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     streamPath: join(streamsDir, `${base}.jsonl`),
     eventsPath: join(streamsDir, `${base}.events.jsonl`),
     ticket: o.ticket,
+    agentLog,
   };
 }
 
@@ -307,6 +331,13 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
 
     let buf = '';
     let result: ReturnType<typeof extractResult>;
+    // One buffered Agent Log Cycle per `thought` block seen, in order — the
+    // whole point of Agent Log Cycles (WORKSPACE_AGENTS_PLAN.md) is capturing
+    // a run's thinking output, so a cycle is defined as one thinking block
+    // rather than one assistant turn (a turn with no thought contributes
+    // nothing worth a row). Flushed against the Agent Log row's id once the
+    // run finishes and that row exists — see the `close` handler below.
+    const cycles: AgentCycle[] = [];
 
     const handleLine = (line: string) => {
       if (!line) return;
@@ -332,6 +363,9 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
             data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
           };
           eventsSink?.write(`${JSON.stringify(e)}\n`);
+          if (ev.kind === 'thought' && ev.text) {
+            cycles.push({ cycleIndex: cycles.length, occurredAt: e.at, thinking: ev.text });
+          }
         }
       } catch {
         /* a shape this run's mapping does not expect must not kill the cycle */
@@ -346,7 +380,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     });
 
     child.on('error', (err) => reject(new AgentError(`cannot run ${plan.bin}: ${err.message}`)));
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       if (buf) handleLine(buf);
       rawSink?.end();
       eventsSink?.end();
@@ -367,6 +401,22 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
           ...(result?.totalCostUsd !== undefined ? { totalCostUsd: result.totalCostUsd } : {}),
         },
       });
+      if (plan.agentLog) {
+        try {
+          await reportAgentRun(plan.agentLog, {
+            ticketReference: plan.ticket,
+            outcome: (code ?? 1) === 0 ? 'success' : 'error',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            cycles,
+          });
+        } catch (e) {
+          // A workspace that has never been provisioned/backfilled (ISSUE-465),
+          // or a plain network hiccup, must not fail the run it is reporting
+          // on — same reasoning as `openSink`'s degrade-quietly contract above.
+          emit.warn(`could not report agent log: ${(e as Error).message}`, { step: 'agent' });
+        }
+      }
       resolve({ code: code ?? 1, ms });
     });
     child.stdin.end(plan.prompt);

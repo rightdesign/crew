@@ -13,7 +13,7 @@ import {
   loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
   DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
-  ConfigError, type RoleName, type RepoTarget,
+  ConfigError, type RoleName, type RepoTarget, type Route,
 } from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
@@ -42,6 +42,7 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
+import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError } from './agents.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
 } from './git.ts';
@@ -174,6 +175,7 @@ function usage(): never {
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
+  crew agents sync [route]      push crew's built-in personas into the workspace Agents table
   crew install                  write and load this platform's scheduler unit
   crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
@@ -240,7 +242,7 @@ const FLEET_CAPABLE = new Set(['poll', 'run']);
 // ship still gets "name one" unless they say `--fleet` explicitly.
 const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && flag('fleet');
 const named = positional[1];
-const fleetWide = command === 'inbox' || command === 'connect' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || releaseFleetWide ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -1171,6 +1173,59 @@ switch (command) {
       },
     });
     process.on('SIGINT', () => { stop(); process.exit(0); });
+    break;
+  }
+
+  case 'agents': {
+    // `crew agents sync [route]` — the only subcommand today. Unlike every
+    // other route-scoped command, the route argument is positional[2]
+    // (`agents` occupies positional[1] as the subcommand name), so this
+    // resolves its own target route instead of using the `route` the global
+    // `fleetWide` default picked (see the `command === 'agents'` entry
+    // there, which exists only to stop `findRoute(cfg, 'sync')` throwing).
+    const sub = positional[1];
+    if (sub !== 'sync') {
+      process.stderr.write('crew agents sync [route]   push crew\'s Developer/Design/QA/Triage personas into the workspace Agents table\n');
+      process.exit(2);
+    }
+    let target: Route;
+    try {
+      target = findRoute(cfg, positional[2]);
+    } catch (e) {
+      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    if (!target.resolved) {
+      process.stderr.write(`crew agents sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
+      process.exit(2);
+    }
+    let result: Awaited<ReturnType<typeof syncPersonas>>;
+    try {
+      result = await syncPersonas(target, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent, dryRun });
+    } catch (e) {
+      if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    for (const o of result.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
+    for (const o of result.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
+    if (!dryRun) {
+      // Persist only `agentPersonas` into this route's resolved state file —
+      // same merge-not-clobber shape `connect`'s own `contract`/
+      // `reviewedStatuses` writes use, since a hand-authored `contract`
+      // block or another field this command knows nothing about must
+      // survive untouched.
+      const resolvedPath = resolvedPathFor(cfg.ship.stateDir, target.route);
+      const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
+      raw.agentPersonas = result.agentPersonas;
+      mkdirSync(dirOf(resolvedPath), { recursive: true });
+      writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
+    }
+    // A diverged persona is not this run's failure, but it IS something an
+    // operator needs to act on (review the row, or re-sync once they have) —
+    // a nonzero exit is what makes that visible to whatever invoked this
+    // (a scheduler job's log, a person's own shell) without erroring the
+    // whole command.
+    if (result.outcomes.some((o) => o.action === 'diverged')) process.exitCode = 1;
     break;
   }
 
