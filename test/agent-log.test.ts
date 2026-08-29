@@ -43,6 +43,7 @@ test('reportAgentRun creates the log row, then flushes its cycles in order again
   assert.deepEqual(calls[0]!.body, {
     agentId: 'agent-1', ticketReference: 'ISSUE-416', outcome: 'success',
     startedAt: '2026-08-28T00:00:00.000Z', finishedAt: '2026-08-28T00:05:00.000Z',
+    source: 'client', client: 'crew',
   });
   // Cycles land in order, against the log row's own id — not sent concurrently
   // or out of sequence, since Cycle Index is meaningful order.
@@ -71,6 +72,28 @@ test('agentId is omitted from the body when the target has none — a run still 
     outcome: 'success', startedAt: 'a', finishedAt: 'b', cycles: [],
   });
   assert.equal((calls[0]!.body as { agentId?: string }).agentId, undefined);
+});
+
+test('reports source: client, model and the token/cost breakdown when the run provides them (ISSUE-376)', async (t) => {
+  const { restore, calls } = mockFetch({ 'POST /api/workspaces/ws-1/agents/log': { id: 'log-4' } });
+  t.after(restore);
+
+  await reportAgentRun(target, {
+    outcome: 'success', startedAt: 'a', finishedAt: 'b', cycles: [],
+    model: 'claude-sonnet-5',
+    tokensIn: 1200,
+    tokensOut: 300,
+    cacheReadTokens: 40,
+    cacheWriteTokens: 5,
+    costUsd: 0.0456,
+  });
+
+  assert.deepEqual(calls[0]!.body, {
+    agentId: 'agent-1', outcome: 'success', startedAt: 'a', finishedAt: 'b',
+    source: 'client', client: 'crew',
+    model: 'claude-sonnet-5', tokensIn: 1200, tokensOut: 300,
+    cacheReadTokens: 40, cacheWriteTokens: 5, costUsd: 0.0456,
+  });
 });
 
 test('a non-ok response throws, naming the path and status', async (t) => {

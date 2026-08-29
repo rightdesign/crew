@@ -409,6 +409,12 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
             startedAt,
             finishedAt: new Date().toISOString(),
             cycles,
+            model: plan.model,
+            tokensIn: result?.inputTokens,
+            tokensOut: result?.outputTokens,
+            cacheReadTokens: result?.cacheReadTokens,
+            cacheWriteTokens: result?.cacheCreationTokens,
+            costUsd: result?.totalCostUsd,
           });
         } catch (e) {
           // A workspace that has never been provisioned/backfilled (ISSUE-465),

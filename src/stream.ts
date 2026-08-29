@@ -22,6 +22,17 @@ export interface StreamResult {
   sessionId?: string;
   numTurns?: number;
   totalCostUsd?: number;
+  /**
+   * From the result line's own `usage` block — present on every
+   * `claude --output-format stream-json` result event, not just when
+   * prompt caching was used (a run with no cache hits reports 0, not an
+   * absent field). `undefined` here only for a result line that predates
+   * this shape or genuinely omits `usage`.
+   */
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 interface ContentBlock {
@@ -38,6 +49,12 @@ interface StreamLine {
   session_id?: string;
   num_turns?: number;
   total_cost_usd?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
 
 /**
@@ -83,5 +100,13 @@ export function mapStreamLine(line: unknown): StreamKindEvent[] {
 export function extractResult(line: unknown): StreamResult | undefined {
   const obj = line as StreamLine;
   if (!obj || obj.type !== 'result') return undefined;
-  return { sessionId: obj.session_id, numTurns: obj.num_turns, totalCostUsd: obj.total_cost_usd };
+  return {
+    sessionId: obj.session_id,
+    numTurns: obj.num_turns,
+    totalCostUsd: obj.total_cost_usd,
+    inputTokens: obj.usage?.input_tokens,
+    outputTokens: obj.usage?.output_tokens,
+    cacheReadTokens: obj.usage?.cache_read_input_tokens,
+    cacheCreationTokens: obj.usage?.cache_creation_input_tokens,
+  };
 }

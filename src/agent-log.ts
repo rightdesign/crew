@@ -42,6 +42,13 @@ export interface AgentRunReport {
   startedAt: string;
   finishedAt: string;
   cycles: AgentCycle[];
+  /** As reported by the run — `plan.model`, the model this ship was configured to run. */
+  model?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costUsd?: number;
 }
 
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
@@ -76,6 +83,14 @@ export async function reportAgentRun(
     outcome: run.outcome,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
+    source: 'client',
+    client: 'crew',
+    model: run.model,
+    tokensIn: run.tokensIn,
+    tokensOut: run.tokensOut,
+    cacheReadTokens: run.cacheReadTokens,
+    cacheWriteTokens: run.cacheWriteTokens,
+    costUsd: run.costUsd,
   });
   for (const cycle of run.cycles) {
     await post(target, `/agents/log/${entry.id}/cycles`, {
