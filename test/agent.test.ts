@@ -200,15 +200,21 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
 
   // Thought/tool/text blocks landed on their OWN sink, not the shared one —
   // a long session is thousands of these and events.jsonl is not the place.
+  // A `thought` block also gets a paired `cycle` event (ISSUE-481) — the
+  // same text, correlated with its Agent Log Cycle index, for a live
+  // consumer (crew-macos) that wants "which numbered cycle" alongside the
+  // raw thinking text `thought` already carries.
   const mapped = readFileSync(plan.eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(mapped.map((e) => e.data.kind), ['thought', 'tool', 'text']);
+  assert.deepEqual(mapped.map((e) => e.data.kind), ['thought', 'cycle', 'tool', 'text']);
   // The thought/text blocks must carry their actual content verbatim, not
   // just a bare kind marker — a client tailing eventsPath live otherwise
   // has to fall back to parsing the whole raw transcript.
   assert.equal(mapped[0].data.text, 'let me look');
-  assert.equal(mapped[1].data.tool, 'Bash');
-  assert.equal(mapped[1].data.target, 'ls');
-  assert.equal(mapped[2].data.text, 'All done.');
+  assert.equal(mapped[1].data.text, 'let me look');
+  assert.equal(mapped[1].data.cycleIndex, 0);
+  assert.equal(mapped[2].data.tool, 'Bash');
+  assert.equal(mapped[2].data.target, 'ls');
+  assert.equal(mapped[3].data.text, 'All done.');
   for (const e of mapped) {
     assert.equal(e.step, 'agent');
     assert.equal(e.role, 'dev');

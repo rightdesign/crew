@@ -364,7 +364,26 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
           };
           eventsSink?.write(`${JSON.stringify(e)}\n`);
           if (ev.kind === 'thought' && ev.text) {
-            cycles.push({ cycleIndex: cycles.length, occurredAt: e.at, thinking: ev.text });
+            const cycleIndex = cycles.length;
+            cycles.push({ cycleIndex, occurredAt: e.at, thinking: ev.text });
+            // A second event alongside the raw `thought` one above (ISSUE-481)
+            // — a live consumer (crew-macos's log window) wants the same
+            // thinking text correlated with the Agent Log Cycle it will end
+            // up as (`cycleIndex`, matching `AgentCycle` above) plus which
+            // seat/persona produced it, not just the bare text `thought`
+            // carries. `cycleIndex` only exists here, in the buffer this
+            // function already owns, not in `mapStreamLine` — that mapper is
+            // deliberately a pure, per-line function with no run state
+            // (module doc above), so it stays the one place deciding
+            // "is this a thinking block", and this is the one place that
+            // knows which numbered cycle it became. `role`, `route`, `ticket`
+            // are already on the envelope via the `e` spread, which is what
+            // a persona display already needs.
+            eventsSink?.write(`${JSON.stringify({
+              ...e,
+              message: 'cycle',
+              data: { kind: 'cycle', cycleIndex, text: ev.text },
+            })}\n`);
           }
         }
       } catch {

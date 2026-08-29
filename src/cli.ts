@@ -13,7 +13,7 @@ import {
   loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
   DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
-  ConfigError, type RoleName, type RepoTarget, type Route,
+  ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
 } from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
@@ -164,7 +164,7 @@ function usage(): never {
   crew merge [route]             merge verified branches and stop
   crew deploy [route]            release now, even with nothing new to merge
   crew watch [route]             live view of what the crew is doing
-  crew status [route]            paused/running state
+  crew status [route] [--json]   paused/running state; --json for a machine reader
   crew doctor [route]            read-only preflight
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
@@ -1726,6 +1726,84 @@ switch (command) {
   }
 
   case 'status': {
+    // `--json` is an ADDITION, not a mode the text output below was folded
+    // into — the human form is unchanged, since people have it in scripts
+    // and in their fingers. It exists because a monitor (crew-macos's menu
+    // bar app, ISSUE-417) previously had no supported way to ask "what is
+    // this ship doing" except parsing crew's own private files directly —
+    // crew.yaml, the state directory's pause markers, its lock files. Every
+    // one of those is an implementation detail this program is free to
+    // change; this is the answer that's safe to depend on instead.
+    //
+    // Single-route, matching the text output below: `status` isn't
+    // FLEET_CAPABLE today (see `FLEET_CAPABLE` near the top of this file),
+    // so `route` here is always the one route this invocation resolved,
+    // never a fleet-wide list.
+    //
+    // Starvation instrumentation (ISSUE-382): the poll writes this every
+    // cycle, so a quiet board's most urgent ticket going unpicked shows up
+    // here without anyone reading the log by hand.
+    const fairness = state.fairness(route.route);
+    const waiting = fairness.waiting();
+
+    // Ship liveness (ISSUE-380): every ship this route's Ships table
+    // knows about, not only this one — "status ... what this ship (or the
+    // fleet) is doing" names both. Absent entirely on a workspace with no
+    // Ships table, same as `doctor`'s "this workspace has no Ships table
+    // (fine)".
+    const statusTracker = new Tracker(route, cfg.ship);
+    const shipRows = await statusTracker.shipRows();
+    const engagedTicketIds = shipRows.map((s) => s.engaged_ticket_id).filter((id): id is string => !!id);
+    const engagedTickets = engagedTicketIds.length ? await statusTracker.ticketsByIds(engagedTicketIds) : [];
+    const issueLabelById = new Map(engagedTickets.map((t) => [t.id, t.issue_id]));
+
+    if (flag('json')) {
+      const repos = await resolvedRepos(route);
+      process.stdout.write(`${JSON.stringify({
+        // Bumped only when a field CHANGES MEANING or is removed — new
+        // fields never bump it, so a reader can add support without a flag
+        // day.
+        version: 1,
+        configFile: cfg.configFile,
+        ship: {
+          name: cfg.ship.name,
+          platform: cfg.ship.platform,
+          agent: { bin: cfg.ship.agent.bin, model: cfg.ship.agent.model },
+          stateDir: cfg.ship.stateDir,
+          logFile: cfg.ship.logFile,
+          eventFile: eventFileFor(cfg.ship.stateDir),
+        },
+        crew: {
+          paused: state.isPaused(),
+          roles: ROLE_NAMES.map((r) => ({ name: r, label: ROLE_LABEL[r], paused: state.isRolePaused(r) })),
+        },
+        watermark: state.watermark(),
+        route: {
+          name: route.route,
+          dir: route.dir,
+          enabled: route.enabled,
+          area: route.area ?? null,
+          baseUrl: route.baseUrl,
+          repos: repos.map((r) => ({
+            name: r.name,
+            dir: r.dir,
+            worktreePrefix: r.config.worktrees.prefix,
+            worktreeParent: resolvePath(r.dir, '..'),
+          })),
+          waiting: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : null,
+        },
+        ships: shipRows.map((s) => ({
+          name: s.name ?? null,
+          lastSeen: s.last_seen ?? null,
+          engaged: !!s.engaged,
+          engagedSince: s.engaged_since ?? null,
+          engagedRoute: s.engaged_connection ?? null,
+          engagedTicket: s.engaged_ticket_id ? issueLabelById.get(s.engaged_ticket_id) ?? null : null,
+        })),
+      }, null, 2)}\n`);
+      break;
+    }
+
     process.stdout.write(
       `ship:       ${cfg.ship.name} (${cfg.ship.platform})\n` +
         `route:      ${route.route} -> ${route.dir}\n` +
@@ -1736,11 +1814,6 @@ switch (command) {
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
       if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);
     }
-    // Starvation instrumentation (ISSUE-382): the poll writes this every
-    // cycle, so a quiet board's most urgent ticket going unpicked shows up
-    // here without anyone reading the log by hand.
-    const fairness = state.fairness(route.route);
-    const waiting = fairness.waiting();
     if (waiting) {
       process.stdout.write(
         `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +
@@ -1748,20 +1821,10 @@ switch (command) {
       );
     }
 
-    // Ship liveness (ISSUE-380): every ship this route's Ships table
-    // knows about, not only this one — "status ... what this ship (or the
-    // fleet) is doing" names both. Absent entirely on a workspace with no
-    // Ships table, same as `doctor`'s "this workspace has no Ships table
-    // (fine)".
-    const statusTracker = new Tracker(route, cfg.ship);
-    const shipRows = await statusTracker.shipRows();
     if (shipRows.length) {
       // "An engaged ship names what it is working" — resolve the raw
       // `engaged_ticket_id` references to their `issue_id` label, one call
       // for every engaged ship rather than one call per ship.
-      const engagedTicketIds = shipRows.map((s) => s.engaged_ticket_id).filter((id): id is string => !!id);
-      const engagedTickets = await statusTracker.ticketsByIds(engagedTicketIds);
-      const issueLabelById = new Map(engagedTickets.map((t) => [t.id, t.issue_id]));
       process.stdout.write('ships:\n');
       for (const s of shipRows) {
         process.stdout.write(`  ${renderShipLine(s, issueLabelById)}\n`);
