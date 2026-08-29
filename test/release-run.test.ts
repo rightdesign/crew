@@ -142,6 +142,43 @@ release:
   assert.equal(out.merged.length, 0);
   assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim(), before);
   assert.ok(lines.some((l) => /hands work off and does not release/.test(l)));
+
+  // the merged hook was actually consulted (ISSUE-517) — not left dead like
+  // before, when `external` short-circuited before detectClosure ever ran
+  assert.equal(out.externalClosures?.length, 1);
+  assert.equal(out.externalClosures?.[0]?.ticket.issue_id, 'ISSUE-7');
+  assert.equal(out.externalClosures?.[0]?.closure.state, 'merged');
+  assert.equal(out.externalClosures?.[0]?.closure.confidence, 'definitive');
+});
+
+test('external mode resolves a commit sha for a hook-confirmed merge, same as the heuristic path would', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  merged: exit 0
+release:
+  mode: external
+  versioning: none
+  tag: false
+  changelog: false
+`, bare);
+
+  // a human merged the PR out-of-band: squashed onto main, branch deleted —
+  // exactly what the hook is telling the crew happened
+  g('push', '-q', 'origin', 'issue-7');
+  g('merge', '--squash', 'issue-7'); g('commit', '-qm', 'built it (ISSUE-7) (#3)');
+  const squashSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('push', '-q', 'origin', 'main');
+  g('push', '-q', 'origin', '--delete', 'issue-7');
+  g('checkout', '-q', 'main');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.externalClosures?.[0]?.closure.state, 'merged');
+  assert.equal(out.externalClosures?.[0]?.closure.mergedAt, squashSha);
 });
 
 test('a dirty tree refuses before anything is attempted', async () => {

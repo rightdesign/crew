@@ -12,8 +12,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  createReleaseTag, currentBranch, fetchRemote, git, gitOk, GitError, headSha,
-  pushTag, remoteBranchExists, remoteConfigured, status, tagExists,
+  createReleaseTag, currentBranch, detectClosure, fetchRemote, git, gitOk, GitError, headSha,
+  pushTag, remoteBranchExists, remoteConfigured, status, tagExists, type ClosureCheck,
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
@@ -128,6 +128,17 @@ export interface ReleaseOutcome {
    * names) category `describeRelease` can put in a dedupable headline.
    */
   blockKind?: ReleaseBlock['kind'];
+  /**
+   * `release.mode: external` only: whether each verified ticket's branch has
+   * landed on the other side of the handoff, per `hooks.merged` (or the
+   * heuristic fallback). The crew does not act on this itself — it does not
+   * merge, stamp or close anything for an external repo, that authority
+   * belongs to whatever released it — but the caller needs `state` and
+   * `mergedAt` to write the same `commit_sha`/`merged_at` fields the
+   * automated-merge path stamps (ISSUE-218), so an external ticket's record
+   * means the same thing regardless of which path closed it.
+   */
+  externalClosures?: { ticket: Ticket; closure: ClosureCheck }[];
 }
 
 const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'bump' | 'released',
@@ -141,6 +152,45 @@ const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'b
     onLine: (l) => { if (l.trim()) o.emit.emit(l.trim(), { data: { hook: name } }); },
   });
 };
+
+/**
+ * `release.mode: external`'s only remaining interest: has each verified
+ * ticket's branch landed on the other side of the handoff? `hooks.merged` is
+ * repo-config's own validation guarantees exist whenever `external` is
+ * declared (repo-config.ts), so it is always defined here — the heuristic
+ * fallback inside `detectClosure` is for callers with no hook, not this one.
+ *
+ * A ticket with no branch here (`c.branch === null`) is skipped: it is either
+ * already accounted for (`already-merged`) or has never been built
+ * (`never-built`), and stranded-verified.ts is what handles that, the same as
+ * every other release mode — closure detection needs a branch name to ask
+ * the hook about.
+ */
+async function detectExternalClosures(
+  o: ReleaseRunOptions, candidates: MergeCandidate[],
+): Promise<{ ticket: Ticket; closure: ClosureCheck }[]> {
+  const script = o.repo.hooks.merged;
+  const mergedHook = script
+    ? async (env: Record<string, string>) => (await runScript(script, {
+        cwd: o.cwd,
+        env,
+        shell: resolveShell(o.repo.shell ?? o.shell),
+        onLine: (l) => { if (l.trim()) o.emit.emit(l.trim(), { data: { hook: 'merged' } }); },
+      })).code
+    : undefined;
+
+  const out: { ticket: Ticket; closure: ClosureCheck }[] = [];
+  for (const c of candidates) {
+    if (!c.branch) continue;
+    const closure = await detectClosure({
+      cwd: o.cwd, key: c.ticket.issue_id, pushedBranch: c.branch,
+      remote: o.repo.branch.remote, base: o.repo.branch.base, mergedHook,
+    });
+    o.emit.emit(closure.detail, { ticket: c.ticket.issue_id, data: { confidence: closure.confidence } });
+    out.push({ ticket: c.ticket, closure });
+  }
+  return out;
+}
 
 /**
  * Squash-merges one verified branch.
@@ -445,7 +495,8 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   // whatever does.
   if (o.repo.release.mode === 'external') {
     o.emit.emit('release.mode is external — the crew hands work off and does not release');
-    return { merged: [], deployed: false, stopped: 'external', decision };
+    const externalClosures = await detectExternalClosures(o, decision.merges);
+    return { merged: [], deployed: false, stopped: 'external', decision, externalClosures };
   }
 
   o.emit.enter('merge');

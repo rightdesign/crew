@@ -29,7 +29,7 @@ import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
 import { runRelease } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
-import { planStamp, applyStamp } from './stamp.ts';
+import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
@@ -604,6 +604,14 @@ async function releasePhase(
       if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
     } else if (outcome.stopped) {
       emit.emit(`nothing stamped — ${outcome.stopped}`);
+    }
+
+    // `release.mode: external`: the crew ships nothing itself, but a ticket
+    // whose branch has landed on the other side of the hand-off still gets
+    // its `commit_sha`/`merged_at` written, same as the block above does for
+    // tickets this release actually stamped `deployed` itself.
+    if (outcome.externalClosures?.length) {
+      await applyExternalClosures(tracker, outcome.externalClosures, emit, dryRun);
     }
 
     // Last, and non-fatal: whatever happened has happened, and telling someone

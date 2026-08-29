@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { planStamp, applyStamp } from '../src/stamp.ts';
+import { planStamp, applyStamp, applyExternalClosures } from '../src/stamp.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
 import type { Ticket } from '../src/tracker.ts';
+import type { ClosureCheck } from '../src/git.ts';
 
 const T = (issue_id: string, status = 'verified'): Ticket =>
   ({ id: issue_id, issue_id, status, updated_at: '2026-08-23T00:00:00Z' }) as Ticket;
@@ -96,4 +97,92 @@ test('a no-op merge is still stamped, though no commit names it', () => {
   );
   assert.deepEqual(plan.map((p) => p.ticket.issue_id), ['ISSUE-292']);
   assert.equal(plan[0]!.reason, 'merged by this release');
+});
+
+const closure = (state: ClosureCheck['state'], mergedAt?: string): ClosureCheck =>
+  ({ state, confidence: 'definitive', mergedAt, detail: 'd' });
+
+test('a merged external closure with a sha stamps commit_sha/merged_at', async () => {
+  const lines: string[] = [];
+  const calls: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => {
+      calls.push({ id, patch });
+      return {} as Ticket;
+    },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef') }], emitter(lines), false,
+  );
+  assert.equal(n, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.id, 'ISSUE-517');
+  assert.equal(calls[0]!.patch.commit_sha, 'deadbeef');
+  assert.ok(typeof calls[0]!.patch.merged_at === 'string');
+});
+
+test('a merged external closure with no resolved sha is not stamped', async () => {
+  const lines: string[] = [];
+  let called = false;
+  const tracker = {
+    updateTicket: async () => { called = true; return {} as Ticket; },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', undefined) }], emitter(lines), false,
+  );
+  assert.equal(n, 0);
+  assert.equal(called, false);
+});
+
+test('an open or unknown external closure is not stamped', async () => {
+  const lines: string[] = [];
+  let called = false;
+  const tracker = {
+    updateTicket: async () => { called = true; return {} as Ticket; },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker,
+    [{ ticket: T('ISSUE-1'), closure: closure('open') }, { ticket: T('ISSUE-2'), closure: closure('unknown') }],
+    emitter(lines), false,
+  );
+  assert.equal(n, 0);
+  assert.equal(called, false);
+});
+
+test('a dry run for external closures stamps nothing but reports what it would', async () => {
+  const lines: string[] = [];
+  let called = false;
+  const tracker = {
+    updateTicket: async () => { called = true; return {} as Ticket; },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef') }], emitter(lines), true,
+  );
+  assert.equal(called, false);
+  assert.equal(n, 1);
+  assert.ok(lines.some((l) => /would stamp commit_sha \(deadbeef\)/.test(l)));
+});
+
+test('a tracker failure on one external closure does not abandon the rest', async () => {
+  const lines: string[] = [];
+  const calls: string[] = [];
+  const tracker = {
+    updateTicket: async (id: string) => {
+      calls.push(id);
+      if (id === 'ISSUE-2') throw new Error('503 from the tracker');
+      return {} as Ticket;
+    },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker,
+    [
+      { ticket: T('ISSUE-1'), closure: closure('merged', 'aaa') },
+      { ticket: T('ISSUE-2'), closure: closure('merged', 'bbb') },
+      { ticket: T('ISSUE-3'), closure: closure('merged', 'ccc') },
+    ],
+    emitter(lines), false,
+  );
+  assert.deepEqual(calls, ['ISSUE-1', 'ISSUE-2', 'ISSUE-3']);
+  assert.equal(n, 2);
+  assert.ok(lines.some((l) => /ISSUE-2.*could not stamp commit_sha/.test(l)));
 });

@@ -148,7 +148,31 @@ test('the repo\'s merged hook is authoritative, and the heuristics are not consu
   });
   assert.equal(truth.state, 'merged');
   assert.equal(truth.confidence, 'definitive');
+  assert.equal(truth.mergedAt, undefined);   // rewritten subject — nothing to resolve
   assert.deepEqual(seen[0], { CREW_TICKET: 'ISSUE-500', CREW_BRANCH: 'issue-500', CREW_BASE: 'main' });
+});
+
+test('the merged hook is authoritative about STATE, but the sha still comes from the base — same as the heuristic path', async () => {
+  const { work, g } = pair();
+  g('checkout', '-qb', 'issue-502');
+  writeFileSync(join(work, 'f.txt'), '1'); g('add', '.');
+  g('commit', '-qm', 'built it (ISSUE-502)');
+  g('push', '-q', 'origin', 'issue-502');
+  const branchHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work, encoding: 'utf8' }).trim();
+  g('checkout', '-q', 'main');
+  g('merge', '--squash', 'issue-502'); g('commit', '-qm', 'built it (ISSUE-502) (#7)');
+  const squashSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work, encoding: 'utf8' }).trim();
+  g('push', '-q', 'origin', 'main');
+  g('push', '-q', 'origin', '--delete', 'issue-502');
+  fetchRemote(work);
+
+  const truth = await detectClosure({
+    cwd: work, key: 'ISSUE-502', pushedBranch: 'issue-502', mergedHook: async () => 0,
+  });
+  assert.equal(truth.state, 'merged');
+  assert.equal(truth.confidence, 'definitive');
+  assert.notEqual(truth.mergedAt, branchHead);   // the branch's own head is not on the base — squashed
+  assert.equal(truth.mergedAt, squashSha);
 });
 
 test('a hook saying "not landed" still distinguishes open from abandoned', async () => {

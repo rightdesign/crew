@@ -298,7 +298,16 @@ export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
       CREW_TICKET: o.key, CREW_BRANCH: o.pushedBranch, CREW_BASE: base,
     });
     if (code === 0) {
-      return { state: 'merged', confidence: 'definitive', detail: `the repo's merged hook says ${o.key} landed` };
+      // The hook only answers WHETHER it merged, not WHERE — resolve the same
+      // way the heuristic path does, so a hook-confirmed merge still carries a
+      // commit sha when the base names the key. A squash whose subject was
+      // rewritten leaves this undefined; the hook's answer is still definitive
+      // either way, just without a sha to stamp.
+      const mergedAt = findKeyOnBase(o.cwd, o.key, remote, base, o.since) ?? undefined;
+      return {
+        state: 'merged', confidence: 'definitive', mergedAt,
+        detail: `the repo's merged hook says ${o.key} landed`,
+      };
     }
     // A hook that ran and said "no" is still definitive about not-merged; it
     // just cannot distinguish "still open" from "closed unmerged", which the

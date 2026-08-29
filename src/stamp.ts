@@ -15,7 +15,7 @@
 import type { Tracker, Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 import type { Emitter } from './events.ts';
-import { commitBodies } from './git.ts';
+import { commitBodies, type ClosureCheck } from './git.ts';
 
 export interface StampPlan {
   ticket: Ticket;
@@ -88,6 +88,49 @@ export async function applyStamp(
       // One ticket failing must not abandon the rest, and none of it fails
       // the release — the work is already live.
       emit.warn(`could not stamp: ${(e as Error).message}`, { ticket: ticket.issue_id });
+    }
+  }
+  return stamped;
+}
+
+/**
+ * `release.mode: external` only: write `commit_sha`/`merged_at` onto a
+ * ticket once `detectClosure` confirms it landed on the other side of the
+ * hand-off — the same two fields dev-loop.sh's `stamp_merge_commit` writes
+ * for the automated-merge path (ISSUE-218), so a ticket's record means the
+ * same thing regardless of which path closed it.
+ *
+ * Only `state === 'merged'` writes anything: `open`/`unknown` mean nothing
+ * has happened yet, and a `mergedAt` that stays `undefined` (merge subject
+ * was rewritten, no key found on the base) is not stamped either — a
+ * missing sha next cycle, once the base has more history to search, beats a
+ * wrong one now.
+ */
+export async function applyExternalClosures(
+  tracker: Tracker,
+  closures: { ticket: Ticket; closure: ClosureCheck }[] | undefined,
+  emit: Emitter,
+  dryRun: boolean,
+): Promise<number> {
+  if (!closures?.length) return 0;
+  let stamped = 0;
+  const at = new Date().toISOString();
+  for (const { ticket, closure } of closures) {
+    if (closure.state !== 'merged' || !closure.mergedAt) continue;
+    if (dryRun) {
+      emit.emit(`would stamp commit_sha (${closure.mergedAt.slice(0, 8)})`, { ticket: ticket.issue_id });
+      stamped++;
+      continue;
+    }
+    try {
+      await tracker.updateTicket(ticket.id, { commit_sha: closure.mergedAt, merged_at: at });
+      emit.emit(`stamped commit_sha (${closure.mergedAt.slice(0, 8)})`, { ticket: ticket.issue_id });
+      stamped++;
+    } catch (e) {
+      // Same reasoning as applyStamp above: the merge already happened on
+      // the other side, a tracker blip here must not be treated as a
+      // release failure.
+      emit.warn(`could not stamp commit_sha: ${(e as Error).message}`, { ticket: ticket.issue_id });
     }
   }
   return stamped;
