@@ -49,6 +49,20 @@ export interface AgentRunReport {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costUsd?: number;
+  /**
+   * ISSUE-377/529: the Agents row's history-entry id current as of the
+   * `crew agents sync` that last established this role's persona
+   * (`route.resolved.agentPersonas[role].historyId`) — lets
+   * `crew logbook show --prompt` fetch the exact template version that
+   * produced this run.
+   */
+  promptVersion?: string;
+  /**
+   * ISSUE-377/529: hash of the actually-composed local template body
+   * (`common.md` + `lane-<role>.md`) at run time — a check value for the
+   * reconstruction above, not a storage key.
+   */
+  promptSha?: string;
 }
 
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
@@ -91,6 +105,8 @@ export async function reportAgentRun(
     cacheReadTokens: run.cacheReadTokens,
     cacheWriteTokens: run.cacheWriteTokens,
     costUsd: run.costUsd,
+    promptVersion: run.promptVersion,
+    promptSha: run.promptSha,
   });
   for (const cycle of run.cycles) {
     await post(target, `/agents/log/${entry.id}/cycles`, {

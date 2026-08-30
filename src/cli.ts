@@ -43,6 +43,7 @@ import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, PERSONA_NAME } from './agents.ts';
+import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
 } from './git.ts';
@@ -176,6 +177,8 @@ function usage(): never {
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
   crew agents sync [route]      push crew's built-in personas into the workspace Agents table
+  crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
+  crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew install                  write and load this platform's scheduler unit
   crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
@@ -242,7 +245,7 @@ const FLEET_CAPABLE = new Set(['poll', 'run']);
 // ship still gets "name one" unless they say `--fleet` explicitly.
 const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && flag('fleet');
 const named = positional[1];
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'logbook' || releaseFleetWide ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -1249,6 +1252,77 @@ switch (command) {
     // (a scheduler job's log, a person's own shell) without erroring the
     // whole command.
     if (result.outcomes.some((o) => o.action === 'diverged')) process.exitCode = 1;
+    break;
+  }
+
+  case 'logbook': {
+    // Same shape as `case 'agents'` above: `logbook` occupies positional[1]
+    // as the subcommand name, so this resolves its own target route rather
+    // than the fleet-wide default `route` above picked. `show`'s entry id
+    // is always the LAST positional — a route is only read from
+    // positional[2] when a further positional (the entry id) follows it,
+    // so `crew logbook show ABC123` (no route named) still works on a
+    // single-route ship without requiring `crew logbook show default ABC123`.
+    const sub = positional[1];
+    if (sub !== 'list' && sub !== 'show') {
+      process.stderr.write(
+        'crew logbook list [route] [--role R] [--ticket T] [--limit N]\n' +
+        'crew logbook show [route] <entryId> [--prompt]\n',
+      );
+      process.exit(2);
+    }
+    const routeArg = sub === 'show' && positional[3] ? positional[2] : (sub === 'list' ? positional[2] : undefined);
+    const entryId = sub === 'show' ? (positional[3] ?? positional[2]) : undefined;
+    if (sub === 'show' && !entryId) {
+      process.stderr.write('crew logbook show [route] <entryId> [--prompt]\n');
+      process.exit(2);
+    }
+    let target: Route;
+    try {
+      target = findRoute(cfg, routeArg);
+    } catch (e) {
+      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    try {
+      if (sub === 'list') {
+        const entries = await listLogEntries(target, {
+          userAgent: cfg.ship.userAgent,
+          role: value('role'),
+          ticket: value('ticket'),
+          limit: value('limit') ? Number(value('limit')) : undefined,
+        });
+        if (entries.length === 0) { process.stdout.write('(no Agent Log entries match)\n'); break; }
+        for (const e of entries) {
+          process.stdout.write(
+            `${e.id}  ${e.started_at ?? '?'}  ${e.outcome ?? '?'}` +
+              `${e.ticket_reference ? `  ${e.ticket_reference}` : ''}${e.model ? `  ${e.model}` : ''}\n`,
+          );
+        }
+      } else {
+        const { entry, reconstruction } = await showLogEntry(target, entryId!, {
+          userAgent: cfg.ship.userAgent,
+          withPrompt: flag('prompt'),
+        });
+        process.stdout.write(
+          `id:         ${entry.id}\n` +
+          `started:    ${entry.started_at ?? '?'}\n` +
+          `finished:   ${entry.finished_at ?? '?'}\n` +
+          `outcome:    ${entry.outcome ?? '?'}\n` +
+          `ticket:     ${entry.ticket_reference ?? '(none)'}\n` +
+          `model:      ${entry.model ?? '?'}\n`,
+        );
+        if (flag('prompt')) {
+          process.stdout.write(`\nprompt reconstruction: ${reconstruction.status}` +
+            `${reconstruction.reason ? ` — ${reconstruction.reason}` : ''}\n`);
+          if (reconstruction.prompt) process.stdout.write(`\n${reconstruction.prompt}\n`);
+          if (reconstruction.status !== 'exact') process.exitCode = 1;
+        }
+      }
+    } catch (e) {
+      if (e instanceof LogbookError) { process.stderr.write(`crew logbook: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
     break;
   }
 

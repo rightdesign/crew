@@ -116,8 +116,16 @@ export interface ResolvedIds {
    * is what makes a later sync's divergence check possible: if the row's
    * current `updated_at` no longer matches, a workspace admin edited the
    * prompt since crew last wrote it, and the sync must not clobber that.
+   *
+   * `historyId` (ISSUE-377/529) is the Agents row's own version-history
+   * entry id current as of the same sync that wrote `lastSyncedUpdatedAt` —
+   * `agents.ts` looks it up right after establishing the row's state, so a
+   * later run's `planAgentRun` can stamp `prompt_version` on its Agent Log
+   * row without a network call of its own. Absent when the sync's history
+   * lookup itself failed (best-effort, same as everything else here) or
+   * predates this field.
    */
-  agentPersonas?: Partial<Record<RoleName, { agentId: string; lastSyncedUpdatedAt: string }>>;
+  agentPersonas?: Partial<Record<RoleName, { agentId: string; lastSyncedUpdatedAt: string; historyId?: string }>>;
 }
 
 export interface Route {
@@ -581,7 +589,13 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
   const agentPersonas: ResolvedIds['agentPersonas'] = {};
   for (const role of ROLE_NAMES) {
     const p = raw.agentPersonas?.[role];
-    if (p?.agentId && p?.lastSyncedUpdatedAt) agentPersonas[role] = { agentId: p.agentId, lastSyncedUpdatedAt: p.lastSyncedUpdatedAt };
+    if (p?.agentId && p?.lastSyncedUpdatedAt) {
+      agentPersonas[role] = {
+        agentId: p.agentId,
+        lastSyncedUpdatedAt: p.lastSyncedUpdatedAt,
+        ...(typeof p.historyId === 'string' ? { historyId: p.historyId } : {}),
+      };
+    }
   }
   return {
     workspaceId: m.req(raw.workspaceId, `${where}.resolved.workspaceId`),

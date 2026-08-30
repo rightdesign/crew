@@ -4,7 +4,8 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt,
+  syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError,
+  fetchHistoryEntries, fetchDivergedPrompt,
 } from '../src/agents.ts';
 import type { Route } from '../src/config.ts';
 
@@ -109,6 +110,38 @@ test('four missing personas are all created, named and prompted from the local b
   assert.equal(result.agentPersonas.dev?.lastSyncedUpdatedAt, '2026-08-28T00:00:00Z');
   // Nothing writes a persona row through anything but this one path.
   assert.equal(calls.filter((c) => c.key.startsWith('PATCH')).length, 0);
+});
+
+test('ISSUE-377/529: a freshly-created row\'s newest history entry is cached as historyId, for a later run\'s prompt_version', async (t) => {
+  const crewHome = makeCrewHome();
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'POST /api/data-models/agents-model-1/records': (body: any) =>
+      ({ status: 200, body: { id: `row-${body.name}`, name: body.name, prompt: body.prompt, updated_at: '2026-08-28T00:00:00Z' } }),
+    'GET /api/data-models/agents-model-1/records/row-Developer/history?limit=1': () =>
+      ({ status: 200, body: [{ history_id: 'hist-dev-1', changed_at: '2026-08-28T00:00:00Z' }] }),
+    'GET /api/data-models/agents-model-1/records/row-Design/history?limit=1': () => ({ status: 200, body: [] }),
+    'GET /api/data-models/agents-model-1/records/row-QA/history?limit=1': () => ({ status: 200, body: [] }),
+    'GET /api/data-models/agents-model-1/records/row-Triage/history?limit=1': () => ({ status: 200, body: [] }),
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(), { crewHome });
+  assert.equal(result.agentPersonas.dev?.historyId, 'hist-dev-1');
+  // An empty history response is not an error — just nothing to cache yet.
+  assert.equal(result.agentPersonas.design?.historyId, undefined);
+});
+
+test('fetchHistoryEntries throws (rather than swallowing) a non-2xx response — showLogEntry needs to tell "lookup failed" apart from "no rows"', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents-model-1/records/row-1/history?limit=50': () => ({ status: 500, body: { message: 'boom' } }),
+  });
+  t.after(restore);
+  await assert.rejects(
+    fetchHistoryEntries(makeRoute(), 'agents-model-1', 'row-1', undefined),
+    AgentsSyncError,
+  );
 });
 
 test('dry run reports what it would create but performs no POST', async (t) => {

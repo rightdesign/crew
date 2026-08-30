@@ -126,6 +126,70 @@ interface CrewRow {
   [CREW_AGENT_COLUMN]?: string | null;
 }
 
+/**
+ * Raw shape of one row from `GET .../records/:recordId/history` — no SDK
+ * resource covers this endpoint yet, same as `AgentLogTarget`'s own direct
+ * `fetch` use in agent-log.ts. Newest first; every field column the record
+ * has (here, `prompt`) rides along at that version's value, alongside the
+ * history bookkeeping columns.
+ */
+export interface HistoryEntry {
+  history_id: string;
+  changed_at: string;
+  prompt?: string;
+  [column: string]: unknown;
+}
+
+/**
+ * `GET .../records/:recordId/history`, newest first — no SDK resource
+ * covers this endpoint yet. Exported so `logbook.ts`'s reconstruction can
+ * fetch a *specific* `prompt_version` entry the same way `syncPersonas`
+ * fetches the latest one below. Throws on a non-2xx response — unlike
+ * `fetchLatestHistoryId`, a caller reconstructing a specific run's prompt
+ * needs to know a lookup failed rather than silently treating "no rows" the
+ * same as "the fetch itself broke".
+ */
+export async function fetchHistoryEntries(
+  route: Route,
+  agentsModelId: string,
+  recordId: string,
+  userAgent: string | undefined,
+  limit = 50,
+): Promise<HistoryEntry[]> {
+  const url = `${route.baseUrl.replace(/\/+$/, '')}/api/data-models/${agentsModelId}/records/${recordId}/history?limit=${limit}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${resolveApiKey(route)}`,
+      'User-Agent': userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+    },
+  });
+  if (!res.ok) throw new AgentsSyncError(`history lookup for ${recordId}: ${res.status} ${res.statusText}`);
+  return (await res.json()) as HistoryEntry[];
+}
+
+/**
+ * The Agents row's current version-history entry id, right after
+ * `syncPersonas` has established the row's state — this is what a later
+ * run's `prompt_version` (ISSUE-377/529) reconstructs against. Best-effort:
+ * a lookup failure must not fail the sync it's riding along with, so this
+ * returns `undefined` rather than throwing, and the caller treats an
+ * undefined `historyId` exactly like a workspace `crew agents sync` has
+ * never synced.
+ */
+async function fetchLatestHistoryId(
+  route: Route,
+  agentsModelId: string,
+  recordId: string,
+  userAgent: string | undefined,
+): Promise<string | undefined> {
+  try {
+    const entries = await fetchHistoryEntries(route, agentsModelId, recordId, userAgent, 1);
+    return entries[0]?.history_id;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Raw shape of `GET /workspaces/:id/field-types` — no SDK resource covers this endpoint yet. */
 interface FieldTypeSummary {
   id: string;
@@ -159,7 +223,7 @@ export interface SyncPersonasResult {
    * time). The caller persists this into the resolved state file; nothing
    * here touches disk itself.
    */
-  agentPersonas: Partial<Record<RoleName, { agentId: string; lastSyncedUpdatedAt: string }>>;
+  agentPersonas: Partial<Record<RoleName, { agentId: string; lastSyncedUpdatedAt: string; historyId?: string }>>;
   /**
    * Migration section, WORKSPACE_AGENTS_PLAN.md: "Crew records switched to
    * reference Agents instead [of embedding prompt/config data]". Empty on
@@ -215,7 +279,8 @@ export async function syncPersonas(
     if (!row) {
       if (opts.dryRun) { outcomes.push({ role, action: 'created', agentId: '(dry run)' }); continue; }
       const created = await client.records.create<AgentRow>(agentsModel.id, { name, prompt: defaultPrompt });
-      agentPersonas[role] = { agentId: created.id, lastSyncedUpdatedAt: created.updated_at };
+      const historyId = await fetchLatestHistoryId(route, agentsModel.id, created.id, opts.userAgent);
+      agentPersonas[role] = { agentId: created.id, lastSyncedUpdatedAt: created.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'created', agentId: created.id });
       continue;
     }
@@ -224,7 +289,8 @@ export async function syncPersonas(
       // In sync content-wise regardless of who wrote it last — nothing to
       // push, just (re)anchor the cache to the row's current updated_at so
       // a later sync's compare-and-swap has the right baseline.
-      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at };
+      const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
+      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'unchanged', agentId: row.id });
       continue;
     }
@@ -249,7 +315,8 @@ export async function syncPersonas(
       const updated = await client.records.update<AgentRow>(
         agentsModel.id, row.id, { prompt: defaultPrompt }, knownBaseline,
       );
-      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: updated.updated_at };
+      const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
+      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: updated.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'updated', agentId: row.id });
     } catch (e) {
       if (e instanceof StaleWriteError) {

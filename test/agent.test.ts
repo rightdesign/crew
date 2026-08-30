@@ -293,6 +293,11 @@ test('spawnAgent reports the run as one Agent Log row, and its one thinking bloc
     agentId: 'agent-9', ticketReference: 'ISSUE-401', outcome: 'success',
     startedAt: (logCall.body as any).startedAt, finishedAt: (logCall.body as any).finishedAt,
     source: 'client', client: 'crew', model: 'claude-sonnet-5', costUsd: 0.0042,
+    // No `agentPersonas.dev.historyId` in this fixture's route (crew agents
+    // sync hasn't run), so promptVersion is undefined and dropped by
+    // JSON.stringify — only promptSha (always computable from the local
+    // prompt files) survives onto the wire.
+    promptSha: (logCall.body as any).promptSha,
   });
   const cycleCall = calls[1]!;
   assert.equal(cycleCall.key, 'POST /api/workspaces/ws-1/agents/log/log-1/cycles');

@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, type WriteStream } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
@@ -163,6 +164,13 @@ export interface AgentPlan {
    * entirely — same as a route `crew connect` hasn't run on yet.
    */
   agentLog?: AgentLogTarget;
+  /**
+   * ISSUE-377/529 — carried straight through to `reportAgentRun`, see
+   * `AgentRunReport.promptVersion`/`promptSha` (agent-log.ts) for what each
+   * one means and how `crew logbook show --prompt` uses it.
+   */
+  promptVersion?: string;
+  promptSha: string;
 }
 
 export interface PlanOptions {
@@ -218,16 +226,27 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     if (ageSeconds <= DIGEST_MAX_AGE_SECONDS) digest = readFileSync(digestPath, 'utf8');
   }
 
+  const common = readFileSync(commonPath, 'utf8');
+  const brief = readFileSync(briefPath, 'utf8');
+  // A diverged row's prompt is the full common+brief replacement (see
+  // `divergedPrompt`'s own doc on `PlanOptions`), so it goes entirely into
+  // `brief` with `common` left empty rather than splitting it back apart.
+  const effectiveCommon = o.divergedPrompt ? '' : common;
+  const effectiveBrief = o.divergedPrompt ?? brief;
   const prompt = assemblePrompt({
     roster: o.roster,
     environment: o.environment,
-    // A diverged row's prompt is the full common+brief replacement (see
-    // `divergedPrompt`'s own doc on `PlanOptions`), so it goes entirely into
-    // `brief` with `common` left empty rather than splitting it back apart.
-    common: o.divergedPrompt ? '' : readFileSync(commonPath, 'utf8'),
-    brief: o.divergedPrompt ?? readFileSync(briefPath, 'utf8'),
+    common: effectiveCommon,
+    brief: effectiveBrief,
     digest,
   });
+  // ISSUE-377/529: hashed at composition time, over whatever content was
+  // actually assembled above (the diverged replacement when present, else
+  // the local common+brief) — exactly the string `crew agents sync`
+  // (agents.ts's `personaDefaultPrompt`) pushes into this role's Agents row
+  // when not diverged, so a later `crew logbook show --prompt` can tell
+  // whether the local file has moved on from what `prompt_version` points at.
+  const promptSha = createHash('sha256').update(`${effectiveCommon}${effectiveBrief}`).digest('hex');
 
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
@@ -275,6 +294,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     eventsPath: join(streamsDir, `${base}.events.jsonl`),
     ticket: o.ticket,
     agentLog,
+    promptVersion: o.route.resolved?.agentPersonas?.[o.role]?.historyId,
+    promptSha,
   };
 }
 
@@ -448,6 +469,8 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
             cacheReadTokens: result?.cacheReadTokens,
             cacheWriteTokens: result?.cacheCreationTokens,
             costUsd: result?.totalCostUsd,
+            promptVersion: plan.promptVersion,
+            promptSha: plan.promptSha,
           });
         } catch (e) {
           // A workspace that has never been provisioned/backfilled (ISSUE-465),
