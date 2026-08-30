@@ -42,7 +42,7 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
-import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError } from './agents.ts';
+import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, PERSONA_NAME } from './agents.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
 } from './git.ts';
@@ -1767,6 +1767,32 @@ switch (command) {
 
     if (flag('json')) {
       const repos = await resolvedRepos(route);
+      // Per-seat identity (ISSUE-525): crew-macos's menu bar wants the seat's
+      // own Crew-row `Name` (an operator can rename a seat to their liking)
+      // as the PRIMARY label, with the linked Agent persona's display name
+      // only as a secondary detail — see Brad's 2026-08-30 decision on
+      // ISSUE-417. Both live on the tracker, not in local config, so this
+      // reads the Crew rows fresh rather than trusting anything cached.
+      const seatIds = route.resolved?.seats ?? {};
+      const crewRows = Object.keys(seatIds).length ? await statusTracker.crewRows() : [];
+      const crewRowById = new Map(crewRows.map((c) => [c.id, c]));
+      const agentPersonas = route.resolved?.agentPersonas ?? {};
+      const seats = ROLE_NAMES.map((r) => {
+        const seatId = seatIds[r];
+        const crewRow = seatId ? crewRowById.get(seatId) : undefined;
+        const linkedAgentId = agentPersonas[r]?.agentId;
+        // Only claim the persona name once the row's own `agent_id`
+        // matches what `crew agents sync` last linked — an unsynced or
+        // re-pointed seat has no verified persona name to report.
+        const personaName = crewRow?.agent_id && crewRow.agent_id === linkedAgentId ? PERSONA_NAME[r] : null;
+        return {
+          role: r,
+          label: ROLE_LABEL[r],
+          crewId: seatId ?? null,
+          name: crewRow?.name ?? null,
+          personaName,
+        };
+      });
       process.stdout.write(`${JSON.stringify({
         // Bumped only when a field CHANGES MEANING or is removed — new
         // fields never bump it, so a reader can add support without a flag
@@ -1784,6 +1810,7 @@ switch (command) {
         crew: {
           paused: state.isPaused(),
           roles: ROLE_NAMES.map((r) => ({ name: r, label: ROLE_LABEL[r], paused: state.isRolePaused(r) })),
+          seats,
         },
         watermark: state.watermark(),
         route: {

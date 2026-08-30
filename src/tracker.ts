@@ -62,6 +62,8 @@ export interface CrewRow {
   email?: string | null;
   /** The `Ships` row this member runs on. */
   ship_id?: string | null;
+  /** The linked Agents-table row (ISSUE-416's `agents.ts` `linkCrewSeats`), if synced. */
+  agent_id?: string | null;
 }
 
 /**
