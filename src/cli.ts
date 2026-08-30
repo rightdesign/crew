@@ -42,7 +42,7 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
-import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, PERSONA_NAME } from './agents.ts';
+import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, PERSONA_NAME } from './agents.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
 } from './git.ts';
@@ -831,6 +831,7 @@ switch (command) {
           environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
           apiKey: resolveApiKey(w.route),
           cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
+          divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent }),
         });
         process.stdout.write(`${describePlan(fleetPlan)}\n`);
         break;
@@ -912,6 +913,7 @@ switch (command) {
         environment: await environmentFor(w.route, fleetTicketHint),
         apiKey: resolveApiKey(w.route),
         cycle: emit.cycle, ticket: fleetTicketHint,
+        divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent }),
       });
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.route.route}`);
@@ -1108,6 +1110,7 @@ switch (command) {
         environment: await environmentFor(route, ticketHint),
         apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint,
+        divergedPrompt: await fetchDivergedPrompt(route, current, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent }),
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);

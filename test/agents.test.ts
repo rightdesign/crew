@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError } from '../src/agents.ts';
+import {
+  syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt,
+} from '../src/agents.ts';
 import type { Route } from '../src/config.ts';
 
 /** A minimal crewHome with just the prompt files agents.ts reads. */
@@ -366,4 +368,62 @@ test('dry run never touches the Crew table', async (t) => {
   const result = await syncPersonas(route, { crewHome, dryRun: true });
 
   assert.deepEqual(result.crewLinks, []);
+});
+
+test('fetchDivergedPrompt returns undefined when a role has never been synced (no cached agentId)', async (t) => {
+  const crewHome = makeCrewHome();
+  const { restore } = mockFetch({});
+  t.after(restore);
+
+  const route = makeRoute(undefined, { dev: 'seat-dev' });
+  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+
+  assert.equal(prompt, undefined);
+});
+
+test('fetchDivergedPrompt returns undefined when the row still matches the local template', async (t) => {
+  const crewHome = makeCrewHome();
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: personaDefaultPrompt(crewHome, 'dev'), updated_at: '2026-01-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+
+  assert.equal(prompt, undefined);
+});
+
+test('fetchDivergedPrompt returns the live text when a workspace admin edited the row directly', async (t) => {
+  const crewHome = makeCrewHome();
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: 'CUSTOM ADMIN PROMPT\n', updated_at: '2026-02-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+
+  assert.equal(prompt, 'CUSTOM ADMIN PROMPT\n');
+});
+
+test('fetchDivergedPrompt falls back to undefined rather than throwing when the tracker is unreachable', async (t) => {
+  const crewHome = makeCrewHome();
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 404, body: { message: 'not found' } }),
+  });
+  t.after(restore);
+
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+
+  assert.equal(prompt, undefined);
 });

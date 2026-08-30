@@ -72,6 +72,55 @@ interface AgentRow {
   updated_at: string;
 }
 
+/**
+ * The live prompt for `role`'s Agent row on `route`'s workspace, when a
+ * workspace admin has edited it directly in Tablation (ISSUE-526) — or
+ * `undefined` when it still matches the local template, or when there is
+ * nothing to compare against yet.
+ *
+ * Deliberately its own single-row lookup rather than reusing
+ * `syncPersonas`'s four-role sync: `planAgentRun` runs once per role, every
+ * cycle, and syncing is a person's explicit `crew agents sync` step, not
+ * something the runner should trigger (or wait on) just to start a session.
+ * `agentPersonas[role].agentId` — set the first time a sync has EVER run for
+ * this route — is the only prerequisite; the runner does not require a
+ * *recent* sync, since this compares the row's current content itself, not
+ * against sync's own CAS baseline.
+ *
+ * Per-route by construction: `route.resolved.workspaceId` (and so the
+ * Agents-table row this fetches) is a route's own resolved id, never shared
+ * across routes, so a customization on one workspace cannot leak into
+ * another route's runs.
+ */
+export async function fetchDivergedPrompt(
+  route: Route,
+  role: RoleName,
+  opts: { crewHome: string; userAgent?: string },
+): Promise<string | undefined> {
+  const agentId = route.resolved?.agentPersonas?.[role]?.agentId;
+  if (!agentId || !route.resolved) return undefined;
+
+  const client = new TablationClient({
+    baseUrl: `${route.baseUrl}/api`,
+    apiKey: resolveApiKey(route),
+    headers: { 'User-Agent': opts.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' },
+  } as ConstructorParameters<typeof TablationClient>[0]);
+
+  let row: AgentRow;
+  try {
+    const agentsModel = await client.dataModels.get('agents', route.resolved.workspaceId);
+    row = await client.records.get<AgentRow>(agentsModel.id, agentId);
+  } catch {
+    // A missing table, a deleted row, an unreachable tracker — none of
+    // these should block a run that has always worked without this check;
+    // the local template is always a safe fallback.
+    return undefined;
+  }
+
+  const defaultPrompt = personaDefaultPrompt(opts.crewHome, role);
+  return row.prompt !== defaultPrompt ? row.prompt : undefined;
+}
+
 interface CrewRow {
   id: string;
   [CREW_AGENT_COLUMN]?: string | null;

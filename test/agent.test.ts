@@ -84,6 +84,17 @@ test('a plan is fully decided without running anything', () => {
   assert.match(describePlan(plan), /prompt:\s+\d+ bytes on stdin \(never argv\)/);
 });
 
+test('a diverged prompt replaces common+brief wholesale, rather than being appended alongside them', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+    divergedPrompt: 'CUSTOM ADMIN PROMPT',
+  });
+  assert.match(plan.prompt, /R[\s\S]*ENV[\s\S]*CUSTOM ADMIN PROMPT/);
+  assert.ok(!plan.prompt.includes('SHARED POLICY'), 'the local common.md must not survive alongside a diverged prompt');
+  assert.ok(!plan.prompt.includes('BRIEF dev'), 'the local lane brief must not survive alongside a diverged prompt');
+});
+
 test('the stream path is derived from route, role and cycle, and shown by --dry-run', () => {
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({

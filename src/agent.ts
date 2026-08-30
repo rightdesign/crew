@@ -184,6 +184,17 @@ export interface PlanOptions {
   ticket?: string;
   /** Injected for testing; defaults to the real clock. */
   now?: () => number;
+  /**
+   * A workspace admin's live edit to this role's Agent-table prompt
+   * (`agents.ts` `fetchDivergedPrompt`, ISSUE-526), replacing
+   * `common.md`+`lane-<role>.md` wholesale when present — that row's
+   * `prompt` field IS what those two files' concatenation seeds it with, so
+   * a diverged row already carries the full replacement text, not just the
+   * lane-specific part. Undefined (the common case) keeps today's
+   * local-files behavior; fetching it is the caller's job, not
+   * `planAgentRun`'s — this function stays local-I/O only.
+   */
+  divergedPrompt?: string;
 }
 
 export class AgentError extends Error {}
@@ -210,8 +221,11 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const prompt = assemblePrompt({
     roster: o.roster,
     environment: o.environment,
-    common: readFileSync(commonPath, 'utf8'),
-    brief: readFileSync(briefPath, 'utf8'),
+    // A diverged row's prompt is the full common+brief replacement (see
+    // `divergedPrompt`'s own doc on `PlanOptions`), so it goes entirely into
+    // `brief` with `common` left empty rather than splitting it back apart.
+    common: o.divergedPrompt ? '' : readFileSync(commonPath, 'utf8'),
+    brief: o.divergedPrompt ?? readFileSync(briefPath, 'utf8'),
     digest,
   });
 
