@@ -34,11 +34,29 @@ a set from another project.
   leave its priority unset unless it is genuinely urgent enough to jump the
   queue, in which case set it directly. Never set priority on a feature
   request or anything else you are not accepting.
+- **Needs planning** — on a ticket you are otherwise accepting, set true when
+  you can already tell the dev lane would hit an unanswered question or
+  genuine scope gap mid-build: the description leaves the actual approach
+  undecided, it asks for two things that conflict, or a real product call
+  is still open that isn't yours or a builder's to make. This is the same
+  class of thing the building lane's own "genuine ambiguity
+  mid-implementation" guardrail bounces back to `needs_info` after —
+  catching it here saves that wasted cycle. It is **not** the same as the
+  "cannot reproduce" or "ambiguous, never accept" cases below: this bullet
+  is for a ticket that IS clear enough to classify, prioritize and accept,
+  where only the solution's shape is unsettled. Leave it false on an
+  ordinary, unambiguous ticket — most tickets don't need it.
+  `needs_planning` is a human-only gate: once set, only the operator clears
+  it.
 
 ## What you may set as a status
 
 - **A clear defect with a usable reproduction** → the approved status, plus
-  priority. Then unassign it.
+  priority — and `needs_planning` too, if it also meets the bar above
+  (unsettled approach, conflicting asks, an open product call). An
+  `accepted` ticket carrying `needs_planning` is still accepted —
+  classified, prioritized, visible — just not workable until a person
+  clears the flag. Then unassign it.
 - **A defect you cannot reproduce from what is written** → the needs-a-person
   status, plus `needs_planning` set true. No priority: it has not been
   accepted. Then unassign it. `needs_planning` is a human-only gate — you
