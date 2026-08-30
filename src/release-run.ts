@@ -201,12 +201,12 @@ async function detectExternalClosures(
  * human wrote for the changelog.
  */
 /**
- * `applied` wrote a commit; `noop` merged a branch whose change was already
- * present; `false` failed. The caller needs the distinction: a cycle in which
- * every merge was a no-op has nothing to release, however many branches it
- * merged.
+ * `applied` wrote a commit (and names its sha); `noop` merged a branch whose
+ * change was already present; `conflict` failed. The caller needs the
+ * distinction: a cycle in which every merge was a no-op has nothing to
+ * release, however many branches it merged.
  */
-type MergeResult = 'applied' | 'noop' | { conflict: ConflictFailure };
+type MergeResult = { applied: true; sha?: string } | 'noop' | { conflict: ConflictFailure };
 
 /**
  * A branch that would not merge, and what it disagreed about.
@@ -227,7 +227,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   const subject = c.entries[0] ?? `${c.ticket.title ?? c.ticket.issue_id} (${c.ticket.issue_id})`;
   if (o.dryRun) {
     o.emit.emit(`would squash-merge ${c.branch} — "${subject}"`, { ticket: c.ticket.issue_id });
-    return 'applied';
+    return { applied: true };
   }
   // Where to rewind to if this branch does not apply cleanly. A squash merge
   // never writes MERGE_HEAD, so `git merge --abort` cannot undo one — it fails
@@ -254,8 +254,9 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     // The ticket key goes in the SUBJECT deliberately: it is the only durable
     // link once a forge squashes this again, and closure detection reads it.
     git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.`]);
+    const sha = headSha(o.cwd);
     o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
-    return 'applied';
+    return { applied: true, sha };
   } catch (e) {
     // WHAT disagreed, read while the failed merge is still in the index —
     // after the rewind below there is nothing left to ask. This is the only
@@ -519,8 +520,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       continue;
     }
     const r = mergeOne(o, c);
-    if (typeof r === 'object') { conflicts.push(r.conflict); continue; }
-    if (r === 'applied') applied++;
+    if (typeof r === 'object' && 'conflict' in r) { conflicts.push(r.conflict); continue; }
+    if (typeof r === 'object' && r.applied) {
+      applied++;
+      c.sha = r.sha;
+    }
     merged.push(c);
   }
 

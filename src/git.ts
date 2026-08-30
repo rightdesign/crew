@@ -220,19 +220,27 @@ export function remoteBranchExists(cwd: string, remote: string, branch: string):
  * `since` bounds the search — usually the last commit the crew already knew
  * about on the base, so a long-lived repo is not re-scanned every cycle.
  */
-export function findKeyOnBase(
-  cwd: string, key: string, remote: string, base: string, since?: string | null,
-): string | null {
-  const range = since ? `${since}..${remote}/${base}` : `${remote}/${base}`;
-  // Bounded on both sides, NOT a substring search: ISSUE-32 would otherwise
-  // match ISSUE-320, ISSUE-321 and ISSUE-326, and report a ticket merged
-  // because a different one was. The trailing guard excludes a digit only, so
-  // "(ISSUE-32)" and "ISSUE-32:" still match.
+/**
+ * The sha of the first commit in `range` whose subject names `key`.
+ *
+ * Bounded on both sides, NOT a substring search: ISSUE-32 would otherwise
+ * match ISSUE-320, ISSUE-321 and ISSUE-326, and report a ticket merged
+ * because a different one was. The trailing guard excludes a digit only, so
+ * "(ISSUE-32)" and "ISSUE-32:" still match.
+ */
+export function findKeyInRange(cwd: string, key: string, range: string): string | null {
   const escaped = key.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&');
   const pattern = `(^|[^0-9A-Za-z_-])${escaped}([^0-9]|$)`;
   const out = gitOk(cwd, ['log', range, '--format=%H %s', '--extended-regexp', `--grep=${pattern}`]);
   if (!out) return null;
   return out.split('\n')[0]?.split(' ')[0] ?? null;
+}
+
+export function findKeyOnBase(
+  cwd: string, key: string, remote: string, base: string, since?: string | null,
+): string | null {
+  const range = since ? `${since}..${remote}/${base}` : `${remote}/${base}`;
+  return findKeyInRange(cwd, key, range);
 }
 
 /**

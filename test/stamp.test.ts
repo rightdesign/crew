@@ -75,6 +75,36 @@ test('a tracker failure on one ticket does not abandon the rest, or fail the rel
   assert.ok(lines.some((l) => /ISSUE-2.*could not stamp/.test(l)));
 });
 
+test('a stamp with a known sha writes commit_sha/merged_at alongside status', async () => {
+  const calls: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => {
+      calls.push({ id, patch });
+      return {} as Ticket;
+    },
+  } as unknown as Parameters<typeof applyStamp>[0];
+  const plan = [{ ticket: T('ISSUE-1'), reason: 'merged by this release', sha: 'deadbeef' }];
+  const n = await applyStamp(tracker, plan, '1.3.0', DEFAULT_CONTRACT, emitter([]), false);
+  assert.equal(n, 1);
+  assert.equal(calls[0]!.patch.commit_sha, 'deadbeef');
+  assert.ok(typeof calls[0]!.patch.merged_at === 'string');
+  assert.equal(calls[0]!.patch.released_version, '1.3.0');
+});
+
+test('a stamp with no known sha writes status/version only', async () => {
+  const calls: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => {
+      calls.push({ id, patch });
+      return {} as Ticket;
+    },
+  } as unknown as Parameters<typeof applyStamp>[0];
+  const plan = [{ ticket: T('ISSUE-1'), reason: 'named in a..b' }];
+  await applyStamp(tracker, plan, '1.3.0', DEFAULT_CONTRACT, emitter([]), false);
+  assert.equal(calls[0]!.patch.commit_sha, undefined);
+  assert.equal(calls[0]!.patch.merged_at, undefined);
+});
+
 test('a dry run stamps nothing but reports what it would', async () => {
   const lines: string[] = [];
   let called = false;
@@ -93,10 +123,31 @@ test('a no-op merge is still stamped, though no commit names it', () => {
   const { dir, from, to } = repoWith(['Release v1.0.0']);
   const plan = planStamp(
     dir, [T('ISSUE-292'), T('ISSUE-500')], DEFAULT_CONTRACT, from, to,
-    ['ISSUE-292'],   // ISSUE-500 was neither merged nor named
+    new Map([['ISSUE-292', 'abc123']]),   // ISSUE-500 was neither merged nor named
   );
   assert.deepEqual(plan.map((p) => p.ticket.issue_id), ['ISSUE-292']);
   assert.equal(plan[0]!.reason, 'merged by this release');
+  assert.equal(plan[0]!.sha, 'abc123');
+});
+
+test('a ticket merged by this run but as a no-op carries no sha', () => {
+  // A no-op merge writes no commit (release-run.ts's mergeOne), so there is
+  // nothing to name — the map entry is present with an undefined sha.
+  const { dir, from, to } = repoWith(['Release v1.0.0']);
+  const plan = planStamp(
+    dir, [T('ISSUE-292')], DEFAULT_CONTRACT, from, to,
+    new Map([['ISSUE-292', undefined]]),
+  );
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0]!.sha, undefined);
+});
+
+test('a ticket named in the range but not merged by this run resolves its own sha', () => {
+  const { dir, from, to } = repoWith(['unrelated', 'shipped earlier (ISSUE-9)']);
+  const plan = planStamp(dir, [T('ISSUE-9')], DEFAULT_CONTRACT, from, to);
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0]!.reason, `named in ${from.slice(0, 8)}..${to.slice(0, 8)}`);
+  assert.match(plan[0]!.sha ?? '', /^[0-9a-f]{40}$/);
 });
 
 const closure = (state: ClosureCheck['state'], mergedAt?: string): ClosureCheck =>

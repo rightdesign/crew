@@ -599,7 +599,7 @@ async function releasePhase(
       const plan = planStamp(
         target.dir, tickets, tracker.contract,
         outcome.decision.lastReleased, outcome.decision.head,
-        outcome.merged.map((m) => m.ticket.issue_id),
+        new Map(outcome.merged.map((m) => [m.ticket.issue_id, m.sha])),
       );
       if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
     } else if (outcome.stopped) {

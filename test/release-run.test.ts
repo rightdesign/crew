@@ -98,6 +98,18 @@ test('a real release merges, bumps, changelogs, deploys and tags', async () => {
   assert.match(execFileSync('git', ['tag', '--list'], { cwd: dir, encoding: 'utf8' }), /v1\.3\.0/);
   // the ticket key is on the integration branch — closure depends on it
   assert.match(execFileSync('git', ['log', '--format=%B', '-3'], { cwd: dir, encoding: 'utf8' }), /ISSUE-7/);
+  // the merge candidate carries the sha of its own squash commit (ISSUE-218)
+  assert.match(out.merged[0]!.sha ?? '', /^[0-9a-f]{40}$/);
+});
+
+test('a dry run reports no sha — nothing was actually committed', async () => {
+  const { dir, repo } = project(LOCAL);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: true,
+  });
+  assert.equal(out.merged.length, 1);
+  assert.equal(out.merged[0]!.sha, undefined);
 });
 
 test('a red test gate stops everything before the version moves', async () => {
@@ -397,6 +409,7 @@ test('a verified branch already contained in main merges as a no-op', async () =
   // Merged, because the work IS on main — the ticket must go on to be stamped
   // and closed rather than sitting at `verified` forever.
   assert.equal(out.merged.length, 1);
+  assert.equal(out.merged[0]!.sha, undefined);   // no commit was written for it
   assert.ok(lines.some((l) => /issue-8 is already contained/.test(l)));
   // ...and no empty commit was manufactured to represent it. HEAD does move —
   // the release's own version-bump commit lands on top — so what matters is

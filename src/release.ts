@@ -132,6 +132,17 @@ export interface MergeCandidate {
   majorRequested: boolean;
   /** Why it is not mergeable, when branch is null. */
   skipReason?: 'already-merged' | 'never-built';
+  /**
+   * The squash-merge commit this run wrote for it, when it wrote one.
+   *
+   * Unset for a `noop` merge (no commit — the change was already on the
+   * base) and for a dry run (nothing was actually committed). Set here,
+   * mutating the candidate `mergeOne` already returned, rather than
+   * threaded back through a parallel structure — `merged` (the array of
+   * candidates the release loop builds) is already what `planStamp` reads
+   * per ticket.
+   */
+  sha?: string;
 }
 
 export type BumpSize = 'major' | 'minor' | 'patch';

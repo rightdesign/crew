@@ -15,12 +15,19 @@
 import type { Tracker, Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 import type { Emitter } from './events.ts';
-import { commitBodies, type ClosureCheck } from './git.ts';
+import { commitBodies, findKeyInRange, type ClosureCheck } from './git.ts';
 
 export interface StampPlan {
   ticket: Ticket;
   /** Why it is being stamped: named in the released range. */
   reason: string;
+  /**
+   * The merge commit sha on the base branch, when it is known — either this
+   * run's own squash-merge, or resolved from the released range for a
+   * ticket this run did not merge itself (a prior cycle's deploy failed and
+   * this one carries it, or a forge/person merged it outside the crew).
+   */
+  sha?: string;
 }
 
 /**
@@ -35,7 +42,8 @@ export function planStamp(
   cwd: string, tickets: Ticket[], contract: Contract,
   fromSha: string | null, toSha: string,
   /**
-   * Tickets this run merged itself, by issue id.
+   * Tickets this run merged itself, by issue id, to the sha of the squash
+   * commit it wrote (unset for a no-op merge — nothing was committed).
    *
    * The commit scan below cannot see all of them. A branch already contained
    * in the integration branch merges as a no-op and writes NO commit, so it is
@@ -44,17 +52,23 @@ export function planStamp(
    * is first-hand knowledge; the scan is for everything else, including work a
    * forge or a person merged outside the crew.
    */
-  merged: Iterable<string> = [],
+  merged: ReadonlyMap<string, string | undefined> = new Map(),
 ): StampPlan[] {
-  const own = new Set(merged);
   const range = fromSha ? `${fromSha.slice(0, 8)}..${toSha.slice(0, 8)}` : null;
   const bodies = fromSha ? commitBodies(cwd, `${fromSha}..${toSha}`) : '';
   return tickets
     .filter((t) => t.status === contract.statuses.verified)
-    .map((t) => {
-      if (own.has(t.issue_id)) return { ticket: t, reason: 'merged by this release' };
+    .map((t): StampPlan | null => {
+      if (merged.has(t.issue_id)) {
+        return { ticket: t, reason: 'merged by this release', sha: merged.get(t.issue_id) };
+      }
       if (range && new RegExp(`(^|[^0-9A-Za-z_-])${t.issue_id}([^0-9]|$)`).test(bodies)) {
-        return { ticket: t, reason: `named in ${range}` };
+        // Not merged by this run — a prior cycle's deploy failed and this one
+        // carries it, or a forge/person merged it outside the crew. Its sha
+        // is resolved from the same range, same reasoning as `findKeyOnBase`
+        // (git.ts) uses for the external-closure path.
+        const sha = findKeyInRange(cwd, t.issue_id, range) ?? undefined;
+        return { ticket: t, reason: `named in ${range}`, sha };
       }
       return null;
     })
@@ -67,9 +81,10 @@ export async function applyStamp(
 ): Promise<number> {
   let stamped = 0;
   const at = new Date().toISOString();
-  for (const { ticket } of plan) {
+  for (const { ticket, sha } of plan) {
+    const shaNote = sha ? `, commit_sha ${sha.slice(0, 8)}` : '';
     if (dryRun) {
-      emit.emit(`would stamp -> ${contract.statuses.deployed}${version ? ` (${version})` : ''}`, {
+      emit.emit(`would stamp -> ${contract.statuses.deployed}${version ? ` (${version})` : ''}${shaNote}`, {
         ticket: ticket.issue_id,
       });
       stamped++;
@@ -79,8 +94,14 @@ export async function applyStamp(
       await tracker.updateTicket(ticket.id, {
         status: contract.statuses.deployed,
         ...(version ? { released_version: version, released_at: at } : {}),
+        // Written here rather than only on the external path (below): a
+        // ticket's record should mean the same thing regardless of which
+        // release mode closed it (ISSUE-218). `merged_at` is stamped
+        // alongside — not read off the commit itself — since that is the
+        // moment the tracker learns of it, same as the external path.
+        ...(sha ? { commit_sha: sha, merged_at: at } : {}),
       });
-      emit.emit(`stamped ${contract.statuses.deployed}${version ? ` (${version})` : ''}`, {
+      emit.emit(`stamped ${contract.statuses.deployed}${version ? ` (${version})` : ''}${shaNote}`, {
         ticket: ticket.issue_id,
       });
       stamped++;
