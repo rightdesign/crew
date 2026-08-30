@@ -70,6 +70,16 @@ routes:
     # dir: "/home/me/src/my-product"
 
     worktreePrefix: "myproject-issue-"
+
+    # Which lane-behavior policy this workspace's agents follow — the
+    # prose in prompts/<name>/common.md + lane-<role>.md. Bare name
+    # ("dev-qa") picks a preset shipped under crew's own prompts/; a path
+    # ("./my-policy" or "~/my-crew-policy") points at a fully custom set
+    # you copied and edited yourself, so adopting your own workflow never
+    # requires forking crew. Defaults to "default" (the three-lane
+    # dev/design/QA policy this repo ships with) when omitted. See
+    # prompts/default/ for the shape a custom set needs to have.
+    # promptSet: "dev-qa"
     # What a host must be to build a repo lives in THAT repo's own .crew.yaml
     # (any | unix | macos | linux | windows) — never here. A route can span
     # repos with different needs; the ship refuses a route only when it can

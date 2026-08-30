@@ -256,6 +256,23 @@ export interface Route {
    */
   contract?: Partial<import('./contract.ts').Contract> | null;
   resolved?: ResolvedIds;
+  /**
+   * Where this route's four prompt files (`common.md` + `lane-<role>.md`)
+   * actually live — always resolved to a real directory, never re-derived
+   * at a call site (same convention as `reposBasePath`). Comes from the
+   * route's own `promptSet:` (a bare name resolves under
+   * `<crewHome>/prompts/`, a path is expanded relative to this route's
+   * config the same way `apiKeyFile` is); absent `promptSet` falls
+   * through to `<crewHome>/prompts/default`, which is what every route
+   * used unconditionally before per-route prompt sets existed. This is
+   * per-ROUTE, not per-ship, for the same reason `contract` above is: one
+   * machine may
+   * serve several workspaces, each with its own process — a design-gated
+   * three-lane flow for one, a plain dev+QA flow for another — and
+   * nothing about which prompt policy a workspace wants is a fact about
+   * this machine.
+   */
+  promptsDir: string;
 }
 
 export interface Ship {
@@ -316,7 +333,7 @@ const SHIP_KEYS = new Set([
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
-  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch']);
@@ -463,6 +480,22 @@ function expand(p: string, base: string): string {
   let out = p.startsWith('~') ? p.replace(/^~/, homedir()) : p;
   out = out.replace(/\$\{?HOME\}?/g, homedir());
   return isAbsolute(out) ? out : resolve(base, out);
+}
+
+/**
+ * A bare name ("dev-qa") is one of the preset directories crew ships under
+ * `prompts/`; anything that looks like a path (contains a `/`, or starts
+ * with `.`/`~`) is a fork living outside the crew install and is expanded
+ * relative to this route's own config directory, same as `apiKeyFile`
+ * above — so adopting a fully custom policy never requires forking crew
+ * itself, just pointing `promptSet` at a copied-and-edited directory.
+ */
+function resolvePromptsDir(promptSet: string | undefined, crewHome: string, base: string): string {
+  if (!promptSet) return join(crewHome, 'prompts', 'default');
+  if (promptSet.includes('/') || promptSet.startsWith('.') || promptSet.startsWith('~')) {
+    return expand(promptSet, base);
+  }
+  return join(crewHome, 'prompts', promptSet);
 }
 
 class Missing {
@@ -678,7 +711,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
     const where = `routes[${i}]`;
     const routeMissing = new Missing();
     try {
-      return [parseOneRoute(c, where, file, base, stateDir, raw, routeMissing)];
+      return [parseOneRoute(c, where, file, base, stateDir, raw, routeMissing, crewHome)];
     } catch (e) {
       const label = typeof c?.route === 'string' && c.route ? `"${c.route}"` : where;
       routeWarnings.push(`route ${label} dropped — ${(e as Error).message}`);
@@ -722,7 +755,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
 
 function parseOneRoute(
   c: any, where: string, file: string, base: string, stateDir: string, raw: Record<string, any>,
-  missing: Missing,
+  missing: Missing, crewHome: string,
 ): Route {
   rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
   const route = missing.req(c?.route, `${where}.route`) as string;
@@ -780,6 +813,7 @@ function parseOneRoute(
     reposBasePath: expand(String(c?.reposBasePath ?? raw.ship?.reposBasePath ?? DEFAULT_REPOS_BASE_PATH), base),
     repoOverrides,
     worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
+    promptsDir: resolvePromptsDir(c?.promptSet ? String(c.promptSet) : undefined, crewHome, base),
     weight,
     baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
     // Keys are workspace-scoped in general, so a route normally brings its

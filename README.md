@@ -5,7 +5,8 @@ A standing team of headless agents that picks work off a
 and reports back on the board.
 
 Each **seat** is a row in the board's Crew table that happens to be a robot,
-with a brief (`prompts/`) and a slice of the queue. A seat is named in that
+with a brief (`prompts/<promptSet>/`, see "Prompt sets" below) and a slice
+of the queue. A seat is named in that
 table and answers to that name — call the dev seat "Trevor" and the crew will
 call it Trevor, in the queue digest and in the comments it writes on tickets.
 Everything the crew knows about a run — what to build, what is blocked, what
@@ -19,14 +20,16 @@ this ship, and the interactive sessions they work through. A ticket assigned
 to a hold is off limits to every seat, whatever its status, which is how a
 person takes something over without racing the crew for it.
 
-Today's crew has four seats:
+Today's crew has four seats, described below under the `default` prompt
+set (the three-lane dev/design/QA policy this repo ships with — see
+"Prompt sets" below for others, and for writing your own):
 
 | Seat | Owns | Brief |
 | --- | --- | --- |
-| **dev** | approved tickets that don't need design work | `prompts/lane-dev.md` |
-| **design** | approved tickets flagged *Needs design* | `prompts/lane-design.md` |
-| **qa** | everything at `fixed` or `qa`, whoever built it | `prompts/lane-qa.md` |
-| **triage** | tickets assigned to the triage seat | `prompts/lane-triage.md` |
+| **dev** | approved tickets that don't need design work | `prompts/default/lane-dev.md` |
+| **design** | approved tickets flagged *Needs design* | `prompts/default/lane-design.md` |
+| **qa** | everything at `fixed` or `qa`, whoever built it | `prompts/default/lane-qa.md` |
+| **triage** | tickets assigned to the triage seat | `prompts/default/lane-triage.md` |
 
 One role runs per cycle, whichever holds the most urgent actionable ticket
 (`src/priority.ts` decides, and the same module sorts the digest that agent is
@@ -46,6 +49,46 @@ seat that resolves it is one with the ticket's context, and QA checks the
 resolution like any other change. A branch that was merely stale merges
 cleanly at that point and nobody is woken at all. Conflicting a second time
 stops at `needs_info` rather than looping.
+
+## Prompt sets
+
+The seats above and their briefs are policy, not mechanism — a fact about
+*how* one particular workspace likes to work, not about what crew itself
+can do. `prompts/` ships more than one of these as complete, ready-to-run
+policies:
+
+| Directory | Policy |
+| --- | --- |
+| `prompts/default/` | Three lanes — dev, design (gated by a *Needs design* flag), QA. |
+| `prompts/dev-qa/` | Two lanes — dev builds everything, QA checks it. No design gate. |
+
+A route picks one with `promptSet:` in `crew.yaml` (see
+`crew.example.yaml`) — a bare name resolves under this repo's own
+`prompts/`, defaulting to `default` when omitted. Different routes on the
+same ship can run different prompt sets, since which workflow a workspace
+wants is a fact about that workspace, not about the machine running it.
+
+**Writing your own** is the expected path once a shipped preset doesn't
+fit: copy a preset directory (`cp -r prompts/default ~/my-crew-policy`),
+edit its prose, and point `promptSet` at the copy (`~/my-crew-policy` or a
+relative path) — no fork of this repo required. A prompt set is a complete,
+self-contained fork of `common.md` + one `lane-<role>.md` per seat, not a
+diff against another one; each file is read as plain prose concatenated
+ahead of the per-run roster/environment/queue sections
+(`src/agent.ts`'s `assemblePrompt`), so there's no templating layer to
+learn. `prompts/dev-qa/` is a worked example of trimming a lane out of
+`default` cleanly, including the unused `lane-design.md` stub every
+preset still needs today — see the next paragraph for why.
+
+One current limit: **the four seats themselves (dev, design, qa, triage)
+are fixed** — `src/config.ts`'s `RoleName` — so even a prompt set with no
+real use for a seat (`dev-qa`'s `design`) still needs a `lane-<role>.md`
+file, or `crew agents sync` and `planAgentRun` throw looking for it.
+`prompts/dev-qa/lane-design.md` handles this by being a brief that just
+says "do nothing, you shouldn't be staffed" — copy that pattern for any
+seat your own policy doesn't use. Making the seat set itself
+policy-defined, so a prompt set could add or drop a role outright, is a
+larger change than prompt sets took and hasn't been done.
 
 ## What a workspace has to provide
 
@@ -154,7 +197,7 @@ which only discovers names and remotes, never fetches anything itself.
 bin/crew          the entry point
 src/              the implementation (Node, run directly via type stripping)
 test/             its tests, including a fake board for integration runs
-prompts/          the shared policy, plus one brief per role
+prompts/          prompt sets — prompts/<name>/common.md + lane-<role>.md
 docs/             CONTRACT.md, REPO_SPEC.md, MIGRATION.md
 launchd/          timer templates (edit the paths before installing)
 crew.example.yaml copy to ~/.config/crew/crew.yaml

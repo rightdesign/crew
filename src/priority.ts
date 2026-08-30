@@ -1,8 +1,10 @@
 /**
  * The crew's ticket ordering, in one place.
  *
- * This is the executable copy of the Step 2 ordering rule in
- * `prompts/common.md`. Both the queue digest (which sorts the agent's queue)
+ * This is the executable copy of the Step 2 ordering rule in each prompt
+ * set's `common.md` (`prompts/<promptSet>/common.md`) — every set ships
+ * with the same ordering prose, since it's mechanism, not policy. Both the
+ * queue digest (which sorts the agent's queue)
  * and role selection (which decides who runs this cycle) rank through here,
  * so the sort an agent is handed and the choice of who runs can never
  * disagree. If this and the prose ever drift, the prose is what to correct.

@@ -6,7 +6,8 @@
  * Agents tables now auto-provision on every workspace (ISSUE-465), so this
  * no longer creates the table — it only adds crew's own rows to one that's
  * already there, and keeps them in sync with crew's own local prompt files
- * (`prompts/common.md` + `prompts/lane-<role>.md`, the exact static content
+ * (`route.promptsDir`'s `common.md` + `lane-<role>.md` — see the README's
+ * "Prompt sets" section — the exact static content
  * `agent.ts`'s `assemblePrompt` concatenates ahead of the per-run
  * roster/environment/digest sections) without ever clobbering a workspace
  * admin's own edit to a persona's Prompt field.
@@ -57,9 +58,9 @@ export class AgentsSyncError extends Error {}
  * copy of `common.md`/`lane-<role>.md` has moved on — never anything a
  * workspace admin typed into the row directly.
  */
-export function personaDefaultPrompt(crewHome: string, role: RoleName): string {
-  const commonPath = join(crewHome, 'prompts', 'common.md');
-  const briefPath = join(crewHome, 'prompts', `lane-${role}.md`);
+export function personaDefaultPrompt(promptsDir: string, role: RoleName): string {
+  const commonPath = join(promptsDir, 'common.md');
+  const briefPath = join(promptsDir, `lane-${role}.md`);
   if (!existsSync(commonPath)) throw new AgentsSyncError(`no shared policy at ${commonPath}`);
   if (!existsSync(briefPath)) throw new AgentsSyncError(`no brief at ${briefPath}`);
   return `${readFileSync(commonPath, 'utf8')}${readFileSync(briefPath, 'utf8')}`;
@@ -95,7 +96,7 @@ interface AgentRow {
 export async function fetchDivergedPrompt(
   route: Route,
   role: RoleName,
-  opts: { crewHome: string; userAgent?: string },
+  opts: { userAgent?: string },
 ): Promise<string | undefined> {
   const agentId = route.resolved?.agentPersonas?.[role]?.agentId;
   if (!agentId || !route.resolved) return undefined;
@@ -117,7 +118,7 @@ export async function fetchDivergedPrompt(
     return undefined;
   }
 
-  const defaultPrompt = personaDefaultPrompt(opts.crewHome, role);
+  const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
   return row.prompt !== defaultPrompt ? row.prompt : undefined;
 }
 
@@ -241,7 +242,7 @@ export interface SyncPersonasResult {
  */
 export async function syncPersonas(
   route: Route,
-  opts: { crewHome: string; userAgent?: string; dryRun?: boolean },
+  opts: { userAgent?: string; dryRun?: boolean },
 ): Promise<SyncPersonasResult> {
   if (!route.resolved) {
     throw new AgentsSyncError(`route "${route.route}" has no resolved ids — run \`crew connect\` first`);
@@ -273,7 +274,7 @@ export async function syncPersonas(
 
   for (const role of ROLE_NAMES) {
     const name = PERSONA_NAME[role];
-    const defaultPrompt = personaDefaultPrompt(opts.crewHome, role);
+    const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
     const row = rows.find((r) => r.name === name);
 
     if (!row) {

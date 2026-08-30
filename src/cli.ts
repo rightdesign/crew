@@ -829,12 +829,12 @@ switch (command) {
       }
       if (dryRun) {
         const fleetPlan = planAgentRun({
-          role: w.role, route: w.route, ship: cfg.ship, crewHome: CREW_HOME,
+          role: w.role, route: w.route, ship: cfg.ship,
           stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
           environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
           apiKey: resolveApiKey(w.route),
           cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
-          divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent }),
+          divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         });
         process.stdout.write(`${describePlan(fleetPlan)}\n`);
         break;
@@ -911,12 +911,12 @@ switch (command) {
       }
 
       const fleetPlan = planAgentRun({
-        role: w.role, route: w.route, ship: cfg.ship, crewHome: CREW_HOME,
+        role: w.role, route: w.route, ship: cfg.ship,
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
         environment: await environmentFor(w.route, fleetTicketHint),
         apiKey: resolveApiKey(w.route),
         cycle: emit.cycle, ticket: fleetTicketHint,
-        divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent }),
+        divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
       });
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.route.route}`);
@@ -1108,12 +1108,12 @@ switch (command) {
       }
 
       const plan = planAgentRun({
-        role: current, route, ship: cfg.ship, crewHome: CREW_HOME,
+        role: current, route, ship: cfg.ship,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, route, current),
         environment: await environmentFor(route, ticketHint),
         apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint,
-        divergedPrompt: await fetchDivergedPrompt(route, current, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent }),
+        divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);
@@ -1227,7 +1227,7 @@ switch (command) {
     }
     let result: Awaited<ReturnType<typeof syncPersonas>>;
     try {
-      result = await syncPersonas(target, { crewHome: CREW_HOME, userAgent: cfg.ship.userAgent, dryRun });
+      result = await syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun });
     } catch (e) {
       if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;

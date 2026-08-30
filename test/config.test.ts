@@ -175,6 +175,33 @@ test('worktreePrefix is optional — a route that says nothing gets no ship-leve
   assert.equal(cfg.routes[0]!.worktreePrefix, undefined);
 });
 
+test('promptsDir defaults to <crewHome>/prompts/default when a route says nothing', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.promptsDir, join(dir, 'prompts', 'default'));
+});
+
+test('a bare promptSet name resolves under <crewHome>/prompts/, not the route\'s own dir', () => {
+  const withPreset = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    promptSet: dev-qa');
+  const { dir, file } = withConfig(withPreset);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.promptsDir, join(dir, 'prompts', 'dev-qa'));
+});
+
+test('a promptSet that looks like a path is expanded relative to this route\'s own config, like apiKeyFile', () => {
+  const withPath = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    promptSet: ./my-policy');
+  const { dir, file } = withConfig(withPath);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.promptsDir, join(dir, 'my-policy'));
+});
+
+test('a promptSet starting with ~ expands against the home directory, same as other path settings', () => {
+  const withHome = ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    promptSet: ~/my-crew-policy');
+  const { dir, file } = withConfig(withHome);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.promptsDir, join(homedir(), 'my-crew-policy'));
+});
+
 test('a config with no routes is refused', () => {
   const { dir, file } = withConfig('ship: {}\n');
   assert.throws(() => loadConfig(dir, file), /routes \(at least one\)/);

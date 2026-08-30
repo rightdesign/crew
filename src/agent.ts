@@ -177,7 +177,6 @@ export interface PlanOptions {
   role: RoleName;
   route: Route;
   ship: Ship;
-  crewHome: string;
   stateDir: string;
   roster: string;
   environment: string;
@@ -209,11 +208,11 @@ export class AgentError extends Error {}
 
 /** Everything the run WOULD do, decided without doing any of it. */
 export function planAgentRun(o: PlanOptions): AgentPlan {
-  const briefPath = join(o.crewHome, 'prompts', `lane-${o.role}.md`);
+  const briefPath = join(o.route.promptsDir, `lane-${o.role}.md`);
   if (!existsSync(briefPath)) {
     throw new AgentError(`no brief at ${briefPath} — refusing to run an unscoped session`);
   }
-  const commonPath = join(o.crewHome, 'prompts', 'common.md');
+  const commonPath = join(o.route.promptsDir, 'common.md');
   if (!existsSync(commonPath)) throw new AgentError(`no shared policy at ${commonPath}`);
 
   const now = o.now ?? (() => Date.now());

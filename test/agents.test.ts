@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -9,21 +9,20 @@ import {
 } from '../src/agents.ts';
 import type { Route } from '../src/config.ts';
 
-/** A minimal crewHome with just the prompt files agents.ts reads. */
-function makeCrewHome(overrides: Partial<Record<'common' | 'dev' | 'design' | 'qa' | 'triage', string>> = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'crew-agents-'));
-  const prompts = join(dir, 'prompts');
-  mkdirSync(prompts, { recursive: true });
+/** A minimal prompts directory with just the files agents.ts reads — what Route.promptsDir points at. */
+function makePromptsDir(overrides: Partial<Record<'common' | 'dev' | 'design' | 'qa' | 'triage', string>> = {}): string {
+  const prompts = mkdtempSync(join(tmpdir(), 'crew-agents-'));
   writeFileSync(join(prompts, 'common.md'), overrides.common ?? 'COMMON\n');
   for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
     writeFileSync(join(prompts, `lane-${role}.md`), overrides[role] ?? `LANE-${role.toUpperCase()}\n`);
   }
-  return dir;
+  return prompts;
 }
 
 function makeRoute(
   agentPersonas?: Route['resolved'] extends infer R ? (R extends { agentPersonas?: infer P } ? P : never) : never,
   seats: Partial<Record<'dev' | 'design' | 'qa' | 'triage', string>> = {},
+  promptsDir: string = makePromptsDir(),
 ): Route {
   return {
     route: 'issues/test',
@@ -35,6 +34,7 @@ function makeRoute(
     hooks: {},
     labels: {},
     release: {},
+    promptsDir,
     resolved: {
       workspaceId: 'ws-1',
       models: { issues: 'issues-model', comments: 'comments-model', crew: 'crew-model' },
@@ -67,13 +67,13 @@ function mockFetch(handlers: Record<string, (body: unknown) => { status: number;
 const AGENTS_MODEL = { id: 'agents-model-1', workspaceId: 'ws-1', name: 'Agents', tableName: 'agents' };
 
 test('personaDefaultPrompt concatenates common.md and lane-<role>.md with no separator, matching assemblePrompt', () => {
-  const crewHome = makeCrewHome({ common: 'COMMON\n', dev: 'DEV BRIEF\n' });
-  assert.equal(personaDefaultPrompt(crewHome, 'dev'), 'COMMON\nDEV BRIEF\n');
+  const promptsDir = makePromptsDir({ common: 'COMMON\n', dev: 'DEV BRIEF\n' });
+  assert.equal(personaDefaultPrompt(promptsDir, 'dev'), 'COMMON\nDEV BRIEF\n');
 });
 
 test('personaDefaultPrompt throws a clear AgentsSyncError when a brief is missing', () => {
-  const crewHome = mkdtempSync(join(tmpdir(), 'crew-agents-empty-'));
-  assert.throws(() => personaDefaultPrompt(crewHome, 'dev'), AgentsSyncError);
+  const promptsDir = mkdtempSync(join(tmpdir(), 'crew-agents-empty-'));
+  assert.throws(() => personaDefaultPrompt(promptsDir, 'dev'), AgentsSyncError);
 });
 
 test('a workspace with no Agents table yet fails with a message naming ISSUE-465, not a raw 404', async (t) => {
@@ -83,13 +83,13 @@ test('a workspace with no Agents table yet fails with a message naming ISSUE-465
   t.after(restore);
   const route = makeRoute();
   await assert.rejects(
-    syncPersonas(route, { crewHome: makeCrewHome() }),
+    syncPersonas(route, {}),
     (e: unknown) => e instanceof AgentsSyncError && /ISSUE-465/.test((e as Error).message),
   );
 });
 
 test('four missing personas are all created, named and prompted from the local briefs', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const created: Array<{ name: string; prompt: string }> = [];
   const { restore, calls } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
@@ -101,7 +101,7 @@ test('four missing personas are all created, named and prompted from the local b
   });
   t.after(restore);
 
-  const result = await syncPersonas(makeRoute(), { crewHome });
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
 
   assert.equal(result.outcomes.length, 4);
   assert.ok(result.outcomes.every((o) => o.action === 'created'));
@@ -113,7 +113,7 @@ test('four missing personas are all created, named and prompted from the local b
 });
 
 test('ISSUE-377/529: a freshly-created row\'s newest history entry is cached as historyId, for a later run\'s prompt_version', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
@@ -127,7 +127,7 @@ test('ISSUE-377/529: a freshly-created row\'s newest history entry is cached as 
   });
   t.after(restore);
 
-  const result = await syncPersonas(makeRoute(), { crewHome });
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
   assert.equal(result.agentPersonas.dev?.historyId, 'hist-dev-1');
   // An empty history response is not an error — just nothing to cache yet.
   assert.equal(result.agentPersonas.design?.historyId, undefined);
@@ -150,14 +150,14 @@ test('dry run reports what it would create but performs no POST', async (t) => {
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
   });
   t.after(restore);
-  const result = await syncPersonas(makeRoute(), { crewHome: makeCrewHome(), dryRun: true });
+  const result = await syncPersonas(makeRoute(), { dryRun: true });
   assert.ok(result.outcomes.every((o) => o.action === 'created'));
   assert.equal(calls.filter((c) => c.key.startsWith('POST')).length, 0);
 });
 
 test('a row whose content already matches the local default is left alone and just re-anchors the cache', async (t) => {
-  const crewHome = makeCrewHome();
-  const defaultPrompt = personaDefaultPrompt(crewHome, 'dev');
+  const promptsDir = makePromptsDir();
+  const defaultPrompt = personaDefaultPrompt(promptsDir, 'dev');
   const { restore, calls } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
@@ -171,7 +171,7 @@ test('a row whose content already matches the local default is left alone and ju
   });
   t.after(restore);
 
-  const result = await syncPersonas(makeRoute(), { crewHome });
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
   const dev = result.outcomes.find((o) => o.role === 'dev')!;
   assert.equal(dev.action, 'unchanged');
   assert.equal(result.agentPersonas.dev?.lastSyncedUpdatedAt, '2026-01-01T00:00:00Z');
@@ -179,7 +179,7 @@ test('a row whose content already matches the local default is left alone and ju
 });
 
 test('a differing row with no cached baseline is reported diverged and never overwritten — crew cannot prove it wrote the current content', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore, calls } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
@@ -191,14 +191,14 @@ test('a differing row with no cached baseline is reported diverged and never ove
   });
   t.after(restore);
 
-  const result = await syncPersonas(makeRoute(), { crewHome }); // no agentPersonas cache passed in
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {}); // no agentPersonas cache passed in
   assert.ok(result.outcomes.every((o) => o.action === 'diverged'));
   assert.equal(calls.filter((c) => c.key.startsWith('PATCH')).length, 0);
   assert.match(describeSyncOutcome(result.outcomes[0]!), /HAS LOCAL EDITS/);
 });
 
 test('a row matching crew\'s own last-synced updated_at is pushed forward when the local default has changed since', async (t) => {
-  const crewHome = makeCrewHome({ dev: 'NEW DEV BRIEF\n' });
+  const promptsDir = makePromptsDir({ dev: 'NEW DEV BRIEF\n' });
   let patchedBody: unknown;
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
@@ -206,9 +206,9 @@ test('a row matching crew\'s own last-synced updated_at is pushed forward when t
       status: 200,
       body: [
         { id: 'row-Developer', name: 'Developer', prompt: 'COMMON\nOLD DEV BRIEF\n', updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(crewHome, 'design'), updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(crewHome, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(crewHome, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(promptsDir, 'design'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(promptsDir, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(promptsDir, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': (body) => {
@@ -218,8 +218,8 @@ test('a row matching crew\'s own last-synced updated_at is pushed forward when t
   });
   t.after(restore);
 
-  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any);
-  const result = await syncPersonas(route, { crewHome });
+  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any, {}, promptsDir);
+  const result = await syncPersonas(route, {});
   const dev = result.outcomes.find((o) => o.role === 'dev')!;
   assert.equal(dev.action, 'updated');
   assert.deepEqual(patchedBody, { prompt: 'COMMON\nNEW DEV BRIEF\n' });
@@ -227,24 +227,24 @@ test('a row matching crew\'s own last-synced updated_at is pushed forward when t
 });
 
 test('a stale-write 409 (someone edited between the list and the patch) is reported diverged, not thrown', async (t) => {
-  const crewHome = makeCrewHome({ dev: 'NEW DEV BRIEF\n' });
+  const promptsDir = makePromptsDir({ dev: 'NEW DEV BRIEF\n' });
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
       status: 200,
       body: [
         { id: 'row-Developer', name: 'Developer', prompt: 'COMMON\nOLD DEV BRIEF\n', updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(crewHome, 'design'), updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(crewHome, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(crewHome, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(promptsDir, 'design'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(promptsDir, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(promptsDir, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': () => ({ status: 409, body: { message: 'stale' } }),
   });
   t.after(restore);
 
-  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any);
-  const result = await syncPersonas(route, { crewHome });
+  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any, {}, promptsDir);
+  const result = await syncPersonas(route, {});
   const dev = result.outcomes.find((o) => o.role === 'dev')!;
   assert.equal(dev.action, 'diverged');
   // The cache stays untouched — the caller must not persist a "synced" state that never happened.
@@ -273,25 +273,25 @@ const FIELD_TYPES = [
 ];
 
 /** All four Agents rows already in sync, so every role resolves an `agentId` with no prompt writes. */
-function unchangedAgentsRowsHandler(crewHome: string) {
+function unchangedAgentsRowsHandler(promptsDir: string) {
   return () => ({
     status: 200,
     body: (['dev', 'design', 'qa', 'triage'] as const).map((role) => ({
       id: `row-${role}`,
       name: { dev: 'Developer', design: 'Design', qa: 'QA', triage: 'Triage' }[role],
-      prompt: personaDefaultPrompt(crewHome, role),
+      prompt: personaDefaultPrompt(promptsDir, role),
       updated_at: '2026-01-01T00:00:00Z',
     })),
   });
 }
 
 test('a workspace with no Agent field yet gets one created, then every seated role is linked', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   let fieldCreateBody: unknown;
   const patched: Record<string, unknown> = {};
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
-    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(crewHome),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
     'GET /api/data-models/crew-model': () => ({ status: 200, body: CREW_MODEL_NO_FIELD }),
     'GET /api/workspaces/ws-1/field-types': () => ({ status: 200, body: FIELD_TYPES }),
     'POST /api/data-models/crew-model/fields': (body) => { fieldCreateBody = body; return { status: 201, body: { columnName: 'agent_id' } }; },
@@ -306,8 +306,8 @@ test('a workspace with no Agent field yet gets one created, then every seated ro
   });
   t.after(restore);
 
-  const route = makeRoute(undefined, { dev: 'seat-dev', design: 'seat-design', qa: 'seat-qa', triage: 'seat-triage' });
-  const result = await syncPersonas(route, { crewHome });
+  const route = makeRoute(undefined, { dev: 'seat-dev', design: 'seat-design', qa: 'seat-qa', triage: 'seat-triage' }, promptsDir);
+  const result = await syncPersonas(route, {});
 
   assert.deepEqual(fieldCreateBody, {
     name: 'Agent',
@@ -323,19 +323,19 @@ test('a workspace with no Agent field yet gets one created, then every seated ro
 });
 
 test('an existing Agent field is reused (no field-types lookup, no POST), and an already-correct seat is left alone', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   let patchCalled = false;
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
-    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(crewHome),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
     'GET /api/data-models/crew-model': () => ({ status: 200, body: CREW_MODEL_WITH_FIELD }),
     'GET /api/data-models/crew-model/records/seat-dev': () => ({ status: 200, body: { id: 'seat-dev', agent_id: 'row-dev' } }),
     'PATCH /api/data-models/crew-model/records/seat-dev': () => { patchCalled = true; return { status: 200, body: {} }; },
   });
   t.after(restore);
 
-  const route = makeRoute(undefined, { dev: 'seat-dev' });
-  const result = await syncPersonas(route, { crewHome });
+  const route = makeRoute(undefined, { dev: 'seat-dev' }, promptsDir);
+  const result = await syncPersonas(route, {});
 
   assert.equal(patchCalled, false);
   const dev = result.crewLinks.find((o) => o.role === 'dev')!;
@@ -344,31 +344,31 @@ test('an existing Agent field is reused (no field-types lookup, no POST), and an
 });
 
 test('roles with no configured seat are reported no_seat and never touch the Crew table', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
-    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(crewHome),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
   });
   t.after(restore);
 
-  const route = makeRoute(); // no seats configured at all
-  const result = await syncPersonas(route, { crewHome });
+  const route = makeRoute(undefined, {}, promptsDir); // no seats configured at all
+  const result = await syncPersonas(route, {});
 
   assert.equal(result.crewLinks.length, 4);
   assert.ok(result.crewLinks.every((o) => o.action === 'no_seat'));
 });
 
 test('a seated role whose persona diverged this pass is reported persona_diverged, not no_seat, and never touches the Crew table', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
       status: 200,
       body: [
         { id: 'row-Developer', name: 'Developer', prompt: 'COMMON\nOLD DEV BRIEF\n', updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(crewHome, 'design'), updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(crewHome, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
-        { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(crewHome, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(promptsDir, 'design'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(promptsDir, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(promptsDir, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
   });
@@ -376,8 +376,8 @@ test('a seated role whose persona diverged this pass is reported persona_diverge
 
   // No cached baseline for dev's row, so it resolves 'diverged' — no
   // agentId for that role — while a seat IS configured for it.
-  const route = makeRoute(undefined, { dev: 'seat-dev' });
-  const result = await syncPersonas(route, { crewHome });
+  const route = makeRoute(undefined, { dev: 'seat-dev' }, promptsDir);
+  const result = await syncPersonas(route, {});
 
   const dev = result.outcomes.find((o) => o.role === 'dev')!;
   assert.equal(dev.action, 'diverged');
@@ -390,49 +390,48 @@ test('a seated role whose persona diverged this pass is reported persona_diverge
 });
 
 test('dry run never touches the Crew table', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
-    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(crewHome),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
   });
   t.after(restore);
 
-  const route = makeRoute(undefined, { dev: 'seat-dev' });
-  const result = await syncPersonas(route, { crewHome, dryRun: true });
+  const route = makeRoute(undefined, { dev: 'seat-dev' }, promptsDir);
+  const result = await syncPersonas(route, { dryRun: true });
 
   assert.deepEqual(result.crewLinks, []);
 });
 
 test('fetchDivergedPrompt returns undefined when a role has never been synced (no cached agentId)', async (t) => {
-  const crewHome = makeCrewHome();
   const { restore } = mockFetch({});
   t.after(restore);
 
   const route = makeRoute(undefined, { dev: 'seat-dev' });
-  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
 
   assert.equal(prompt, undefined);
 });
 
 test('fetchDivergedPrompt returns undefined when the row still matches the local template', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records/row-dev': () => ({
       status: 200,
-      body: { id: 'row-dev', name: 'Developer', prompt: personaDefaultPrompt(crewHome, 'dev'), updated_at: '2026-01-01T00:00:00Z' },
+      body: { id: 'row-dev', name: 'Developer', prompt: personaDefaultPrompt(promptsDir, 'dev'), updated_at: '2026-01-01T00:00:00Z' },
     }),
   });
   t.after(restore);
 
-  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
-  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' }, promptsDir);
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
 
   assert.equal(prompt, undefined);
 });
 
 test('fetchDivergedPrompt returns the live text when a workspace admin edited the row directly', async (t) => {
-  const crewHome = makeCrewHome();
+  const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records/row-dev': () => ({
@@ -442,21 +441,20 @@ test('fetchDivergedPrompt returns the live text when a workspace admin edited th
   });
   t.after(restore);
 
-  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
-  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' }, promptsDir);
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
 
   assert.equal(prompt, 'CUSTOM ADMIN PROMPT\n');
 });
 
 test('fetchDivergedPrompt falls back to undefined rather than throwing when the tracker is unreachable', async (t) => {
-  const crewHome = makeCrewHome();
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 404, body: { message: 'not found' } }),
   });
   t.after(restore);
 
   const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
-  const prompt = await fetchDivergedPrompt(route, 'dev', { crewHome });
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
 
   assert.equal(prompt, undefined);
 });

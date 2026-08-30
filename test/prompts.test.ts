@@ -6,9 +6,10 @@ import { join } from 'node:path';
 /**
  * ISSUE-293's acceptance criterion, as a test.
  *
- * The briefs under prompts/ are shared by every project the crew is pointed
- * at. A path, a command, an id or a person's name in one of them is wrong for
- * every project except the one it was written for — and wrong silently, since
+ * The briefs under prompts/<preset>/ are shared by every project a route
+ * points at that preset (see Route.promptsDir, config.ts). A path, a
+ * command, an id or a person's name in one of them is wrong for every
+ * project except the one it was written for — and wrong silently, since
  * the agent will follow it. Everything specific belongs in the Environment
  * block (src/environment.ts), the roster, or the repository's own .crew.yaml.
  *
@@ -33,18 +34,30 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   ['a hardcoded port', /:(?:3000|5173|5432|8080)\b/],
 ];
 
-test('no brief names anything specific to one project, machine or person', () => {
-  const files = readdirSync(PROMPTS).filter((f) => f.endsWith('.md'));
-  assert.ok(files.length >= 5, 'expected the shared policy plus one brief per role');
+/** Every `prompts/<name>/` directory is its own self-contained preset — see docs/CONTRACT.md and Route.promptsDir. */
+function presetDirs(): string[] {
+  return readdirSync(PROMPTS, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => join(PROMPTS, e.name));
+}
+
+test('every prompt set is complete and names nothing specific to one project, machine or person', () => {
+  const dirs = presetDirs();
+  assert.ok(dirs.length >= 1, 'expected at least one prompt-set directory under prompts/');
   const found: string[] = [];
-  for (const f of files) {
-    const text = readFileSync(join(PROMPTS, f), 'utf8');
-    text.split('\n').forEach((line, n) => {
-      for (const [what, re] of FORBIDDEN) {
-        const m = re.exec(line);
-        if (m) found.push(`${f}:${n + 1} contains ${what}: ${m[0].trim()}`);
-      }
-    });
+  for (const dir of dirs) {
+    const files = readdirSync(dir).filter((f) => f.endsWith('.md'));
+    assert.ok(files.includes('common.md'), `${dir}: missing the shared common.md`);
+    assert.ok(files.length >= 2, `${dir}: expected common.md plus at least one lane-<role>.md brief`);
+    for (const f of files) {
+      const text = readFileSync(join(dir, f), 'utf8');
+      text.split('\n').forEach((line, n) => {
+        for (const [what, re] of FORBIDDEN) {
+          const m = re.exec(line);
+          if (m) found.push(`${dir.slice(PROMPTS.length + 1)}/${f}:${n + 1} contains ${what}: ${m[0].trim()}`);
+        }
+      });
+    }
   }
   assert.deepEqual(found, []);
 });

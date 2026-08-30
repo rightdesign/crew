@@ -14,13 +14,14 @@ const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'f
 
 function rig() {
   const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
-  mkdirSync(join(home, 'prompts'), { recursive: true });
-  writeFileSync(join(home, 'prompts', 'common.md'), 'SHARED POLICY\n');
+  const promptsDir = join(home, 'prompts');
+  mkdirSync(promptsDir, { recursive: true });
+  writeFileSync(join(promptsDir, 'common.md'), 'SHARED POLICY\n');
   for (const r of ['dev', 'design', 'qa']) {
-    writeFileSync(join(home, 'prompts', `lane-${r}.md`), `BRIEF ${r}\n`);
+    writeFileSync(join(promptsDir, `lane-${r}.md`), `BRIEF ${r}\n`);
   }
   const state = mkdtempSync(join(tmpdir(), 'crew-state-'));
-  const route = { route: 'test/proj', dir: '/tmp/proj' } as any;
+  const route = { route: 'test/proj', dir: '/tmp/proj', promptsDir } as any;
   const ship = { agent: { bin: '/bin/echo', model: 'claude-sonnet-5' } } as any;
   return { home, state, route, ship };
 }
@@ -70,7 +71,7 @@ test('the roster leads, then environment, then policy, then brief, then queue', 
 
 test('a plan is fully decided without running anything', () => {
   const { home, state, route, ship } = rig();
-  const plan = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const plan = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
   assert.deepEqual(plan.args, [
@@ -87,7 +88,7 @@ test('a plan is fully decided without running anything', () => {
 test('a diverged prompt replaces common+brief wholesale, rather than being appended alongside them', () => {
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
     divergedPrompt: 'CUSTOM ADMIN PROMPT',
   });
   assert.match(plan.prompt, /R[\s\S]*ENV[\s\S]*CUSTOM ADMIN PROMPT/);
@@ -98,7 +99,7 @@ test('a diverged prompt replaces common+brief wholesale, rather than being appen
 test('the stream path is derived from route, role and cycle, and shown by --dry-run', () => {
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV',
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV',
     cycle: '20260825120000', ticket: 'ISSUE-401',
   });
   assert.equal(plan.streamPath, join(state, 'streams', 'test-proj-dev-20260825120000.jsonl'));
@@ -114,14 +115,14 @@ test('a fresh digest is attached; a stale one is ignored', () => {
   const digest = join(state, 'digest-test-proj-dev.md');
   writeFileSync(digest, '## Current queue\n');
 
-  const fresh = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const fresh = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(fresh.digestAttached, true);
   assert.match(fresh.prompt, /## Current queue/);
 
   // age it past the cutoff — acting on a stale queue is worse than rebuilding
   const old = (Date.now() - (DIGEST_MAX_AGE_SECONDS + 60) * 1000) / 1000;
   utimesSync(digest, old, old);
-  const stale = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const stale = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(stale.digestAttached, false);
   assert.doesNotMatch(stale.prompt, /## Current queue/);
   assert.ok(stale.digestAgeSeconds! > DIGEST_MAX_AGE_SECONDS);
@@ -130,8 +131,8 @@ test('a fresh digest is attached; a stale one is ignored', () => {
 test('digests are per route AND per role — one ship, several projects', () => {
   const { home, state, route, ship } = rig();
   writeFileSync(join(state, 'digest-test-proj-qa.md'), 'QA QUEUE\n');
-  const qa = planAgentRun({ role: 'qa', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
-  const dev = planAgentRun({ role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const qa = planAgentRun({ role: 'qa', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  const dev = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
   assert.equal(qa.digestAttached, true);
   assert.equal(dev.digestAttached, false);   // not the other role's queue
 });
@@ -139,7 +140,7 @@ test('digests are per route AND per role — one ship, several projects', () => 
 test('a plan carries no agentLog target when the route has never been connected', () => {
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV',
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV',
     apiKey: 'k', cycle: 'c1',
   });
   assert.equal(plan.agentLog, undefined);
@@ -148,11 +149,11 @@ test('a plan carries no agentLog target when the route has never been connected'
 test('a resolved route with a synced persona carries a full agentLog target', () => {
   const { home, state, ship } = rig();
   const route = {
-    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
     resolved: { workspaceId: 'ws-1', agentPersonas: { dev: { agentId: 'agent-9', lastSyncedUpdatedAt: 't' } } },
   } as any;
   const plan = planAgentRun({
-    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, crewHome: home, stateDir: state,
+    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, stateDir: state,
     roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1',
   });
   assert.deepEqual(plan.agentLog, {
@@ -163,11 +164,11 @@ test('a resolved route with a synced persona carries a full agentLog target', ()
 test('a resolved route with no synced persona for this role still reports, with no agentId', () => {
   const { home, state, ship } = rig();
   const route = {
-    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
     resolved: { workspaceId: 'ws-1' },
   } as any;
   const plan = planAgentRun({
-    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, crewHome: home, stateDir: state,
+    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, stateDir: state,
     roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1',
   });
   assert.equal(plan.agentLog?.agentId, undefined);
@@ -177,7 +178,7 @@ test('a resolved route with no synced persona for this role still reports, with 
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, route, ship } = rig();
   assert.throws(
-    () => planAgentRun({ role: 'triage', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
+    () => planAgentRun({ role: 'triage', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
     (e: Error) => {
       assert.ok(e instanceof AgentError);
       assert.match(e.message, /refusing to run an unscoped session/);
@@ -190,7 +191,7 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({
     role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
-    crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'ISSUE-401',
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'ISSUE-401',
   });
   plan.bin = process.execPath;
   plan.args = [FAKE_CLAUDE];
@@ -264,12 +265,12 @@ function mockFetch(routes: Record<string, unknown>) {
 test('spawnAgent reports the run as one Agent Log row, and its one thinking block as one cycle', async (t) => {
   const { home, state, ship } = rig();
   const route = {
-    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
     resolved: { workspaceId: 'ws-1', agentPersonas: { dev: { agentId: 'agent-9', lastSyncedUpdatedAt: 't' } } },
   } as any;
   const plan = planAgentRun({
     role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
-    crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-401',
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-401',
   });
   plan.bin = process.execPath;
   plan.args = [FAKE_CLAUDE];
@@ -309,12 +310,12 @@ test('spawnAgent reports the run as one Agent Log row, and its one thinking bloc
 test('spawnAgent warns but still resolves when reporting the agent log fails', async (t) => {
   const { home, state, ship } = rig();
   const route = {
-    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test',
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
     resolved: { workspaceId: 'ws-1' },
   } as any;
   const plan = planAgentRun({
     role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
-    crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c2',
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c2',
   });
   plan.bin = process.execPath;
   plan.args = [FAKE_CLAUDE];
@@ -334,7 +335,7 @@ test('spawnAgent warns but still resolves when reporting the agent log fails', a
 test('spawnAgent never dies on a malformed line, and closes cleanly', async () => {
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({
-    role: 'dev', route, ship, crewHome: home, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c2',
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c2',
   });
   plan.bin = process.execPath;
   plan.args = [FAKE_CLAUDE];
