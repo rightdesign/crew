@@ -55,10 +55,17 @@ export const DEFAULT_BASE_URL = 'https://app.tablation.com';
  */
 export const DEFAULT_REPOS_BASE_PATH = '~/Crew';
 
-export type RoleName = 'dev' | 'design' | 'qa' | 'triage';
-export const ROLE_NAMES: RoleName[] = ['dev', 'design', 'qa', 'triage'];
+export type RoleName = 'dev' | 'design' | 'qa' | 'triage' | 'pair';
+/**
+ * `pair` is deliberately last, and deliberately never added to any of the
+ * polling order arrays in select.ts/cli.ts (`['qa','triage','dev','design']`
+ * and friends) — it is an interactive human-driven session, never a seat the
+ * fleet picks up work for on its own. It rides ROLE_NAMES only so its Agents
+ * row gets created/kept in sync the same way the four polled seats' do.
+ */
+export const ROLE_NAMES: RoleName[] = ['dev', 'design', 'qa', 'triage', 'pair'];
 export const ROLE_LABEL: Record<RoleName, string> = {
-  dev: 'Dev', design: 'Design', qa: 'QA', triage: 'Triage',
+  dev: 'Dev', design: 'Design', qa: 'QA', triage: 'Triage', pair: 'Pair',
 };
 
 export interface HoldConfig { id: string; role?: string }
@@ -846,6 +853,24 @@ function parseOneRoute(
   return result;
 }
 
+/**
+ * Which route (if any) owns the checkout at `dir` — how something started
+ * from inside a repo (an IDE session, a shell) rather than by an operator
+ * naming a route on the command line, works out which board it belongs to.
+ * Matches `dir` itself or any ancestor of it against every checkout
+ * `reposOf` lists for each route, so it works from a subdirectory of the
+ * checkout too. Returns undefined rather than throwing — the caller (e.g. a
+ * `SessionStart` hook) treats "not a crew checkout" as a normal, silent case.
+ */
+export function routeForDir(cfg: CrewConfig, dir: string): Route | undefined {
+  const target = resolve(dir);
+  const isInside = (base: string) => {
+    const b = resolve(base);
+    return target === b || target.startsWith(`${b}/`);
+  };
+  return cfg.routes.find((r) => reposOf(r).some((repo) => isInside(repo.dir)));
+}
+
 /** Look a route up by its `workspace/project` string — how `crew run <route>` addresses one. */
 export function findRoute(cfg: CrewConfig, route?: string): Route {
   if (!route) {
@@ -927,7 +952,12 @@ export function configuredMembers(rt: Route) {
   const out: Array<{ id: string; role: string; kind: 'seat' | 'hold' }> = [];
   for (const role of ROLE_NAMES) {
     const id = r.seats[role];
-    if (id) out.push({ id, role: ROLE_LABEL[role], kind: 'seat' });
+    // `pair`'s Crew row is stored the same way a polled seat's is, but it is
+    // a HOLD, not a seat: it is never assigned work by the poll loop, and a
+    // ticket it IS working (a live, human-paired session) must be off-limits
+    // to every polled seat the same way one a person is driving already is
+    // (roster.ts's `isHold`, and the `holds` Set `poll.ts` builds from this).
+    if (id) out.push({ id, role: ROLE_LABEL[role], kind: role === 'pair' ? 'hold' : 'seat' });
   }
   if (r.operator) out.push({ id: r.operator, role: 'Operator', kind: 'hold' });
   for (const h of r.holds) if (h.id) out.push({ id: h.id, role: h.role ?? '', kind: 'hold' });

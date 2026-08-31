@@ -71,6 +71,7 @@ export const triageSlice = (tickets: Ticket[], triageSeat?: string): Ticket[] =>
 export function sliceFor(tickets: Ticket[], role: RoleName): Ticket[] {
   if (role === 'qa') return qaSlice(tickets);
   if (role === 'triage') return triageSlice(tickets);   // caller passes the seat where it matters
+  if (role === 'pair') return [];   // interactive, never polled — see roleHasWork
   return buildingSlice(tickets, role);
 }
 
@@ -170,6 +171,12 @@ export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boole
   if (i.paused?.has(role)) return { hasWork: false, reason: 'paused' };
   if (role === 'qa') return qaRoleHasWork(i);
   if (role === 'triage') return triageRoleHasWork(i);
+  // `pair` is a live, human-driven session — it never runs unattended, so
+  // it never has autonomous "work" for the poll to wake it for. It is not
+  // in `selectRole`'s `order` below, so this branch is unreachable from the
+  // poll loop today; it exists so `roleHasWork` stays total over RoleName
+  // for any other caller.
+  if (role === 'pair') return { hasWork: false, reason: 'pair is interactive, not polled' };
   return buildingRoleHasWork(role, i);
 }
 
@@ -186,6 +193,7 @@ export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boole
 export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
   if (role === 'qa') return qaSlice(i.tickets).filter((t) => !isHeld(t, i.holds));
   if (role === 'triage') return triageSlice(i.tickets, i.seats.triage).filter((t) => !isHeld(t, i.holds));
+  if (role === 'pair') return [];
   const me = i.seats[role];
   if (!me) return [];
   return sliceFor(i.tickets, role).filter(

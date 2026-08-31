@@ -20,8 +20,8 @@ this ship, and the interactive sessions they work through. A ticket assigned
 to a hold is off limits to every seat, whatever its status, which is how a
 person takes something over without racing the crew for it.
 
-Today's crew has four seats, described below under the `default` prompt
-set (the three-lane dev/design/QA policy this repo ships with — see
+Today's crew has four polled seats, described below under the `default`
+prompt set (the three-lane dev/design/QA policy this repo ships with — see
 "Prompt sets" below for others, and for writing your own):
 
 | Seat | Owns | Brief |
@@ -30,6 +30,16 @@ set (the three-lane dev/design/QA policy this repo ships with — see
 | **design** | approved tickets flagged *Needs design* | `prompts/default/lane-design.md` |
 | **qa** | everything at `fixed` or `qa`, whoever built it | `prompts/default/lane-qa.md` |
 | **triage** | tickets assigned to the triage seat | `prompts/default/lane-triage.md` |
+
+A fifth persona, **pair**, rides `crew agents sync` alongside these four but
+is not polled: it is the identity a live, interactive session (an IDE
+conversation, not a scheduled run) uses when it touches the tracker. It has
+no Crew-table seat, is never assigned a ticket by the poll loop, and its
+brief (`prompts/default/lane-pair.md`) is not prefixed with `common.md` —
+none of the polling loop's shared policy describes it. `crew agents prompt
+pair` prints its current persona text (a workspace admin's live edit if
+there is one, else the local default) for something like a `SessionStart`
+hook to feed into a session at start.
 
 One role runs per cycle, whichever holds the most urgent actionable ticket
 (`src/priority.ts` decides, and the same module sorts the digest that agent is
@@ -80,15 +90,17 @@ learn. `prompts/dev-qa/` is a worked example of trimming a lane out of
 `default` cleanly, including the unused `lane-design.md` stub every
 preset still needs today — see the next paragraph for why.
 
-One current limit: **the four seats themselves (dev, design, qa, triage)
-are fixed** — `src/config.ts`'s `RoleName` — so even a prompt set with no
-real use for a seat (`dev-qa`'s `design`) still needs a `lane-<role>.md`
-file, or `crew agents sync` and `planAgentRun` throw looking for it.
-`prompts/dev-qa/lane-design.md` handles this by being a brief that just
-says "do nothing, you shouldn't be staffed" — copy that pattern for any
-seat your own policy doesn't use. Making the seat set itself
-policy-defined, so a prompt set could add or drop a role outright, is a
-larger change than prompt sets took and hasn't been done.
+One current limit: **the role set itself is fixed** — `src/config.ts`'s
+`RoleName` (`dev`, `design`, `qa`, `triage`, `pair`) — so even a prompt set
+with no real use for a polled seat (`dev-qa`'s `design`) still needs a
+`lane-<role>.md` file for every one of them, `pair` included, or `crew
+agents sync` and `planAgentRun` throw looking for it. `prompts/dev-qa/
+lane-design.md` handles this by being a brief that just says "do nothing,
+you shouldn't be staffed" — copy that pattern for any polled seat your own
+policy doesn't use (`pair` is never polled, so its own brief just needs to
+exist, not disclaim itself). Making the seat set itself policy-defined, so
+a prompt set could add or drop a role outright, is a larger change than
+prompt sets took and hasn't been done.
 
 ## What a workspace has to provide
 

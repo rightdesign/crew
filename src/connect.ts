@@ -323,6 +323,16 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       if (id) out.seats[role] = id;
       else problems.push(`no Crew row looking like the ${role} seat — create one, or omit that role`);
     }
+    // `pair` is optional and best-effort, unlike the four polled seats above:
+    // a workspace with no interactive-session row yet is not a problem, just
+    // one `crew agents sync` cannot link a persona to. Stored the same way
+    // (`out.seats.pair`) so `crew agents sync`'s existing seat-linking loop
+    // needs no `pair`-specific code — `configuredMembers()` (config.ts) is
+    // what reclassifies this one row as a HOLD rather than a seat, since a
+    // ticket Pair is working must stay off-limits to the polled seats the
+    // same way one a person is driving does.
+    const pairId = seatFor(rows, 'pair');
+    if (pairId) out.seats.pair = pairId;
     // Anything that is not one of the seats is a person or a session: a hold.
     const seatIds = new Set(Object.values(out.seats));
     out.holds = rows.filter((r) => !seatIds.has(r.id)).map((r) => ({ id: r.id, name: r.name ?? '' }));

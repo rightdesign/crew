@@ -180,7 +180,48 @@ test('discover() leaves operator unset when no hold email matches (or two do)', 
 
   const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
   assert.equal(found.operator, undefined);
-  assert.equal(found.holds.length, 2);
+  // "Pair agent" is claimed as the pair seat, not left as a hold — see the
+  // dedicated pair-matching test below.
+  assert.equal(found.holds.length, 1);
+});
+
+test('discover() best-effort-matches a "pair" Crew row into seats.pair, and drops it from holds', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'hold-pair', name: 'Pair agent' },
+      { id: 'hold-brad', name: 'Brad C.' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.seats.pair, 'hold-pair');
+  assert.deepEqual(found.holds.map((h) => h.id), ['hold-brad']);
+});
+
+test('discover() reports no problem when no "pair" Crew row exists — it is optional, unlike the four polled seats', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'hold-brad', name: 'Brad C.' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.seats.pair, undefined);
+  assert.ok(!found.problems.some((p) => p.includes('pair')));
 });
 
 test('discover() flags a status CHOICE value the default contract does not name (ISSUE-467)', async (t) => {

@@ -237,6 +237,31 @@ test('configuredMembers reads the resolved ids, not authored ones', () => {
   ]);
 });
 
+test('configuredMembers classifies a resolved pair seat as a HOLD, not a seat — a ticket it works must stay off-limits to the polled seats', () => {
+  const withPair = `
+ship:
+  agent: { bin: /bin/true }
+routes:
+  - route: issues/dev-crew
+    dir: /tmp/proj
+    worktreePrefix: proj-issue-
+    baseUrl: https://example.test/
+    resolved:
+      workspaceId: ws-1
+      models: { issues: i, comments: c, crew: m }
+      seats: { dev: dev-1, pair: pair-seat-1 }
+      operator: op-1
+      holds: []
+`;
+  const { dir, file } = withConfig(withPair);
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.deepEqual(configuredMembers(r), [
+    { id: 'dev-1', role: 'Dev', kind: 'seat' },
+    { id: 'pair-seat-1', role: 'Pair', kind: 'hold' },
+    { id: 'op-1', role: 'Operator', kind: 'hold' },
+  ]);
+});
+
 test('an unresolved route says to run crew connect', () => {
   const noIds = ONE.slice(0, ONE.indexOf('    resolved:'));
   const { dir, file } = withConfig(noIds);

@@ -1,6 +1,6 @@
 /**
- * `crew agents sync` — pushes crew's four built-in personas (Developer,
- * Design, QA, Triage) into a workspace's Agents system table (ISSUE-416).
+ * `crew agents sync` — pushes crew's built-in personas (Developer, Design,
+ * QA, Triage, Pair) into a workspace's Agents system table (ISSUE-416).
  *
  * Scope, per docs/WORKSPACE_AGENTS_PLAN.md's 2026-08-27 revision: the three
  * Agents tables now auto-provision on every workspace (ISSUE-465), so this
@@ -18,6 +18,13 @@
  * separate read-then-compare step of our own — the row's `updated_at` at
  * the time crew last wrote it IS "crew's last-known value" the plan calls
  * for, and the server enforces the compare atomically.
+ *
+ * `pair` rides the same sync as a fifth persona, but it is not a polled
+ * seat — nothing in select.ts/poll.ts ever assigns it a ticket, and
+ * `crew connect`'s Crew-seat resolution never looks for a "pair" row. Its
+ * Agents-table row exists so a live, human-paired session can fetch its own
+ * persona prompt on demand — see `currentPersonaPrompt` below and
+ * `crew agents prompt`.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -41,7 +48,7 @@ declare module '@tablation/client' {
 
 /** Persona row `Name` values — matches WORKSPACE_AGENTS_PLAN.md and ISSUE-416's own wording. */
 export const PERSONA_NAME: Record<RoleName, string> = {
-  dev: 'Developer', design: 'Design', qa: 'QA', triage: 'Triage',
+  dev: 'Developer', design: 'Design', qa: 'QA', triage: 'Triage', pair: 'Pair',
 };
 
 /** The field `ensureCrewAgentField` provisions on the tracker's own Crew table (Migration section, WORKSPACE_AGENTS_PLAN.md). */
@@ -59,10 +66,16 @@ export class AgentsSyncError extends Error {}
  * workspace admin typed into the row directly.
  */
 export function personaDefaultPrompt(promptsDir: string, role: RoleName): string {
-  const commonPath = join(promptsDir, 'common.md');
   const briefPath = join(promptsDir, `lane-${role}.md`);
-  if (!existsSync(commonPath)) throw new AgentsSyncError(`no shared policy at ${commonPath}`);
   if (!existsSync(briefPath)) throw new AgentsSyncError(`no brief at ${briefPath}`);
+  // `common.md` is the polling loop's shared policy (worktrees, one
+  // stateless invocation per cycle, the three-lane hand-off protocol) — none
+  // of it describes `pair`, an interactive session with full conversation
+  // context and no lane of its own, so its brief is self-contained instead
+  // of being prefixed with policy prose that would misdescribe it.
+  if (role === 'pair') return readFileSync(briefPath, 'utf8');
+  const commonPath = join(promptsDir, 'common.md');
+  if (!existsSync(commonPath)) throw new AgentsSyncError(`no shared policy at ${commonPath}`);
   return `${readFileSync(commonPath, 'utf8')}${readFileSync(briefPath, 'utf8')}`;
 }
 
@@ -120,6 +133,24 @@ export async function fetchDivergedPrompt(
 
   const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
   return row.prompt !== defaultPrompt ? row.prompt : undefined;
+}
+
+/**
+ * The prompt a role's Agents row carries right now — a workspace admin's
+ * live edit when there is one, else whatever `crew agents sync` last wrote
+ * (which is, in turn, the local template when nobody has ever synced this
+ * route). Unlike `fetchDivergedPrompt`, this always returns something: it is
+ * what `crew agents prompt` prints for a caller (a `SessionStart` hook, a
+ * person at a terminal) that just wants "the current text", not a diff
+ * against the local file.
+ */
+export async function currentPersonaPrompt(
+  route: Route,
+  role: RoleName,
+  opts: { userAgent?: string },
+): Promise<string> {
+  const diverged = await fetchDivergedPrompt(route, role, opts);
+  return diverged ?? personaDefaultPrompt(route.promptsDir, role);
 }
 
 interface CrewRow {

@@ -10,7 +10,7 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  loadConfig, findRoute, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
+  loadConfig, findRoute, routeForDir, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
   DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
@@ -42,7 +42,7 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
-import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, PERSONA_NAME } from './agents.ts';
+import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
@@ -177,6 +177,7 @@ function usage(): never {
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
   crew agents sync [route]      push crew's built-in personas into the workspace Agents table
+  crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew install                  write and load this platform's scheduler unit
@@ -1203,15 +1204,49 @@ switch (command) {
   }
 
   case 'agents': {
-    // `crew agents sync [route]` — the only subcommand today. Unlike every
-    // other route-scoped command, the route argument is positional[2]
-    // (`agents` occupies positional[1] as the subcommand name), so this
-    // resolves its own target route instead of using the `route` the global
-    // `fleetWide` default picked (see the `command === 'agents'` entry
-    // there, which exists only to stop `findRoute(cfg, 'sync')` throwing).
+    // `crew agents sync [route]` and `crew agents prompt <role> [route]`.
+    // Unlike every other route-scoped command, the route argument is
+    // positional[2] or [3] (`agents` occupies positional[1] as the
+    // subcommand name), so this resolves its own target route instead of
+    // using the `route` the global `fleetWide` default picked (see the
+    // `command === 'agents'` entry there, which exists only to stop
+    // `findRoute(cfg, 'sync')` throwing).
     const sub = positional[1];
+    if (sub === 'prompt') {
+      const role = positional[2] as RoleName | undefined;
+      if (!role || !ROLE_NAMES.includes(role)) {
+        process.stderr.write(`crew agents prompt <role> [route]   print a persona's current prompt (roles: ${ROLE_NAMES.join(', ')})\n`);
+        process.exit(2);
+      }
+      let promptTarget: Route;
+      try {
+        // No route named: prefer the route this cwd belongs to (a `SessionStart`
+        // hook runs from inside a checkout, not with a route named on argv) —
+        // falling back to findRoute's own single-route default for a ship with
+        // exactly one route.
+        promptTarget = positional[3]
+          ? findRoute(cfg, positional[3])
+          : (routeForDir(cfg, process.cwd()) ?? findRoute(cfg, undefined));
+      } catch (e) {
+        if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+        throw e;
+      }
+      if (!promptTarget.resolved) {
+        process.stderr.write(`crew agents prompt: route "${promptTarget.route}" has no resolved ids — run \`crew connect\` first\n`);
+        process.exit(2);
+      }
+      try {
+        const prompt = await currentPersonaPrompt(promptTarget, role, { userAgent: cfg.ship.userAgent });
+        process.stdout.write(prompt);
+      } catch (e) {
+        if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents prompt: ${e.message}\n`); process.exit(2); }
+        throw e;
+      }
+      break;
+    }
     if (sub !== 'sync') {
-      process.stderr.write('crew agents sync [route]   push crew\'s Developer/Design/QA/Triage personas into the workspace Agents table\n');
+      process.stderr.write('crew agents sync [route]              push crew\'s Developer/Design/QA/Triage/Pair personas into the workspace Agents table\n');
+      process.stderr.write(`crew agents prompt <role> [route]     print a persona's current prompt (roles: ${ROLE_NAMES.join(', ')})\n`);
       process.exit(2);
     }
     let target: Route;
@@ -1854,7 +1889,10 @@ switch (command) {
       const crewRows = Object.keys(seatIds).length ? await statusTracker.crewRows() : [];
       const crewRowById = new Map(crewRows.map((c) => [c.id, c]));
       const agentPersonas = route.resolved?.agentPersonas ?? {};
-      const seats = ROLE_NAMES.map((r) => {
+      // 'pair' never has a Crew-table seat (it's an interactive persona, not
+      // a polled one — see config.ts's RoleName doc) — including it here
+      // would show crew-macos a seat entry that can never be staffed.
+      const seats = ROLE_NAMES.filter((r) => r !== 'pair').map((r) => {
         const seatId = seatIds[r];
         const crewRow = seatId ? crewRowById.get(seatId) : undefined;
         const linkedAgentId = agentPersonas[r]?.agentId;

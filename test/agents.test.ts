@@ -4,16 +4,16 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError,
+  syncPersonas, personaDefaultPrompt, currentPersonaPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError,
   fetchHistoryEntries, fetchDivergedPrompt,
 } from '../src/agents.ts';
 import type { Route } from '../src/config.ts';
 
 /** A minimal prompts directory with just the files agents.ts reads — what Route.promptsDir points at. */
-function makePromptsDir(overrides: Partial<Record<'common' | 'dev' | 'design' | 'qa' | 'triage', string>> = {}): string {
+function makePromptsDir(overrides: Partial<Record<'common' | 'dev' | 'design' | 'qa' | 'triage' | 'pair', string>> = {}): string {
   const prompts = mkdtempSync(join(tmpdir(), 'crew-agents-'));
   writeFileSync(join(prompts, 'common.md'), overrides.common ?? 'COMMON\n');
-  for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
+  for (const role of ['dev', 'design', 'qa', 'triage', 'pair'] as const) {
     writeFileSync(join(prompts, `lane-${role}.md`), overrides[role] ?? `LANE-${role.toUpperCase()}\n`);
   }
   return prompts;
@@ -76,6 +76,11 @@ test('personaDefaultPrompt throws a clear AgentsSyncError when a brief is missin
   assert.throws(() => personaDefaultPrompt(promptsDir, 'dev'), AgentsSyncError);
 });
 
+test('personaDefaultPrompt skips common.md for pair — it is not a dev-loop lane', () => {
+  const promptsDir = makePromptsDir({ common: 'COMMON\n', pair: 'PAIR BRIEF\n' });
+  assert.equal(personaDefaultPrompt(promptsDir, 'pair'), 'PAIR BRIEF\n');
+});
+
 test('a workspace with no Agents table yet fails with a message naming ISSUE-465, not a raw 404', async (t) => {
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 404, body: { message: 'not found' } }),
@@ -88,7 +93,7 @@ test('a workspace with no Agents table yet fails with a message naming ISSUE-465
   );
 });
 
-test('four missing personas are all created, named and prompted from the local briefs', async (t) => {
+test('five missing personas are all created, named and prompted from the local briefs', async (t) => {
   const promptsDir = makePromptsDir();
   const created: Array<{ name: string; prompt: string }> = [];
   const { restore, calls } = mockFetch({
@@ -103,9 +108,9 @@ test('four missing personas are all created, named and prompted from the local b
 
   const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
 
-  assert.equal(result.outcomes.length, 4);
+  assert.equal(result.outcomes.length, 5);
   assert.ok(result.outcomes.every((o) => o.action === 'created'));
-  assert.deepEqual(created.map((c) => c.name).sort(), ['Design', 'Developer', 'QA', 'Triage']);
+  assert.deepEqual(created.map((c) => c.name).sort(), ['Design', 'Developer', 'Pair', 'QA', 'Triage']);
   assert.equal(result.agentPersonas.dev?.agentId, 'row-Developer');
   assert.equal(result.agentPersonas.dev?.lastSyncedUpdatedAt, '2026-08-28T00:00:00Z');
   // Nothing writes a persona row through anything but this one path.
@@ -162,7 +167,7 @@ test('a row whose content already matches the local default is left alone and ju
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
       status: 200,
-      body: ['Developer', 'Design', 'QA', 'Triage'].map((name) => ({
+      body: ['Developer', 'Design', 'QA', 'Triage', 'Pair'].map((name) => ({
         id: `row-${name}`, name,
         prompt: name === 'Developer' ? defaultPrompt : `${name} placeholder`,
         updated_at: '2026-01-01T00:00:00Z',
@@ -184,7 +189,7 @@ test('a differing row with no cached baseline is reported diverged and never ove
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
       status: 200,
-      body: ['Developer', 'Design', 'QA', 'Triage'].map((name) => ({
+      body: ['Developer', 'Design', 'QA', 'Triage', 'Pair'].map((name) => ({
         id: `row-${name}`, name, prompt: 'someone typed this directly into the app', updated_at: '2026-01-01T00:00:00Z',
       })),
     }),
@@ -209,6 +214,7 @@ test('a row matching crew\'s own last-synced updated_at is pushed forward when t
         { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(promptsDir, 'design'), updated_at: '2026-01-01T00:00:00Z' },
         { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(promptsDir, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
         { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(promptsDir, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Pair', name: 'Pair', prompt: personaDefaultPrompt(promptsDir, 'pair'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': (body) => {
@@ -237,6 +243,7 @@ test('a stale-write 409 (someone edited between the list and the patch) is repor
         { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(promptsDir, 'design'), updated_at: '2026-01-01T00:00:00Z' },
         { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(promptsDir, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
         { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(promptsDir, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Pair', name: 'Pair', prompt: personaDefaultPrompt(promptsDir, 'pair'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': () => ({ status: 409, body: { message: 'stale' } }),
@@ -272,13 +279,13 @@ const FIELD_TYPES = [
   { id: 'issues-ref-type', kind: 'REFERENCE', targetModelId: 'issues-model', isMultiple: false },
 ];
 
-/** All four Agents rows already in sync, so every role resolves an `agentId` with no prompt writes. */
+/** All five Agents rows already in sync, so every role resolves an `agentId` with no prompt writes. */
 function unchangedAgentsRowsHandler(promptsDir: string) {
   return () => ({
     status: 200,
-    body: (['dev', 'design', 'qa', 'triage'] as const).map((role) => ({
+    body: (['dev', 'design', 'qa', 'triage', 'pair'] as const).map((role) => ({
       id: `row-${role}`,
-      name: { dev: 'Developer', design: 'Design', qa: 'QA', triage: 'Triage' }[role],
+      name: { dev: 'Developer', design: 'Design', qa: 'QA', triage: 'Triage', pair: 'Pair' }[role],
       prompt: personaDefaultPrompt(promptsDir, role),
       updated_at: '2026-01-01T00:00:00Z',
     })),
@@ -318,7 +325,9 @@ test('a workspace with no Agent field yet gets one created, then every seated ro
   assert.deepEqual(patched, {
     dev: { agent_id: 'row-dev' }, design: { agent_id: 'row-design' }, qa: { agent_id: 'row-qa' }, triage: { agent_id: 'row-triage' },
   });
-  assert.ok(result.crewLinks.every((o) => o.action === 'linked'));
+  // pair has no configured seat, so it resolves 'no_seat' — only the four seated roles link.
+  assert.ok(result.crewLinks.filter((o) => o.role !== 'pair').every((o) => o.action === 'linked'));
+  assert.equal(result.crewLinks.find((o) => o.role === 'pair')!.action, 'no_seat');
   assert.equal(describeCrewLink(result.crewLinks.find((o) => o.role === 'dev')!), 'Developer: Crew row now references its Agents row');
 });
 
@@ -354,7 +363,7 @@ test('roles with no configured seat are reported no_seat and never touch the Cre
   const route = makeRoute(undefined, {}, promptsDir); // no seats configured at all
   const result = await syncPersonas(route, {});
 
-  assert.equal(result.crewLinks.length, 4);
+  assert.equal(result.crewLinks.length, 5);
   assert.ok(result.crewLinks.every((o) => o.action === 'no_seat'));
 });
 
@@ -369,6 +378,7 @@ test('a seated role whose persona diverged this pass is reported persona_diverge
         { id: 'row-Design', name: 'Design', prompt: personaDefaultPrompt(promptsDir, 'design'), updated_at: '2026-01-01T00:00:00Z' },
         { id: 'row-QA', name: 'QA', prompt: personaDefaultPrompt(promptsDir, 'qa'), updated_at: '2026-01-01T00:00:00Z' },
         { id: 'row-Triage', name: 'Triage', prompt: personaDefaultPrompt(promptsDir, 'triage'), updated_at: '2026-01-01T00:00:00Z' },
+        { id: 'row-Pair', name: 'Pair', prompt: personaDefaultPrompt(promptsDir, 'pair'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
   });
@@ -457,4 +467,37 @@ test('fetchDivergedPrompt falls back to undefined rather than throwing when the 
   const prompt = await fetchDivergedPrompt(route, 'dev', {});
 
   assert.equal(prompt, undefined);
+});
+
+test('currentPersonaPrompt falls back to the local default when there is nothing to compare against yet', async (t) => {
+  const promptsDir = makePromptsDir({ pair: 'PAIR BRIEF\n' });
+  const { restore } = mockFetch({});
+  t.after(restore);
+
+  // No cached agentId for 'pair' — `crew agents sync` has never run for this route.
+  const route = makeRoute(undefined, {}, promptsDir);
+  const prompt = await currentPersonaPrompt(route, 'pair', {});
+
+  assert.equal(prompt, 'PAIR BRIEF\n');
+});
+
+test('currentPersonaPrompt returns a workspace admin\'s live edit over the local default', async (t) => {
+  const promptsDir = makePromptsDir({ pair: 'PAIR BRIEF\n' });
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-pair': () => ({
+      status: 200,
+      body: { id: 'row-pair', name: 'Pair', prompt: 'CUSTOM PAIR PROMPT\n', updated_at: '2026-02-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute(
+    { pair: { agentId: 'row-pair', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any,
+    {},
+    promptsDir,
+  );
+  const prompt = await currentPersonaPrompt(route, 'pair', {});
+
+  assert.equal(prompt, 'CUSTOM PAIR PROMPT\n');
 });
