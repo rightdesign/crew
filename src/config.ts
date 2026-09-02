@@ -45,6 +45,17 @@ import {
 export const DEFAULT_BASE_URL = 'https://app.tablation.com';
 
 /**
+ * Applied whenever `ship.agent.maxThinkingTokens` is omitted, so extended
+ * thinking — and with it, Agent Log Cycles reporting (ISSUE-558) — works out
+ * of the box rather than needing a config edit before it does anything.
+ * Modest on purpose: enough for a `thinking` block on most turns without a
+ * large latency/cost jump. An operator who wants more, or wants the old
+ * (cycles-empty) behavior back, sets `ship.agent.maxThinkingTokens`
+ * explicitly — 0 disables it.
+ */
+export const DEFAULT_MAX_THINKING_TOKENS = 4096;
+
+/**
  * Where a repo's checkout lives when `repos:` doesn't say so explicitly —
  * `<reposBasePath>/<workspace>/<repoName>`. `repos:` stays for the repos
  * that live somewhere else (an existing checkout, a shared location), but a
@@ -295,7 +306,16 @@ export interface Route {
 export interface Ship {
   name: string;
   platform: ShipPlatform;
-  agent: { bin: string; model: string };
+  /**
+   * `maxThinkingTokens` is what turns extended thinking on for the CLI
+   * invocation (`spawnAgent`'s `MAX_THINKING_TOKENS` env var) — without it
+   * the session never emits `thinking` stream blocks, so Agent Log Cycles
+   * reporting (`agent-log.ts`) has nothing to report and silently shows no
+   * cycles for every lane (ISSUE-558). 0 disables it and restores the old
+   * behavior, for an operator who wants to opt back out of the extra
+   * latency/cost.
+   */
+  agent: { bin: string; model: string; maxThinkingTokens: number };
   shell?: string;
   extraPath?: string;
   useNvm: boolean;
@@ -716,6 +736,12 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
     missing.add(`ship.streamRetentionDays must be a positive integer (got "${shipRaw.streamRetentionDays}")`);
   }
+  const maxThinkingTokens = shipRaw.agent?.maxThinkingTokens === undefined
+    ? DEFAULT_MAX_THINKING_TOKENS
+    : Number(shipRaw.agent.maxThinkingTokens);
+  if (!Number.isInteger(maxThinkingTokens) || maxThinkingTokens < 0) {
+    missing.add(`ship.agent.maxThinkingTokens must be a non-negative integer (got "${shipRaw.agent?.maxThinkingTokens}")`);
+  }
   // Relative to the CONFIG's directory, not the checkout: config and state
   // belong to the machine and should travel together. Computed here, ahead
   // of the ship object below, because the routes loop needs it too — each
@@ -760,7 +786,11 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
     ship: {
       name: shipRaw.name ?? 'this ship',
       platform: (declaredPlatform as ShipPlatform) ?? hostPlatform(),
-      agent: { bin: expand(shipRaw.agent?.bin ?? 'claude', base), model: shipRaw.agent?.model ?? 'claude-sonnet-5' },
+      agent: {
+        bin: expand(shipRaw.agent?.bin ?? 'claude', base),
+        model: shipRaw.agent?.model ?? 'claude-sonnet-5',
+        maxThinkingTokens,
+      },
       shell: shipRaw.shell,
       extraPath: shipRaw.extraPath,
       useNvm: shipRaw.useNvm !== false,

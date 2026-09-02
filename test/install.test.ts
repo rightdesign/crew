@@ -6,7 +6,7 @@ import type { Ship } from '../src/config.ts';
 const ship = (over: Partial<Ship> = {}): Ship => ({
   name: 'Test Ship',
   platform: 'macos',
-  agent: { bin: '/usr/local/bin/claude', model: 'claude-sonnet-5' },
+  agent: { bin: '/usr/local/bin/claude', model: 'claude-sonnet-5', maxThinkingTokens: 4096 },
   useNvm: true,
   stateDir: '/tmp/crew-state',
   logFile: '/tmp/crew.log',

@@ -21,6 +21,11 @@ ship:
   agent:
     bin: "/usr/local/bin/claude"     # absolute: a timer runs with a minimal PATH
     model: "claude-sonnet-5"
+    # Extended thinking budget, passed as MAX_THINKING_TOKENS. Defaults to
+    # 4096 when omitted — without it the CLI never emits `thinking` stream
+    # blocks, so Agent Log Cycles reporting has nothing to report. Set to 0
+    # to disable (less latency/cost, no cycles reported).
+    # maxThinkingTokens: 4096
 
   # shell: bash                      # defaults per platform
   extraPath: "/opt/homebrew/bin"     # prepended for hooks

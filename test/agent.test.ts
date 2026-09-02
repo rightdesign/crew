@@ -176,6 +176,24 @@ test('a resolved route with no synced persona for this role still reports, with 
   assert.equal(plan.agentLog?.workspaceId, 'ws-1');
 });
 
+test('a positive maxThinkingTokens is passed through as MAX_THINKING_TOKENS — otherwise the CLI never emits thinking blocks and cycles reporting has nothing to report', () => {
+  const { state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { ...ship, agent: { ...ship.agent, maxThinkingTokens: 4096 } },
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+  });
+  assert.equal(plan.setEnv.MAX_THINKING_TOKENS, '4096');
+});
+
+test('maxThinkingTokens of 0 leaves MAX_THINKING_TOKENS unset — the operator opted out', () => {
+  const { state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { ...ship, agent: { ...ship.agent, maxThinkingTokens: 0 } },
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+  });
+  assert.equal(plan.setEnv.MAX_THINKING_TOKENS, undefined);
+});
+
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, route, ship } = rig();
   assert.throws(

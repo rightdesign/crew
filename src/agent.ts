@@ -285,7 +285,15 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
     unsetEnv: BILLING_VARS_TO_UNSET,
-    setEnv: o.apiKey ? { [API_KEY_VAR]: o.apiKey } : {},
+    setEnv: {
+      ...(o.apiKey ? { [API_KEY_VAR]: o.apiKey } : {}),
+      // Extended thinking is what makes the CLI emit `thinking` stream
+      // blocks at all — without it, `run.cycles` (below) is always empty
+      // and Agent Log Cycles reporting has nothing to report (ISSUE-558).
+      ...(o.ship.agent.maxThinkingTokens > 0
+        ? { MAX_THINKING_TOKENS: String(o.ship.agent.maxThinkingTokens) }
+        : {}),
+    },
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,
     model: o.ship.agent.model,

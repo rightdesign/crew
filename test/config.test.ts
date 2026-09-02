@@ -64,6 +64,25 @@ test('ship-level settings are shared; route settings are not', () => {
   assert.equal(cfg.routes[1]!.worktreePrefix, 'js-issue-');
 });
 
+test('maxThinkingTokens defaults to a non-zero value — extended thinking must be on for cycles reporting to have anything to report', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.ok(cfg.ship.agent.maxThinkingTokens > 0);
+});
+
+test('maxThinkingTokens can be overridden, including disabled with 0', () => {
+  const withOverride = ONE.replace('ship:\n  agent: { bin: /bin/true }', 'ship:\n  agent: { bin: /bin/true, maxThinkingTokens: 0 }');
+  const { dir, file } = withConfig(withOverride);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.ship.agent.maxThinkingTokens, 0);
+});
+
+test('a negative maxThinkingTokens is a config error', () => {
+  const bad = ONE.replace('ship:\n  agent: { bin: /bin/true }', 'ship:\n  agent: { bin: /bin/true, maxThinkingTokens: -1 }');
+  const { dir, file } = withConfig(bad);
+  assert.throws(() => loadConfig(dir, file), ConfigError);
+});
+
 test('the platform this ship IS is detected; routes no longer declare one', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);
