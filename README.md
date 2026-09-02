@@ -45,9 +45,12 @@ Alongside personas, a prompt set can also ship **skills** —
 `prompts/<promptSet>/skills/*.md`, each one YAML frontmatter (`name`,
 `description`) plus a markdown prompt body. A skill isn't a seat: it's not
 polled and not concatenated into every run's prompt, just synced into the
-workspace's `Agent Skills` table (`crew skills sync [route]`, same
-create/update/diverged shape as `crew agents sync`) so any session can fetch
-it by name on demand — e.g. a Pair session invoked via an Epic's
+workspace's `Agent Skills` table so any session can fetch it by name on
+demand. `crew agents sync [route]` pushes both personas and skills in one
+run — "agents" here means every agent-shaped resource crew owns, not just
+the Agents table; `crew skills sync [route]` is the same create/update/
+diverged sync narrowed to skills alone, for when you've only touched
+`skills/`. Example use — a Pair session invoked via an Epic's
 `grill_link` looks up the `Grill-Me` skill through the Tablation MCP tool
 `agent_skills_controller_get_skill` and follows it. `prompts/default/skills/
 grill-me.md` is the shipped example.

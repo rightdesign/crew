@@ -177,9 +177,9 @@ function usage(): never {
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
-  crew agents sync [route]      push crew's built-in personas into the workspace Agents table
+  crew agents sync [route]      push crew's personas AND skill files into the workspace Agents/Agent Skills tables
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
-  crew skills sync [route]      push crew's skill files (e.g. grill-me) into the workspace Agent Skills table
+  crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew install                  write and load this platform's scheduler unit
@@ -1247,7 +1247,7 @@ switch (command) {
       break;
     }
     if (sub !== 'sync') {
-      process.stderr.write('crew agents sync [route]              push crew\'s Developer/Design/QA/Triage/Pair personas into the workspace Agents table\n');
+      process.stderr.write('crew agents sync [route]              push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables\n');
       process.stderr.write(`crew agents prompt <role> [route]     print a persona's current prompt (roles: ${ROLE_NAMES.join(', ')})\n`);
       process.exit(2);
     }
@@ -1262,41 +1262,60 @@ switch (command) {
       process.stderr.write(`crew agents sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
       process.exit(2);
     }
-    let result: Awaited<ReturnType<typeof syncPersonas>>;
+    let personaResult: Awaited<ReturnType<typeof syncPersonas>>;
     try {
-      result = await syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun });
+      personaResult = await syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun });
     } catch (e) {
       if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;
     }
-    for (const o of result.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
-    for (const o of result.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
+    for (const o of personaResult.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
+    for (const o of personaResult.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
+    // "Agents" here means every agent-shaped resource crew owns — personas
+    // AND skills — not just the Agents table; `crew skills sync` remains
+    // available on its own when an operator wants to push skill changes
+    // without touching personas, but this is the one command a person
+    // reaches for after editing anything under prompts/<promptSet>/.
+    let skillResult: Awaited<ReturnType<typeof syncSkills>>;
+    try {
+      skillResult = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun });
+    } catch (e) {
+      if (e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    for (const o of skillResult.outcomes) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
     if (!dryRun) {
-      // Persist only `agentPersonas` into this route's resolved state file —
-      // same merge-not-clobber shape `connect`'s own `contract`/
-      // `reviewedStatuses` writes use, since a hand-authored `contract`
-      // block or another field this command knows nothing about must
-      // survive untouched.
+      // Persist `agentPersonas` and `agentSkills` into this route's resolved
+      // state file — same merge-not-clobber shape `connect`'s own
+      // `contract`/`reviewedStatuses` writes use, since a hand-authored
+      // `contract` block or another field this command knows nothing about
+      // must survive untouched.
       const resolvedPath = resolvedPathFor(cfg.ship.stateDir, target.route);
       const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
-      raw.agentPersonas = result.agentPersonas;
+      raw.agentPersonas = personaResult.agentPersonas;
+      raw.agentSkills = skillResult.agentSkills;
       mkdirSync(dirOf(resolvedPath), { recursive: true });
       writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
     }
-    // A diverged persona is not this run's failure, but it IS something an
-    // operator needs to act on (review the row, or re-sync once they have) —
-    // a nonzero exit is what makes that visible to whatever invoked this
-    // (a scheduler job's log, a person's own shell) without erroring the
-    // whole command.
-    if (result.outcomes.some((o) => o.action === 'diverged')) process.exitCode = 1;
+    // A diverged persona or skill is not this run's failure, but it IS
+    // something an operator needs to act on (review the row, or re-sync
+    // once they have) — a nonzero exit is what makes that visible to
+    // whatever invoked this (a scheduler job's log, a person's own shell)
+    // without erroring the whole command.
+    if (personaResult.outcomes.some((o) => o.action === 'diverged') || skillResult.outcomes.some((o) => o.action === 'diverged')) {
+      process.exitCode = 1;
+    }
     break;
   }
 
   case 'skills': {
-    // `crew skills sync [route]` — same shape as `case 'agents'` above:
-    // `skills` occupies positional[1] as the subcommand name, so this
-    // resolves its own target route from positional[2] rather than the
-    // fleet-wide default `route` above picked.
+    // `crew skills sync [route]` — the skills-only subset of what `crew
+    // agents sync` already does as part of its own run; use this when you
+    // want to push a skill-file change without touching personas. Same
+    // shape as `case 'agents'` above: `skills` occupies positional[1] as
+    // the subcommand name, so this resolves its own target route from
+    // positional[2] rather than the fleet-wide default `route` above
+    // picked.
     const sub = positional[1];
     if (sub !== 'sync') {
       process.stderr.write('crew skills sync [route]              push crew\'s skill files (e.g. grill-me) into the workspace Agent Skills table\n');

@@ -22,10 +22,11 @@ There are two halves to this:
   - [2.2 Clone and build](#22-clone-and-build)
   - [2.3 Write your machine config](#23-write-your-machine-config)
   - [2.4 Resolve the workspace](#24-resolve-the-workspace)
-  - [2.5 Run the preflight](#25-run-the-preflight)
-  - [2.6 Turn the route on](#26-turn-the-route-on)
-  - [2.7 Try it by hand first](#27-try-it-by-hand-first)
-  - [2.8 Put it on a timer](#28-put-it-on-a-timer)
+  - [2.5 Sync personas and skills](#25-sync-personas-and-skills)
+  - [2.6 Run the preflight](#26-run-the-preflight)
+  - [2.7 Turn the route on](#27-turn-the-route-on)
+  - [2.8 Try it by hand first](#28-try-it-by-hand-first)
+  - [2.9 Put it on a timer](#29-put-it-on-a-timer)
 - [Part 3 — crew-macos (optional menu bar front end)](#part-3--crew-macos-optional-menu-bar-front-end)
   - [3.1 Requirements](#31-requirements)
   - [3.2 Clone and build](#32-clone-and-build)
@@ -143,7 +144,7 @@ ship:
 
 routes:
   - route: my-workspace/my-product   # the workspace/project slug pair you were invited to
-    enabled: false                   # leave false until `doctor` is clean (see 2.5)
+    enabled: false                   # leave false until `doctor` is clean (see 2.6)
     area: "My Product"
     apiKey: "sk_..."                 # the key from 1.3 (or set ship.apiKey once, covering every route)
 ```
@@ -166,7 +167,23 @@ result to a local state file — nothing here starts polling or touches the
 tracker's data beyond reading it. Re-running it later only asks about
 anything genuinely new; it won't re-ask what it already resolved.
 
-### 2.5 Run the preflight
+### 2.5 Sync personas and skills
+
+```sh
+bin/crew agents sync my-workspace/my-product
+```
+
+This pushes crew's built-in personas (Developer, Design, QA, Triage, Pair)
+into the workspace's `Agents` table, and its skill files (e.g. `grill-me`,
+under `prompts/<promptSet>/skills/`) into the `Agent Skills` table — both
+`syncPersonas` and `syncSkills` run in one pass, since "agents" here means
+every agent-shaped resource crew owns, not just the Agents table. It's safe
+to re-run any time you edit a persona or skill file locally: unchanged rows
+are left alone, and a row a workspace admin edited by hand is reported
+`diverged` rather than overwritten. `bin/crew skills sync my-workspace/
+my-product` does the skills half alone, if you only touched `skills/`.
+
+### 2.6 Run the preflight
 
 ```sh
 bin/crew doctor my-workspace/my-product
@@ -178,7 +195,7 @@ and have working hooks (`.crew.yaml` or the fallback in `crew.yaml`), the
 tools it needs are on `PATH`, the agent binary exists, and the tracker
 actually answers with that API key. Fix anything it flags before continuing.
 
-### 2.6 Turn the route on
+### 2.7 Turn the route on
 
 Once `doctor` is clean, flip the route live:
 
@@ -192,7 +209,7 @@ Nothing writes to the tracker, wakes an agent, or deploys anything until
 this is `true` — it's the one switch that matters most, so leave it `false`
 during all of the above.
 
-### 2.7 Try it by hand first
+### 2.8 Try it by hand first
 
 Before putting it on a timer, run one cycle manually and watch what it does:
 
@@ -202,7 +219,7 @@ bin/crew run my-workspace/my-product      # actually runs the winning role's ses
 bin/crew watch my-workspace/my-product    # live view while it's running
 ```
 
-### 2.8 Put it on a timer
+### 2.9 Put it on a timer
 
 ```sh
 bin/crew install             # writes and loads this platform's own scheduler unit
