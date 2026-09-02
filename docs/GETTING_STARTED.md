@@ -23,10 +23,11 @@ There are two halves to this:
   - [2.3 Write your machine config](#23-write-your-machine-config)
   - [2.4 Resolve the workspace](#24-resolve-the-workspace)
   - [2.5 Sync personas and skills](#25-sync-personas-and-skills)
-  - [2.6 Run the preflight](#26-run-the-preflight)
-  - [2.7 Turn the route on](#27-turn-the-route-on)
-  - [2.8 Try it by hand first](#28-try-it-by-hand-first)
-  - [2.9 Put it on a timer](#29-put-it-on-a-timer)
+  - [2.6 Register the Tablation MCP server](#26-register-the-tablation-mcp-server)
+  - [2.7 Run the preflight](#27-run-the-preflight)
+  - [2.8 Turn the route on](#28-turn-the-route-on)
+  - [2.9 Try it by hand first](#29-try-it-by-hand-first)
+  - [2.10 Put it on a timer](#210-put-it-on-a-timer)
 - [Part 3 — crew-macos (optional menu bar front end)](#part-3--crew-macos-optional-menu-bar-front-end)
   - [3.1 Requirements](#31-requirements)
   - [3.2 Clone and build](#32-clone-and-build)
@@ -144,7 +145,7 @@ ship:
 
 routes:
   - route: my-workspace/my-product   # the workspace/project slug pair you were invited to
-    enabled: false                   # leave false until `doctor` is clean (see 2.6)
+    enabled: false                   # leave false until `doctor` is clean (see 2.7)
     area: "My Product"
     apiKey: "sk_..."                 # the key from 1.3 (or set ship.apiKey once, covering every route)
 ```
@@ -183,7 +184,50 @@ are left alone, and a row a workspace admin edited by hand is reported
 `diverged` rather than overwritten. `bin/crew skills sync my-workspace/
 my-product` does the skills half alone, if you only touched `skills/`.
 
-### 2.6 Run the preflight
+### 2.6 Register the Tablation MCP server
+
+The polled seats (dev/design/QA/triage) talk to the tracker entirely
+through crew's own REST calls — this step is for anyone driving a live,
+interactive Claude Code session against the tracker: the **Pair** persona,
+or a session invoked via an Epic's `grill_link` to run the `Grill-Me`
+skill (§2.5). Neither works well without the `mcp__tablation__*` tools —
+Pair's own brief and the `Grill-Me` skill both assume they're available,
+and fall back to slower, error-prone raw `curl` calls without them.
+
+Tablation exposes an MCP server at `/api/mcp` on the same backend as the
+REST API, using the Streamable HTTP transport, authenticated the same way
+as everything else — a workspace `sk_...` API key, presented as a Bearer
+token when the MCP session starts:
+
+```sh
+claude mcp add --transport http tablation https://app.tablation.com/api/mcp \
+  --header "Authorization: Bearer sk_..." \
+  --scope local
+```
+
+Notes:
+
+- **Hostname**: Modify `app.tablation.com` to match the hostname for any dev
+  instance you're using.
+- **The key**: crew's own route key (`crew.yaml`'s `apiKey`/`apiKeyFile`) is
+  the same kind of key and works here too — reusing it is the path of
+  least resistance. Mint a separate key from the workspace's API-key
+  settings instead if you want MCP usage to have its own audit trail; there
+  is no scope-narrowing mechanism today, so either key can reach everything
+  its holder can reach over the REST API.
+- **`--scope local`** stores this in your own `~/.claude.json`, not shared
+  with anyone else or checked into a repo — right for a key. `--scope
+  project` writes a shared `.mcp.json`, which is fine for the *server URL*
+  but never commit a raw key in it; use that scope only with env-var
+  expansion (`"Authorization": "Bearer ${TABLATION_API_KEY}"`) and an
+  `export` in your own shell profile.
+- This has to be run once per machine (or per project, at `project` scope)
+  — there's no `crew connect`-driven auto-registration for it today (a
+  filed idea, not built).
+- The server is plain HTTP, not HTTPS, when the backend is running on
+  `localhost` — swap in whatever host you're actually pointed at.
+
+### 2.7 Run the preflight
 
 ```sh
 bin/crew doctor my-workspace/my-product
@@ -195,7 +239,7 @@ and have working hooks (`.crew.yaml` or the fallback in `crew.yaml`), the
 tools it needs are on `PATH`, the agent binary exists, and the tracker
 actually answers with that API key. Fix anything it flags before continuing.
 
-### 2.7 Turn the route on
+### 2.8 Turn the route on
 
 Once `doctor` is clean, flip the route live:
 
@@ -209,7 +253,7 @@ Nothing writes to the tracker, wakes an agent, or deploys anything until
 this is `true` — it's the one switch that matters most, so leave it `false`
 during all of the above.
 
-### 2.8 Try it by hand first
+### 2.9 Try it by hand first
 
 Before putting it on a timer, run one cycle manually and watch what it does:
 
@@ -219,7 +263,7 @@ bin/crew run my-workspace/my-product      # actually runs the winning role's ses
 bin/crew watch my-workspace/my-product    # live view while it's running
 ```
 
-### 2.9 Put it on a timer
+### 2.10 Put it on a timer
 
 ```sh
 bin/crew install             # writes and loads this platform's own scheduler unit
@@ -251,7 +295,7 @@ offers goes through your existing `bin/crew`, so it can't drift from what
 the CLI would do.
 
 It only makes sense **after** Part 2 — specifically after `bin/crew install`
-(2.8) — because it locates your checkout by reading the installed
+(2.10) — because it locates your checkout by reading the installed
 launchd job, not by asking you for a path.
 
 ### 3.1 Requirements
@@ -293,7 +337,7 @@ in Part 2:
   `bin/crew` can never disagree about which file is in force.
 - **Checkout**: read out of the launchd plist that `bin/crew install`
   wrote — the interpreter path and `bin/crew`'s absolute path, exactly as
-  the timer invokes them. This is why 2.8 has to happen first; without an
+  the timer invokes them. This is why 2.10 has to happen first; without an
   installed timer there's no plist for it to read.
 
 Both can be overridden in the app's own Settings if you need to point it
