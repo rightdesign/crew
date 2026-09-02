@@ -133,6 +133,16 @@ export interface ResolvedIds {
    * predates this field.
    */
   agentPersonas?: Partial<Record<RoleName, { agentId: string; lastSyncedUpdatedAt: string; historyId?: string }>>;
+  /**
+   * The workspace Agent Skills-table row backing each of crew's local skill
+   * files (`prompts/<promptSet>/skills/*.md`), and the row `updated_at`
+   * `crew skills sync` (skills.ts) last wrote itself. Absent entirely until
+   * that command has been run once; a skill missing from the map just
+   * hasn't been synced yet. Keyed by the skill's own `name` (its
+   * frontmatter, not a fixed role union — skills are open-ended) rather
+   * than `RoleName`, unlike `agentPersonas` above.
+   */
+  agentSkills?: Record<string, { skillId: string; lastSyncedUpdatedAt: string }>;
 }
 
 export interface Route {
@@ -637,6 +647,13 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
       };
     }
   }
+  const agentSkills: NonNullable<ResolvedIds['agentSkills']> = {};
+  for (const [name, s] of Object.entries(raw.agentSkills ?? {})) {
+    const skill = s as { skillId?: unknown; lastSyncedUpdatedAt?: unknown };
+    if (typeof skill?.skillId === 'string' && typeof skill?.lastSyncedUpdatedAt === 'string') {
+      agentSkills[name] = { skillId: skill.skillId, lastSyncedUpdatedAt: skill.lastSyncedUpdatedAt };
+    }
+  }
   return {
     workspaceId: m.req(raw.workspaceId, `${where}.resolved.workspaceId`),
     projectId: raw.projectId,
@@ -658,6 +675,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     holds,
     contract: raw.contract ?? undefined,
     ...(Object.keys(agentPersonas).length > 0 ? { agentPersonas } : {}),
+    ...(Object.keys(agentSkills).length > 0 ? { agentSkills } : {}),
   };
 }
 

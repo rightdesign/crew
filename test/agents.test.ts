@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -12,9 +12,11 @@ import type { Route } from '../src/config.ts';
 /** A minimal prompts directory with just the files agents.ts reads — what Route.promptsDir points at. */
 function makePromptsDir(overrides: Partial<Record<'common' | 'dev' | 'design' | 'qa' | 'triage' | 'pair', string>> = {}): string {
   const prompts = mkdtempSync(join(tmpdir(), 'crew-agents-'));
-  writeFileSync(join(prompts, 'common.md'), overrides.common ?? 'COMMON\n');
+  const personas = join(prompts, 'personas');
+  mkdirSync(personas, { recursive: true });
+  writeFileSync(join(personas, 'common.md'), overrides.common ?? 'COMMON\n');
   for (const role of ['dev', 'design', 'qa', 'triage', 'pair'] as const) {
-    writeFileSync(join(prompts, `lane-${role}.md`), overrides[role] ?? `LANE-${role.toUpperCase()}\n`);
+    writeFileSync(join(personas, `lane-${role}.md`), overrides[role] ?? `LANE-${role.toUpperCase()}\n`);
   }
   return prompts;
 }

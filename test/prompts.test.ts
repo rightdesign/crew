@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseSkillFile } from '../src/skills.ts';
 
 /**
  * ISSUE-293's acceptance criterion, as a test.
@@ -41,22 +42,40 @@ function presetDirs(): string[] {
     .map((e) => join(PROMPTS, e.name));
 }
 
+function scan(dir: string, label: string, found: string[]): void {
+  const files = readdirSync(dir).filter((f) => f.endsWith('.md'));
+  for (const f of files) {
+    const text = readFileSync(join(dir, f), 'utf8');
+    text.split('\n').forEach((line, n) => {
+      for (const [what, re] of FORBIDDEN) {
+        const m = re.exec(line);
+        if (m) found.push(`${label}/${f}:${n + 1} contains ${what}: ${m[0].trim()}`);
+      }
+    });
+  }
+}
+
 test('every prompt set is complete and names nothing specific to one project, machine or person', () => {
   const dirs = presetDirs();
   assert.ok(dirs.length >= 1, 'expected at least one prompt-set directory under prompts/');
   const found: string[] = [];
   for (const dir of dirs) {
-    const files = readdirSync(dir).filter((f) => f.endsWith('.md'));
-    assert.ok(files.includes('common.md'), `${dir}: missing the shared common.md`);
-    assert.ok(files.length >= 2, `${dir}: expected common.md plus at least one lane-<role>.md brief`);
-    for (const f of files) {
-      const text = readFileSync(join(dir, f), 'utf8');
-      text.split('\n').forEach((line, n) => {
-        for (const [what, re] of FORBIDDEN) {
-          const m = re.exec(line);
-          if (m) found.push(`${dir.slice(PROMPTS.length + 1)}/${f}:${n + 1} contains ${what}: ${m[0].trim()}`);
-        }
-      });
+    const label = dir.slice(PROMPTS.length + 1);
+    const personas = join(dir, 'personas');
+    const files = existsSync(personas) ? readdirSync(personas).filter((f) => f.endsWith('.md')) : [];
+    assert.ok(files.includes('common.md'), `${dir}/personas: missing the shared common.md`);
+    assert.ok(files.length >= 2, `${dir}/personas: expected common.md plus at least one lane-<role>.md brief`);
+    scan(personas, `${label}/personas`, found);
+
+    const skills = join(dir, 'skills');
+    if (existsSync(skills)) {
+      for (const f of readdirSync(skills).filter((s) => s.endsWith('.md'))) {
+        // Reuses the real parser rather than re-checking frontmatter shape here —
+        // a skill file that fails to parse is exactly as broken as one `crew skills
+        // sync` would reject.
+        parseSkillFile(join(skills, f));
+      }
+      scan(skills, `${label}/skills`, found);
     }
   }
   assert.deepEqual(found, []);

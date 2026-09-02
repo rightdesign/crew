@@ -72,8 +72,9 @@ routes:
     worktreePrefix: "myproject-issue-"
 
     # Which lane-behavior policy this workspace's agents follow — the
-    # prose in prompts/<name>/common.md + lane-<role>.md. Bare name
-    # ("dev-qa") picks a preset shipped under crew's own prompts/; a path
+    # prose in prompts/<name>/personas/{common.md,lane-<role>.md}, plus
+    # whatever prompts/<name>/skills/*.md it ships. Bare name ("dev-qa")
+    # picks a preset shipped under crew's own prompts/; a path
     # ("./my-policy" or "~/my-crew-policy") points at a fully custom set
     # you copied and edited yourself, so adopting your own workflow never
     # requires forking crew. Defaults to "default" (the three-lane

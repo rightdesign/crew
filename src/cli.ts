@@ -43,6 +43,7 @@ import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
@@ -178,6 +179,7 @@ function usage(): never {
   crew connect                  resolve a workspace's ids into a crew.yaml block
   crew agents sync [route]      push crew's built-in personas into the workspace Agents table
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
+  crew skills sync [route]      push crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew install                  write and load this platform's scheduler unit
@@ -246,7 +248,7 @@ const FLEET_CAPABLE = new Set(['poll', 'run']);
 // ship still gets "name one" unless they say `--fleet` explicitly.
 const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && flag('fleet');
 const named = positional[1];
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'logbook' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || releaseFleetWide ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -1286,6 +1288,51 @@ switch (command) {
     // a nonzero exit is what makes that visible to whatever invoked this
     // (a scheduler job's log, a person's own shell) without erroring the
     // whole command.
+    if (result.outcomes.some((o) => o.action === 'diverged')) process.exitCode = 1;
+    break;
+  }
+
+  case 'skills': {
+    // `crew skills sync [route]` — same shape as `case 'agents'` above:
+    // `skills` occupies positional[1] as the subcommand name, so this
+    // resolves its own target route from positional[2] rather than the
+    // fleet-wide default `route` above picked.
+    const sub = positional[1];
+    if (sub !== 'sync') {
+      process.stderr.write('crew skills sync [route]              push crew\'s skill files (e.g. grill-me) into the workspace Agent Skills table\n');
+      process.exit(2);
+    }
+    let target: Route;
+    try {
+      target = findRoute(cfg, positional[2]);
+    } catch (e) {
+      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    if (!target.resolved) {
+      process.stderr.write(`crew skills sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
+      process.exit(2);
+    }
+    let result: Awaited<ReturnType<typeof syncSkills>>;
+    try {
+      result = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun });
+    } catch (e) {
+      if (e instanceof SkillSyncError) { process.stderr.write(`crew skills sync: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    for (const o of result.outcomes) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
+    if (!dryRun) {
+      // Same merge-not-clobber shape `case 'agents'` uses for its own
+      // `agentPersonas` write — a hand-authored `contract` block or another
+      // field this command knows nothing about must survive untouched.
+      const resolvedPath = resolvedPathFor(cfg.ship.stateDir, target.route);
+      const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
+      raw.agentSkills = result.agentSkills;
+      mkdirSync(dirOf(resolvedPath), { recursive: true });
+      writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
+    }
+    // A diverged skill is not this run's failure, but it IS something an
+    // operator needs to act on — same reasoning as `case 'agents'`.
     if (result.outcomes.some((o) => o.action === 'diverged')) process.exitCode = 1;
     break;
   }

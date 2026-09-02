@@ -15,10 +15,11 @@ const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'f
 function rig() {
   const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
   const promptsDir = join(home, 'prompts');
-  mkdirSync(promptsDir, { recursive: true });
-  writeFileSync(join(promptsDir, 'common.md'), 'SHARED POLICY\n');
+  const personas = join(promptsDir, 'personas');
+  mkdirSync(personas, { recursive: true });
+  writeFileSync(join(personas, 'common.md'), 'SHARED POLICY\n');
   for (const r of ['dev', 'design', 'qa']) {
-    writeFileSync(join(promptsDir, `lane-${r}.md`), `BRIEF ${r}\n`);
+    writeFileSync(join(personas, `lane-${r}.md`), `BRIEF ${r}\n`);
   }
   const state = mkdtempSync(join(tmpdir(), 'crew-state-'));
   const route = { route: 'test/proj', dir: '/tmp/proj', promptsDir } as any;

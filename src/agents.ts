@@ -66,7 +66,7 @@ export class AgentsSyncError extends Error {}
  * workspace admin typed into the row directly.
  */
 export function personaDefaultPrompt(promptsDir: string, role: RoleName): string {
-  const briefPath = join(promptsDir, `lane-${role}.md`);
+  const briefPath = join(promptsDir, 'personas', `lane-${role}.md`);
   if (!existsSync(briefPath)) throw new AgentsSyncError(`no brief at ${briefPath}`);
   // `common.md` is the polling loop's shared policy (worktrees, one
   // stateless invocation per cycle, the three-lane hand-off protocol) — none
@@ -74,7 +74,7 @@ export function personaDefaultPrompt(promptsDir: string, role: RoleName): string
   // context and no lane of its own, so its brief is self-contained instead
   // of being prefixed with policy prose that would misdescribe it.
   if (role === 'pair') return readFileSync(briefPath, 'utf8');
-  const commonPath = join(promptsDir, 'common.md');
+  const commonPath = join(promptsDir, 'personas', 'common.md');
   if (!existsSync(commonPath)) throw new AgentsSyncError(`no shared policy at ${commonPath}`);
   return `${readFileSync(commonPath, 'utf8')}${readFileSync(briefPath, 'utf8')}`;
 }

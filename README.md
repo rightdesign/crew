@@ -26,20 +26,31 @@ prompt set (the three-lane dev/design/QA policy this repo ships with — see
 
 | Seat | Owns | Brief |
 | --- | --- | --- |
-| **dev** | approved tickets that don't need design work | `prompts/default/lane-dev.md` |
-| **design** | approved tickets flagged *Needs design* | `prompts/default/lane-design.md` |
-| **qa** | everything at `fixed` or `qa`, whoever built it | `prompts/default/lane-qa.md` |
-| **triage** | tickets assigned to the triage seat | `prompts/default/lane-triage.md` |
+| **dev** | approved tickets that don't need design work | `prompts/default/personas/lane-dev.md` |
+| **design** | approved tickets flagged *Needs design* | `prompts/default/personas/lane-design.md` |
+| **qa** | everything at `fixed` or `qa`, whoever built it | `prompts/default/personas/lane-qa.md` |
+| **triage** | tickets assigned to the triage seat | `prompts/default/personas/lane-triage.md` |
 
 A fifth persona, **pair**, rides `crew agents sync` alongside these four but
 is not polled: it is the identity a live, interactive session (an IDE
 conversation, not a scheduled run) uses when it touches the tracker. It has
 no Crew-table seat, is never assigned a ticket by the poll loop, and its
-brief (`prompts/default/lane-pair.md`) is not prefixed with `common.md` —
-none of the polling loop's shared policy describes it. `crew agents prompt
-pair` prints its current persona text (a workspace admin's live edit if
-there is one, else the local default) for something like a `SessionStart`
-hook to feed into a session at start.
+brief (`prompts/default/personas/lane-pair.md`) is not prefixed with
+`common.md` — none of the polling loop's shared policy describes it. `crew
+agents prompt pair` prints its current persona text (a workspace admin's
+live edit if there is one, else the local default) for something like a
+`SessionStart` hook to feed into a session at start.
+
+Alongside personas, a prompt set can also ship **skills** —
+`prompts/<promptSet>/skills/*.md`, each one YAML frontmatter (`name`,
+`description`) plus a markdown prompt body. A skill isn't a seat: it's not
+polled and not concatenated into every run's prompt, just synced into the
+workspace's `Agent Skills` table (`crew skills sync [route]`, same
+create/update/diverged shape as `crew agents sync`) so any session can fetch
+it by name on demand — e.g. a Pair session invoked via an Epic's
+`grill_link` looks up the `Grill-Me` skill through the Tablation MCP tool
+`agent_skills_controller_get_skill` and follows it. `prompts/default/skills/
+grill-me.md` is the shipped example.
 
 One role runs per cycle, whichever holds the most urgent actionable ticket
 (`src/priority.ts` decides, and the same module sorts the digest that agent is
@@ -82,9 +93,10 @@ wants is a fact about that workspace, not about the machine running it.
 fit: copy a preset directory (`cp -r prompts/default ~/my-crew-policy`),
 edit its prose, and point `promptSet` at the copy (`~/my-crew-policy` or a
 relative path) — no fork of this repo required. A prompt set is a complete,
-self-contained fork of `common.md` + one `lane-<role>.md` per seat, not a
-diff against another one; each file is read as plain prose concatenated
-ahead of the per-run roster/environment/queue sections
+self-contained fork of `personas/common.md` + one `personas/lane-<role>.md`
+per seat, plus whatever `skills/*.md` it wants, not a diff against another
+one; each persona file is read as plain prose concatenated ahead of the
+per-run roster/environment/queue sections
 (`src/agent.ts`'s `assemblePrompt`), so there's no templating layer to
 learn. `prompts/dev-qa/` is a worked example of trimming a lane out of
 `default` cleanly, including the unused `lane-design.md` stub every
@@ -209,7 +221,8 @@ which only discovers names and remotes, never fetches anything itself.
 bin/crew          the entry point
 src/              the implementation (Node, run directly via type stripping)
 test/             its tests, including a fake board for integration runs
-prompts/          prompt sets — prompts/<name>/common.md + lane-<role>.md
+prompts/          prompt sets — prompts/<name>/personas/{common.md,lane-<role>.md}
+                  + prompts/<name>/skills/*.md
 docs/             CONTRACT.md, REPO_SPEC.md, MIGRATION.md
 launchd/          timer templates (edit the paths before installing)
 crew.example.yaml copy to ~/.config/crew/crew.yaml
