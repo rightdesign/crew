@@ -241,7 +241,7 @@ test('discover() flags a status CHOICE value the default contract does not name 
             choiceOptions: [
               { value: 'new', label: 'New', position: 0 },
               { value: 'accepted', label: 'Approved', position: 1 },
-              { value: 'closed_completed', label: 'Completed', position: 2 },
+              { value: 'closed_escalated', label: 'Escalated', position: 2 },
               { value: 'draft', label: 'Draft', position: 3 },
             ],
           },
@@ -254,7 +254,7 @@ test('discover() flags a status CHOICE value the default contract does not name 
   const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
   assert.deepEqual(
     found.unrecognizedStatuses,
-    [{ value: 'closed_completed', label: 'Completed', position: 2 }, { value: 'draft', label: 'Draft', position: 3 }],
+    [{ value: 'closed_escalated', label: 'Escalated', position: 2 }, { value: 'draft', label: 'Draft', position: 3 }],
   );
 });
 

@@ -56,7 +56,14 @@ export interface ContractComments {
 export interface ContractStatuses {
   /** Everything a poll considers live. */
   open: string[];
-  /** A blocker stops counting only at these. */
+  /**
+   * A blocker stops counting only at these. Besides the deploy/won't-fix/
+   * duplicate terminals, the default also names `closed_completed` (done but
+   * not deployed — investigation-report-shaped tickets that have no build to
+   * ship) and `closed_cant_reproduce` (closed as written, unreproducible) as
+   * terminal. A workspace-added status not already in `open` or `resolved`
+   * is still discovered per-route via `crew connect`'s prompt, same as ever.
+   */
   resolved: string[];
   /** The one a human sets to authorise work. The runner may never set it. */
   approved: string;
@@ -146,7 +153,14 @@ export const DEFAULT_CONTRACT: Contract = {
   },
   statuses: {
     open: ['new', 'accepted', 'blocked', 'in_progress', 'needs_info', 'fixed', 'qa', 'verified'],
-    resolved: ['verified', 'closed_deployed', 'closed_wont_fix', 'closed_duplicate'],
+    resolved: [
+      'verified',
+      'closed_deployed',
+      'closed_wont_fix',
+      'closed_duplicate',
+      'closed_completed',
+      'closed_cant_reproduce',
+    ],
     approved: 'accepted',
     parked: 'blocked',
     building: 'in_progress',

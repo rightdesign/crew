@@ -59,7 +59,7 @@ stating.
 | role | value | |
 | --- | --- | --- |
 | open | `new` `accepted` `blocked` `in_progress` `needs_info` `fixed` `qa` `verified` | everything a poll considers live |
-| resolved | `verified` `closed_deployed` `closed_wont_fix` `closed_duplicate` | a blocker stops counting only at these |
+| resolved | `verified` `closed_deployed` `closed_wont_fix` `closed_duplicate` `closed_completed` `closed_cant_reproduce` | a blocker stops counting only at these. `closed_completed` is done-but-not-deployed (investigation-report-shaped tickets with no build to ship); `closed_cant_reproduce` is closed as written, unreproducible |
 | approved | `accepted` | **only a human sets this.** The runner never does |
 | parked | `blocked` | the sub-state of approved the runner parks into and out of |
 | building | `in_progress` | |
@@ -103,14 +103,18 @@ routes:
 ```
 
 **`statuses.resolved` is discovered, not just authored.** A workspace-added
-terminal status (a `closed_completed`, say) can't be inferred from its name
+terminal status (a `closed_escalated`, say) can't be inferred from its name
 alone, so `crew connect` reads the Issues table's own status CHOICE options,
 compares them against this document's default names, and — on a real
 terminal — asks once per value it doesn't recognise whether it means
 resolved/terminal. A "yes" folds it into `contract.statuses.resolved` in the
 resolved state file; a "no" (or a value nobody has answered about yet) is
 left unclassified, same as before this existed, rather than guessed into
-`open` or any other role. Re-running `crew connect` only asks about values it
+`open` or any other role — a pre-triage `draft` status (the epic grill-me
+flow's holding state for Issues not yet ready to act on: they either get
+promoted to `new` or, if later scoped out, closed as `closed_wont_fix`) is
+exactly this case, correctly answered "no". Re-running `crew connect` only
+asks about values it
 hasn't asked about before (`reviewedStatuses`, alongside `contract` in the
 same file) — it never re-asks, and never overwrites what a hand-authored
 override already said about columns, priority order, or anything else.

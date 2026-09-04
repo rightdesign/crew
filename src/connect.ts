@@ -79,7 +79,7 @@ export interface Discovered {
   /**
    * Status CHOICE values this project's Issues table defines that
    * DEFAULT_CONTRACT's own status names don't cover (ISSUE-467) — e.g. a
-   * workspace-added terminal status like `closed_completed`, which used to
+   * workspace-added terminal status like `closed_escalated`, which used to
    * require hand-editing `contract.statuses.resolved` in the resolved state
    * file to be recognised as resolving a blocker. Ordered by the field's
    * own `position`. The caller (`crew connect`, interactively) asks once
