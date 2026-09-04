@@ -32,4 +32,4 @@ release:
   # deploy hook, and declaring one here is an error rather than a no-op.
   mode: integrate
   versioning: none
-  changelog: false
+  changelog: CHANGELOG.md
