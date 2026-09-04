@@ -124,6 +124,36 @@ test('a red test gate stops everything before the version moves', async () => {
   assert.ok(lines.some((l) => /test gate FAILED/.test(l)));
 });
 
+const INTEGRATE_NO_DEPLOY = `version: 1
+hooks:
+  test: exit 1
+  build: exit 0
+release:
+  mode: integrate
+  versioning: none
+  changelog: false
+`;
+
+test('crew deploy skips the test gate on an integrate-mode repo with nothing to deploy', async () => {
+  const { dir, repo } = project(INTEGRATE_NO_DEPLOY);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false, isDeployCommand: true,
+  });
+  assert.equal(out.integrated, true);
+  assert.ok(lines.some((l) => /skipped.*nothing to ship/.test(l)));
+});
+
+test('routine release/merge still runs the test gate on an integrate-mode repo (only "crew deploy" skips it)', async () => {
+  const { dir, repo } = project(INTEGRATE_NO_DEPLOY);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'tests failed');
+  assert.ok(lines.some((l) => /test gate FAILED/.test(l)));
+});
+
 test('a failed deploy leaves no tag — the next cycle must not think it shipped', async () => {
   const { dir, repo } = project(LOCAL.replace('deploy: exit 0', 'deploy: exit 3'));
   const out = await runRelease({

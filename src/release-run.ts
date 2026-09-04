@@ -70,6 +70,18 @@ export interface ReleaseRunOptions {
    * merge phase has nothing left to do.
    */
   force?: boolean;
+  /**
+   * Set only for `crew deploy`'s own fan-out, never for `crew merge`,
+   * `crew release`, or the inline release at the tail of `crew run` (even
+   * with `--force`, which also sets `force` above but is a different act).
+   * A repo on `release.mode: integrate` with no `hooks.deploy` has nothing
+   * that `crew deploy` could ship — the test gate protects a deploy that
+   * isn't happening — so this skips just that hook, just for this command.
+   * Routine merge-time test gating for the same repo is untouched: it still
+   * runs on `crew merge`/`crew release`/`crew run`, which is the whole
+   * point of the gate.
+   */
+  isDeployCommand?: boolean;
   shell?: string;
 }
 
@@ -644,7 +656,13 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     o.emit.emit('forced: nothing new merged and nothing unreleased, releasing anyway');
   }
 
-  if (!o.skipTests && o.repo.hooks.test) {
+  const nothingToDeploy = o.repo.release.mode === 'integrate' && !o.repo.hooks.deploy;
+  if (o.isDeployCommand && nothingToDeploy) {
+    o.emit.emit(
+      `${hookLabel(o.repo, 'test')} skipped — release.mode is integrate with no deploy hook, ` +
+        `so this "crew deploy" run has nothing to ship`,
+    );
+  } else if (!o.skipTests && o.repo.hooks.test) {
     if (o.dryRun) o.emit.emit(`would run the test gate: ${hookLabel(o.repo, 'test')}`);
     else {
       const r = await hook(o, 'test');

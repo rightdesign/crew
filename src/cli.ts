@@ -340,7 +340,9 @@ function printReleaseSummary(summaries: RepoReleaseSummary[]): void {
   }
 }
 
-async function releaseFleet(opts: { mergeOnly?: boolean; force?: boolean } = {}): Promise<void> {
+async function releaseFleet(
+  opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
+): Promise<void> {
   const summaries: RepoReleaseSummary[] = [];
   for (const c of cfg.routes) {
     if (!dryRun && !c.enabled) continue;
@@ -358,7 +360,9 @@ async function releaseFleet(opts: { mergeOnly?: boolean; force?: boolean } = {})
  * repositories: a verified branch in the second one is no less ready than a
  * verified branch in the first.
  */
-async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {}): Promise<void> {
+async function releaseTargets(
+  opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
+): Promise<void> {
   const only = value('repo');
   const targets = reposOf(route);
   const chosen = only ? targets.filter((t) => t.name === only) : targets;
@@ -547,7 +551,8 @@ function reportUnplaceable(
  * blocks the next poll from starting, and vice versa.
  */
 async function releasePhase(
-  c: typeof route, target: RepoTarget, opts: { mergeOnly?: boolean; force?: boolean } = {},
+  c: typeof route, target: RepoTarget,
+  opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<RepoReleaseSummary> {
   const scope = `${c.route}/${target.name}`;
   // Per REPOSITORY, not per route. A board's area spans several repos and
@@ -620,6 +625,7 @@ async function releasePhase(
       // deploy failed on, where nothing new will merge but the work is
       // genuinely unreleased.
       force: command === 'deploy' || flag('force'),
+      isDeployCommand: opts.isDeployCommand,
     });
     const summary = summarizeOutcome(outcome, scope, !!repo.hooks.test && !flag('skip-tests'));
 
@@ -1209,7 +1215,10 @@ switch (command) {
   case 'merge':
   case 'deploy':
   case 'release': {
-    const opts = { mergeOnly: command === 'merge', force: command === 'deploy' || flag('force') };
+    const opts = {
+      mergeOnly: command === 'merge', force: command === 'deploy' || flag('force'),
+      isDeployCommand: command === 'deploy',
+    };
     // Named or single route by default — `crew release` is a deliberate act
     // on one repo. `--fleet` opts into the same fleet-wide sweep `crew run`
     // used to do inline (see the release-lane comment on `case 'run'`); the
