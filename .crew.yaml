@@ -21,7 +21,11 @@ hooks:
   # touches no network.
   test: node --test --test-timeout 90000 --experimental-strip-types test/*.test.ts
 
-  build: npx tsc --noEmit
+  # Typecheck, then rebuild dist/cli.js — bin/crew runs the built output
+  # when present, so a release that skips this step leaves every local
+  # runner (launchd/systemd timers, crew-macos) executing a stale bundle
+  # until someone happens to rebuild by hand (ISSUE-584).
+  build: npx tsc --noEmit && ./node_modules/.bin/tsup src/cli.ts --format esm --clean
 
   version: node -p "require('./package.json').version"
 
