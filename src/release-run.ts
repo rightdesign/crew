@@ -141,6 +141,65 @@ export interface ReleaseOutcome {
   externalClosures?: { ticket: Ticket; closure: ClosureCheck }[];
 }
 
+/**
+ * One repo's outcome from a release phase, for the fan-out summary the CLI
+ * prints once every repo on a route has run.
+ *
+ * `crew deploy <route>` (and `merge`/`release`) run every repo of a route
+ * one after another, each through its own independent test/build/deploy
+ * gate. Streamed together with no per-repo roll-up, a run where one repo's
+ * tests genuinely failed (correctly skipping its deploy) and another's
+ * passed and shipped read as "test failures didn't block the deploy" — they
+ * did, for the repo that failed; the other repo was never gated by it. This
+ * is that roll-up (ISSUE-583).
+ */
+export interface RepoReleaseSummary {
+  scope: string;
+  tests: 'pass' | 'fail' | 'skipped';
+  outcome:
+    | 'deployed' | 'merged' | 'integrated' | 'nothing'
+    | 'build-failed' | 'deploy-failed' | 'tag-push-failed' | 'skipped' | 'error';
+  detail: string;
+}
+
+/**
+ * Turns a completed `runRelease` outcome into one summary row.
+ *
+ * `hadTestHook` is whether the test gate actually ran for this repo at all
+ * (a test hook configured and `--skip-tests` not passed) — several of
+ * `outcome.stopped`'s reasons return before the test gate runs, so
+ * "no test hook" and "returned before testing" both read as `'skipped'`
+ * rather than a false `'pass'`.
+ */
+export function summarizeOutcome(o: ReleaseOutcome, scope: string, hadTestHook: boolean): RepoReleaseSummary {
+  const tests: 'pass' | 'fail' | 'skipped' =
+    o.stopped === 'tests failed' ? 'fail' : hadTestHook ? 'pass' : 'skipped';
+  switch (o.stopped) {
+    case 'tests failed':
+      return { scope, tests, outcome: 'nothing', detail: 'test gate failed — not deployed' };
+    case 'nothing to release':
+    case 'nothing merged and no release marker':
+    case 'already contained in the base branch':
+      // Tests never ran on any of these paths — they return before the test
+      // gate because there is genuinely nothing to test yet.
+      return { scope, tests: 'skipped', outcome: 'nothing', detail: o.stopped };
+    case 'build failed':
+      return { scope, tests, outcome: 'build-failed', detail: 'build failed — not deployed' };
+    case 'deploy failed':
+      return { scope, tests, outcome: 'deploy-failed', detail: 'deploy failed' };
+    case 'tag push failed':
+      return { scope, tests, outcome: 'tag-push-failed', detail: 'tag push failed' };
+  }
+  if (o.deployed) return { scope, tests, outcome: 'deployed', detail: `deployed${o.version ? ` ${o.version}` : ''}` };
+  if (o.integrated) {
+    return { scope, tests, outcome: 'integrated', detail: `merged${o.version ? ` ${o.version}` : ''}, nothing to deploy` };
+  }
+  return {
+    scope, tests, outcome: 'merged',
+    detail: `${o.merged.length} merged${o.version ? `, ${o.version}` : ''}${o.tag ? `, tagged ${o.tag}` : ''}`,
+  };
+}
+
 const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'bump' | 'released',
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];

@@ -27,7 +27,7 @@ import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
-import { runRelease } from './release-run.ts';
+import { runRelease, summarizeOutcome, type RepoReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
@@ -319,13 +319,36 @@ function requireArmed(what: string): void {
  * deploy, and two of those at once on one machine is how a release starts
  * failing for reasons unrelated to the code.
  */
+/**
+ * One line per repo, printed once every repo a fan-out touched has run.
+ *
+ * Only when there is more than one: a single-repo release already has its
+ * own outcome in the log immediately above with nothing to disambiguate it
+ * from. The ambiguity this exists to remove — a mixed pass/fail run reading
+ * as "tests didn't block the deploy" — only arises once a route or `--fleet`
+ * run spans more than one repo (ISSUE-583).
+ */
+function printReleaseSummary(summaries: RepoReleaseSummary[]): void {
+  if (summaries.length <= 1) return;
+  emit.enter('release');
+  emit.emit(`release summary — ${summaries.length} repo(s):`);
+  for (const s of summaries) {
+    const testLabel = s.tests === 'pass' ? 'tests passed' : s.tests === 'fail' ? 'tests FAILED' : 'tests skipped';
+    emit.emit(`  ${s.scope}: ${testLabel}, ${s.outcome} — ${s.detail}`, {
+      level: s.outcome === 'error' || s.tests === 'fail' ? 'warn' : 'info',
+    });
+  }
+}
+
 async function releaseFleet(opts: { mergeOnly?: boolean; force?: boolean } = {}): Promise<void> {
+  const summaries: RepoReleaseSummary[] = [];
   for (const c of cfg.routes) {
     if (!dryRun && !c.enabled) continue;
     // No route-wide platform gate: releasePhase checks each repo's own
     // requirement, and a route can span repos with different needs.
-    for (const r of reposOf(c)) await releasePhase(c, r, opts);
+    for (const r of reposOf(c)) summaries.push(await releasePhase(c, r, opts));
   }
+  printReleaseSummary(summaries);
 }
 
 /**
@@ -346,7 +369,9 @@ async function releaseTargets(opts: { mergeOnly?: boolean; force?: boolean } = {
     );
     process.exit(2);
   }
-  for (const t of chosen) await releasePhase(route, t, opts);
+  const summaries: RepoReleaseSummary[] = [];
+  for (const t of chosen) summaries.push(await releasePhase(route, t, opts));
+  printReleaseSummary(summaries);
 
   // Ship-wide, not per-repo — one sweep per release cycle, alongside the
   // worktree sweep each repo just ran above (ISSUE-401).
@@ -523,7 +548,7 @@ function reportUnplaceable(
  */
 async function releasePhase(
   c: typeof route, target: RepoTarget, opts: { mergeOnly?: boolean; force?: boolean } = {},
-): Promise<void> {
+): Promise<RepoReleaseSummary> {
   const scope = `${c.route}/${target.name}`;
   // Per REPOSITORY, not per route. A board's area spans several repos and
   // each releases on its own: they have separate versions, separate tags and
@@ -533,7 +558,7 @@ async function releasePhase(
   const relLock = dryRun ? undefined : state.acquire(`release-${scope}`);
   if (relLock && !relLock.ok) {
     emit.emit(`a previous release (pid ${relLock.heldBy}) is still running — skipping`, { step: 'release' });
-    return;
+    return { scope, tests: 'skipped', outcome: 'skipped', detail: 'a previous release is still running' };
   }
   // Board-visible, cross-ship claim (ISSUE-394) — `relLock` above only ever
   // excluded two processes on THIS machine. Taken after the local lock so a
@@ -558,11 +583,12 @@ async function releasePhase(
     // different needs. Skip only this one; the rest of the route's
     // repos may still be releasable here.
     if (!satisfies(cfg.ship.platform, repo.platform)) {
-      emit.emit(`${scope}: skipping — ${explain(cfg.ship.platform, repo.platform)}`, { step: 'release' });
-      return;
+      const detail = explain(cfg.ship.platform, repo.platform);
+      emit.emit(`${scope}: skipping — ${detail}`, { step: 'release' });
+      return { scope, tests: 'skipped', outcome: 'skipped', detail };
     }
 
-    if (!dryRun && !c.enabled) return;
+    if (!dryRun && !c.enabled) return { scope, tests: 'skipped', outcome: 'skipped', detail: 'route not enabled' };
     const tracker = new Tracker(c, cfg.ship);
 
     if (!dryRun) {
@@ -571,7 +597,7 @@ async function releasePhase(
       if (!got.ok) {
         const why = got.reason === 'held' ? `held by ${got.heldBy ?? 'another ship'}` : 'claimed by another ship mid-check';
         emit.emit(`release for ${scope} is ${why} on the board — skipping`, { step: 'release' });
-        return;
+        return { scope, tests: 'skipped', outcome: 'skipped', detail: `release ${why} on the board` };
       }
       boardLock = got;
     }
@@ -595,6 +621,7 @@ async function releasePhase(
       // genuinely unreleased.
       force: command === 'deploy' || flag('force'),
     });
+    const summary = summarizeOutcome(outcome, scope, !!repo.hooks.test && !flag('skip-tests'));
 
     // Stamping is deliberately last and deliberately non-fatal: the work is
     // already live, and a tracker blip must not turn a good release into a
@@ -702,6 +729,7 @@ async function releasePhase(
       emit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
     }
 
+    return summary;
   } catch (e) {
     // Last resort: every step above already treats a tracker blip as
     // non-fatal on its own (stamping, notify, the conflict/unbuildable
@@ -712,6 +740,7 @@ async function releasePhase(
     // release that may already be live — so it gets the same "warn, don't
     // fail" treatment as everything else in this function.
     emit.warn(`release phase failed: ${(e as Error).message}`, { step: 'release' });
+    return { scope, tests: 'skipped', outcome: 'error', detail: (e as Error).message };
   } finally {
     if (boardLock && boardLock.ok) await boardLock.release();
     if (relLock && relLock.ok) relLock.release();

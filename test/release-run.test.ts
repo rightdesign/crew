@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runRelease } from '../src/release-run.ts';
+import { runRelease, summarizeOutcome, type ReleaseOutcome } from '../src/release-run.ts';
 import { git } from '../src/git.ts';
 import { parseRepoConfig, resolveRepoConfig } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
@@ -848,4 +848,69 @@ test('a conflicting branch is reported rather than silently skipped', async () =
   assert.deepEqual(out.conflicts![0]!.paths, ['contested.txt'], 'the caller needs to know WHAT disagreed');
   // and the failed merge left nothing behind
   assert.equal(git(dir, ['status', '--porcelain']), '');
+});
+
+// summarizeOutcome — the per-repo row behind the fan-out release summary
+// (ISSUE-583). Pure function, no repo fixture needed: a minimal decision
+// stub is enough since only `stopped`/`deployed`/`integrated`/`version`/
+// `tag`/`merged` ever feed the summary.
+const decisionStub = {
+  block: null, merges: [], head: 'HEAD', lastTag: null, lastReleased: null,
+  unreleasedCommits: 0, upToDate: false, unseeded: false,
+};
+const outcome = (over: Partial<ReleaseOutcome> = {}): ReleaseOutcome =>
+  ({ merged: [], deployed: false, decision: decisionStub, ...over }) as ReleaseOutcome;
+
+test('summarizeOutcome: a failed test gate reports tests FAILED, whether or not a hook is configured', () => {
+  const s = summarizeOutcome(outcome({ stopped: 'tests failed' }), 'r/x', true);
+  assert.equal(s.tests, 'fail');
+  assert.equal(s.outcome, 'nothing');
+});
+
+test('summarizeOutcome: nothing-to-release paths never ran tests, even with a test hook configured', () => {
+  for (const stopped of [
+    'nothing to release', 'nothing merged and no release marker', 'already contained in the base branch',
+  ] as const) {
+    const s = summarizeOutcome(outcome({ stopped }), 'r/x', true);
+    assert.equal(s.tests, 'skipped', stopped);
+    assert.equal(s.outcome, 'nothing', stopped);
+  }
+});
+
+test('summarizeOutcome: build/deploy/tag-push failures still credit a passing test gate', () => {
+  for (const [stopped, want] of [
+    ['build failed', 'build-failed'],
+    ['deploy failed', 'deploy-failed'],
+    ['tag push failed', 'tag-push-failed'],
+  ] as const) {
+    const s = summarizeOutcome(outcome({ stopped }), 'r/x', true);
+    assert.equal(s.tests, 'pass', stopped);
+    assert.equal(s.outcome, want, stopped);
+  }
+});
+
+test('summarizeOutcome: no test hook at all reports tests skipped, not a false pass', () => {
+  const s = summarizeOutcome(outcome({ stopped: 'build failed' }), 'r/x', false);
+  assert.equal(s.tests, 'skipped');
+});
+
+test('summarizeOutcome: a real deploy reports deployed with its version in the detail', () => {
+  const s = summarizeOutcome(outcome({ deployed: true, version: '1.4.0' }), 'r/x', true);
+  assert.equal(s.tests, 'pass');
+  assert.equal(s.outcome, 'deployed');
+  assert.match(s.detail, /1\.4\.0/);
+});
+
+test('summarizeOutcome: release.mode integrate reports integrated, never deployed', () => {
+  const s = summarizeOutcome(outcome({ integrated: true, version: '2.0.0' }), 'r/x', true);
+  assert.equal(s.outcome, 'integrated');
+});
+
+test('summarizeOutcome: a CI push with no local deploy hook reports merged, with the tag named', () => {
+  const s = summarizeOutcome(
+    outcome({ confirmed: true, merged: [{}] as never, version: '1.0.1', tag: 'v1.0.1' }), 'r/x', true,
+  );
+  assert.equal(s.outcome, 'merged');
+  assert.match(s.detail, /1 merged/);
+  assert.match(s.detail, /v1\.0\.1/);
 });
