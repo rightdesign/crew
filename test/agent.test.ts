@@ -239,12 +239,13 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
 
   // Thought/tool/text blocks landed on their OWN sink, not the shared one —
   // a long session is thousands of these and events.jsonl is not the place.
-  // A `thought` block also gets a paired `cycle` event (ISSUE-481) — the
-  // same text, correlated with its Agent Log Cycle index, for a live
-  // consumer (crew-macos) that wants "which numbered cycle" alongside the
-  // raw thinking text `thought` already carries.
+  // A `thought` block AND a `text` block each get a paired `cycle` event
+  // (ISSUE-481, widened by ISSUE-594) — the same text, correlated with its
+  // Agent Log Cycle index, for a live consumer (crew-macos) that wants
+  // "which numbered cycle" alongside the raw text the source event already
+  // carries.
   const mapped = readFileSync(plan.eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(mapped.map((e) => e.data.kind), ['thought', 'cycle', 'tool', 'text']);
+  assert.deepEqual(mapped.map((e) => e.data.kind), ['thought', 'cycle', 'tool', 'text', 'cycle']);
   // The thought/text blocks must carry their actual content verbatim, not
   // just a bare kind marker — a client tailing eventsPath live otherwise
   // has to fall back to parsing the whole raw transcript.
@@ -254,6 +255,8 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
   assert.equal(mapped[2].data.tool, 'Bash');
   assert.equal(mapped[2].data.target, 'ls');
   assert.equal(mapped[3].data.text, 'All done.');
+  assert.equal(mapped[4].data.text, 'All done.');
+  assert.equal(mapped[4].data.cycleIndex, 1);
   for (const e of mapped) {
     assert.equal(e.step, 'agent');
     assert.equal(e.role, 'dev');
@@ -289,7 +292,7 @@ function mockFetch(routes: Record<string, unknown>) {
   return { restore: () => { globalThis.fetch = originalFetch; }, calls };
 }
 
-test('spawnAgent reports the run as one Agent Log row, and its one thinking block as one cycle', async (t) => {
+test('spawnAgent reports the run as one Agent Log row, its thinking block and its final text turn each as a cycle', async (t) => {
   const { home, state, ship } = rig();
   const route = {
     route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
@@ -314,7 +317,7 @@ test('spawnAgent reports the run as one Agent Log row, and its one thinking bloc
   const result = await spawnAgent(plan, emit);
   assert.equal(result.code, 0);
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   const logCall = calls[0]!;
   assert.equal(logCall.key, 'POST /api/workspaces/ws-1/agents/log');
   assert.deepEqual(logCall.body, {
@@ -327,10 +330,18 @@ test('spawnAgent reports the run as one Agent Log row, and its one thinking bloc
     // prompt files) survives onto the wire.
     promptSha: (logCall.body as any).promptSha,
   });
-  const cycleCall = calls[1]!;
-  assert.equal(cycleCall.key, 'POST /api/workspaces/ws-1/agents/log/log-1/cycles');
-  assert.deepEqual(cycleCall.body, {
-    cycleIndex: 0, occurredAt: (cycleCall.body as any).occurredAt, thinking: 'let me look',
+  const thoughtCycleCall = calls[1]!;
+  assert.equal(thoughtCycleCall.key, 'POST /api/workspaces/ws-1/agents/log/log-1/cycles');
+  assert.deepEqual(thoughtCycleCall.body, {
+    cycleIndex: 0, occurredAt: (thoughtCycleCall.body as any).occurredAt, thinking: 'let me look',
+  });
+  // The final assistant text block (ISSUE-594) becomes its own cycle,
+  // tagged role: 'assistant' — the thinking cycle above carries no role,
+  // matching crew's pre-existing behavior.
+  const textCycleCall = calls[2]!;
+  assert.equal(textCycleCall.key, 'POST /api/workspaces/ws-1/agents/log/log-1/cycles');
+  assert.deepEqual(textCycleCall.body, {
+    cycleIndex: 1, occurredAt: (textCycleCall.body as any).occurredAt, thinking: 'All done.', role: 'assistant',
   });
 });
 

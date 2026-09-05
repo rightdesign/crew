@@ -31,9 +31,18 @@ export interface AgentLogTarget {
 
 export interface AgentCycle {
   cycleIndex: number;
-  /** ISO 8601 — when this cycle's thinking block was observed. */
+  /** ISO 8601 — when this cycle was observed. */
   occurredAt: string;
+  /** A thinking block's text, or an assistant conversational reply's text — see `role`. */
   thinking: string;
+  /**
+   * 'assistant' for a conversational text turn (ISSUE-594), tagged the same
+   * way `agent-chat.service.ts`'s `logChatRun` (ISSUE-504) already tags
+   * plain assistant text in this same column. Omitted for a thinking block,
+   * matching crew's pre-existing cycles — the Activity Log viewer treats a
+   * missing role as 'assistant' for backward compatibility either way.
+   */
+  role?: 'assistant';
 }
 
 export interface AgentRunReport {
@@ -113,6 +122,7 @@ export async function reportAgentRun(
       cycleIndex: cycle.cycleIndex,
       occurredAt: cycle.occurredAt,
       thinking: cycle.thinking,
+      ...(cycle.role ? { role: cycle.role } : {}),
     });
   }
   return { agentLogId: entry.id };

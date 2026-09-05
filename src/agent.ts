@@ -382,12 +382,12 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
 
     let buf = '';
     let result: ReturnType<typeof extractResult>;
-    // One buffered Agent Log Cycle per `thought` block seen, in order — the
+    // One buffered Agent Log Cycle per `thought` block or assistant `text`
+    // turn seen, in order (ISSUE-594 widened this from thinking-only) — the
     // whole point of Agent Log Cycles (WORKSPACE_AGENTS_PLAN.md) is capturing
-    // a run's thinking output, so a cycle is defined as one thinking block
-    // rather than one assistant turn (a turn with no thought contributes
-    // nothing worth a row). Flushed against the Agent Log row's id once the
-    // run finishes and that row exists — see the `close` handler below.
+    // a run's visible output, and a turn with neither contributes nothing
+    // worth a row. Flushed against the Agent Log row's id once the run
+    // finishes and that row exists — see the `close` handler below.
     const cycles: AgentCycle[] = [];
 
     const handleLine = (line: string) => {
@@ -414,22 +414,33 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
             data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
           };
           eventsSink?.write(`${JSON.stringify(e)}\n`);
-          if (ev.kind === 'thought' && ev.text) {
+          if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) {
             const cycleIndex = cycles.length;
-            cycles.push({ cycleIndex, occurredAt: e.at, thinking: ev.text });
-            // A second event alongside the raw `thought` one above (ISSUE-481)
-            // — a live consumer (crew-macos's log window) wants the same
-            // thinking text correlated with the Agent Log Cycle it will end
+            cycles.push({
+              cycleIndex,
+              occurredAt: e.at,
+              thinking: ev.text,
+              // A conversational `text` turn is tagged 'assistant' so it's
+              // distinguishable from a thinking block once both share this
+              // buffer (ISSUE-594) — matching the precedent
+              // `agent-chat.service.ts`'s logChatRun (ISSUE-504) already set
+              // for the same column. A `thought` cycle stays untagged, same
+              // as before this change.
+              ...(ev.kind === 'text' ? { role: 'assistant' as const } : {}),
+            });
+            // A second event alongside the raw `thought`/`text` one above
+            // (ISSUE-481) — a live consumer (crew-macos's log window) wants
+            // the same text correlated with the Agent Log Cycle it will end
             // up as (`cycleIndex`, matching `AgentCycle` above) plus which
-            // seat/persona produced it, not just the bare text `thought`
-            // carries. `cycleIndex` only exists here, in the buffer this
-            // function already owns, not in `mapStreamLine` — that mapper is
-            // deliberately a pure, per-line function with no run state
-            // (module doc above), so it stays the one place deciding
-            // "is this a thinking block", and this is the one place that
-            // knows which numbered cycle it became. `role`, `route`, `ticket`
-            // are already on the envelope via the `e` spread, which is what
-            // a persona display already needs.
+            // seat/persona produced it, not just the bare text the source
+            // event carries. `cycleIndex` only exists here, in the buffer
+            // this function already owns, not in `mapStreamLine` — that
+            // mapper is deliberately a pure, per-line function with no run
+            // state (module doc above), so it stays the one place deciding
+            // "is this a thinking block or a text turn", and this is the one
+            // place that knows which numbered cycle it became. `role`,
+            // `route`, `ticket` are already on the envelope via the `e`
+            // spread, which is what a persona display already needs.
             eventsSink?.write(`${JSON.stringify({
               ...e,
               message: 'cycle',
