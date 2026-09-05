@@ -124,6 +124,28 @@ test('a red test gate stops everything before the version moves', async () => {
   assert.ok(lines.some((l) => /test gate FAILED/.test(l)));
 });
 
+test('a worker-crash-shaped test failure is retried once, and a clean retry proceeds', async () => {
+  const { dir, repo } = project(LOCAL.replace('test: exit 0', `test: |
+    if [ -f .test-ran-once ]; then exit 0; else touch .test-ran-once; echo "A jest worker process was terminated by another process: signal=SIGSEGV"; exit 1; fi`));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, undefined);
+  assert.equal(out.deployed, true);
+  assert.ok(lines.some((l) => /looks like a worker crash.*retrying once/.test(l)));
+});
+
+test('a worker-crash-shaped failure that recurs on retry still stops the release', async () => {
+  const { dir, repo } = project(LOCAL.replace('test: exit 0',
+    'test: echo "signal=SIGSEGV" && exit 1'));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'tests failed');
+  assert.ok(lines.some((l) => /looks like a worker crash.*retrying once/.test(l)));
+  assert.ok(lines.some((l) => /test gate FAILED/.test(l)));
+});
+
 const INTEGRATE_NO_DEPLOY = `version: 1
 hooks:
   test: exit 1

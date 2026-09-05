@@ -212,6 +212,26 @@ export function summarizeOutcome(o: ReleaseOutcome, scope: string, hadTestHook: 
   };
 }
 
+/**
+ * Whether a failed test hook's output looks like a worker crash rather than a
+ * real assertion failure — a jest (or similar) worker process getting killed
+ * by a signal, with no failing-test diff in the output to explain it.
+ *
+ * Narrow on purpose: this exists to retry a transient crash once, not to
+ * paper over a real red suite. Two release cycles (2026-08-24T20:05Z and
+ * 2026-08-28T05:43Z, ISSUE-490) both hit the same jest signature — a
+ * different spec file each time, `signal=SIGSEGV` with no assertion diff,
+ * consistent with a native-addon crash under concurrent-lane resource
+ * contention — and both times the very next cycle ran clean. So a
+ * crash-shaped failure with nothing else in the output is worth one retry
+ * before filing a failure-alert ticket.
+ */
+function looksLikeWorkerCrash(output: string): boolean {
+  const crashSignature = /worker process was terminated by another process|signal=SIG(SEGV|ABRT|BUS)/i;
+  const assertionDiff = /(AssertionError|Expected:|Received:|✕|not ok \d)/;
+  return crashSignature.test(output) && !assertionDiff.test(output);
+}
+
 const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'bump' | 'released',
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
@@ -665,7 +685,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   } else if (!o.skipTests && o.repo.hooks.test) {
     if (o.dryRun) o.emit.emit(`would run the test gate: ${hookLabel(o.repo, 'test')}`);
     else {
-      const r = await hook(o, 'test');
+      let r = await hook(o, 'test');
+      if (r && r.code !== 0 && looksLikeWorkerCrash(r.output)) {
+        o.emit.warn('test gate failed with what looks like a worker crash, not a real failure — retrying once');
+        r = await hook(o, 'test');
+      }
       if (r && r.code !== 0) {
         o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
         return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision };
