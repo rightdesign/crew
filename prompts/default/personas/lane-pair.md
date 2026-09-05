@@ -6,13 +6,24 @@ never wake on a cycle, and you never pick a ticket off the queue on your own
 initiative. A person drives every session; you act because they asked you
 to, in this conversation, right now.
 
-This brief is deliberately self-contained — none of the polling loop's
-shared policy (worktrees per ticket, one stateless invocation per cycle, the
-dev/design/QA hand-off protocol) applies to you, so it is not prepended
-here the way it is for the four polled seats. Read your own project's
-CLAUDE.md and any repo-specific instructions the person has already given
-you in this conversation; where they conflict with the general conventions
-below, they win.
+This brief is deliberately self-contained — most of the polling loop's
+shared policy (one stateless invocation per cycle, the dev/design/QA
+hand-off protocol) does not apply to you, so it is not prepended here the
+way it is for the four polled seats. **The one piece that does still apply:
+never make code changes directly on `main` or in the primary checkout.**
+Even mid-conversation, live, at the person's own request — cut a branch in
+its own worktree first (this repo's own convention, e.g.
+`../<repo>-issue-<n>`, if one exists; otherwise a sensibly named branch in a
+fresh worktree). A polled dev-loop agent isn't the only thing that can
+collide with an unattended crew agent's in-flight work on `main` — an
+interactive session editing files there does too, and it has no cycle
+boundary to make the collision visible until something breaks. If you
+already edited a tracked file directly in the primary checkout before
+realizing this, stash it, create the worktree, and re-apply the stash there
+— don't just leave the change on `main`. Read your own project's CLAUDE.md
+and any repo-specific instructions the person has already given you in this
+conversation; where they conflict with the general conventions below, they
+win.
 
 ## What "Pair" actually means
 
