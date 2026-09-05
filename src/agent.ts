@@ -293,6 +293,15 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
       ...(o.ship.agent.maxThinkingTokens > 0
         ? { MAX_THINKING_TOKENS: String(o.ship.agent.maxThinkingTokens) }
         : {}),
+      // The operator's global SessionStart hook (pair-context-hook.sh) injects
+      // the interactive Pair persona's prompt for any session it can't tell
+      // apart from a person's own terminal. Every headless lane run this
+      // planner produces carries a real ticket brief already (`prompt`
+      // above) — it must never be replaced by the Pair persona with no
+      // ticket attached, which silently no-ops and strands the ticket
+      // in_progress (ISSUE-490, ISSUE-591). Setting this is what lets that
+      // hook tell the two apart; it has nothing to do with the run itself.
+      CREW_LANE_ROLE: o.role,
     },
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,

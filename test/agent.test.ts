@@ -194,6 +194,14 @@ test('maxThinkingTokens of 0 leaves MAX_THINKING_TOKENS unset — the operator o
   assert.equal(plan.setEnv.MAX_THINKING_TOKENS, undefined);
 });
 
+test('every plan sets CREW_LANE_ROLE, so the operator\'s SessionStart hook can tell a headless lane run apart from a person\'s own terminal (ISSUE-591)', () => {
+  const { state, route, ship } = rig();
+  const dev = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  assert.equal(dev.setEnv.CREW_LANE_ROLE, 'dev');
+  const qa = planAgentRun({ role: 'qa', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  assert.equal(qa.setEnv.CREW_LANE_ROLE, 'qa');
+});
+
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, route, ship } = rig();
   assert.throws(
