@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { discover, listWorkspaces, renderConnection, type Discovered } from '../src/connect.ts';
+import {
+  discover, listWorkspaces, renderConnection, type Discovered,
+  listLibraryTemplates, previewTemplateInstall, installTemplate,
+} from '../src/connect.ts';
 
 /** Wires a fetch mock keyed by exact pathname+query, ignoring host/baseUrl. */
 function mockFetch(routes: Record<string, unknown>) {
@@ -108,6 +111,7 @@ test('no project qualifies: an admin is told they can install a template', async
   const found = await discover({ ...BASE, workspace: 'issues' });
   assert.equal(found.projectId, undefined);
   assert.ok(found.problems.some((p) => /install an Issues-tracker template/.test(p)));
+  assert.equal(found.offerTemplateInstall, true);
 });
 
 test('no project qualifies: a plain member is told to ask an admin, not offered install', async (t) => {
@@ -122,6 +126,7 @@ test('no project qualifies: a plain member is told to ask an admin, not offered 
   const found = await discover({ ...BASE, workspace: 'issues' });
   assert.ok(found.problems.some((p) => /ask a workspace admin/.test(p)));
   assert.ok(!found.problems.some((p) => /install an Issues-tracker template/.test(p)));
+  assert.equal(found.offerTemplateInstall, false);
 });
 
 test('discover() carries the resolved workspace and project slugs, not just their display names', async (t) => {
@@ -315,6 +320,52 @@ test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces
     { slug: 'paradium', name: 'Paradium', role: 'WORKSPACE_USER' },
   ]);
   assert.deepEqual(seen, ['/api/auth/my-workspaces']);
+});
+
+test('listLibraryTemplates() returns the published templates as-is', async (t) => {
+  const { restore } = mockFetch({
+    '/api/library-templates': [{ id: 'tpl-1', name: 'Issues' }],
+  });
+  t.after(restore);
+
+  const templates = await listLibraryTemplates(BASE);
+  assert.deepEqual(templates, [{ id: 'tpl-1', name: 'Issues' }]);
+});
+
+test('previewTemplateInstall() reads the diff for the given template/workspace pair', async (t) => {
+  const { restore } = mockFetch({
+    '/api/library-templates/tpl-1/install-preview?workspaceId=ws-1': {
+      hasUnresolvedConflicts: true,
+      dataModels: { conflicts: [{ name: 'Issues', tableName: 'issues' }] },
+      fieldTypes: { conflicts: [] },
+    },
+  });
+  t.after(restore);
+
+  const preview = await previewTemplateInstall(BASE, 'tpl-1', 'ws-1');
+  assert.equal(preview.hasUnresolvedConflicts, true);
+  assert.equal(preview.dataModels.conflicts[0]?.name, 'Issues');
+});
+
+test('installTemplate() POSTs workspaceId (and projectName when given) and returns the new project', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    calls.push({
+      url: String(input instanceof Request ? input.url : input),
+      method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(init.body as string) : undefined,
+    });
+    return new Response(JSON.stringify({ project: { id: 'p-new', slug: 'issues-2', name: 'Issues' } }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const installed = await installTemplate(BASE, 'tpl-1', 'ws-1', 'Issues');
+  assert.deepEqual(installed, { project: { id: 'p-new', slug: 'issues-2', name: 'Issues' } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, 'POST');
+  assert.ok(calls[0]!.url.endsWith('/api/library-templates/tpl-1/install'));
+  assert.deepEqual(calls[0]!.body, { workspaceId: 'ws-1', projectName: 'Issues' });
 });
 
 test('renderConnection() no longer prints a resolved: block — those ids go to the state file', () => {

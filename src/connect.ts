@@ -113,6 +113,16 @@ export interface Discovered {
    * `workspace/project`) naming one.
    */
   projectOptions?: ProjectOption[];
+  /**
+   * Set when no `project` was named and no project in the workspace has the
+   * tables a route needs (ISSUE-419) — the caller (`crew connect`, on a real
+   * terminal, when `role` is an admin) can offer to install the Issues
+   * library template rather than just telling the operator to do it by hand
+   * in the app. Left unset for every other "unresolved" shape (a named
+   * project not found, several qualifying projects tied) — those aren't
+   * "nothing to install", they're "say which one".
+   */
+  offerTemplateInstall?: boolean;
   /** Everything that could not be resolved, with what was available. */
   problems: string[];
 }
@@ -144,6 +154,56 @@ async function get<T>(o: AuthOptions, path: string): Promise<T> {
   });
   if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
   return (await res.json()) as T;
+}
+
+async function post<T>(o: AuthOptions, path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${o.baseUrl.replace(/\/+$/, '')}/api${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${o.apiKey}`,
+      'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+  return (await res.json()) as T;
+}
+
+/** One template on the platform-wide Tablation Library (`GET /library-templates` — no `workspaceId`, every published template is visible from anywhere). */
+export interface LibraryTemplateOption {
+  id: string;
+  name: string;
+}
+
+export async function listLibraryTemplates(o: AuthOptions): Promise<LibraryTemplateOption[]> {
+  return get<LibraryTemplateOption[]>(o, '/library-templates');
+}
+
+/** Only what `crew connect`'s install offer needs from `GET /library-templates/:id/install-preview` — the full diff has a bucket per entity kind, this only cares whether any of them collided. */
+export interface TemplateInstallPreview {
+  hasUnresolvedConflicts: boolean;
+  dataModels: { conflicts: Array<{ name: string; tableName: string }> };
+  fieldTypes: { conflicts: Array<{ name: string }> };
+}
+
+export async function previewTemplateInstall(
+  o: AuthOptions, templateId: string, workspaceId: string,
+): Promise<TemplateInstallPreview> {
+  return get<TemplateInstallPreview>(o, `/library-templates/${templateId}/install-preview?workspaceId=${workspaceId}`);
+}
+
+export interface InstalledTemplate {
+  project: { id: string; slug: string; name: string };
+}
+
+export async function installTemplate(
+  o: AuthOptions, templateId: string, workspaceId: string, projectName?: string,
+): Promise<InstalledTemplate> {
+  return post<InstalledTemplate>(o, `/library-templates/${templateId}/install`, {
+    workspaceId,
+    ...(projectName ? { projectName } : {}),
+  });
 }
 
 /**
@@ -232,6 +292,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       );
     } else {
       const isAdmin = out.role === 'WORKSPACE_ADMIN' || out.role === 'PLATFORM_ADMIN';
+      out.offerTemplateInstall = isAdmin;
       problems.push(
         `no project in this workspace has the tables a route needs (${REQUIRED_TABLES.join(', ')}) — ` +
           (isAdmin

@@ -41,7 +41,10 @@ import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
-import { discover, listWorkspaces, renderConnection, ConnectHttpError } from './connect.ts';
+import {
+  discover, listWorkspaces, renderConnection, ConnectHttpError,
+  listLibraryTemplates, previewTemplateInstall, installTemplate,
+} from './connect.ts';
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -155,6 +158,54 @@ async function pickResolvedStatuses(unrecognized: Array<{ value: string; label?:
     rl.close();
   }
   return resolved;
+}
+
+/**
+ * Asks, on a real terminal, whether to install the "Issues" library template
+ * when `discover()` found no project with the tables a route needs and this
+ * key's own role is a workspace/platform admin (ISSUE-419). Returns the
+ * newly-installed project's slug on success, so the caller can re-run
+ * `discover()` with it named explicitly; `undefined` on "no" or on anything
+ * that stops this from being a clean install (no matching template, or a
+ * conflict `install-preview` already reports) — the caller falls back to the
+ * existing "unresolved" message either way, never half-applies anything.
+ */
+async function offerTemplateInstall(
+  authOpts: { baseUrl: string; apiKey: string; userAgent?: string },
+  workspaceId: string,
+): Promise<string | undefined> {
+  const templates = await listLibraryTemplates(authOpts);
+  const template = templates.find((t) => t.name.trim().toLowerCase() === 'issues');
+  if (!template) {
+    process.stderr.write('\n  No "Issues" template is published to the Library yet — nothing to offer to install.\n');
+    return undefined;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  let answer: string;
+  try {
+    answer = (await rl.question(
+      `\nNo project here has what a route needs. Install the "${template.name}" library template into a new project? [y/N] `,
+    )).trim();
+  } finally {
+    rl.close();
+  }
+  if (!/^y/i.test(answer)) return undefined;
+
+  const preview = await previewTemplateInstall(authOpts, template.id, workspaceId);
+  if (preview.hasUnresolvedConflicts) {
+    const names = [
+      ...preview.dataModels.conflicts.map((c) => c.name),
+      ...preview.fieldTypes.conflicts.map((c) => c.name),
+    ];
+    process.stderr.write(
+      `\n  "${template.name}" collides with something already in this workspace (${names.join(', ') || 'see the app for detail'})` +
+        ' — resolve that in the app before installing, or rename the conflicting table/type.\n',
+    );
+    return undefined;
+  }
+  const installed = await installTemplate(authOpts, template.id, workspaceId);
+  process.stderr.write(`\n  Installed "${installed.project.name}" (${installed.project.slug}).\n`);
+  return installed.project.slug;
 }
 
 function usage(): never {
@@ -1495,7 +1546,13 @@ switch (command) {
     };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
-      const found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area') });
+      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area') });
+      if (!found.projectId && found.offerTemplateInstall && process.stdin.isTTY && process.stdout.isTTY) {
+        const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId);
+        if (installedSlug) {
+          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area') });
+        }
+      }
       if (!found.projectId) {
         process.stderr.write(`crew connect ${ws}: unresolved —\n`);
         for (const p of found.problems) process.stderr.write(`  - ${p}\n`);
