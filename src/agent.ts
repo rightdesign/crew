@@ -35,12 +35,16 @@ export const DIGEST_MAX_AGE_SECONDS = 600;
  * for throwaway verification scripts.
  */
 export function allowedTools(role: RoleName): string[] {
+  // Every lane gets the Tablation MCP tools alongside its REST+apiKey access
+  // (the MCP server registered in `args`, below) — the tracker's own
+  // generated tool surface, not a replacement for the tracker-key path.
+  const tablation = 'mcp__tablation__*';
   // Triage classifies and nothing else: no Edit, no Write. It reads reports,
   // sets fields and comments. Withholding both editing tools makes "this is
   // not yours to fix" structural rather than a rule in a brief.
-  if (role === 'triage') return ['Bash', 'Read'];
-  if (role === 'qa') return ['Bash', 'Read', 'Write', 'Grep', 'Glob'];
-  const base = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'];
+  if (role === 'triage') return ['Bash', 'Read', tablation];
+  if (role === 'qa') return ['Bash', 'Read', 'Write', 'Grep', 'Glob', tablation];
+  const base = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', tablation];
   // The design role additionally loads skills and publishes a design canvas.
   return role === 'design' ? [...base, 'Skill', 'Artifact'] : base;
 }
@@ -290,6 +294,23 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
       '--disallowedTools', ...DISALLOWED_TOOLS,
       '--model', model,
       '--output-format', 'stream-json', '--verbose',
+      // Registers the tracker's own MCP tool surface for this run only —
+      // `${CREW_API_KEY}` is interpolated by the CLI from the environment
+      // (set below), so the resolved key is never written to an argv string
+      // or a config file on disk. Skipped when there's no key to send: a
+      // route `crew connect` hasn't resolved yet has nothing to authenticate
+      // the MCP connection with either.
+      ...(o.apiKey
+        ? ['--mcp-config', JSON.stringify({
+            mcpServers: {
+              tablation: {
+                type: 'http',
+                url: `${o.route.baseUrl}/api/mcp`,
+                headers: { Authorization: `Bearer \${${API_KEY_VAR}}` },
+              },
+            },
+          })]
+        : []),
     ],
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),

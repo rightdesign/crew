@@ -9,6 +9,7 @@ import {
   planAgentRun, describePlan, spawnAgent, AgentError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
+import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
 
@@ -32,6 +33,12 @@ test('QA gets no Edit — bouncing back is the path of least resistance', () => 
   assert.ok(allowedTools('qa').includes('Write'));   // throwaway verification scripts
   assert.ok(allowedTools('qa').includes('Bash'));    // git, dev servers, Playwright
   assert.ok(allowedTools('dev').includes('Edit'));
+});
+
+test('every lane gets the tablation MCP tools', () => {
+  for (const r of ['dev', 'qa', 'design', 'triage'] as const) {
+    assert.ok(allowedTools(r).includes('mcp__tablation__*'), `${r} should have MCP tablation access`);
+  }
 });
 
 test('only the design role gets Skill and Artifact', () => {
@@ -76,7 +83,7 @@ test('a plan is fully decided without running anything', () => {
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
   assert.deepEqual(plan.args, [
-    '-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob',
+    '-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'mcp__tablation__*',
     '--disallowedTools', ...DISALLOWED_TOOLS,
     '--model', 'claude-sonnet-5',
     '--output-format', 'stream-json', '--verbose',
@@ -84,6 +91,29 @@ test('a plan is fully decided without running anything', () => {
   assert.match(plan.prompt, /R[\s\S]*SHARED POLICY[\s\S]*BRIEF dev/);
   assert.equal(plan.digestAttached, false);
   assert.match(describePlan(plan), /prompt:\s+\d+ bytes on stdin \(never argv\)/);
+});
+
+test('an apiKey registers the tablation MCP server, keyed off the route\'s own base URL', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route: { ...route, baseUrl: 'https://app.tablation.com' }, ship, stateDir: state,
+    roster: 'R', environment: 'ENV', cycle: 'c1', apiKey: 'sk_test123',
+  });
+  const i = plan.args.indexOf('--mcp-config');
+  assert.ok(i >= 0, '--mcp-config missing when an apiKey is present');
+  const config = JSON.parse(plan.args[i + 1]!);
+  assert.equal(config.mcpServers.tablation.url, 'https://app.tablation.com/api/mcp');
+  // The literal `${CREW_API_KEY}` placeholder, resolved by the CLI itself
+  // from the environment (set below) — the key must never appear in argv.
+  assert.equal(config.mcpServers.tablation.headers.Authorization, `Bearer \${${API_KEY_VAR}}`);
+  assert.ok(!plan.args.some((a) => a.includes('sk_test123')), 'the raw key must never appear in argv');
+  assert.equal(plan.setEnv[API_KEY_VAR], 'sk_test123');
+});
+
+test('no apiKey means no MCP server registration — nothing to authenticate the connection with', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  assert.ok(!plan.args.includes('--mcp-config'));
 });
 
 test('a diverged prompt replaces common+brief wholesale, rather than being appended alongside them', () => {
