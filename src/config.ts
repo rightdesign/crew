@@ -630,6 +630,23 @@ export function resolvedPathFor(stateDir: string, route: string): string {
   return join(stateDir, 'resolved', workspace, `${project}.json`);
 }
 
+/**
+ * Where `crew connect`'s device-authorization path (ISSUE-609) writes the
+ * API key it minted, so the printed route block's `apiKeyFile`/`apiKeyVar`
+ * point at a real file instead of a `REPLACE` placeholder — mirrors
+ * `resolvedPathFor`'s own `<stateDir>/<kind>/<workspace>/<project>` shape,
+ * a sibling tree kept out of `crew.yaml` for the same reason `resolved` is:
+ * regenerable, not something a person authors by hand. `CREW_API_KEY=...`
+ * is the one line inside, in the same `VAR=value` shape `apiKeyFile`
+ * parsing already expects (see `resolveApiKey` below) — a manually-provided
+ * `--key` is never written anywhere; this path only exists because a
+ * device-authorization key has nowhere else to live once minted.
+ */
+export function apiKeyPathFor(stateDir: string, route: string): string {
+  const [workspace, project] = splitRoute(route);
+  return join(stateDir, 'keys', workspace, `${project}.env`);
+}
+
 /** `"workspace/project"` -> `["workspace", "project"]`, validated. */
 function splitRoute(route: string): [string, string] {
   const parts = route.split('/');

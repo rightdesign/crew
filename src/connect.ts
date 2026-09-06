@@ -419,7 +419,22 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
  * `<stateDir>/resolved/<workspace>/<project>.json` (see `resolvedPathFor` in
  * config.ts), written by the caller, not pasted by hand.
  */
-export function renderConnection(d: Discovered, route: string, dir: string, opts: { area?: string } = {}): string {
+export function renderConnection(
+  d: Discovered,
+  route: string,
+  dir: string,
+  opts: { area?: string; apiKeyFile?: string; apiKeyVar?: string } = {},
+): string {
+  // A device-authorization run (ISSUE-609) already has a real file/var —
+  // print it verbatim instead of the usual paste-your-own-key placeholder,
+  // since a person supplying `--key` by hand never gets one written for
+  // them and still has to say where their key lives.
+  const apiKeyFileLine = opts.apiKeyFile
+    ? `    apiKeyFile: "${opts.apiKeyFile}"`
+    : `    apiKeyFile: "REPLACE — a file holding this workspace's key"`;
+  const apiKeyVarLine = opts.apiKeyVar
+    ? `    apiKeyVar: ${opts.apiKeyVar}`
+    : `    apiKeyVar: REPLACE_KEY_VAR`;
   return `  - route: ${route}
     enabled: false          # arm it deliberately, once doctor is green
 ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
@@ -430,7 +445,7 @@ ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
     # What a host must be to build this — unix, macos, linux, or windows —
     # belongs in each repo's own .crew.yaml, not here (see docs/REPO_SPEC.md).
     baseUrl: "REPLACE — the same baseUrl as your other routes"
-    apiKeyFile: "REPLACE — a file holding this workspace's key"
-    apiKeyVar: REPLACE_KEY_VAR
+${apiKeyFileLine}
+${apiKeyVarLine}
 `;
 }

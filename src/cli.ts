@@ -9,9 +9,10 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hostname } from 'node:os';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
+  DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
 } from './config.ts';
@@ -45,6 +46,7 @@ import {
   discover, listWorkspaces, renderConnection, ConnectHttpError,
   listLibraryTemplates, previewTemplateInstall, installTemplate,
 } from './connect.ts';
+import { authorizeDevice, pollForDeviceToken, DeviceAuthExpired, DeviceAuthDenied } from './device-auth.ts';
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -1526,24 +1528,65 @@ switch (command) {
     // named rather than slugged.
     const arg = positional[1];
     const [argWorkspace, argProject] = arg?.includes('/') ? arg.split(/\/(.*)/s) : [arg, undefined];
-    const workspace = argWorkspace ?? value('workspace-id') ?? value('workspace');
+    let workspace = argWorkspace ?? value('workspace-id') ?? value('workspace');
     const project = argProject ?? value('project');
+    const baseUrl = value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL;
     // No bare `cfg.ship.apiKey` to read here — it's only a fallback SOURCE the
     // route parser merges in, not a field of its own on `Ship`. Any
     // already-configured route's (already-merged) key is the next best
     // guess, and exactly what a ship-level key resolves to in practice.
-    const apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? cfg.routes.find((c) => c.apiKey)?.apiKey;
+    let apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? cfg.routes.find((c) => c.apiKey)?.apiKey;
+    // Set only when THIS run minted the key via device-authorization
+    // (ISSUE-609) — `runConnect` below uses this to write the key to
+    // apiKeyPathFor and print real apiKeyFile/apiKeyVar values in the
+    // rendered route block, since a `--key`-supplied key was already
+    // sitting in a file somewhere before this ever ran, but a freshly
+    // minted one has nowhere else to live.
+    let mintedFromDevice = false;
     if (!apiKey) {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        process.stderr.write(
+          'crew connect [<workspace>[/<project>]] --key K (or CREW_CONNECT_KEY, or ship.apiKey in crew.yaml)\n' +
+          '  workspace/project may be slugs, ids, or (project) a name. Omit workspace to list them.\n' +
+          '  Omit --key from a real terminal instead to sign in via device authorization.\n',
+        );
+        process.exit(2);
+      }
+      // No `--key`, and a real terminal on both ends — offer the
+      // device-authorization handshake (ISSUE-609) rather than just
+      // refusing: Synthesis already exposes this for exactly this case
+      // (a CLI with no key yet, run by someone who already has workspace
+      // access — typically via SSO).
+      const auth = await authorizeDevice(baseUrl, cfg.ship.userAgent, `crew on ${hostname()}`);
       process.stderr.write(
-        'crew connect [<workspace>[/<project>]] --key K (or CREW_CONNECT_KEY, or ship.apiKey in crew.yaml)\n' +
-        '  workspace/project may be slugs, ids, or (project) a name. Omit workspace to list them.\n',
+        'No API key given — approve this device from a browser you\'re already signed into Tablation with:\n\n' +
+        `  ${auth.verificationUriComplete}\n\n` +
+        `  (user code, if not already filled in: ${auth.userCode})\n\nWaiting for approval`,
       );
-      process.exit(2);
+      let result;
+      try {
+        result = await pollForDeviceToken(baseUrl, cfg.ship.userAgent, auth, () => process.stderr.write('.'));
+      } catch (e) {
+        process.stderr.write('\n');
+        if (e instanceof DeviceAuthExpired || e instanceof DeviceAuthDenied) {
+          process.stderr.write(`crew connect: ${e.message}\n`);
+        } else {
+          process.stderr.write(`crew connect: device authorization failed — ${(e as Error).message}\n`);
+        }
+        process.exit(2);
+      }
+      process.stderr.write(
+        `\nSigned in as ${result.identity.email} — minted an API key in workspace "${result.workspace.name}".\n`,
+      );
+      apiKey = result.apiKey.key;
+      mintedFromDevice = true;
+      // The device flow just said exactly which workspace this key is
+      // scoped to — no reason to make the operator retype what there was
+      // no ambiguity in, the same reasoning as the single-workspace
+      // shortcut below.
+      if (!workspace) workspace = result.workspace.slug;
     }
-    const authOpts = {
-      baseUrl: value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL,
-      apiKey, userAgent: cfg.ship.userAgent,
-    };
+    const authOpts = { baseUrl, apiKey, userAgent: cfg.ship.userAgent };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
       let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area') });
@@ -1641,10 +1684,28 @@ switch (command) {
         writeFileSync(resolvedPath, `${JSON.stringify(resolved, null, 2)}\n`);
         process.stderr.write(`Resolved ids written to ${resolvedPath}\n`);
       }
+      // A device-authorization key (ISSUE-609) has nowhere else to live —
+      // persist it the same shape apiKeyFile/apiKeyVar already expect
+      // (a `VAR=value` line), rather than printing it to a terminal for
+      // the operator to paste somewhere themselves the way a `--key`
+      // value never had to be, since it was already in a file before
+      // this ran. 0600: this file holds a live credential.
+      let apiKeyFile: string | undefined;
+      const apiKeyVar = 'CREW_API_KEY';
+      if (mintedFromDevice) {
+        apiKeyFile = apiKeyPathFor(cfg.ship.stateDir, route);
+        if (dryRun) {
+          process.stderr.write(`(dry run) would write the minted API key to ${apiKeyFile}\n`);
+        } else {
+          mkdirSync(dirname(apiKeyFile), { recursive: true });
+          writeFileSync(apiKeyFile, `${apiKeyVar}=${apiKey}\n`, { mode: 0o600 });
+          process.stderr.write(`API key written to ${apiKeyFile}\n`);
+        }
+      }
       process.stdout.write(renderConnection(
         found, route,
         value('dir') ?? 'REPLACE — the local checkout this route works',
-        { area: value('area') },
+        { area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined },
       ));
       if (found.problems.length) {
         process.stderr.write('\n  Unresolved — fix these before arming it:\n');

@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
-  resolvedPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo,
+  resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -776,4 +776,12 @@ test('an unplaceable ticket says WHY it could not be placed', () => {
   // The repo's name comes back with it, so the report can name what is
   // waiting rather than only how many.
   assert.equal(unplaceable.find((u) => u.ticket.issue_id === 'E')!.repo, 'beta');
+});
+
+test('apiKeyPathFor mirrors resolvedPathFor\'s <workspace>/<project> shape, under its own "keys" tree (ISSUE-609)', () => {
+  const stateDir = '/tmp/some-state';
+  assert.equal(
+    apiKeyPathFor(stateDir, 'issues/dev-crew'),
+    join(stateDir, 'keys', 'issues', 'dev-crew.env'),
+  );
 });
