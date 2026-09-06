@@ -45,7 +45,7 @@ Post comments on a ticket as work progresses — after scoping an approach, afte
 
 ## Depersonalization
 
-No script, lib, or prompt names its operator directly — **names come from data, roles are parenthetical qualifiers.** Each agent gets a `## Your crew` roster built at run time from the tracker's shared Crew table (Name + Email fields). A helper renders `"Trevor (Dev)"` but plain `"QA agent"` when the row's name already carries the role. The ship owner's role-agnostic term is **Operator**, not "Captain." Config, not prose, is the place for machine-specific ids/paths/keys — those don't travel with the repo.
+No script, lib, or prompt names its operator directly — **names come from data, roles are parenthetical qualifiers.** Each agent gets a `## Your crew` roster built at run time from the tracker's shared Crew table (Name + Email fields). The ship owner's role-agnostic term is **Operator**. Config, not prose, is the place for machine-specific ids/paths/keys — those don't travel with the repo.
 
 ## Agent personas & logbook (built, not a plan)
 

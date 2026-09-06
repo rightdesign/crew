@@ -6,13 +6,11 @@ and reports back on the board.
 
 Each **seat** is a row in the board's Crew table that happens to be a robot,
 with a brief (`prompts/<promptSet>/`, see "Prompt sets" below) and a slice
-of the queue. A seat is named in that
-table and answers to that name — call the dev seat "Trevor" and the crew will
-call it Trevor, in the queue digest and in the comments it writes on tickets.
-Everything the crew knows about a run — what to build, what is blocked, what
-has shipped — is table data, and every step it takes is visible as a status
-change or a comment on the ticket. There is no hidden state and no queue but
-the board.
+of the queue. A seat is named in that table and answers to that name, in the
+queue digest and in the comments it writes on tickets. Everything the crew
+knows about a run — what to build, what is blocked, what has shipped — is
+table data, and every step it takes is visible as a status change or a
+comment on the ticket. There is no hidden state and no queue but the board.
 
 Every agent is handed a roster at the top of its prompt: who else is aboard,
 what each of them is called, and which rows are **holds** — the people using
