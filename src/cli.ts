@@ -1588,12 +1588,19 @@ switch (command) {
     }
     const authOpts = { baseUrl, apiKey, userAgent: cfg.ship.userAgent };
 
+    // Provisioning (ISSUE-610) needs to know which machine this is — the
+    // same `ship.name`/`ship.platform` `doctor` already matches Ships rows
+    // against. Threaded through explicitly rather than read again inside
+    // `discover()`: this file already has `cfg` in scope, and `discover()`
+    // stays a pure function of its options, testable without a config file.
+    const ship = { name: cfg.ship.name, platform: cfg.ship.platform };
+
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
-      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area') });
+      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun });
       if (!found.projectId && found.offerTemplateInstall && process.stdin.isTTY && process.stdout.isTTY) {
         const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId);
         if (installedSlug) {
-          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area') });
+          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun });
         }
       }
       if (!found.projectId) {
@@ -1707,6 +1714,10 @@ switch (command) {
         value('dir') ?? 'REPLACE — the local checkout this route works',
         { area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined },
       ));
+      if (found.provisioning.length) {
+        process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);
+        for (const p of found.provisioning) process.stderr.write(`    - ${p}\n`);
+      }
       if (found.problems.length) {
         process.stderr.write('\n  Unresolved — fix these before arming it:\n');
         for (const p of found.problems) process.stderr.write(`    - ${p}\n`);

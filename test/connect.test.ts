@@ -19,6 +19,28 @@ function mockFetch(routes: Record<string, unknown>) {
   return { restore: () => { globalThis.fetch = originalFetch; }, seen };
 }
 
+/**
+ * Same idea as `mockFetch`, but also records the method and (parsed) body of
+ * every call, and lets a route's response depend on the method — POST
+ * `.../records` (create) and GET `.../records?limit=200` (list) share a
+ * pathname but never a query string, so a plain `mockFetch` route table
+ * already disambiguates them; this is only for tests that need to assert
+ * *what* got written, not just that a lookup happened.
+ */
+function mockFetchCalls(routes: Record<string, unknown>) {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ method: string; key: string; body: unknown }> = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const key = `${url.pathname}${url.search}`;
+    const method = init?.method ?? 'GET';
+    calls.push({ method, key, body: init?.body ? JSON.parse(init.body as string) : undefined });
+    if (!(key in routes)) return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+    return new Response(JSON.stringify(routes[key]), { status: 200 });
+  }) as typeof fetch;
+  return { restore: () => { globalThis.fetch = originalFetch; }, calls };
+}
+
 const BASE = { baseUrl: 'https://example.test', apiKey: 'k', userAgent: 'crew-test' };
 
 test('discover() resolves the workspace by slug, not by echoing the input as its id', async (t) => {
@@ -302,6 +324,137 @@ test('discover() leaves unrecognizedStatuses undefined rather than failing the w
   assert.equal(found.projectId, 'proj-1');
 });
 
+test('discover() with no `ship` given never provisions — same workspace-wide, unscoped search as before (ISSUE-610)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [{ id: 'seat-dev', name: 'Developer agent' }],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.deepEqual(found.provisioning, []);
+  assert.ok(!calls.some((c) => c.method === 'POST' || c.method === 'PATCH'), 'no writes without `ship`');
+});
+
+test('discover() creates the Ships row when this ship has no row yet, and reports it in provisioning (ISSUE-610)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [],
+    '/api/data-models/ships-model/records': { id: 'ship-new' },
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-new' },
+      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-new' },
+      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-new' },
+      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-new' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook", platform: 'macos' },
+  });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.ok(found.provisioning.some((p) => p.includes('created Ships row')));
+  const createShip = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
+  assert.deepEqual(createShip?.body, { name: "Brad's MacBook", platform: 'macos' });
+});
+
+test('discover() claims a pre-existing, unscoped Crew row for this ship rather than creating a duplicate (ISSUE-610)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }],
+    '/api/data-models/crew-model/records?limit=200': [
+      // No ship_id — this is the single-machine-era row the ticket's own
+      // framing describes; claiming it (not duplicating it) is the point.
+      { id: 'seat-dev', name: 'Developer agent' },
+      { id: 'hold-brad', name: 'Brad C.' },
+    ],
+    '/api/data-models/crew-model/records/seat-dev': { id: 'seat-dev', ship_id: 'ship-1' },
+    // design/qa/triage have no row at all in this fixture — each gets
+    // created fresh, same as the dedicated "creates a new row" test below.
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" },
+  });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.ok(found.provisioning.some((p) => p.includes('claimed existing Crew row for the dev seat')));
+  const claim = calls.find((c) => c.method === 'PATCH' && c.key === '/api/data-models/crew-model/records/seat-dev');
+  assert.deepEqual(claim?.body, { ship_id: 'ship-1' });
+  // design/qa/triage have no row at all in this fixture (only "dev" was
+  // seeded) — created fresh rather than left unresolved, same as the
+  // dedicated "creates a new row" test.
+  assert.ok(found.provisioning.some((p) => p === 'created Crew row for the design seat'));
+});
+
+test('discover() creates a new, ship-scoped Crew row for a lane with no row at all, linked to its Agents-table persona (ISSUE-610)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }],
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [{ id: 'agent-dev', name: 'Developer' }],
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-dev-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" },
+  });
+  assert.equal(found.seats.dev, 'seat-dev-new');
+  assert.ok(found.provisioning.some((p) => p === 'created Crew row for the dev seat'));
+  const createCrew = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/crew-model/records');
+  assert.deepEqual(createCrew?.body, { name: 'Developer agent', ship_id: 'ship-1', agent_id: 'agent-dev' });
+});
+
+test('discover() skips all provisioning on a dry run — writes nothing, falls back to the unscoped search (ISSUE-610)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [{ id: 'seat-dev', name: 'Developer agent' }],
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" }, dryRun: true,
+  });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.deepEqual(found.provisioning, []);
+  assert.ok(!calls.some((c) => c.method === 'POST' || c.method === 'PATCH'), 'dry run writes nothing');
+});
+
 test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces list', async (t) => {
   const { restore, seen } = mockFetch({
     '/api/auth/my-workspaces': {
@@ -372,7 +525,7 @@ test('renderConnection() no longer prints a resolved: block — those ids go to 
   const d: Discovered = {
     workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
     projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
-    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [],
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
   };
   const block = renderConnection(d, 'issues/issues', '/tmp/synthesis');
   assert.ok(!block.includes('resolved:'));

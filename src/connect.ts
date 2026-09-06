@@ -1,22 +1,26 @@
 /**
- * `crew connect` — discovery half.
+ * `crew connect` — discovery, plus provisioning this machine's own rows.
  *
  * A route needs fourteen uuids. Every one of them is discoverable by
  * name, and writing them out by hand is the friction ISSUE-285 exists to
- * remove. This does the READ-ONLY part of that ticket: resolve names to ids
- * and print a route block ready to paste into crew.yaml.
+ * remove. Most of this file resolves names to ids and prints a route block
+ * ready to paste into crew.yaml — read-only.
  *
- * What it deliberately does NOT do, because both need the keychain work in
- * ISSUE-283 that does not exist yet:
- *   - mint a workspace API key (keys are workspace-scoped; there is no
- *     platform key, so one must already exist and be supplied);
- *   - provision the Crew rows for roles the workspace lacks.
+ * Two things it does write, both opt-in via `DiscoverOptions.ship` (a plain
+ * discover() call with no `ship` given, like every test in
+ * `connect.test.ts`, stays exactly as read-only as before):
+ *   - find-or-create the caller's own `Ships` row, matched by exact name
+ *     (ISSUE-380's own convention, `Tracker.myShipRow`);
+ *   - find, claim, or create a `Crew` row per polled lane (dev/design/qa/
+ *     triage), scoped to that Ships row via `ship_id` (ISSUE-610).
  *
- * So this is a paste-ready draft, not the finished command. It is honest
- * about the difference rather than pretending to be `crew connect`.
+ * Minting a workspace API key needed the keychain work in ISSUE-283 too —
+ * that part shipped as ISSUE-609's device-authorization handshake instead.
  */
 
 import { DEFAULT_CONTRACT } from './contract.ts';
+import { PERSONA_NAME } from './agents.ts';
+import type { RoleName } from './config.ts';
 
 export interface AuthOptions {
   baseUrl: string;
@@ -31,6 +35,22 @@ export interface DiscoverOptions extends AuthOptions {
    * every project with the tables a route needs offered as a choice. */
   project?: string;
   area?: string;
+  /**
+   * This machine's own identity (`crew.yaml`'s `ship.name`/`ship.platform`)
+   * — when given, `discover()` provisions this ship's `Ships` row and its
+   * per-lane `Crew` rows (ISSUE-610). Omitted, `discover()` stays exactly
+   * the read-only lookup it always was: no ship-scoping, no writes, the
+   * old workspace-wide-by-name seat search.
+   */
+  ship?: { name: string; platform?: string };
+  /**
+   * Same meaning as everywhere else in the CLI: report what discovery would
+   * do without writing anything. Provisioning (the `ship` option above) is
+   * entirely skipped under a dry run, same as the resolved-state and
+   * API-key files `cli.ts`'s `connect` case writes — this function makes no
+   * network POST/PATCH calls at all when set.
+   */
+  dryRun?: boolean;
 }
 
 /** One workspace this key's identity can see, whichever workspace minted it. */
@@ -125,6 +145,16 @@ export interface Discovered {
   offerTemplateInstall?: boolean;
   /** Everything that could not be resolved, with what was available. */
   problems: string[];
+  /**
+   * What this pass's provisioning (`DiscoverOptions.ship`, ISSUE-610)
+   * actually did — a Ships row created or matched, a Crew row claimed
+   * (a pre-multi-machine row with no `ship_id` yet, pointed at this ship)
+   * or newly created. Empty when `ship` was omitted, this was a dry run,
+   * the workspace has no `Ships` table, or nothing needed doing (every
+   * row already matched). The caller (`crew connect`) prints these so
+   * provisioning a machine is never a silent write.
+   */
+  provisioning: string[];
 }
 
 /**
@@ -159,6 +189,20 @@ async function get<T>(o: AuthOptions, path: string): Promise<T> {
 async function post<T>(o: AuthOptions, path: string, body: unknown): Promise<T> {
   const res = await fetch(`${o.baseUrl.replace(/\/+$/, '')}/api${path}`, {
     method: 'POST',
+    headers: {
+      Authorization: `Bearer ${o.apiKey}`,
+      'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+  return (await res.json()) as T;
+}
+
+async function patch<T>(o: AuthOptions, path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${o.baseUrl.replace(/\/+$/, '')}/api${path}`, {
+    method: 'PATCH',
     headers: {
       Authorization: `Bearer ${o.apiKey}`,
       'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
@@ -239,12 +283,13 @@ async function missingTables(o: DiscoverOptions, projectId: string): Promise<str
 
 export async function discover(o: DiscoverOptions): Promise<Discovered> {
   const problems: string[] = [];
+  const provisioning: string[] = [];
   // `GET /workspaces/:idOrSlug` resolves either form to the real uuid — the
   // rest of this function, and everything downstream, works in ids only.
   const ws = await get<{ id: string; slug: string; name?: string }>(o, `/workspaces/${o.workspace}`);
   const out: Discovered = {
     workspaceId: ws.id, workspaceSlug: ws.slug, workspaceName: ws.name,
-    models: {}, seats: {}, holds: [], problems,
+    models: {}, seats: {}, holds: [], problems, provisioning,
   };
 
   // Own role, not anyone else's — `/auth/me` derives it the same way for an
@@ -375,12 +420,87 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     }
   }
 
+  // Ship provisioning (ISSUE-610): find-or-create this machine's own Ships
+  // row before resolving Crew seats, so a brand-new machine needs no manual
+  // step in the app first. Both this and the Crew-row provisioning below
+  // are skipped entirely — falling through to the old workspace-wide,
+  // unscoped seat search — when the caller gave no `ship` (every test in
+  // connect.test.ts), this is a dry run, this workspace has no Ships table,
+  // or the ship's name matches more than one row (ambiguous, left for a
+  // person the same way `Tracker.myShipRow` leaves it).
+  let shipRowId: string | undefined;
+  if (out.shipsModelId && o.ship && !o.dryRun) {
+    const shipRows = await get<Array<{ id: string; name?: string | null }>>(
+      o, `/data-models/${out.shipsModelId}/records?limit=200`,
+    );
+    const mine = shipRows.filter((r) => (r.name ?? '').trim() === o.ship!.name.trim());
+    if (mine.length === 1) {
+      shipRowId = mine[0]!.id;
+    } else if (mine.length === 0) {
+      const created = await post<{ id: string }>(o, `/data-models/${out.shipsModelId}/records`, {
+        name: o.ship.name,
+        ...(o.ship.platform ? { platform: o.ship.platform } : {}),
+      });
+      shipRowId = created.id;
+      provisioning.push(`created Ships row "${o.ship.name}"`);
+    } else {
+      problems.push(`${mine.length} Ships rows named "${o.ship.name}" — which one is this machine?`);
+    }
+  }
+
+  // The Agent record each newly-provisioned Crew row should point at
+  // (ISSUE-416's `agent_id`, same field `agents.ts`'s `linkCrewSeats`
+  // fills for an existing seat) — looked up once, only when a new Crew row
+  // might actually get created below. `Agents` is a workspace-scoped system
+  // table (ISSUE-465, `client.dataModels.get('agents', workspaceId)` in
+  // agents.ts), not one of this project's own data models, so it is looked
+  // up by its fixed tableName rather than through `find()` above.
+  let agentIdFor: (role: RoleName) => string | undefined = () => undefined;
+  if (shipRowId) {
+    try {
+      const agentsModel = await get<{ id: string }>(o, `/data-models/agents?workspaceId=${ws.id}`);
+      const agentRows = await get<Array<{ id: string; name?: string | null }>>(
+        o, `/data-models/${agentsModel.id}/records?limit=200`,
+      );
+      agentIdFor = (role) => agentRows.find((r) => r.name === PERSONA_NAME[role])?.id;
+    } catch {
+      // No Agents table yet, or unreadable — the Crew row still gets
+      // created below, just without an agent_id; `crew agents sync` links
+      // it the first time someone runs that.
+    }
+  }
+
   if (out.models.crew) {
-    const rows = await get<Array<{ id: string; name?: string | null; email?: string | null }>>(
+    const rows = await get<Array<{ id: string; name?: string | null; email?: string | null; ship_id?: string | null }>>(
       o, `/data-models/${out.models.crew}/records?limit=200`,
     );
-    for (const role of ['dev', 'design', 'qa', 'triage']) {
-      const id = seatFor(rows, role === 'dev' ? 'develop' : role);
+    // Unscoped (old behaviour) unless a ship actually resolved above.
+    const scoped = shipRowId ? rows.filter((r) => r.ship_id === shipRowId) : rows;
+    // A row with no `ship_id` predates multi-machine support and implicitly
+    // represents a single shared instance (see the ticket's own framing,
+    // ISSUE-610) — claimed by name the first time a real ship connects and
+    // finds one, rather than left to be duplicated by a fresh create below.
+    const unclaimed = shipRowId ? rows.filter((r) => !r.ship_id) : [];
+
+    for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
+      const searchTerm = role === 'dev' ? 'develop' : role;
+      let id = seatFor(scoped, searchTerm);
+      if (!id && shipRowId) {
+        const legacyId = seatFor(unclaimed, searchTerm);
+        if (legacyId) {
+          await patch(o, `/data-models/${out.models.crew}/records/${legacyId}`, { ship_id: shipRowId });
+          id = legacyId;
+          provisioning.push(`claimed existing Crew row for the ${role} seat`);
+        } else {
+          const created = await post<{ id: string }>(o, `/data-models/${out.models.crew}/records`, {
+            name: `${PERSONA_NAME[role]} agent`,
+            ship_id: shipRowId,
+            ...(agentIdFor(role) ? { agent_id: agentIdFor(role) } : {}),
+          });
+          id = created.id;
+          provisioning.push(`created Crew row for the ${role} seat`);
+        }
+      }
       if (id) out.seats[role] = id;
       else problems.push(`no Crew row looking like the ${role} seat — create one, or omit that role`);
     }
@@ -391,8 +511,10 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // needs no `pair`-specific code — `configuredMembers()` (config.ts) is
     // what reclassifies this one row as a HOLD rather than a seat, since a
     // ticket Pair is working must stay off-limits to the polled seats the
-    // same way one a person is driving does.
-    const pairId = seatFor(rows, 'pair');
+    // same way one a person is driving does. Never claimed or created
+    // (unlike the four polled seats): an interactive session's own row is
+    // a person's to place, not this command's.
+    const pairId = seatFor(scoped, 'pair') || (shipRowId ? seatFor(unclaimed, 'pair') : undefined);
     if (pairId) out.seats.pair = pairId;
     // Anything that is not one of the seats is a person or a session: a hold.
     const seatIds = new Set(Object.values(out.seats));

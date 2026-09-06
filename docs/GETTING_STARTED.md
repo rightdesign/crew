@@ -73,14 +73,21 @@ one; it can't be recovered.
 This key is bound to both the workspace and your user — crew acts as you
 when it uses it.
 
-### 1.4 Make sure your machine has a Ships row
+### 1.4 Your machine's Ships row
 
-crew identifies "this machine" by a name that must match a row in the
-workspace's **Ships** table. If you're setting up a brand-new machine, add a
-row there (name it something recognizable, e.g. `"Brad's MacBook"`) before
-moving on — `crew connect` and `crew doctor` will complain if it's missing.
-An existing team usually already has a convention for this; ask before
-inventing your own.
+crew identifies "this machine" by a name (`ship.name` in `crew.yaml`, §2.3).
+`crew connect` (§2.4) provisions this for you the first time it runs — it
+finds-or-creates a row on the workspace's **Ships** table under that name,
+and one **Crew** row per lane (dev/design/qa/triage), scoped to it, the
+first time it needs one. Nothing to do here by hand: this section used to
+say to add the Ships row yourself before continuing, which is no longer
+necessary.
+
+If your workspace already has a Ships row for this machine from before
+`crew connect` did this automatically (or a teammate added one by hand), it
+just gets matched by name and reused — nothing is duplicated. An existing
+team usually already has a naming convention for this (e.g.
+`"Brad's MacBook"`); ask before inventing your own.
 
 ---
 
