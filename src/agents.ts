@@ -83,7 +83,48 @@ interface AgentRow {
   id: string;
   name: string;
   prompt: string;
+  model?: string | null;
   updated_at: string;
+}
+
+/**
+ * Which Agent row backs `role` on this route right now.
+ *
+ * `agentPersonas[role].agentId` — set the first time `crew agents sync` has
+ * run for this route — is the fast path, and wins when present so an
+ * explicit sync's own CAS-tracked row stays authoritative. Absent that (a
+ * route `crew connect` has provisioned, ISSUE-609/610, but nobody has ever
+ * run `crew agents sync` on this machine), fall back to reading the seat's
+ * own `Crew.agent_id` — `discover()` (connect.ts) already links a freshly
+ * created Crew row to the matching persona's Agent record at provisioning
+ * time (ISSUE-611), so a session should not need a separate local sync step
+ * just to see the workspace's own copy of its prompt/model.
+ */
+async function resolveAgentId(
+  route: Route,
+  role: RoleName,
+  opts: { userAgent?: string },
+): Promise<string | undefined> {
+  const cached = route.resolved?.agentPersonas?.[role]?.agentId;
+  if (cached) return cached;
+
+  const seatId = route.resolved?.seats?.[role];
+  if (!seatId || !route.resolved) return undefined;
+
+  const client = new TablationClient({
+    baseUrl: `${route.baseUrl}/api`,
+    apiKey: resolveApiKey(route),
+    headers: { 'User-Agent': opts.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' },
+  } as ConstructorParameters<typeof TablationClient>[0]);
+
+  try {
+    const row = await client.records.get<{ agent_id?: string | null }>(route.resolved.models.crew, seatId);
+    return row.agent_id ?? undefined;
+  } catch {
+    // A deleted seat row or an unreachable tracker — same "never block a
+    // run" reasoning as the row fetches below.
+    return undefined;
+  }
 }
 
 /**
@@ -96,10 +137,6 @@ interface AgentRow {
  * `syncPersonas`'s four-role sync: `planAgentRun` runs once per role, every
  * cycle, and syncing is a person's explicit `crew agents sync` step, not
  * something the runner should trigger (or wait on) just to start a session.
- * `agentPersonas[role].agentId` — set the first time a sync has EVER run for
- * this route — is the only prerequisite; the runner does not require a
- * *recent* sync, since this compares the row's current content itself, not
- * against sync's own CAS baseline.
  *
  * Per-route by construction: `route.resolved.workspaceId` (and so the
  * Agents-table row this fetches) is a route's own resolved id, never shared
@@ -111,7 +148,7 @@ export async function fetchDivergedPrompt(
   role: RoleName,
   opts: { userAgent?: string },
 ): Promise<string | undefined> {
-  const agentId = route.resolved?.agentPersonas?.[role]?.agentId;
+  const agentId = await resolveAgentId(route, role, opts);
   if (!agentId || !route.resolved) return undefined;
 
   const client = new TablationClient({
@@ -133,6 +170,40 @@ export async function fetchDivergedPrompt(
 
   const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
   return row.prompt !== defaultPrompt ? row.prompt : undefined;
+}
+
+/**
+ * The model `role`'s linked Agent row asks for, straight from the tracker —
+ * ISSUE-611's other half of "use its prompt/model fields directly at
+ * runtime". Unlike the prompt, a per-Agent model has no local template to
+ * diverge from: it is a first-class piece of that row's own config, so it
+ * is returned whenever the linked row has one set, whichever of
+ * `resolveAgentId`'s two paths found the row. `undefined` (not synced yet,
+ * no seat, no `agent_id` on the seat, no `model` on the row, or an
+ * unreachable tracker) leaves the caller's own `ship.agent.model` default
+ * untouched.
+ */
+export async function fetchSeatAgentModel(
+  route: Route,
+  role: RoleName,
+  opts: { userAgent?: string },
+): Promise<string | undefined> {
+  const agentId = await resolveAgentId(route, role, opts);
+  if (!agentId || !route.resolved) return undefined;
+
+  const client = new TablationClient({
+    baseUrl: `${route.baseUrl}/api`,
+    apiKey: resolveApiKey(route),
+    headers: { 'User-Agent': opts.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' },
+  } as ConstructorParameters<typeof TablationClient>[0]);
+
+  try {
+    const agentsModel = await client.dataModels.get('agents', route.resolved.workspaceId);
+    const row = await client.records.get<AgentRow>(agentsModel.id, agentId);
+    return row.model ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

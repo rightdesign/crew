@@ -202,6 +202,14 @@ export interface PlanOptions {
    * `planAgentRun`'s — this function stays local-I/O only.
    */
   divergedPrompt?: string;
+  /**
+   * The linked Agent row's own `model` field (`agents.ts`
+   * `fetchSeatAgentModel`, ISSUE-611), overriding `ship.agent.model` for
+   * this run when the workspace has set one. Undefined (no seat, no linked
+   * Agent, or the row has no `model`) keeps today's ship-wide default.
+   * Fetching it is the caller's job, same as `divergedPrompt` above.
+   */
+  agentModel?: string;
 }
 
 export class AgentError extends Error {}
@@ -249,6 +257,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
+  const model = o.agentModel ?? o.ship.agent.model;
 
   // Reporting needs a resolved workspace (`crew connect`) and a key to call
   // it with — either is missing for a route that hasn't been connected, or
@@ -279,7 +288,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     args: [
       '-p', '--allowedTools', ...allowedTools(o.role),
       '--disallowedTools', ...DISALLOWED_TOOLS,
-      '--model', o.ship.agent.model,
+      '--model', model,
       '--output-format', 'stream-json', '--verbose',
     ],
     prompt,
@@ -305,7 +314,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     },
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,
-    model: o.ship.agent.model,
+    model,
     streamPath: join(streamsDir, `${base}.jsonl`),
     eventsPath: join(streamsDir, `${base}.events.jsonl`),
     ticket: o.ticket,

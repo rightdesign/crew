@@ -97,6 +97,23 @@ test('a diverged prompt replaces common+brief wholesale, rather than being appen
   assert.ok(!plan.prompt.includes('BRIEF dev'), 'the local lane brief must not survive alongside a diverged prompt');
 });
 
+test('agentModel overrides the ship\'s own default model, in both the args and the plan (ISSUE-611)', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+    agentModel: 'claude-opus-5',
+  });
+  assert.ok(plan.args.includes('claude-opus-5'));
+  assert.ok(!plan.args.includes('claude-sonnet-5'));
+  assert.equal(plan.model, 'claude-opus-5');
+});
+
+test('no agentModel leaves the ship\'s own default model untouched', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  assert.equal(plan.model, 'claude-sonnet-5');
+});
+
 test('the stream path is derived from route, role and cycle, and shown by --dry-run', () => {
   const { home, state, route, ship } = rig();
   const plan = planAgentRun({

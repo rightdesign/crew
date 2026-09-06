@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   syncPersonas, personaDefaultPrompt, currentPersonaPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError,
-  fetchHistoryEntries, fetchDivergedPrompt,
+  fetchHistoryEntries, fetchDivergedPrompt, fetchSeatAgentModel,
 } from '../src/agents.ts';
 import type { Route } from '../src/config.ts';
 
@@ -469,6 +469,96 @@ test('fetchDivergedPrompt falls back to undefined rather than throwing when the 
   const prompt = await fetchDivergedPrompt(route, 'dev', {});
 
   assert.equal(prompt, undefined);
+});
+
+test('fetchDivergedPrompt falls back to the seat\'s own Crew.agent_id when no sync has ever cached one (ISSUE-611)', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-dev': () => ({ status: 200, body: { id: 'seat-dev', agent_id: 'row-dev' } }),
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: 'LINKED SEAT PROMPT\n', updated_at: '2026-02-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  // No `agentPersonas` cache — `crew connect` provisioned the seat and
+  // linked it (ISSUE-610), but `crew agents sync` has never run here.
+  const route = makeRoute(undefined, { dev: 'seat-dev' });
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
+
+  assert.equal(prompt, 'LINKED SEAT PROMPT\n');
+});
+
+test('fetchDivergedPrompt returns undefined when the seat\'s Crew row has no agent_id yet', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-dev': () => ({ status: 200, body: { id: 'seat-dev', agent_id: null } }),
+  });
+  t.after(restore);
+
+  const route = makeRoute(undefined, { dev: 'seat-dev' });
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
+
+  assert.equal(prompt, undefined);
+});
+
+test('fetchSeatAgentModel returns undefined when nothing has ever linked this role to an Agent row', async (t) => {
+  const { restore } = mockFetch({});
+  t.after(restore);
+
+  const route = makeRoute(undefined, {});
+  const model = await fetchSeatAgentModel(route, 'dev', {});
+
+  assert.equal(model, undefined);
+});
+
+test('fetchSeatAgentModel reads the linked Agent row\'s model via the cached agentId from crew agents sync', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: 'X', model: 'claude-opus-5', updated_at: '2026-02-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  const model = await fetchSeatAgentModel(route, 'dev', {});
+
+  assert.equal(model, 'claude-opus-5');
+});
+
+test('fetchSeatAgentModel falls back to the seat\'s own Crew.agent_id, same as fetchDivergedPrompt (ISSUE-611)', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-dev': () => ({ status: 200, body: { id: 'seat-dev', agent_id: 'row-dev' } }),
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: 'X', model: 'claude-sonnet-5', updated_at: '2026-02-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute(undefined, { dev: 'seat-dev' });
+  const model = await fetchSeatAgentModel(route, 'dev', {});
+
+  assert.equal(model, 'claude-sonnet-5');
+});
+
+test('fetchSeatAgentModel returns undefined when the linked Agent row has no model set', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: 'X', updated_at: '2026-02-01T00:00:00Z' },
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  const model = await fetchSeatAgentModel(route, 'dev', {});
+
+  assert.equal(model, undefined);
 });
 
 test('currentPersonaPrompt falls back to the local default when there is nothing to compare against yet', async (t) => {
