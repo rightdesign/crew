@@ -52,6 +52,7 @@ import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.t
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
+  refreshBaseBranch,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -1994,12 +1995,28 @@ switch (command) {
   case 'sync': {
     // A reviewer's commits land on the remote; until a worktree takes them the
     // dev seat builds on stale code and QA verifies something nobody reviewed.
+    // The PRIMARY checkout's own base branch needs the same treatment, for a
+    // different reason: an agent's `git worktree add` cuts a new ticket's
+    // worktree from `base`'s CURRENT local commit (docs/loop personas, Step
+    // 3.1), so a checkout that has not fetched recently hands that agent a
+    // worktree missing whatever landed on the remote since (ISSUE-635).
     emit.enter('worktree');
     let tracked = 0;
     let acted = 0;
+    let baseChecked = 0;
+    let baseActed = 0;
     // Every repository of the route: a reviewer's commits on the second
-    // repo's branch are no less stale for being next door (ISSUE-350).
-    for (const r of reposOf(route)) {
+    // repo's branch are no less stale for being next door (ISSUE-350), and
+    // neither is a second repo's own base branch.
+    for (const r of await resolvedRepos(route)) {
+      const base = refreshBaseBranch(r.dir, r.config.branch.remote, r.config.branch.base, dryRun);
+      if (base.action !== 'not-applicable') {
+        baseChecked++;
+        if (base.action === 'fetch-failed') emit.warn(base.detail);
+        else if (base.action === 'diverged' || base.action === 'ff-failed') { baseActed++; emit.warn(base.detail); }
+        else if (base.action === 'would-fast-forward' || base.action === 'fast-forwarded') { baseActed++; emit.emit(base.detail); }
+      }
+
       fetchRemote(r.dir);
       for (const w of worktrees(r.dir)) {
         if (!w.branch) continue;
@@ -2017,6 +2034,7 @@ switch (command) {
       }
     }
     // Silence would read as "checked and fine"; say which it was.
+    if (baseChecked > 0 && baseActed === 0) emit.emit(`${baseChecked} base branch(es) checked, all level with the remote`);
     if (tracked === 0) emit.emit('no worktree tracks a remote branch — nothing to sync');
     else if (acted === 0) emit.emit(`${tracked} worktree(s) tracking a remote, all level with it`);
     break;

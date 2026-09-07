@@ -398,6 +398,83 @@ export function fastForward(cwd: string, branch: string): boolean {
   return gitOk(cwd, ['merge', '--ff-only', s.upstream!]) !== null;
 }
 
+// ---------------------------------------------------------------------------
+// Base branch refresh: keeping the PRIMARY checkout (not a worktree) level
+// with the remote, both before a release decides anything and before an
+// agent cuts a new ticket's worktree from it.
+// ---------------------------------------------------------------------------
+
+export type BaseRefreshOutcome =
+  | { action: 'not-applicable'; detail: string }
+  | { action: 'fetch-failed'; detail: string }
+  | { action: 'level'; detail: string }
+  | { action: 'would-fast-forward'; behind: number; detail: string }
+  | { action: 'fast-forwarded'; behind: number; detail: string }
+  | { action: 'diverged'; ahead: number; behind: number; detail: string }
+  | { action: 'ff-failed'; behind: number; detail: string };
+
+/**
+ * Brings `base`'s local ref in `cwd` level with `<remote>/<base>`,
+ * fast-forward only, from a clean tree.
+ *
+ * `syncState`/`fastForward` above answer the same question for a WORKTREE's
+ * branch, via its own `@{upstream}` — set automatically because a worktree's
+ * branch was either pushed for review or cut with `-b`. A checkout's base
+ * branch is different: an operator or script placed it, so it very often
+ * tracks nothing, and comparing through `@{upstream}` would silently report
+ * "tracks no remote branch" forever. This measures against `<remote>/<base>`
+ * directly instead, the same way `release-run.ts`'s own pre-release refresh
+ * always has.
+ *
+ * `not-applicable` covers every "nothing to take, carry on" case that isn't
+ * a fault: `cwd` isn't on `base`, `cwd` is dirty, no remote is configured, or
+ * the remote has no `base` at all (three repos on this ship legitimately
+ * have none of any of these). A caller that wants to warn on `fetch-failed`
+ * specifically may; the rest are quiet by design, same reasoning
+ * `release-run.ts` already documented for its own copy of this check.
+ */
+export function refreshBaseBranch(cwd: string, remote: string, base: string, dryRun = false): BaseRefreshOutcome {
+  if (currentBranch(cwd) !== base || status(cwd).length > 0) {
+    return { action: 'not-applicable', detail: `${cwd} is not on a clean ${base}` };
+  }
+  if (!remoteConfigured(cwd, remote)) {
+    return { action: 'not-applicable', detail: `${remote} is not configured` };
+  }
+  if (!fetchRemote(cwd, remote)) {
+    return { action: 'fetch-failed', detail: `could not fetch ${remote}` };
+  }
+  if (!remoteBranchExists(cwd, remote, base)) {
+    return { action: 'not-applicable', detail: `${remote}/${base} does not exist` };
+  }
+  const upstream = `${remote}/${base}`;
+  const counts = gitOk(cwd, ['rev-list', '--left-right', '--count', `${upstream}...${base}`]) ?? '0\t0';
+  const [behindStr, aheadStr] = counts.split(/\s+/);
+  const behind = Number.parseInt(behindStr ?? '0', 10);
+  const ahead = Number.parseInt(aheadStr ?? '0', 10);
+  if (ahead > 0 && behind > 0) {
+    return {
+      action: 'diverged', ahead, behind,
+      detail: `${base} has diverged from ${upstream} (${ahead} ahead, ${behind} behind)`,
+    };
+  }
+  if (behind === 0) return { action: 'level', detail: `${base} is level with ${upstream}` };
+  if (dryRun) {
+    return { action: 'would-fast-forward', behind, detail: `would fast-forward ${base}: ${behind} behind ${upstream}` };
+  }
+  if (gitOk(cwd, ['merge', '--ff-only', upstream]) === null) {
+    return { action: 'ff-failed', behind, detail: `${base} is ${behind} behind ${upstream} and would not fast-forward` };
+  }
+  return {
+    action: 'fast-forwarded', behind,
+    detail: `fast-forwarded ${base} to ${upstream} (${behind} commit(s) from elsewhere)`,
+  };
+}
+
+/** Pushes `branch`'s current local commit to `remote`. Throws on rejection. */
+export function pushBranch(cwd: string, remote: string, branch: string): void {
+  git(cwd, ['push', remote, branch]);
+}
+
 export interface WorktreeInfo { path: string; branch: string | null }
 
 export function worktrees(cwd: string): WorktreeInfo[] {

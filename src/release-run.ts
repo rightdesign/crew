@@ -12,8 +12,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  createReleaseTag, currentBranch, detectClosure, fetchRemote, git, gitOk, GitError, headSha,
-  pushTag, remoteBranchExists, remoteConfigured, status, tagExists, type ClosureCheck,
+  createReleaseTag, detectClosure, git, gitOk, GitError, headSha,
+  pushBranch, pushTag, refreshBaseBranch, remoteConfigured, tagExists, type ClosureCheck,
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
@@ -475,58 +475,37 @@ async function confirm(o: ReleaseRunOptions, expected: string): Promise<boolean 
  *     resolution nobody asked for, on the branch everything ships from.
  */
 function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: string } {
-  const base = o.repo.branch.base;
-  const remote = o.repo.branch.remote;
-
-  // Only from a clean checkout sitting on the base. Neither is this
-  // function's job to report — `checkGuards` says it better a moment later —
-  // but fast-forwarding from anywhere else would move the wrong branch.
-  if (currentBranch(o.cwd) !== base || status(o.cwd).length > 0) return { ok: true };
-
-  // No remote at all is the documented "nothing to take" case above, not a
-  // fault — warning about it every cycle would train an operator to ignore
-  // the warning, which is worse than not having one for the cycle a REAL
-  // fetch failure (network, auth) needs it.
-  if (!remoteConfigured(o.cwd, remote)) return { ok: true };
-
-  // A fetch touches only remote-tracking refs, so it runs in a dry run too:
-  // without it a dry run would report drift that is merely unobserved, which
-  // is worse than useless. Nothing that moves a local branch runs below.
-  if (!fetchRemote(o.cwd, remote)) {
-    o.emit.warn(`could not fetch ${remote} — releasing from what this ship already has`);
-    return { ok: true };
+  // The actual fetch-and-compare is `refreshBaseBranch` (git.ts), shared with
+  // `crew sync`'s equivalent check before an agent cuts a new ticket's
+  // worktree — this wrapper only adds the emitting and blocking this call
+  // site wants around it.
+  const r = refreshBaseBranch(o.cwd, o.repo.branch.remote, o.repo.branch.base, o.dryRun);
+  switch (r.action) {
+    // "Nothing to take, carry on": not on a clean base, no remote configured,
+    // the remote has no base branch at all (three repos on this ship,
+    // legitimately), or already level. None of these are a fault — warning
+    // about them every cycle would train an operator to ignore the warning,
+    // which is worse than not having one for the cycle a REAL fetch failure
+    // (network, auth) needs it.
+    case 'not-applicable':
+    case 'level':
+      return { ok: true };
+    case 'fetch-failed':
+      o.emit.warn(`${r.detail} — releasing from what this ship already has`);
+      return { ok: true };
+    case 'would-fast-forward':
+    case 'fast-forwarded':
+      o.emit.emit(r.detail);
+      return { ok: true };
+    // DIVERGED: stop. Local commits the remote has not got AND remote
+    // commits this ship has not got means two ships have both written to the
+    // base. Fast-forwarding is impossible and merging would be this crew
+    // inventing a resolution nobody asked for, on the branch everything
+    // ships from.
+    case 'diverged':
+    case 'ff-failed':
+      return { ok: false, why: r.detail };
   }
-
-  // Measured against `<remote>/<base>` directly rather than through a
-  // configured upstream: a crew checkout is cut by an operator or a script and
-  // very often tracks nothing, and `git branch -u` is not something this is
-  // entitled to set on someone's repo. The remote-tracking ref is there either
-  // way once the fetch above succeeded.
-  const upstream = `${remote}/${base}`;
-  if (!remoteBranchExists(o.cwd, remote, base)) return { ok: true };
-
-  const counts = gitOk(o.cwd, ['rev-list', '--left-right', '--count', `${upstream}...${base}`]);
-  if (!counts) return { ok: true };
-  const [behindStr, aheadStr] = counts.split(/\s+/);
-  const behind = Number.parseInt(behindStr ?? '0', 10);
-  const ahead = Number.parseInt(aheadStr ?? '0', 10);
-
-  if (ahead > 0 && behind > 0) {
-    return { ok: false, why: `${base} has diverged from ${upstream} (${ahead} ahead, ${behind} behind)` };
-  }
-  // Ahead only is the normal state of a ship between releases: it has merged
-  // work the remote has not seen, and the release is what pushes it.
-  if (behind === 0) return { ok: true };
-
-  if (o.dryRun) {
-    o.emit.emit(`would fast-forward ${base}: ${behind} behind ${upstream}`);
-    return { ok: true };
-  }
-  if (gitOk(o.cwd, ['merge', '--ff-only', upstream]) === null) {
-    return { ok: false, why: `${base} is ${behind} behind ${upstream} and would not fast-forward` };
-  }
-  o.emit.emit(`fast-forwarded ${base} to ${upstream} (${behind} commit(s) from elsewhere)`);
-  return { ok: true };
 }
 
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
@@ -751,6 +730,35 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     }
   } else if (o.repo.release.mode !== 'local') {
     o.emit.emit(`release.mode is ${o.repo.release.mode} — CI takes it from here`);
+  }
+
+  // Keep the remote in sync with what actually landed on the base. Merging a
+  // verified branch onto `base` (above) has always been local-only — nothing
+  // pushed it, so a repo whose release.mode never pushes anything else
+  // (local, integrate) left every merge stranded on this one ship's disk,
+  // and even ci_manual/ci_auto only pushed the release TAG, whose objects
+  // reach the remote without moving `<remote>/<base>` itself. A repo with no
+  // remote configured (three on this ship) is never asked to push and this
+  // is never an error for them. Same treatment as the deploy hook and the
+  // tag push below: the merge and version-bump commits already landed
+  // locally, so a failed push is a failed release, not a warning.
+  if (remoteConfigured(o.cwd, o.repo.branch.remote)) {
+    if (o.dryRun) {
+      o.emit.emit(`would push ${o.repo.branch.base} to ${o.repo.branch.remote}`);
+    } else {
+      try {
+        pushBranch(o.cwd, o.repo.branch.remote, o.repo.branch.base);
+        o.emit.emit(`pushed ${o.repo.branch.base} to ${o.repo.branch.remote}`);
+      } catch (e) {
+        o.emit.error(
+          `failed to push ${o.repo.branch.base} to ${o.repo.branch.remote} — ${(e as GitError).message}`,
+        );
+        return {
+          merged, conflicts, unbuildable, version, deployed, integrated, decision,
+          stopped: 'base branch push failed',
+        };
+      }
+    }
   }
 
   // Tag AFTER a successful deploy, never before: a tag is the record that

@@ -333,7 +333,18 @@ ticket follows the shorter path in "Question and Investigation tickets"
 below instead — read that section before starting Step 3's numbered list
 if `report_type` is either of those.
 
-1. From the primary checkout, `git worktree add` a sibling worktree for this
+1. Run `crew sync` (name the route if this ship serves more than one) from
+   the primary checkout first. It fetches the remote and fast-forwards the
+   primary checkout's own base branch to it — the same thing it already does
+   for an existing worktree's branch — so the worktree this step cuts isn't
+   missing commits another ship or a reviewer pushed since the last sync. It
+   is quiet, not an alert, about a primary checkout that isn't cleanly on the
+   base branch (something else may be mid-edit there) — that's expected, not
+   a fault, and just means this sync is a no-op. A genuinely DIVERGED base
+   branch is reported in `crew sync`'s own output; that's for the operator to
+   reconcile, not something to resolve yourself — carry on and cut the
+   worktree from whatever HEAD the primary checkout actually has. Then, from
+   the primary checkout, `git worktree add` a sibling worktree for this
    ticket, on a new branch cut from the base branch's current HEAD — the
    location, the branch name and the base are all in the Environment section.
    Cutting from the base branch's HEAD, not from this checkout's working

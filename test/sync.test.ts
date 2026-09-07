@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncState, fastForward, worktrees, fetchRemote, status } from '../src/git.ts';
+import { syncState, fastForward, worktrees, fetchRemote, status, refreshBaseBranch } from '../src/git.ts';
 
 /** A bare remote and two clones — "the reviewer" and "the ship". */
 function world() {
@@ -112,6 +112,70 @@ test('worktrees are enumerated with their branches', () => {
   const list = worktrees(ship.d);
   assert.ok(list.some((w) => w.branch === 'issue-9'));
   assert.ok(list.some((w) => w.branch === 'main'));
+});
+
+/* ── refreshBaseBranch: the PRIMARY checkout's own base branch, not a
+   worktree's — used both by the release phase before deciding what to
+   release, and by `crew sync` before an agent cuts a new ticket's worktree
+   from it (ISSUE-635). ── */
+
+test('refreshBaseBranch fast-forwards the primary checkout when another ship pushed to base', () => {
+  const { ship, reviewer } = world();
+  writeFileSync(join(reviewer.d, 'elsewhere.txt'), '1'); reviewer.g('add', '.');
+  reviewer.g('commit', '-qm', 'another ship shipped this'); reviewer.g('push', '-q', 'origin', 'main');
+
+  const r = refreshBaseBranch(ship.d, 'origin', 'main');
+  assert.equal(r.action, 'fast-forwarded');
+  assert.match(r.detail, /fast-forwarded main to origin\/main/);
+  assert.equal(
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ship.d, encoding: 'utf8' }).trim(),
+    execFileSync('git', ['rev-parse', 'origin/main'], { cwd: ship.d, encoding: 'utf8' }).trim(),
+  );
+});
+
+test('refreshBaseBranch is a dry-run no-op that only reports what it would do', () => {
+  const { ship, reviewer } = world();
+  writeFileSync(join(reviewer.d, 'elsewhere.txt'), '1'); reviewer.g('add', '.');
+  reviewer.g('commit', '-qm', 'another ship shipped this'); reviewer.g('push', '-q', 'origin', 'main');
+  const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ship.d, encoding: 'utf8' }).trim();
+
+  const r = refreshBaseBranch(ship.d, 'origin', 'main', true);
+  assert.equal(r.action, 'would-fast-forward');
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ship.d, encoding: 'utf8' }).trim(), before);
+});
+
+test('refreshBaseBranch never touches a dirty checkout', () => {
+  const { ship, reviewer } = world();
+  writeFileSync(join(reviewer.d, 'elsewhere.txt'), '1'); reviewer.g('add', '.');
+  reviewer.g('commit', '-qm', 'another ship shipped this'); reviewer.g('push', '-q', 'origin', 'main');
+  writeFileSync(join(ship.d, 'uncommitted.txt'), 'wip');   // work in progress
+
+  const r = refreshBaseBranch(ship.d, 'origin', 'main');
+  assert.equal(r.action, 'not-applicable');
+});
+
+test('refreshBaseBranch reports divergence rather than merging on anyone\'s behalf', () => {
+  const { ship, reviewer } = world();
+  writeFileSync(join(reviewer.d, 'theirs.txt'), '1'); reviewer.g('add', '.');
+  reviewer.g('commit', '-qm', 'theirs'); reviewer.g('push', '-q', 'origin', 'main');
+  writeFileSync(join(ship.d, 'ours.txt'), '1'); ship.g('add', '.'); ship.g('commit', '-qm', 'ours');
+
+  const r = refreshBaseBranch(ship.d, 'origin', 'main');
+  assert.equal(r.action, 'diverged');
+  assert.match(r.detail, /diverged from origin\/main/);
+});
+
+test('refreshBaseBranch is a no-op when no remote is configured', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-nosync-'));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'T'], { cwd: dir });
+  writeFileSync(join(dir, 'a.txt'), '1');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir });
+
+  const r = refreshBaseBranch(dir, 'origin', 'main');
+  assert.equal(r.action, 'not-applicable');
 });
 
 test('porcelain parsing keeps the leading status column, and the whole filename', () => {

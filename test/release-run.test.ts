@@ -734,6 +734,66 @@ test('local and integrate modes never push a tag, even with a remote configured'
   })();
 });
 
+test('a real local-mode release pushes the base branch to the remote (ISSUE-635)', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const { dir, repo } = projectWithRemote(LOCAL, bare);
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.version, '1.3.0');
+    // The bare remote's own `main` must carry the merge and version-bump
+    // commits — not just this ship's local checkout, which is what left
+    // `origin/main` stuck behind every release before this.
+    assert.match(
+      execFileSync('git', ['--git-dir', bare, 'log', '--format=%B', 'main', '-1'], { encoding: 'utf8' }),
+      /Release v1\.3\.0/,
+    );
+    assert.ok(lines.some((l) => /pushed main to origin/.test(l)));
+  })();
+});
+
+test('a dry run reports the base branch push it would make, without touching the remote', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const { dir, repo } = projectWithRemote(LOCAL, bare);
+    const before = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
+    await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: true,
+    });
+    assert.ok(lines.some((l) => /would push main to origin/.test(l)));
+    assert.equal(
+      execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(), before,
+    );
+  })();
+});
+
+test('a repo with no remote configured is never asked to push the base branch', async () => {
+  const { dir, repo } = project(LOCAL);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, '1.3.0');
+  assert.ok(!lines.some((l) => /push main/.test(l)));
+});
+
+test('a failed base branch push stops the release, even though the deploy already ran', () => {
+  return (async () => {
+    const { dir, repo } = projectWithRemote(LOCAL, bareRemote());
+    // Point origin somewhere that doesn't exist rather than removing it —
+    // `remoteConfigured` only asks whether a remote URL is set, so removing
+    // it entirely would make the push skip as "no remote" (a different,
+    // already-covered case) instead of actually failing.
+    execFileSync('git', ['remote', 'set-url', 'origin', join(dir, 'no-such-remote')], { cwd: dir, stdio: 'pipe' });
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.stopped, 'base branch push failed');
+    assert.equal(out.deployed, true);   // the local deploy hook already ran and succeeded
+    assert.ok(lines.some((l) => /failed to push main/.test(l)));
+  })();
+});
+
 test('a failed tag push stops the release rather than waiting on a release that was never triggered', () => {
   return (async () => {
     const { dir, repo } = projectWithRemote(`version: 1
