@@ -15,8 +15,9 @@ import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
-import { mapStreamLine, extractResult } from './stream.ts';
+import { mapStreamLine, extractResult, extractTurnTokens } from './stream.ts';
 import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { TicketAttributionTracker } from './ticket-attribution.ts';
 
 /**
  * A digest older than this is treated as absent. Acting on a stale queue is
@@ -419,6 +420,10 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     // worth a row. Flushed against the Agent Log row's id once the run
     // finishes and that row exists — see the `close` handler below.
     const cycles: AgentCycle[] = [];
+    // Which ticket this run actually spent its tokens on, independent of
+    // `plan.ticket` (the pre-run poll hint) — see `ticket-attribution.ts`'s
+    // module doc for why the two can diverge.
+    const attribution = new TicketAttributionTracker();
 
     const handleLine = (line: string) => {
       if (!line) return;
@@ -431,6 +436,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       }
       try {
         result = extractResult(parsed) ?? result;
+        let turnText = '';
         for (const ev of mapStreamLine(parsed)) {
           const e = {
             at: new Date().toISOString(),
@@ -445,6 +451,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
           };
           eventsSink?.write(`${JSON.stringify(e)}\n`);
           if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) {
+            turnText += `${ev.text}\n`;
             const cycleIndex = cycles.length;
             cycles.push({
               cycleIndex,
@@ -478,6 +485,14 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
             })}\n`);
           }
         }
+        // Only an `assistant` line carries `message.usage` (one real API
+        // call), so this is a no-op for every other line type — including
+        // the tool-only assistant lines already folded into `turnText`
+        // above as an empty string, which `TicketAttributionTracker.add`
+        // treats as "no new mention, keep crediting whatever ticket was
+        // last named."
+        const turnTokens = extractTurnTokens(parsed);
+        if (turnTokens !== undefined) attribution.add(turnText, turnTokens);
       } catch {
         /* a shape this run's mapping does not expect must not kill the cycle */
       }
@@ -495,9 +510,14 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       if (buf) handleLine(buf);
       rawSink?.end();
       eventsSink?.end();
+      // The ticket the transcript actually spent the most tokens on, falling
+      // back to the pre-run poll hint when the visible text never named one
+      // (e.g. an administrative run with nothing ticket-specific to say).
+      const attributedTicket = attribution.winner(plan.ticket);
       try {
         writeFileSync(`${plan.streamPath}.meta.json`, JSON.stringify({
           route: plan.route, role: plan.role, ticket: plan.ticket ?? null,
+          attributedTicket: attributedTicket ?? null,
           startedAt, exitCode: code ?? 1, model: plan.model,
           sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
           totalCostUsd: result?.totalCostUsd ?? null,
@@ -515,7 +535,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       if (plan.agentLog) {
         try {
           await reportAgentRun(plan.agentLog, {
-            ticketReference: plan.ticket,
+            ticketReference: attributedTicket,
             outcome: (code ?? 1) === 0 ? 'success' : 'error',
             startedAt,
             finishedAt: new Date().toISOString(),
