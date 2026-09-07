@@ -225,6 +225,24 @@ export interface Route {
   apiKey?: string;
   apiKeyFile?: string;
   apiKeyVar?: string;
+  /**
+   * Per-lane credentials (ISSUE-464): each polled role authenticates as its
+   * OWN Agent-scoped key (`POST /workspaces/:id/agents/:id/api-keys`,
+   * ISSUE-462/463) instead of every lane sharing this route's single
+   * `apiKey`/`apiKeyFile` above, which is derived from whichever human
+   * minted it. `crew connect` mints one key per lane it can resolve an
+   * Agent row for (`connect.ts`'s `mintLaneApiKeys`) and writes each into
+   * its own file under `<stateDir>/keys/...` (`apiKeyPathFor`, role-aware
+   * overload below) — never inline in `crew.yaml`, same reasoning as the
+   * legacy single key never being pasted in either.
+   *
+   * A role absent from this map (including every role, on a route that
+   * predates this ticket) falls through to `apiKey`/`apiKeyFile`/
+   * `apiKeyVar` above in `resolveApiKey` — this is what keeps a route that
+   * has never been re-run through `crew connect` working completely
+   * unchanged.
+   */
+  apiKeys?: Partial<Record<RoleName, { apiKey?: string; apiKeyFile?: string; apiKeyVar?: string }>>;
   hooks: { test?: string; build?: string; deploy?: string; notify?: string };
   labels: { test?: string; build?: string; deploy?: string };
   /**
@@ -369,9 +387,11 @@ const SHIP_KEYS = new Set([
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
-  'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
+  'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar', 'apiKeys',
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet',
 ]);
+/** What one role's entry under a route's `apiKeys:` block may say (ISSUE-464). */
+const ROLE_API_KEY_ENTRY_KEYS = new Set(['apiKey', 'apiKeyFile', 'apiKeyVar']);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch']);
 const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
@@ -513,6 +533,38 @@ export function mergeRouteRelease(route: Route['release'], override?: Route['rel
   };
 }
 
+/**
+ * A route's `apiKeys:` block (ISSUE-464) — one entry per lane, each shaped
+ * exactly like the route-wide `apiKey`/`apiKeyFile`/`apiKeyVar` trio above,
+ * since `resolveApiKey` resolves either the same way. Unknown role names
+ * are rejected the same as any other unknown key, rather than silently
+ * ignored — a typo'd role here would otherwise look configured and do
+ * nothing, the exact failure mode `rejectUnknownKeys`'s own doc comment
+ * warns about.
+ */
+function parseRoleApiKeys(raw: any, where: string, file: string, dir: string): Route['apiKeys'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const unknownRoles = Object.keys(raw).filter((k) => !ROLE_NAMES.includes(k as RoleName));
+  if (unknownRoles.length > 0) {
+    throw new ConfigError(
+      `${file}: ${where}.apiKeys has unknown role(s): ${unknownRoles.join(', ')}\n` +
+        `  allowed: ${ROLE_NAMES.join(', ')}`,
+    );
+  }
+  const out: Route['apiKeys'] = {};
+  for (const role of ROLE_NAMES) {
+    const entry = raw[role];
+    if (entry === undefined) continue;
+    rejectUnknownKeys(entry, ROLE_API_KEY_ENTRY_KEYS, `${where}.apiKeys.${role}`, file);
+    out[role] = {
+      apiKey: entry.apiKey !== undefined ? String(entry.apiKey) : undefined,
+      apiKeyFile: entry.apiKeyFile !== undefined ? expand(String(entry.apiKeyFile), dir) : undefined,
+      apiKeyVar: entry.apiKeyVar !== undefined ? String(entry.apiKeyVar) : undefined,
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function expand(p: string, base: string): string {
   let out = p.startsWith('~') ? p.replace(/^~/, homedir()) : p;
   out = out.replace(/\$\{?HOME\}?/g, homedir());
@@ -645,6 +697,19 @@ export function resolvedPathFor(stateDir: string, route: string): string {
 export function apiKeyPathFor(stateDir: string, route: string): string {
   const [workspace, project] = splitRoute(route);
   return join(stateDir, 'keys', workspace, `${project}.env`);
+}
+
+/**
+ * Where `crew connect` writes the Agent-scoped key it minted for one lane
+ * (ISSUE-464) — a sibling of `apiKeyPathFor` under the same `keys` tree,
+ * one file per role rather than one per route, since each lane now
+ * authenticates as its own Agent instead of sharing the route's key.
+ * `<stateDir>/keys/<workspace>/<project>-<role>.env`, same
+ * `CREW_API_KEY=...` shape `apiKeyFile` parsing expects.
+ */
+export function laneApiKeyPathFor(stateDir: string, route: string, role: RoleName): string {
+  const [workspace, project] = splitRoute(route);
+  return join(stateDir, 'keys', workspace, `${project}-${role}.env`);
 }
 
 /** `"workspace/project"` -> `["workspace", "project"]`, validated. */
@@ -895,6 +960,7 @@ function parseOneRoute(
     apiKey: c?.apiKey ?? raw.ship?.apiKey,
     apiKeyFile: c?.apiKeyFile ? expand(c.apiKeyFile, dir) : undefined,
     apiKeyVar: c?.apiKeyVar,
+    apiKeys: parseRoleApiKeys(c?.apiKeys, where, file, dir),
     hooks: { test: c?.hooks?.test, build: c?.hooks?.build, deploy: c?.hooks?.deploy, notify: c?.hooks?.notify },
     labels: {
       test: c?.labels?.test ?? c?.hooks?.test,
@@ -996,17 +1062,43 @@ export function repoIdForName(r: Route, name: string): string | undefined {
   return undefined;
 }
 
-/** The API key for one route. Never logged. */
-export function resolveApiKey(r: Route): string {
+function readKeyFromFile(file: string, varName: string): string | undefined {
+  if (!existsSync(file)) return undefined;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const m = line.match(new RegExp(`^${varName}=(.*)$`));
+    if (m) return (m[1] ?? '').trim().replace(/^["']|["']$/g, '');
+  }
+  return undefined;
+}
+
+/**
+ * The API key for one route, optionally scoped to the lane about to
+ * authenticate with it (ISSUE-464).
+ *
+ * `role` given and `r.apiKeys[role]` present: resolves from THAT entry
+ * (its own `apiKey`/`apiKeyFile`+`apiKeyVar`) — this lane authenticates as
+ * its own Agent, minted by `crew connect`. Every other case — no `role`
+ * passed, or the role has no entry (a route `crew connect` hasn't been
+ * re-run on since this ticket, or a lane whose Agent row didn't exist yet
+ * to mint a key for) — falls straight through to the route-wide
+ * `apiKey`/`apiKeyFile`/`apiKeyVar`, exactly as before this ticket. Never
+ * logged.
+ */
+export function resolveApiKey(r: Route, role?: RoleName): string {
+  const laneEntry = role ? r.apiKeys?.[role] : undefined;
+  if (laneEntry?.apiKey) return laneEntry.apiKey;
+  if (laneEntry?.apiKeyFile && laneEntry.apiKeyVar) {
+    const key = readKeyFromFile(laneEntry.apiKeyFile, laneEntry.apiKeyVar);
+    if (key !== undefined) return key;
+  }
+
   if (r.apiKey) return r.apiKey;
-  if (r.apiKeyFile && r.apiKeyVar && existsSync(r.apiKeyFile)) {
-    for (const line of readFileSync(r.apiKeyFile, 'utf8').split('\n')) {
-      const m = line.match(new RegExp(`^${r.apiKeyVar}=(.*)$`));
-      if (m) return (m[1] ?? '').trim().replace(/^["']|["']$/g, '');
-    }
+  if (r.apiKeyFile && r.apiKeyVar) {
+    const key = readKeyFromFile(r.apiKeyFile, r.apiKeyVar);
+    if (key !== undefined) return key;
   }
   throw new ConfigError(
-    `route "${r.route}": no API key (apiKey, or ${r.apiKeyVar ?? 'VAR'} in ${r.apiKeyFile ?? '<unset>'})`,
+    `route "${r.route}"${role ? ` (${role})` : ''}: no API key (apiKey, or ${r.apiKeyVar ?? 'VAR'} in ${r.apiKeyFile ?? '<unset>'})`,
   );
 }
 

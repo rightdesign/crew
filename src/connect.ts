@@ -6,21 +6,26 @@
  * remove. Most of this file resolves names to ids and prints a route block
  * ready to paste into crew.yaml — read-only.
  *
- * Two things it does write, both opt-in via `DiscoverOptions.ship` (a plain
+ * Three things it does write, all opt-in via `DiscoverOptions.ship` (a plain
  * discover() call with no `ship` given, like every test in
  * `connect.test.ts`, stays exactly as read-only as before):
  *   - find-or-create the caller's own `Ships` row, matched by exact name
  *     (ISSUE-380's own convention, `Tracker.myShipRow`);
  *   - find, claim, or create a `Crew` row per polled lane (dev/design/qa/
- *     triage), scoped to that Ships row via `ship_id` (ISSUE-610).
+ *     triage), scoped to that Ships row via `ship_id` (ISSUE-610);
+ *   - mint one Agent-scoped API key per lane whose Agent row already
+ *     exists, so each lane authenticates as its own Agent instead of
+ *     sharing the operator's key (ISSUE-464, `mintLaneApiKeys` below).
  *
- * Minting a workspace API key needed the keychain work in ISSUE-283 too —
- * that part shipped as ISSUE-609's device-authorization handshake instead.
+ * Minting a workspace API key for the OPERATOR (not a lane) needed the
+ * keychain work in ISSUE-283 too — that part shipped as ISSUE-609's
+ * device-authorization handshake instead.
  */
 
+import { existsSync } from 'node:fs';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { PERSONA_NAME } from './agents.ts';
-import type { RoleName } from './config.ts';
+import { ROLE_NAMES, laneApiKeyPathFor, type RoleName } from './config.ts';
 
 export interface AuthOptions {
   baseUrl: string;
@@ -43,6 +48,16 @@ export interface DiscoverOptions extends AuthOptions {
    * old workspace-wide-by-name seat search.
    */
   ship?: { name: string; platform?: string };
+  /**
+   * Where this machine's state lives (`ship.stateDir`) — needed only for
+   * lane API-key minting (ISSUE-464): `mintLaneApiKeys` checks
+   * `laneApiKeyPathFor(stateDir, route, role)` before minting, so a
+   * `crew connect` re-run doesn't mint (and immediately orphan) a fresh key
+   * for a lane that already has one on this machine. Omitted, like `ship`
+   * omitted, skips key minting entirely — read-only discovery never needs a
+   * filesystem.
+   */
+  stateDir?: string;
   /**
    * Same meaning as everywhere else in the CLI: report what discovery would
    * do without writing anything. Provisioning (the `ship` option above) is
@@ -155,6 +170,19 @@ export interface Discovered {
    * provisioning a machine is never a silent write.
    */
   provisioning: string[];
+  /**
+   * One freshly-minted Agent-scoped API key per lane `mintLaneApiKeys`
+   * actually minted this pass (ISSUE-464) — never for a lane that already
+   * had a key file on this machine (see `DiscoverOptions.stateDir`), and
+   * never for a lane whose Agent row doesn't exist yet (that's `crew agents
+   * sync`'s job, per ISSUE-416 — this reuses its rows rather than
+   * re-provisioning them). The raw `key` is returned by the mint endpoint
+   * exactly once and is never recoverable again, so the caller (`cli.ts`'s
+   * `connect` case) must write it to `laneApiKeyPathFor` immediately; it is
+   * never persisted to `resolved` (`resolvedPathFor`) or `crew.yaml`, same
+   * reasoning as `DeviceAuthResult.apiKey` in `device-auth.ts`.
+   */
+  mintedApiKeys: Partial<Record<RoleName, { id: string; key: string; keyPrefix: string }>>;
 }
 
 /**
@@ -287,9 +315,10 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // `GET /workspaces/:idOrSlug` resolves either form to the real uuid — the
   // rest of this function, and everything downstream, works in ids only.
   const ws = await get<{ id: string; slug: string; name?: string }>(o, `/workspaces/${o.workspace}`);
+  const mintedApiKeys: Discovered['mintedApiKeys'] = {};
   const out: Discovered = {
     workspaceId: ws.id, workspaceSlug: ws.slug, workspaceName: ws.name,
-    models: {}, seats: {}, holds: [], problems, provisioning,
+    models: {}, seats: {}, holds: [], problems, provisioning, mintedApiKeys,
   };
 
   // Own role, not anyone else's — `/auth/me` derives it the same way for an
@@ -530,8 +559,86 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       const matches = holdRows.filter((r) => eq(r.email, out.meEmail!));
       if (matches.length === 1) out.operator = matches[0]!.id;
     }
+
+    // Lane API-key minting (ISSUE-464) — gated on `shipRowId` the same as
+    // everything else in this block: it needs `agentIdFor`, which is only
+    // populated once a real (non-dry-run) `ship` provisioning pass has run.
+    if (shipRowId && o.stateDir) {
+      const route = `${out.workspaceSlug}/${out.projectSlug ?? out.projectId}`;
+      await mintLaneApiKeys(o, out.workspaceId, route, out.seats, agentIdFor, mintedApiKeys, provisioning, problems);
+    }
   }
   return out;
+}
+
+/** The four polled lanes `mintLaneApiKeys` mints keys for — never `pair` (see `agents.ts`'s own doc on why `pair` rides `ROLE_NAMES` but is never polled). */
+const POLLED_ROLES: RoleName[] = ['dev', 'design', 'qa', 'triage'];
+
+/**
+ * Mints one Agent-scoped API key per lane that doesn't already have one on
+ * this machine (ISSUE-464) — `POST /workspaces/:id/agents/:id/api-keys`
+ * (ISSUE-462/463), scoped to a synthetic no-login membership for that
+ * Agent row rather than the calling human/operator's own identity, so a
+ * lane authenticates as itself instead of sharing whoever ran `crew
+ * connect`'s credentials.
+ *
+ * Skips (never errors on) a lane with:
+ *   - no seat (`seats[role]` unset — same "not this workspace's shape"
+ *     reasoning the rest of provisioning already uses);
+ *   - no resolved Agent row (`agentIdFor(role)` undefined) — that row is
+ *     `crew agents sync`'s (ISSUE-416) to create, not this function's;
+ *     reported as a `problems` entry pointing at that command instead of
+ *     re-provisioning the same four rows a second, separate way;
+ *   - a key file already on this machine (`laneApiKeyPathFor` exists) —
+ *     idempotent the same way Ships/Crew row provisioning is, and load-
+ *     bearing here specifically: the mint endpoint returns its raw key
+ *     exactly once, so re-minting on every `crew connect` would silently
+ *     orphan the previous key with no way to ever read it back.
+ *
+ * A 401/403 (this connecting key is not a workspace admin — the endpoint is
+ * `@Roles('WORKSPACE_ADMIN')`) degrades the same way every other best-effort
+ * step here does: reported as a `problems` entry, never thrown — `crew
+ * connect` still finishes discovery and provisions Ships/Crew rows either
+ * way. Stops after the first such failure rather than retrying it three
+ * more times: the same key's admin status cannot change lane to lane
+ * within one call.
+ */
+async function mintLaneApiKeys(
+  o: DiscoverOptions,
+  workspaceId: string,
+  route: string,
+  seats: Record<string, string>,
+  agentIdFor: (role: RoleName) => string | undefined,
+  mintedApiKeys: Discovered['mintedApiKeys'],
+  provisioning: string[],
+  problems: string[],
+): Promise<void> {
+  for (const role of POLLED_ROLES) {
+    if (!seats[role]) continue;
+    const agentId = agentIdFor(role);
+    if (!agentId) {
+      problems.push(
+        `no Agent row for the ${role} persona yet — run \`crew agents sync\` once, then \`crew connect\` again to mint its key`,
+      );
+      continue;
+    }
+    const keyPath = laneApiKeyPathFor(o.stateDir!, route, role);
+    if (existsSync(keyPath)) continue;
+    try {
+      const minted = await post<{ id: string; key: string; keyPrefix: string }>(
+        o, `/workspaces/${workspaceId}/agents/${agentId}/api-keys`,
+        { name: `${o.ship?.name ?? 'crew'} — ${PERSONA_NAME[role]} lane` },
+      );
+      mintedApiKeys[role] = minted;
+      provisioning.push(`minted an Agent-scoped API key for the ${role} lane`);
+    } catch (e) {
+      if (e instanceof ConnectHttpError && (e.status === 401 || e.status === 403)) {
+        problems.push(`could not mint an API key for the ${role} lane — this key is not a workspace admin (HTTP ${e.status})`);
+        return;   // the same permission gate applies to every remaining lane
+      }
+      throw e;
+    }
+  }
 }
 
 /**
@@ -545,7 +652,22 @@ export function renderConnection(
   d: Discovered,
   route: string,
   dir: string,
-  opts: { area?: string; apiKeyFile?: string; apiKeyVar?: string } = {},
+  opts: {
+    area?: string;
+    apiKeyFile?: string;
+    apiKeyVar?: string;
+    /**
+     * One entry per lane whose Agent-scoped key `mintLaneApiKeys` minted
+     * (or already found on this machine) this pass — printed as the
+     * route's `apiKeys:` block (ISSUE-464) so a fresh `crew connect` run
+     * hands back a route ready to authenticate each lane as its own Agent,
+     * not just the legacy route-wide key above. Absent (or missing a
+     * role) leaves that lane on the route-wide fallback, same as any route
+     * that predates this ticket.
+     */
+    laneApiKeyFiles?: Partial<Record<RoleName, string>>;
+    laneApiKeyVar?: string;
+  } = {},
 ): string {
   // A device-authorization run (ISSUE-609) already has a real file/var —
   // print it verbatim instead of the usual paste-your-own-key placeholder,
@@ -557,6 +679,15 @@ export function renderConnection(
   const apiKeyVarLine = opts.apiKeyVar
     ? `    apiKeyVar: ${opts.apiKeyVar}`
     : `    apiKeyVar: REPLACE_KEY_VAR`;
+  const laneRoles = (Object.keys(opts.laneApiKeyFiles ?? {}) as RoleName[]).filter((r) => opts.laneApiKeyFiles?.[r]);
+  const apiKeysBlock = laneRoles.length > 0
+    ? `    apiKeys:          # ISSUE-464 — each lane authenticates as its own Agent\n` +
+      laneRoles.map((role) => (
+        `      ${role}:\n` +
+        `        apiKeyFile: "${opts.laneApiKeyFiles![role]}"\n` +
+        `        apiKeyVar: ${opts.laneApiKeyVar ?? 'CREW_API_KEY'}\n`
+      )).join('')
+    : '';
   return `  - route: ${route}
     enabled: false          # arm it deliberately, once doctor is green
 ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
@@ -569,5 +700,5 @@ ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
     baseUrl: "REPLACE — the same baseUrl as your other routes"
 ${apiKeyFileLine}
 ${apiKeyVarLine}
-`;
+${apiKeysBlock}`;
 }
