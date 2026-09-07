@@ -31,16 +31,31 @@
  * that need distinct roots run in separate files/processes for exactly this
  * reason.
  *
- * No authentication happens in this module. Per the relay's own design
- * (docs/RELAY.md in the synthesis repo, ISSUE-550), the relay's
+ * Real authentication (ISSUE-552) happens in `createPassengerHttpServer`,
+ * before a request ever reaches the tool surface below. Per the relay's own
+ * design (docs/RELAY.md in the synthesis repo, ISSUE-550), the relay's
  * `Authorization` gate is presence-only and explicitly defers real
- * credential validation to "the ship's own MCP server" — this file. That
- * validation is NOT built here: ISSUE-551 scopes only the read-only tool
- * surface, and no credential shape for it has been decided yet. Until it
- * is, this server MUST NOT be reachable by anything that hasn't already
- * been authenticated upstream (today, nothing enforces that either) —
- * treat this the same as the relay's own documented gap and do not wire a
- * real deployment (or `mcp_url` publishing) ahead of that decision.
+ * credential validation to "the ship's own MCP server" — this is that
+ * validation. It resolves the caller's Bearer token the same way ordinary
+ * Passenger MCP access already does (CREW_PRD.md §7.6): a loopback
+ * `GET /auth/me?workspaceId=<this container's own workspace>` call to
+ * Tablation's own API. `ApiKeysService.validateKey` (run server-side by that
+ * route) rejects an invalid/revoked key outright, and `AuthService.getMe`
+ * separately 403s a valid key that isn't a member of the named workspace —
+ * together this is exactly "does the resolved member belong to *this
+ * container's* workspace" (decision 2 in the Map, b9f59bd9-8ed5-4479-b85d-
+ * f0a64d00726c), with no per-repo filtering needed since decision 6 already
+ * gives each workspace its own container.
+ *
+ * That workspace id is never taken from the caller or the request — it's
+ * this container's own trusted config (`PASSENGER_MCP_WORKSPACE_ID`, set at
+ * container launch, the same way `PASSENGER_MCP_ROOT` already is). This is
+ * a different question from the relay's own still-open ship→workspace
+ * *entitlement* gap (ISSUE-625: can a ship legitimately claim tunnel
+ * bind-address `-R workspace-<id>:...`?) — that's about an untrusted,
+ * self-asserted claim from a connecting ship, whereas this container's own
+ * workspace id is supplied by whatever trusted process launches it, not by
+ * anything a caller sends. ISSUE-625 landing doesn't change this file.
  */
 
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -62,6 +77,59 @@ import { git, gitOk, GitError } from './git.ts';
 export interface PassengerMcpServerOptions {
   /** Absolute directory paths this server may read from. Never empty. */
   allowedDirectories: string[];
+}
+
+export interface PassengerAuthConfig {
+  /** Base URL of the Tablation API, e.g. `https://app.tablation.com/api`. */
+  tablationApiBaseUrl: string;
+  /**
+   * The workspace this container serves — this container's own trusted
+   * config (e.g. `PASSENGER_MCP_WORKSPACE_ID`), never anything read off the
+   * incoming request. A caller's Bearer token must resolve to a member of
+   * exactly this workspace.
+   */
+  workspaceId: string;
+}
+
+type CredentialCheck =
+  | { ok: true }
+  | { ok: false; status: number; message: string };
+
+/**
+ * Resolves the caller's `Authorization` header against Tablation's own
+ * `GET /auth/me` — the same loopback-to-Tablation shape the relay's
+ * `TablationShipRegistry` already uses for its own Ships-row lookup
+ * (apps/relay/src/shipRegistry.ts), just against a different route. Passes
+ * the header straight through rather than re-deriving a bearer token, so a
+ * malformed header reads the same way `/auth/me` itself would report it.
+ * Never throws — a network failure against Tablation is a 502 verdict, not
+ * an uncaught rejection, so the HTTP handler always has a status to answer
+ * the caller with.
+ */
+async function validateCredential(
+  authHeader: string | undefined,
+  auth: PassengerAuthConfig,
+): Promise<CredentialCheck> {
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { ok: false, status: 401, message: 'Missing or malformed Authorization header' };
+  }
+  const url = `${auth.tablationApiBaseUrl.replace(/\/+$/, '')}/auth/me?workspaceId=${encodeURIComponent(auth.workspaceId)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: authHeader,
+        // Cloudflare 403s a default fetch/curl UA in front of this host — see crew/src/connect.ts.
+        'User-Agent': 'Mozilla/5.0 CrewPassengerMcp/0.1.0',
+      },
+    });
+  } catch (error) {
+    return { ok: false, status: 502, message: `Credential check failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (res.status === 401) return { ok: false, status: 401, message: 'Invalid or revoked API key' };
+  if (res.status === 403) return { ok: false, status: 403, message: 'Not a member of this workspace' };
+  if (!res.ok) return { ok: false, status: 502, message: `Credential check failed: ${res.status} ${res.statusText}` };
+  return { ok: true };
 }
 
 /**
@@ -264,32 +332,57 @@ export async function createPassengerMcpServer(options: PassengerMcpServerOption
  * dependency: `StreamableHTTPServerTransport#handleRequest` works directly
  * against Node's own `IncomingMessage`/`ServerResponse`, which is all a
  * single-route listener needs.
+ *
+ * `auth` is checked before any of the request body is even read — the
+ * caller's `Authorization` header is enough to accept or reject, so an
+ * unauthenticated caller never causes a tool surface to be built at all
+ * (see `validateCredential`'s doc comment for what it checks).
  */
-export function createPassengerHttpServer(options: PassengerMcpServerOptions): Server {
+export function createPassengerHttpServer(options: PassengerMcpServerOptions, auth: PassengerAuthConfig): Server {
   return createHttpServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.url !== '/mcp' || req.method !== 'POST') {
       res.writeHead(404).end();
       return;
     }
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const parsed = body ? JSON.parse(body) : undefined;
-        const server = await createPassengerMcpServer(options);
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-        await server.connect(transport);
-        await transport.handleRequest(req, res, parsed);
-        res.on('close', () => { transport.close(); server.close(); });
-      } catch (error) {
+    validateCredential(req.headers.authorization, auth)
+      .then((credential) => {
+        if (!credential.ok) {
+          res.writeHead(credential.status, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: credential.message },
+            id: null,
+          }));
+          return;
+        }
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const parsed = body ? JSON.parse(body) : undefined;
+            const server = await createPassengerMcpServer(options);
+            const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+            await server.connect(transport);
+            await transport.handleRequest(req, res, parsed);
+            res.on('close', () => { transport.close(); server.close(); });
+          } catch (error) {
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+                jsonrpc: '2.0',
+                error: { code: -32603, message: error instanceof Error ? error.message : 'Internal server error' },
+                id: null,
+              }));
+            }
+          }
+        });
+      })
+      .catch((error) => {
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+          res.writeHead(502, { 'Content-Type': 'application/json' }).end(JSON.stringify({
             jsonrpc: '2.0',
             error: { code: -32603, message: error instanceof Error ? error.message : 'Internal server error' },
             id: null,
           }));
         }
-      }
-    });
+      });
   });
 }
