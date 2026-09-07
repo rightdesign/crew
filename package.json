@@ -15,8 +15,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server-filesystem": "^2026.8.31",
     "@tablation/client": "link:../tablation-js/packages/client",
-    "yaml": "^2.6.1"
+    "yaml": "^2.6.1",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
