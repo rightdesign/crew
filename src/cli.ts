@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, laneApiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
+  DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
 } from './config.ts';
@@ -923,7 +923,7 @@ switch (command) {
           role: w.role, route: w.route, ship: cfg.ship,
           stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
           environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
-          apiKey: resolveApiKey(w.route, w.role),
+          apiKey: resolveApiKey(w.route),
           cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
           divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -1006,7 +1006,7 @@ switch (command) {
         role: w.role, route: w.route, ship: cfg.ship,
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
         environment: await environmentFor(w.route, fleetTicketHint),
-        apiKey: resolveApiKey(w.route, w.role),
+        apiKey: resolveApiKey(w.route),
         cycle: emit.cycle, ticket: fleetTicketHint,
         divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -1204,7 +1204,7 @@ switch (command) {
         role: current, route, ship: cfg.ship,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, route, current),
         environment: await environmentFor(route, ticketHint),
-        apiKey: resolveApiKey(route, current),
+        apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint,
         divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
         agentModel: await fetchSeatAgentModel(route, current, { userAgent: cfg.ship.userAgent }),
@@ -1599,16 +1599,11 @@ switch (command) {
     const ship = { name: cfg.ship.name, platform: cfg.ship.platform };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
-      let found = await discover({
-        ...authOpts, workspace: ws, project: proj, area: value('area'), ship, stateDir: cfg.ship.stateDir, dryRun,
-      });
+      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun });
       if (!found.projectId && found.offerTemplateInstall && process.stdin.isTTY && process.stdout.isTTY) {
         const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId);
         if (installedSlug) {
-          found = await discover({
-            ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship,
-            stateDir: cfg.ship.stateDir, dryRun,
-          });
+          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun });
         }
       }
       if (!found.projectId) {
@@ -1717,38 +1712,10 @@ switch (command) {
           process.stderr.write(`API key written to ${apiKeyFile}\n`);
         }
       }
-      // Lane API keys (ISSUE-464) — one file per lane, each holding the
-      // Agent-scoped key `mintLaneApiKeys` (connect.ts) minted this pass, or
-      // one a PRIOR `crew connect` run on this machine already minted (that
-      // lane's `mintedApiKeys` entry is absent — `mintLaneApiKeys` skips
-      // re-minting once a file exists — but the file itself is still there
-      // to point the rendered route block at). Written with the same
-      // `VAR=value` shape and 0600 mode as the device-authorization key
-      // above, for the same reason: this file holds a live credential.
-      const laneApiKeyVar = 'CREW_API_KEY';
-      const laneApiKeyFiles: Partial<Record<RoleName, string>> = {};
-      for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
-        if (!found.seats[role]) continue;
-        const keyPath = laneApiKeyPathFor(cfg.ship.stateDir, route, role);
-        const minted = found.mintedApiKeys[role];
-        if (minted) {
-          if (dryRun) {
-            process.stderr.write(`(dry run) would write a minted API key for the ${role} lane to ${keyPath}\n`);
-          } else {
-            mkdirSync(dirname(keyPath), { recursive: true });
-            writeFileSync(keyPath, `${laneApiKeyVar}=${minted.key}\n`, { mode: 0o600 });
-            process.stderr.write(`API key for the ${role} lane written to ${keyPath}\n`);
-          }
-        }
-        if (!dryRun && existsSync(keyPath)) laneApiKeyFiles[role] = keyPath;
-      }
       process.stdout.write(renderConnection(
         found, route,
         value('dir') ?? 'REPLACE — the local checkout this route works',
-        {
-          area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined,
-          laneApiKeyFiles, laneApiKeyVar: Object.keys(laneApiKeyFiles).length > 0 ? laneApiKeyVar : undefined,
-        },
+        { area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined },
       ));
       if (found.provisioning.length) {
         process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);

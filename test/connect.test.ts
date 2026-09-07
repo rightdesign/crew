@@ -1,13 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import {
   discover, listWorkspaces, renderConnection, type Discovered,
   listLibraryTemplates, previewTemplateInstall, installTemplate,
 } from '../src/connect.ts';
-import { laneApiKeyPathFor } from '../src/config.ts';
 
 /** Wires a fetch mock keyed by exact pathname+query, ignoring host/baseUrl. */
 function mockFetch(routes: Record<string, unknown>) {
@@ -459,98 +455,6 @@ test('discover() skips all provisioning on a dry run — writes nothing, falls b
   assert.ok(!calls.some((c) => c.method === 'POST' || c.method === 'PATCH'), 'dry run writes nothing');
 });
 
-test('discover() mints an Agent-scoped API key for a lane with a resolved Agent row, and writes it to laneApiKeyPathFor (ISSUE-464)', async (t) => {
-  const stateDir = mkdtempSync(join(tmpdir(), 'crew-connect-'));
-  const { restore, calls } = mockFetchCalls({
-    '/api/workspaces/issues': { id: 'ws-1', slug: 'issues' },
-    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
-    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar', slug: 'bar' },
-    '/api/data-models?projectId=proj-1': [
-      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
-      { id: 'ships-model', name: 'Ships' },
-    ],
-    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }],
-    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
-    '/api/data-models/agents-model/records?limit=200': [{ id: 'agent-dev', name: 'Developer' }],
-    '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-    ],
-    '/api/data-models/crew-model/records': { id: 'seat-new' },
-    '/api/workspaces/ws-1/agents/agent-dev/api-keys': { id: 'key-1', key: 'sk_live_abc', keyPrefix: 'sk_liv' },
-  });
-  t.after(() => { restore(); rmSync(stateDir, { recursive: true, force: true }); });
-
-  const found = await discover({
-    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" }, stateDir,
-  });
-  assert.deepEqual(found.mintedApiKeys.dev, { id: 'key-1', key: 'sk_live_abc', keyPrefix: 'sk_liv' });
-  assert.ok(found.provisioning.some((p) => p === 'minted an Agent-scoped API key for the dev lane'));
-  const mint = calls.find((c) => c.method === 'POST' && c.key === '/api/workspaces/ws-1/agents/agent-dev/api-keys');
-  assert.deepEqual(mint?.body, { name: "Brad's MacBook — Developer lane" });
-  // discover() itself never writes the key to disk — it returns the raw,
-  // one-time-only key in `mintedApiKeys` for the caller (`cli.ts`'s
-  // `connect` case) to write to `laneApiKeyPathFor` immediately, same as
-  // `DeviceAuthResult.apiKey` is handled elsewhere.
-  assert.ok(!existsSync(laneApiKeyPathFor(stateDir, 'issues/bar', 'dev')));
-});
-
-test('discover() reports a problem, and mints nothing, for a lane with no Agent row yet (ISSUE-464)', async (t) => {
-  const stateDir = mkdtempSync(join(tmpdir(), 'crew-connect-'));
-  const { restore, calls } = mockFetchCalls({
-    '/api/workspaces/issues': { id: 'ws-1', slug: 'issues' },
-    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
-    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar', slug: 'bar' },
-    '/api/data-models?projectId=proj-1': [
-      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
-      { id: 'ships-model', name: 'Ships' },
-    ],
-    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }],
-    '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-    ],
-    '/api/data-models/crew-model/records': { id: 'seat-new' },
-  });
-  t.after(() => { restore(); rmSync(stateDir, { recursive: true, force: true }); });
-
-  const found = await discover({
-    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" }, stateDir,
-  });
-  assert.deepEqual(found.mintedApiKeys, {});
-  assert.ok(found.problems.some((p) => p.includes('no Agent row for the dev persona yet')));
-  assert.ok(!calls.some((c) => c.method === 'POST' && c.key.includes('/api-keys')), 'nothing minted without an Agent row');
-});
-
-test('discover() does not re-mint a lane key that already has a file on this machine (ISSUE-464)', async (t) => {
-  const stateDir = mkdtempSync(join(tmpdir(), 'crew-connect-'));
-  const keyFile = laneApiKeyPathFor(stateDir, 'issues/bar', 'dev');
-  mkdirSync(dirname(keyFile), { recursive: true });
-  writeFileSync(keyFile, 'CREW_API_KEY=already-here\n');
-  const { restore, calls } = mockFetchCalls({
-    '/api/workspaces/issues': { id: 'ws-1', slug: 'issues' },
-    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
-    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar', slug: 'bar' },
-    '/api/data-models?projectId=proj-1': [
-      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
-      { id: 'ships-model', name: 'Ships' },
-    ],
-    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }],
-    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
-    '/api/data-models/agents-model/records?limit=200': [{ id: 'agent-dev', name: 'Developer' }],
-    '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-    ],
-    '/api/data-models/crew-model/records': { id: 'seat-new' },
-  });
-  t.after(() => { restore(); rmSync(stateDir, { recursive: true, force: true }); });
-
-  const found = await discover({
-    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" }, stateDir,
-  });
-  assert.deepEqual(found.mintedApiKeys, {});
-  assert.ok(!calls.some((c) => c.method === 'POST' && c.key.includes('/api-keys')), 'no mint call when a key file already exists');
-  assert.equal(readFileSync(keyFile, 'utf8'), 'CREW_API_KEY=already-here\n', 'existing file left untouched');
-});
-
 test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces list', async (t) => {
   const { restore, seen } = mockFetch({
     '/api/auth/my-workspaces': {
@@ -622,7 +526,6 @@ test('renderConnection() no longer prints a resolved: block — those ids go to 
     workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
     projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
     models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
-    mintedApiKeys: {},
   };
   const block = renderConnection(d, 'issues/issues', '/tmp/synthesis');
   assert.ok(!block.includes('resolved:'));

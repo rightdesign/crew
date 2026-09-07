@@ -5,8 +5,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
-  resolvedPathFor, apiKeyPathFor, laneApiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo, resolveApiKey,
-  type Route,
+  resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -785,62 +784,4 @@ test('apiKeyPathFor mirrors resolvedPathFor\'s <workspace>/<project> shape, unde
     apiKeyPathFor(stateDir, 'issues/dev-crew'),
     join(stateDir, 'keys', 'issues', 'dev-crew.env'),
   );
-});
-
-test('laneApiKeyPathFor is a per-role sibling of apiKeyPathFor, under the same "keys" tree (ISSUE-464)', () => {
-  const stateDir = '/tmp/some-state';
-  assert.equal(
-    laneApiKeyPathFor(stateDir, 'issues/dev-crew', 'dev'),
-    join(stateDir, 'keys', 'issues', 'dev-crew-dev.env'),
-  );
-  assert.equal(
-    laneApiKeyPathFor(stateDir, 'issues/dev-crew', 'qa'),
-    join(stateDir, 'keys', 'issues', 'dev-crew-qa.env'),
-  );
-});
-
-test('a route with only the legacy single apiKey resolves it for every role — backward compatible (ISSUE-464)', () => {
-  const { dir, file } = withConfig(ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    apiKey: shared-key'));
-  const cfg = loadConfig(dir, file);
-  assert.equal(resolveApiKey(cfg.routes[0]!, 'dev'), 'shared-key');
-  assert.equal(resolveApiKey(cfg.routes[0]!, 'qa'), 'shared-key');
-  assert.equal(resolveApiKey(cfg.routes[0]!), 'shared-key');
-});
-
-test('a role with its own apiKeys entry wins over the route-wide apiKey (ISSUE-464)', () => {
-  const withLaneKeys = ONE.replace(
-    'worktreePrefix: proj-issue-',
-    'worktreePrefix: proj-issue-\n    apiKey: shared-key\n    apiKeys:\n      dev: { apiKey: dev-key }\n      qa: { apiKey: qa-key }',
-  );
-  const { dir, file } = withConfig(withLaneKeys);
-  const cfg = loadConfig(dir, file);
-  assert.equal(resolveApiKey(cfg.routes[0]!, 'dev'), 'dev-key');
-  assert.equal(resolveApiKey(cfg.routes[0]!, 'qa'), 'qa-key');
-  // design/triage have no entry — fall through to the route-wide key.
-  assert.equal(resolveApiKey(cfg.routes[0]!, 'design'), 'shared-key');
-  // No role at all (an existing, non-lane-aware caller) also falls through.
-  assert.equal(resolveApiKey(cfg.routes[0]!), 'shared-key');
-});
-
-test('a role\'s apiKeys entry can point at its own apiKeyFile/apiKeyVar, same shape as the route-wide fallback', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'crew-cfg-'));
-  const keyFile = join(dir, 'dev.env');
-  writeFileSync(keyFile, 'CREW_API_KEY=file-dev-key\n');
-  const route: Route = {
-    route: 'issues/dev-crew', enabled: false, dir: '/tmp', repos: {}, reposBasePath: '/tmp',
-    repoOverrides: {}, promptsDir: '/tmp', baseUrl: 'https://example.test',
-    apiKeys: { dev: { apiKeyFile: keyFile, apiKeyVar: 'CREW_API_KEY' } },
-    hooks: {}, labels: {}, release: {},
-  };
-  assert.equal(resolveApiKey(route, 'dev'), 'file-dev-key');
-  assert.throws(() => resolveApiKey(route, 'qa'), ConfigError);
-});
-
-test('an unknown role under a route\'s apiKeys block is rejected, same as any other unknown key', () => {
-  const bad = ONE.replace(
-    'worktreePrefix: proj-issue-',
-    'worktreePrefix: proj-issue-\n    apiKeys:\n      devops: { apiKey: x }',
-  );
-  const { dir, file } = withConfig(bad);
-  assert.throws(() => loadConfig(dir, file), /apiKeys has unknown role\(s\): devops/);
 });
