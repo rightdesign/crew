@@ -43,18 +43,20 @@ interface ContentBlock {
   input?: Record<string, unknown>;
 }
 
+interface UsageBlock {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
 interface StreamLine {
   type?: string;
-  message?: { role?: string; content?: ContentBlock[] | string };
+  message?: { role?: string; content?: ContentBlock[] | string; usage?: UsageBlock };
   session_id?: string;
   num_turns?: number;
   total_cost_usd?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  };
+  usage?: UsageBlock;
 }
 
 /**
@@ -94,6 +96,23 @@ export function mapStreamLine(line: unknown): StreamKindEvent[] {
     }
   }
   return out;
+}
+
+/**
+ * A single assistant turn's own token cost — unlike the run-wide totals on
+ * the final `result` line, `message.usage` is present on every `assistant`
+ * stream line (one real API call each), which is what lets a caller weigh
+ * *which part* of a multi-ticket run actually spent the tokens (ISSUE-621
+ * mis-attribution). Undefined for anything but an assistant line, or one
+ * that carries no `usage` block at all.
+ */
+export function extractTurnTokens(line: unknown): number | undefined {
+  const obj = line as StreamLine;
+  if (!obj || obj.type !== 'assistant') return undefined;
+  const usage = obj.message?.usage;
+  if (!usage) return undefined;
+  return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
+    + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
 }
 
 /** The final `{"type":"result"}` line, or undefined for anything else. */

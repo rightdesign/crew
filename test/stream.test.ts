@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapStreamLine, extractResult, toolTarget } from '../src/stream.ts';
+import { mapStreamLine, extractResult, toolTarget, extractTurnTokens } from '../src/stream.ts';
 
 test('a thinking block maps to a thought event, carrying the thinking text verbatim', () => {
   const line = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'hmm' }] } };
@@ -87,6 +87,22 @@ test('the final result line surfaces the token usage breakdown when present (ISS
 test('a non-result line has no result to extract', () => {
   assert.equal(extractResult({ type: 'assistant' }), undefined);
   assert.equal(extractResult(null), undefined);
+});
+
+test('extractTurnTokens sums an assistant line\'s own usage block', () => {
+  const line = {
+    type: 'assistant',
+    message: {
+      role: 'assistant', content: [{ type: 'thinking', thinking: 'hmm' }],
+      usage: { input_tokens: 2, output_tokens: 2, cache_read_input_tokens: 20240, cache_creation_input_tokens: 49836 },
+    },
+  };
+  assert.equal(extractTurnTokens(line), 2 + 2 + 20240 + 49836);
+});
+
+test('extractTurnTokens is undefined for a non-assistant line, or an assistant line with no usage block', () => {
+  assert.equal(extractTurnTokens({ type: 'result', usage: { input_tokens: 5 } }), undefined);
+  assert.equal(extractTurnTokens({ type: 'assistant', message: { role: 'assistant', content: [] } }), undefined);
 });
 
 test('toolTarget falls back to nothing when no recognizable input field is present', () => {

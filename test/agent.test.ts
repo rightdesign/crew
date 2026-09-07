@@ -12,6 +12,7 @@ import { Emitter } from '../src/events.ts';
 import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
+const FAKE_CLAUDE_MULTITICKET = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-multiticket.mjs');
 
 function rig() {
   const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
@@ -390,6 +391,71 @@ test('spawnAgent reports the run as one Agent Log row, its thinking block and it
   assert.deepEqual(textCycleCall.body, {
     cycleIndex: 1, occurredAt: (textCycleCall.body as any).occurredAt, thinking: 'All done.', role: 'assistant',
   });
+});
+
+test('spawnAgent cites the ticket the transcript actually spent the most tokens on, not the pre-run poll hint (ISSUE-621-under-ISSUE-430)', async (t) => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1' },
+  } as any;
+  // Planned against ISSUE-430 (the poll's top candidate), but the fixture's
+  // transcript picks up ISSUE-621 instead and spends nearly all its tokens
+  // there — exactly the mismatch reported.
+  const plan = planAgentRun({
+    role: 'qa', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-430',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_MULTITICKET];
+  plan.cwd = state;
+
+  const { restore, calls } = mockFetch({
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { id: 'cycle-1' },
+  });
+  t.after(restore);
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'qa');
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 0);
+
+  const logCall = calls[0]!;
+  assert.equal((logCall.body as any).ticketReference, 'ISSUE-621');
+
+  // The sidecar records both, so a post-mortem can see the poll hint AND
+  // what actually won, not just the final answer.
+  const meta = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
+  assert.equal(meta.ticket, 'ISSUE-430');
+  assert.equal(meta.attributedTicket, 'ISSUE-621');
+});
+
+test('spawnAgent falls back to the poll hint when the transcript never names a ticket', async (t) => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1' },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-401',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];   // no ticket mentions, no usage blocks in this fixture
+  plan.cwd = state;
+
+  const { restore, calls } = mockFetch({
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { id: 'cycle-1' },
+  });
+  t.after(restore);
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  await spawnAgent(plan, emit);
+
+  assert.equal((calls[0]!.body as any).ticketReference, 'ISSUE-401');
 });
 
 test('spawnAgent warns but still resolves when reporting the agent log fails', async (t) => {
