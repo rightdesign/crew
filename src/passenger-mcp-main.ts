@@ -27,9 +27,16 @@ const root = requireEnv('PASSENGER_MCP_ROOT');
 const workspaceId = requireEnv('PASSENGER_MCP_WORKSPACE_ID');
 const tablationApiBaseUrl = requireEnv('TABLATION_API_BASE_URL');
 const port = Number.parseInt(process.env.PASSENGER_MCP_PORT ?? '8765', 10);
+// ISSUE-554 decision 8's `initialize`-triggered sync (passenger-mcp.ts's
+// `syncOnInitialize`) — optional: `startContainer` (passenger-containers.ts)
+// only sets these when `syncPassengerSyncDaemons` stood up a listener for
+// this workspace. Their absence never blocks the filesystem tool surface.
+const syncUrl = process.env.PASSENGER_SYNC_URL;
+const syncSecret = process.env.PASSENGER_SYNC_SECRET;
+const syncOnInitialize = syncUrl && syncSecret ? { url: syncUrl, secret: syncSecret } : undefined;
 
 const server = createPassengerHttpServer(
-  { allowedDirectories: [root] },
+  { allowedDirectories: [root], syncOnInitialize },
   { tablationApiBaseUrl, workspaceId },
 );
 server.listen(port, () => {

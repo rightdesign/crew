@@ -13,8 +13,11 @@
 #   docker run -d \
 #     --name crew-passenger-<workspaceId> \
 #     -p <hostPort>:8765 \
+#     --add-host host.docker.internal:host-gateway \
 #     -e PASSENGER_MCP_WORKSPACE_ID=<workspaceId> \
 #     -e TABLATION_API_BASE_URL=https://app.tablation.com/api \
+#     -e PASSENGER_SYNC_URL=http://host.docker.internal:<syncPort>/sync \
+#     -e PASSENGER_SYNC_SECRET=<perContainerSecret> \
 #     -v /host/path/to/repo-a:/workspace/repo-a:ro \
 #     -v /host/path/to/repo-b:/workspace/repo-b:ro \
 #     crew-passenger-mcp:latest
@@ -22,6 +25,19 @@
 # `PASSENGER_MCP_ROOT` is fixed at /workspace: `createPassengerHttpServer`
 # treats it as the one allowed root, and every bind-mounted repo is a
 # subdirectory of it, so no per-run env is needed for that half.
+#
+# `--add-host`/`PASSENGER_SYNC_URL`/`PASSENGER_SYNC_SECRET` are ISSUE-554
+# decision 8's `initialize`-triggered checkout sync: `passenger-mcp.ts` POSTs
+# to that URL (crewd's own per-container sync-daemon listener, spawned/torn
+# down alongside this container by `syncPassengerSyncDaemons` in
+# passenger-sync-daemon.ts) when an MCP session's `initialize` handshake
+# happens, so it starts against current code even between crewd's poll
+# cycles. `host.docker.internal` is the Docker bridge gateway, not real
+# loopback — `--add-host ...:host-gateway` is what makes that name resolve
+# on native Linux Docker (Docker Desktop already aliases it). All three are
+# optional in practice (`startContainer` only sets them when a sync-daemon
+# listener actually came up for this workspace) but always present in a
+# real `crew`-managed launch.
 #
 # Deliberately not multi-stage: this is a thin process with three runtime
 # dependencies (see docker/passenger-mcp/package.json) and no build step of

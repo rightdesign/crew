@@ -6,7 +6,12 @@
  * per session, never per repo. The container runs the image built from
  * `../Dockerfile.passenger-mcp` (`docker/passenger-mcp/package.json`'s
  * pruned dependency set), with a read-only bind mount per repo
- * `passengerRepoTargets` (config.ts) says belongs to that workspace.
+ * `passengerCheckoutTargets` (config.ts) says belongs to that workspace —
+ * each one a dedicated, `crewd`-maintained checkout (ISSUE-554, decision 7
+ * in the Map), never a role's ephemeral build worktree and never even the
+ * primary checkout a builder can leave dirty or mid-branch. Keeping those
+ * checkouts fresh is `syncAllPassengerCheckouts` (below), called from
+ * `cli.ts` before this module's own container sync every cycle.
  *
  * Every `docker` invocation goes through the injectable `exec` so tests can
  * run this module's planning/diffing logic without Docker installed at all
@@ -16,7 +21,9 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { CrewConfig } from './config.ts';
-import { passengerRepoTargets } from './config.ts';
+import { passengerCheckoutTargets, reposOf } from './config.ts';
+import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
+import { syncPassengerCheckout, type PassengerCheckoutOutcome } from './git.ts';
 
 export type Exec = (cmd: string, args: string[]) => string;
 
@@ -97,7 +104,7 @@ export function planContainers(cfg: CrewConfig): ContainerPlan[] {
     if (!route.enabled || !route.hostPassengers || !route.resolved?.workspaceId) continue;
     const workspaceId = route.resolved.workspaceId;
     const mounts = byWorkspace.get(workspaceId) ?? new Map<string, Mount>();
-    for (const target of passengerRepoTargets(route)) {
+    for (const target of passengerCheckoutTargets(route)) {
       mounts.set(target.name, { hostPath: target.dir, containerPath: `/workspace/${target.name}` });
     }
     byWorkspace.set(workspaceId, mounts);
@@ -138,12 +145,38 @@ export function stopContainer(name: string, exec: Exec = realExec): void {
 }
 
 /**
+ * Where and how a container calls back into `crewd` to ask for an on-demand
+ * checkout sync (ISSUE-554, decision 8's `initialize`-triggered half) —
+ * `host` is `host.docker.internal`, never `127.0.0.1`: the callback crosses
+ * the Docker bridge network, not real loopback, so the container needs the
+ * bridge gateway's own DNS name, wired up via `startContainer`'s
+ * `--add-host host.docker.internal:host-gateway`. `secret` is generated
+ * per-container by `passenger-sync-daemon.ts`'s `syncPassengerSyncDaemons`
+ * and passed here as already-resolved data — `startContainer` itself never
+ * generates or persists anything, it only wires whatever it's given into
+ * `docker run`'s argv.
+ */
+export interface SyncDaemonEndpoint {
+  host: string;
+  port: number;
+  secret: string;
+}
+
+/**
  * `docker run -d`, one bind mount per repo, the workspace id and Tablation
  * base URL as env (mirroring `passenger-mcp-main.ts`'s own env contract),
  * and the plan's `mountsHash` stamped as a label so a later cycle can tell
- * whether this container's mount set is stale without diffing flags by hand.
+ * whether this container's mount set is stale without diffing flags by
+ * hand. `sync`, when given, additionally wires up the on-demand checkout
+ * sync callback (ISSUE-554 decision 8) — omitted only when
+ * `syncPassengerSyncDaemons` couldn't stand up a listener for this plan,
+ * in which case the container still runs, just without that extra
+ * freshness path (the poll-cadence sync in `syncAllPassengerCheckouts`
+ * still applies regardless).
  */
-export function startContainer(plan: ContainerPlan, tablationApiBaseUrl: string, exec: Exec = realExec): void {
+export function startContainer(
+  plan: ContainerPlan, tablationApiBaseUrl: string, sync: SyncDaemonEndpoint | undefined, exec: Exec = realExec,
+): void {
   const args = [
     'run', '-d',
     '--name', plan.containerName,
@@ -153,6 +186,13 @@ export function startContainer(plan: ContainerPlan, tablationApiBaseUrl: string,
     '-e', `TABLATION_API_BASE_URL=${tablationApiBaseUrl}`,
     '--label', `crew.mounts.hash=${plan.mountsHash}`,
   ];
+  if (sync) {
+    args.push(
+      '--add-host', 'host.docker.internal:host-gateway',
+      '-e', `PASSENGER_SYNC_URL=http://${sync.host}:${sync.port}/sync`,
+      '-e', `PASSENGER_SYNC_SECRET=${sync.secret}`,
+    );
+  }
   for (const m of plan.mounts) args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);
   args.push(IMAGE_TAG);
   exec('docker', args);
@@ -179,9 +219,19 @@ export interface SyncResult {
  * Never called at all when `dockerAvailable()` is false — the caller checks
  * that first, same as `crew doctor` does, and reports it rather than
  * letting every `docker` call in here throw.
+ *
+ * `syncEndpoints` is a plain data lookup (workspace id -> where/how a
+ * container calls back for an on-demand sync), computed by the caller via
+ * `syncPassengerSyncDaemons` (passenger-sync-daemon.ts) BEFORE this
+ * function runs — deliberately not computed in here, so this function's
+ * own docker-argv-building logic stays testable with a fake `exec` and no
+ * real child-process/fs side effects. A workspace missing from the map
+ * (default: none) just starts its container without the sync callback
+ * wired up, never a hard failure.
  */
 export function syncPassengerContainers(
   cfg: CrewConfig, tablationApiBaseUrl: string, exec: Exec = realExec,
+  syncEndpoints: Map<string, SyncDaemonEndpoint> = new Map(),
 ): SyncResult {
   const plans = planContainers(cfg);
   const plannedByName = new Map(plans.map((p) => [p.containerName, p]));
@@ -192,12 +242,13 @@ export function syncPassengerContainers(
   const stopped: string[] = [];
 
   for (const plan of plans) {
+    const sync = syncEndpoints.get(plan.workspaceId);
     if (!existing.has(plan.containerName)) {
-      startContainer(plan, tablationApiBaseUrl, exec);
+      startContainer(plan, tablationApiBaseUrl, sync, exec);
       started.push(plan.containerName);
     } else if (currentMountsHash(plan.containerName, exec) !== plan.mountsHash) {
       stopContainer(plan.containerName, exec);
-      startContainer(plan, tablationApiBaseUrl, exec);
+      startContainer(plan, tablationApiBaseUrl, sync, exec);
       recreated.push(plan.containerName);
     }
   }
@@ -208,4 +259,97 @@ export function syncPassengerContainers(
     }
   }
   return { started, recreated, stopped };
+}
+
+export interface PassengerCheckoutSyncResult {
+  name: string;
+  workspaceId: string;
+  outcome: PassengerCheckoutOutcome;
+}
+
+/**
+ * Everything `syncPassengerCheckout` needs for one repo's dedicated
+ * checkout, fully resolved and JSON-serializable — deliberately a plain
+ * data shape rather than a `Route`/`CrewConfig` slice, because this is also
+ * what gets handed to a workspace's sync-daemon child process (ISSUE-554,
+ * decision 8's `initialize`-triggered half; see `passenger-sync-daemon.ts`)
+ * over an env var. That process never loads `crew.yaml` itself — it only
+ * knows what its own launch env told it — so the spec must carry the fully
+ * resolved remote/base, not a route reference it could re-derive one from.
+ */
+export interface PassengerCheckoutSyncSpec {
+  name: string;
+  workspaceId: string;
+  dir: string;
+  remote: string | undefined;
+  gitRemoteName: string;
+  base: string;
+}
+
+/**
+ * Every repo's dedicated Host Passengers checkout this ship should be
+ * keeping level with its `branch.base`, resolved down to exactly what
+ * `syncPassengerCheckout` needs — optionally narrowed to one workspace's
+ * mounts (the sync-daemon case; `syncAllPassengerCheckouts` below wants
+ * every workspace at once, the poll-cadence case).
+ *
+ * Repo facts (which remote, which base branch) are read from each repo's
+ * ORDINARY working directory (`reposOf`, its own `.crew.yaml` if any) — the
+ * same source `cli.ts`'s own `resolvedRepos` already trusts for release —
+ * even though what gets synced is the SEPARATE dedicated checkout
+ * `passengerCheckoutTargets` names. Reading a repo's own contract never
+ * requires writing to it, so this is safe even when that ordinary
+ * directory doesn't exist yet on this ship (`loadRepoConfig` reads nothing
+ * and `resolveRepoConfig` falls through to the route's own `branch`
+ * override, then to `main`/`origin`).
+ */
+export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string): PassengerCheckoutSyncSpec[] {
+  const specs: PassengerCheckoutSyncSpec[] = [];
+  for (const route of cfg.routes) {
+    if (!route.enabled || !route.hostPassengers || !route.resolved?.workspaceId) continue;
+    if (workspaceId && route.resolved.workspaceId !== workspaceId) continue;
+    const routeWorkspaceId = route.resolved.workspaceId;
+    const ordinaryByName = new Map(reposOf(route).map((t) => [t.name, t]));
+    for (const target of passengerCheckoutTargets(route)) {
+      const ordinary = ordinaryByName.get(target.name);
+      const override = route.repoOverrides[target.name];
+      const effective = resolveRepoConfig(
+        ordinary ? loadRepoConfig(ordinary.dir) : null,
+        { branch: { ...route.branch, ...override?.branch } },
+        ordinary?.dir ?? target.dir,
+      );
+      specs.push({
+        name: target.name,
+        workspaceId: routeWorkspaceId,
+        dir: target.dir,
+        remote: target.remote,
+        gitRemoteName: effective.branch.remote,
+        base: effective.branch.base,
+      });
+    }
+  }
+  return specs;
+}
+
+/**
+ * Brings every repo's dedicated Host Passengers checkout level with its
+ * `branch.base` (ISSUE-554, decision 8 in the Map, b9f59bd9-8ed5-4479-
+ * b85d-f0a64d00726c) — the poll-cadence half of freshness ("piggybacked
+ * onto crewd's existing per-project poll cadence as a background floor").
+ * The MCP `initialize`-triggered half is `passenger-sync-daemon.ts`'s own
+ * HTTP handler, which calls `syncPassengerCheckout` per
+ * `passengerCheckoutSyncSpecs(cfg, workspaceId)` entry the same way this
+ * function does — just scoped to one workspace and fired on demand instead
+ * of once a cycle.
+ *
+ * Called once per cycle from `cli.ts`, before this module's own
+ * `syncPassengerContainers` — a checkout must be cloned and current before
+ * a container can mount it.
+ */
+export function syncAllPassengerCheckouts(cfg: CrewConfig): PassengerCheckoutSyncResult[] {
+  return passengerCheckoutSyncSpecs(cfg).map((spec) => ({
+    name: spec.name,
+    workspaceId: spec.workspaceId,
+    outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base),
+  }));
 }

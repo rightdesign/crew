@@ -77,6 +77,18 @@ import { git, gitOk, GitError } from './git.ts';
 export interface PassengerMcpServerOptions {
   /** Absolute directory paths this server may read from. Never empty. */
   allowedDirectories: string[];
+  /**
+   * The on-demand freshness sync callback (ISSUE-554, decision 8's
+   * `initialize`-triggered half) — `crewd`'s own per-container sync-daemon
+   * listener, reached over the Docker bridge network (`host.docker.internal`,
+   * never real loopback; see `passenger-sync-daemon.ts`'s own doc comment
+   * for why). Undefined when this container's launch env carried no
+   * `PASSENGER_SYNC_URL`/`PASSENGER_SYNC_SECRET` (e.g. the daemon failed to
+   * start for this workspace) — the session still works, it just starts
+   * against whatever the poll-cadence sync last left mounted rather than
+   * guaranteed-current code.
+   */
+  syncOnInitialize?: { url: string; secret: string };
 }
 
 export interface PassengerAuthConfig {
@@ -203,6 +215,22 @@ export async function createPassengerMcpServer(options: PassengerMcpServerOption
   setAllowedDirectories(await resolveAllowedDirectories(options.allowedDirectories));
 
   const server = new McpServer({ name: 'crew-passenger-filesystem', version: '0.1.0' });
+
+  if (options.syncOnInitialize) {
+    const { url, secret } = options.syncOnInitialize;
+    // Fire-and-forget: a Passenger session's `initialize` response must
+    // never wait on (or fail because of) this call. The poll-cadence sync
+    // (`syncAllPassengerCheckouts`, run every crewd cycle regardless) is the
+    // real backstop for checkout freshness — this is strictly an extra,
+    // faster path for the common case of a session starting between two
+    // poll cycles, never the only thing keeping a checkout current.
+    server.server.oninitialized = () => {
+      fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${secret}` } })
+        .catch((error) => {
+          console.error(`Passenger sync-on-initialize callback to ${url} failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    };
+  }
 
   server.registerTool('read_file', {
     title: 'Read File',

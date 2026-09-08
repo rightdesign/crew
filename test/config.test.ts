@@ -6,6 +6,7 @@ import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
   resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo, passengerRepoTargets,
+  passengerCheckoutDir, passengerCheckoutTargets,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -112,6 +113,51 @@ test('passengerRepoTargets() includes every repos: entry once hostPassengers is 
   const route = findRoute(cfg, 'w/multi');
 
   assert.deepEqual(passengerRepoTargets(route).map((t) => t.name), ['frontend']);
+});
+
+test('passengerCheckoutDir() is its own subtree, never the ordinary defaultRepoDir path', () => {
+  const dedicated = passengerCheckoutDir('/base', 'acme', 'crew');
+  const ordinary = defaultRepoDir('/base', 'acme', 'crew');
+  assert.notEqual(dedicated, ordinary);
+  assert.equal(dedicated, '/base/acme/.passenger-checkouts/crew');
+});
+
+test('passengerCheckoutTargets() points every mount at the dedicated checkout, carrying the owner/repo remote even for an explicit repos: entry (ISSUE-554)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: acme/multi',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    hostPassengers: true',
+    '    reposBasePath: /base',
+    '    repos:',
+    '      frontend: /tmp/frontend',
+    '    resolved:',
+    '      workspaceId: ws-1',
+    '      models: { issues: i, comments: c, crew: m }',
+    '      seats: {}',
+    '      operator: op-1',
+    '      holds: []',
+    '      repoNames: { repo-1: frontend }',
+    '      repoRemotes: { repo-1: acme-org/frontend }',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  const route = findRoute(cfg, 'acme/multi');
+
+  const targets = passengerCheckoutTargets(route);
+  assert.deepEqual(targets, [
+    { name: 'frontend', dir: '/base/acme/.passenger-checkouts/frontend', remote: 'acme-org/frontend' },
+  ]);
+  // Never the operator-placed working directory a builder can leave dirty.
+  assert.notEqual(targets[0]!.dir, '/tmp/frontend');
+});
+
+test('passengerCheckoutTargets() is empty when hostPassengers is off, same as passengerRepoTargets()', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.deepEqual(passengerCheckoutTargets(cfg.routes[0]!), []);
 });
 
 test('maxThinkingTokens defaults to a non-zero value — extended thinking must be on for cycles reporting to have anything to report', () => {

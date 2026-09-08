@@ -1143,6 +1143,42 @@ export function passengerRepoTargets(r: Route): RepoTarget[] {
 }
 
 /**
+ * `<basePath>/<workspace>/.passenger-checkouts/<repoName>` — the directory
+ * `crewd` clones and fast-forwards for Host Passengers (ISSUE-554, decision
+ * 7 in the Map, b9f59bd9-8ed5-4479-b85d-f0a64d00726c). Deliberately its own
+ * subtree, distinct from `defaultRepoDir` (a repo's ordinary working
+ * checkout — an explicit `repos:` entry or the derived multi-repo default —
+ * which a builder role can leave dirty or mid-branch) and from any ticket's
+ * ephemeral worktree. Nothing but `syncPassengerCheckouts` ever writes here.
+ */
+export function passengerCheckoutDir(basePath: string, workspace: string, repoName: string): string {
+  return join(basePath, workspace, '.passenger-checkouts', repoName);
+}
+
+/**
+ * `passengerRepoTargets`, but pointed at each repo's dedicated passenger
+ * checkout rather than its ordinary working directory, and carrying the
+ * `owner/repo` remote a first clone needs even for a repo named explicitly
+ * under `repos:` (which has no `remote` of its own — `reposOf` only derives
+ * one for a repo it placed itself). `repoIdForName` + `resolved.repoRemotes`
+ * recovers it the same way `crew connect` populated it, regardless of
+ * whether this route named the repo explicitly or let it default.
+ */
+export function passengerCheckoutTargets(r: Route): RepoTarget[] {
+  if (!r.hostPassengers) return [];
+  const [workspace] = splitRoute(r.route);
+  const remotes = r.resolved?.repoRemotes ?? {};
+  return passengerRepoTargets(r).map((t) => {
+    const id = repoIdForName(r, t.name);
+    return {
+      name: t.name,
+      dir: passengerCheckoutDir(r.reposBasePath, workspace, t.name),
+      remote: t.remote ?? (id ? remotes[id] : undefined),
+    };
+  });
+}
+
+/**
  * The route's `worktreePrefix`, but only where it is unambiguous.
  *
  * A single-repo route has exactly one checkout to name, so the route-level

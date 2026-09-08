@@ -7,7 +7,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, openSync, closeSync, writeSync, statSync, unlinkSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 
 export class GitError extends Error {}
@@ -538,4 +540,99 @@ export function ensureRepoCheckout(dir: string, remote: string | undefined): boo
     throw new GitError(`git clone ${cloneUrlFor(remote)} ${dir}: ${why || err.message.trim()}`);
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Host Passengers' dedicated checkout (ISSUE-554, decisions 7-8 in the Map,
+// b9f59bd9-8ed5-4479-b85d-f0a64d00726c): a `crewd`-maintained clone that is
+// always a coherent snapshot of `branch.base`, never a role's ephemeral
+// build worktree and never even the primary checkout a builder can leave
+// dirty or mid-branch.
+// ---------------------------------------------------------------------------
+
+export type PassengerCheckoutOutcome = { action: 'cloned'; detail: string } | BaseRefreshOutcome;
+
+/** A sync that legitimately runs a `git fetch`/`clone` never takes anywhere near this long — past it, the holder is presumed crashed mid-sync rather than still working. */
+const CHECKOUT_LOCK_STALE_MS = 5 * 60 * 1000;
+
+export function checkoutLockPath(dir: string): string {
+  return `${dir}.sync.lock`;
+}
+
+/** Synchronous sleep via `Atomics.wait` — consistent with the rest of this module's synchronous-git style; a short busy-wait is fine for a lock two callers hold for well under a second each. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Cross-process advisory lock keyed on the checkout directory, so the
+ * poll-cadence sync (`syncAllPassengerCheckouts`, in-process inside `crew
+ * run`/`poll`) and the per-container sync daemon's `/sync` handler (a
+ * separate detached process, `passenger-sync-daemon.ts`) can never both run
+ * `git fetch`/`merge --ff-only` against the same checkout at once and race
+ * on `.git/index.lock`/refs. `openSync(path, 'wx')` is what makes acquiring
+ * it atomic across processes — the OS refuses a second exclusive-create
+ * against the same path. A lock older than `CHECKOUT_LOCK_STALE_MS` is
+ * treated as abandoned (its holder crashed) rather than honored forever.
+ */
+export function acquireCheckoutLock(dir: string, timeoutMs = 30_000): () => void {
+  const lockPath = checkoutLockPath(dir);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      writeSync(fd, `${process.pid}\n`);
+      closeSync(fd);
+      return () => { try { unlinkSync(lockPath); } catch { /* already released */ } };
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > CHECKOUT_LOCK_STALE_MS) {
+          try { unlinkSync(lockPath); } catch { /* another waiter already cleared it */ }
+          continue;
+        }
+      } catch { /* lock vanished between the failed create and this stat - just retry */ }
+      if (Date.now() > deadline) {
+        throw new GitError(`timed out waiting for the sync lock on ${dir} (held by another sync)`);
+      }
+      sleepSync(50);
+    }
+  }
+}
+
+/**
+ * Brings a passenger checkout at `dir` level with `base`, cloning it first
+ * if this is the first cycle to need it.
+ *
+ * `githubRemote` (`owner/repo`) is what a first-time clone needs —
+ * `ensureRepoCheckout`'s own parameter, the same shape `defaultRepoDir`'s
+ * lazy-clone convention already uses elsewhere. `gitRemoteName` (typically
+ * `origin`, from the repo's own resolved `branch.remote`) is the LOCAL name
+ * `refreshBaseBranch` compares against once the clone exists — a different
+ * string with a similar name, so both are required rather than one being
+ * derived from the other.
+ *
+ * A fresh clone lands on whatever the remote's own HEAD default branch is,
+ * which is not guaranteed to be `base` (a repo could default to `master`
+ * while the ship's contract calls its base `main`) — so a clone that didn't
+ * land there switches to it explicitly before reporting `cloned`.
+ *
+ * Locked for the duration (see `acquireCheckoutLock`) since this is called
+ * from two independent processes against the same `dir`.
+ */
+export function syncPassengerCheckout(
+  dir: string, githubRemote: string | undefined, gitRemoteName: string, base: string,
+): PassengerCheckoutOutcome {
+  const release = acquireCheckoutLock(dir);
+  try {
+    if (ensureRepoCheckout(dir, githubRemote)) {
+      if (currentBranch(dir) !== base) git(dir, ['checkout', base]);
+      return { action: 'cloned', detail: `cloned ${githubRemote} into ${dir}` };
+    }
+    return refreshBaseBranch(dir, gitRemoteName, base);
+  } finally {
+    release();
+  }
 }

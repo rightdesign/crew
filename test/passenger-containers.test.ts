@@ -1,14 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   planContainers, portFor, containerNameFor, listPassengerContainers, startContainer, stopContainer,
-  syncPassengerContainers, dockerAvailable, IMAGE_TAG, type Exec, type ContainerPlan,
+  syncPassengerContainers, syncAllPassengerCheckouts, dockerAvailable, IMAGE_TAG, type Exec, type ContainerPlan,
 } from '../src/passenger-containers.ts';
 import type { CrewConfig, Route } from '../src/config.ts';
+import { passengerCheckoutDir } from '../src/config.ts';
+
+const REPOS_BASE = '/tmp/repos-base';
 
 function makeRoute(opts: {
   route: string; enabled?: boolean; hostPassengers?: boolean; workspaceId?: string;
   repos?: Record<string, string>; repoOverrides?: Record<string, { hostPassengers?: boolean }>;
+  reposBasePath?: string;
 }): Route {
   return {
     route: opts.route,
@@ -16,6 +24,7 @@ function makeRoute(opts: {
     dir: '/tmp/does-not-matter',
     repos: opts.repos ?? { only: '/tmp/only' },
     repoOverrides: opts.repoOverrides ?? {},
+    reposBasePath: opts.reposBasePath ?? REPOS_BASE,
     hostPassengers: opts.hostPassengers ?? false,
     baseUrl: 'https://example.test',
     apiKey: 'sk_test',
@@ -30,6 +39,12 @@ function makeRoute(opts: {
       holds: [],
     } : undefined,
   } as unknown as Route;
+}
+
+/** The dedicated passenger checkout path a mount should now resolve to (ISSUE-554). */
+function checkoutFor(route: string, repoName: string): string {
+  const [workspace] = route.split('/');
+  return passengerCheckoutDir(REPOS_BASE, workspace!, repoName);
 }
 
 function makeConfig(routes: Route[]): CrewConfig {
@@ -60,7 +75,22 @@ test('planContainers() produces one plan per workspace, with a stable determinis
   assert.equal(plans[0]!.workspaceId, 'ws-1');
   assert.equal(plans[0]!.containerName, containerNameFor('ws-1'));
   assert.equal(plans[0]!.port, portFor('ws-1'));
-  assert.deepEqual(plans[0]!.mounts, [{ hostPath: '/tmp/alpha', containerPath: '/workspace/alpha' }]);
+  assert.deepEqual(
+    plans[0]!.mounts,
+    [{ hostPath: checkoutFor('w/a', 'alpha'), containerPath: '/workspace/alpha' }],
+  );
+});
+
+test('planContainers() mounts the DEDICATED passenger checkout, never the repo\'s ordinary working directory', () => {
+  // The whole point of ISSUE-554: `repos: { alpha: '/tmp/alpha' }` names an
+  // operator-placed working directory, which a builder role can leave dirty
+  // or mid-branch — Host Passengers must never mount that directly.
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { alpha: '/tmp/alpha' } }),
+  ]);
+  const [mount] = planContainers(cfg)[0]!.mounts;
+  assert.notEqual(mount!.hostPath, '/tmp/alpha');
+  assert.equal(mount!.hostPath, checkoutFor('w/a', 'alpha'));
 });
 
 test('portFor() is deterministic — same workspace id, same port, every call', () => {
@@ -92,9 +122,14 @@ test('planContainers() excludes a workspace whose only route opted every repo ou
 });
 
 test('planContainers() gives two different workspaces two different mountsHash values for the same single repo name', () => {
+  // Distinct WORKSPACE SLUGS (the part of `route` before the `/`), not just
+  // distinct resolved workspaceIds — a mount's path is keyed by that slug
+  // the same way `defaultRepoDir` already keys an ordinary checkout, so two
+  // routes sharing one slug are expected to share one dedicated checkout
+  // (decision 6 in the Map: several routes may share one real workspace).
   const cfg = makeConfig([
-    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/a' } }),
-    makeRoute({ route: 'w/b', hostPassengers: true, workspaceId: 'ws-2', repos: { only: '/tmp/b' } }),
+    makeRoute({ route: 'w1/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/a' } }),
+    makeRoute({ route: 'w2/a', hostPassengers: true, workspaceId: 'ws-2', repos: { only: '/tmp/b' } }),
   ]);
   const plans = planContainers(cfg);
   assert.equal(plans.length, 2);
@@ -135,7 +170,7 @@ test('startContainer() runs `docker run -d` with one -v per mount, the mountsHas
     mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }, { hostPath: '/tmp/b', containerPath: '/workspace/b' }],
     mountsHash: 'deadbeef',
   };
-  startContainer(plan, 'https://app.tablation.com/api', exec);
+  startContainer(plan, 'https://app.tablation.com/api', undefined, exec);
 
   assert.equal(calls.length, 1);
   const [cmd, ...args] = calls[0]!;
@@ -149,6 +184,22 @@ test('startContainer() runs `docker run -d` with one -v per mount, the mountsHas
   assert.ok(args.includes('/tmp/a:/workspace/a:ro'));
   assert.ok(args.includes('/tmp/b:/workspace/b:ro'));
   assert.equal(args[args.length - 1], IMAGE_TAG);
+  assert.ok(!args.includes('host.docker.internal:host-gateway'), 'no --add-host without a sync endpoint');
+});
+
+test('startContainer() wires up the sync-daemon callback when given a SyncDaemonEndpoint', () => {
+  const { exec, calls } = fakeExec();
+  const plan: ContainerPlan = {
+    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800,
+    mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }],
+    mountsHash: 'deadbeef',
+  };
+  startContainer(plan, 'https://app.tablation.com/api', { host: 'host.docker.internal', port: 30800, secret: 'sekrit' }, exec);
+
+  const [, ...args] = calls[0]!;
+  assert.ok(args.includes('host.docker.internal:host-gateway'));
+  assert.ok(args.includes('PASSENGER_SYNC_URL=http://host.docker.internal:30800/sync'));
+  assert.ok(args.includes('PASSENGER_SYNC_SECRET=sekrit'));
 });
 
 test('stopContainer() swallows an already-gone container rather than throwing', () => {
@@ -213,4 +264,58 @@ test('syncPassengerContainers() stops a running container whose workspace is no 
 
   assert.deepEqual(result.stopped, ['crew-passenger-ws-old']);
   assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'rm' && c.includes('crew-passenger-ws-old')));
+});
+
+/* ── syncAllPassengerCheckouts(): the poll-cadence half of freshness
+   (ISSUE-554, decision 8 in the Map) — real git operations against a
+   throwaway bare origin, since this is exactly the fast-forward-or-report
+   logic `syncPassengerCheckout` (git.ts) already covers, exercised through
+   the route/config plumbing that picks which directory gets synced. ── */
+
+test('syncAllPassengerCheckouts() fast-forwards a repo\'s dedicated checkout to what the ordinary checkout\'s config calls its base branch', () => {
+  const root = mkdtempSync(join(tmpdir(), 'crew-passenger-sync-'));
+  const bare = join(root, 'origin.git');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+
+  const seed = join(root, 'seed');
+  execFileSync('git', ['clone', '-q', bare, seed]);
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: seed });
+  execFileSync('git', ['config', 'user.name', 'T'], { cwd: seed });
+  writeFileSync(join(seed, 'README.md'), 'x');
+  execFileSync('git', ['add', '.'], { cwd: seed });
+  execFileSync('git', ['commit', '-qm', 'base'], { cwd: seed });
+  execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: seed });
+
+  const basePath = join(root, 'repos-base');
+  const checkoutDir = passengerCheckoutDir(basePath, 'w', 'crew');
+  execFileSync('git', ['clone', '-q', bare, checkoutDir]);
+
+  // Lands after the dedicated checkout was already cloned — this is what
+  // the sync call below must catch up on.
+  writeFileSync(join(seed, 'more.txt'), '1');
+  execFileSync('git', ['add', '.'], { cwd: seed });
+  execFileSync('git', ['commit', '-qm', 'more'], { cwd: seed });
+  execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: seed });
+
+  const cfg = makeConfig([
+    makeRoute({
+      route: 'w/a', hostPassengers: true, workspaceId: 'ws-1',
+      repos: { crew: bare }, reposBasePath: basePath,
+    }),
+  ]);
+
+  const results = syncAllPassengerCheckouts(cfg);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.name, 'crew');
+  assert.equal(results[0]!.workspaceId, 'ws-1');
+  assert.equal(results[0]!.outcome.action, 'fast-forwarded');
+  assert.equal(
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: checkoutDir, encoding: 'utf8' }).trim(),
+    execFileSync('git', ['rev-parse', 'main'], { cwd: bare, encoding: 'utf8' }).trim(),
+  );
+});
+
+test('syncAllPassengerCheckouts() ignores every route with hostPassengers off, same as planContainers()', () => {
+  const cfg = makeConfig([makeRoute({ route: 'w/a', hostPassengers: false, workspaceId: 'ws-1' })]);
+  assert.deepEqual(syncAllPassengerCheckouts(cfg), []);
 });

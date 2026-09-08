@@ -61,8 +61,9 @@ import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
-import { dockerAvailable, planContainers, syncPassengerContainers } from './passenger-containers.ts';
+import { dockerAvailable, planContainers, syncAllPassengerCheckouts, syncPassengerContainers } from './passenger-containers.ts';
 import { syncPassengerTunnels } from './tunnel.ts';
+import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -272,6 +273,23 @@ const value = (name: string) => {
 const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'));
 const command = positional[0];
 if (!command) usage();
+
+// `passenger-sync-daemon` (ISSUE-554) is not an operator-facing command —
+// it's what `syncPassengerSyncDaemons` (passenger-sync-daemon.ts) spawns
+// detached, one per Host Passengers container, re-running this same binary
+// with a different subcommand rather than a second entry script. It takes
+// no route argument and needs no `crew.yaml` at all (everything it needs
+// travels in via env vars its own spawn call set), so it deliberately
+// bypasses the route-scoped config-loading/locking pipeline every other
+// command below goes through — a ship with more than one route would
+// otherwise hit `findRoute`'s "name one" `ConfigError` immediately, since
+// this command names none.
+if (command === 'passenger-sync-daemon') {
+  runSyncDaemonFromEnv();
+  // Deliberately falls through to nothing further: the listening HTTP
+  // server keeps the event loop alive on its own, same as any other
+  // long-running Node server.
+} else {
 
 /**
  * A bad config is an operator's mistake, not a crash. Print what is wrong and
@@ -863,8 +881,33 @@ switch (command) {
           );
         } else {
           try {
+            // Dedicated checkouts (ISSUE-554, decision 7 in the Map) must be
+            // cloned and fast-forwarded to `branch.base` BEFORE the container
+            // sync below can mount them — decision 8's poll-cadence half of
+            // freshness. A checkout that won't fast-forward (diverged
+            // upstream) is reported, not force-reset past.
+            for (const r of syncAllPassengerCheckouts(cfg)) {
+              if (r.outcome.action === 'diverged' || r.outcome.action === 'ff-failed') {
+                emit.warn(
+                  `passenger checkout for ${r.name} is stale: ${r.outcome.detail}`,
+                  { step: 'passengers', data: { workspaceId: r.workspaceId, repo: r.name } },
+                );
+              }
+            }
             const tablationApiBaseUrl = passengerRoutes[0]!.baseUrl || DEFAULT_BASE_URL;
-            const result = syncPassengerContainers(cfg, tablationApiBaseUrl);
+            // Sync-daemon listeners (ISSUE-554, decision 8's `initialize`-
+            // triggered half) MUST be resolved before `syncPassengerContainers`
+            // below — a container's env (including its callback secret) is
+            // fixed at `docker run` time, so the daemon it's told to call has
+            // to already exist, with a matching secret, by the time that runs.
+            let syncEndpoints;
+            try {
+              syncEndpoints = syncPassengerSyncDaemons(planContainers(cfg), cfg, cfg.ship.stateDir);
+            } catch (e) {
+              emit.warn(`passenger sync-daemon lifecycle failed: ${(e as Error).message}`, { step: 'passengers' });
+              syncEndpoints = new Map();
+            }
+            const result = syncPassengerContainers(cfg, tablationApiBaseUrl, undefined, syncEndpoints);
             if (result.started.length || result.recreated.length || result.stopped.length) {
               emit.emit(
                 `passenger containers: ${result.started.length} started, ${result.recreated.length} recreated, ` +
@@ -2440,3 +2483,4 @@ switch (command) {
 }
 
 lock?.release();
+}

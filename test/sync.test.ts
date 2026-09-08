@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncState, fastForward, worktrees, fetchRemote, status, refreshBaseBranch } from '../src/git.ts';
+import {
+  syncState, fastForward, worktrees, fetchRemote, status, refreshBaseBranch, syncPassengerCheckout,
+  acquireCheckoutLock, checkoutLockPath,
+} from '../src/git.ts';
 
 /** A bare remote and two clones — "the reviewer" and "the ship". */
 function world() {
@@ -208,4 +211,86 @@ test('porcelain parsing keeps the leading status column, and the whole filename'
   writeFileSync(join(dir, '.env'), 'secret');
   const untracked = status(dir).find((c) => c.path === '.env')!;
   assert.equal(untracked.untracked, true);
+});
+
+/* ── syncPassengerCheckout: Host Passengers' dedicated checkout (ISSUE-554,
+   decisions 7-8 in the Map, b9f59bd9-8ed5-4479-b85d-f0a64d00726c) — a
+   `crewd`-maintained clone, never a role's working directory. The fresh-
+   clone branch isn't exercised here: `ensureRepoCheckout` only ever clones
+   over real SSH (`cloneUrlFor`'s fixed `git@github.com:...` shape), the
+   same limitation `git-clone.test.ts` already lives with for
+   `ensureRepoCheckout` itself. ── */
+
+test('syncPassengerCheckout fast-forwards an already-cloned checkout, same as refreshBaseBranch', () => {
+  const { ship, reviewer } = world();
+  writeFileSync(join(reviewer.d, 'elsewhere.txt'), '1'); reviewer.g('add', '.');
+  reviewer.g('commit', '-qm', 'another ship shipped this'); reviewer.g('push', '-q', 'origin', 'main');
+
+  const r = syncPassengerCheckout(ship.d, undefined, 'origin', 'main');
+  assert.equal(r.action, 'fast-forwarded');
+  assert.equal(
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ship.d, encoding: 'utf8' }).trim(),
+    execFileSync('git', ['rev-parse', 'origin/main'], { cwd: ship.d, encoding: 'utf8' }).trim(),
+  );
+});
+
+test('syncPassengerCheckout reports divergence rather than forcing a checkout that already exists past it', () => {
+  const { ship, reviewer } = world();
+  writeFileSync(join(reviewer.d, 'theirs.txt'), '1'); reviewer.g('add', '.');
+  reviewer.g('commit', '-qm', 'theirs'); reviewer.g('push', '-q', 'origin', 'main');
+  writeFileSync(join(ship.d, 'ours.txt'), '1'); ship.g('add', '.'); ship.g('commit', '-qm', 'ours');
+
+  const r = syncPassengerCheckout(ship.d, undefined, 'origin', 'main');
+  assert.equal(r.action, 'diverged');
+});
+
+test('syncPassengerCheckout propagates ensureRepoCheckout\'s refusal when the checkout is missing and no remote was discovered', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'crew-passenger-missing-')), 'nested', 'missing');
+  assert.throws(() => syncPassengerCheckout(dir, undefined, 'origin', 'main'), /no discovered remote/);
+});
+
+/* ── acquireCheckoutLock: the cross-process guard that keeps the poll-cadence
+   sync and the sync daemon's `/sync` handler from racing a git fetch/merge
+   against the same checkout at once. ── */
+
+test('syncPassengerCheckout releases its lock file once it completes, so a later sync is never blocked by its own prior run', () => {
+  const { ship } = world();
+  syncPassengerCheckout(ship.d, undefined, 'origin', 'main');
+  assert.equal(existsSync(checkoutLockPath(ship.d)), false);
+});
+
+test('acquireCheckoutLock refuses a second acquire while the first is still held, and releasing the first unblocks it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-lock-'));
+  const release = acquireCheckoutLock(dir);
+  assert.throws(
+    () => acquireCheckoutLock(dir, 200),
+    /timed out waiting for the sync lock/,
+    'a second holder must not acquire the lock while the first is still held',
+  );
+  release();
+  const release2 = acquireCheckoutLock(dir, 200);
+  release2();
+});
+
+test('acquireCheckoutLock breaks a stale lock (holder crashed mid-sync) rather than waiting on it forever', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-lock-'));
+  const lockPath = checkoutLockPath(dir);
+  writeFileSync(lockPath, '999999999\n');
+  const oldTime = new Date(Date.now() - 10 * 60 * 1000); // well past the 5-minute staleness window
+  utimesSync(lockPath, oldTime, oldTime);
+
+  const release = acquireCheckoutLock(dir, 200);
+  release();
+});
+
+test('syncPassengerCheckout still succeeds when a stale lock from a crashed prior run is left behind', () => {
+  const { ship } = world();
+  mkdirSync(ship.d, { recursive: true });
+  const lockPath = checkoutLockPath(ship.d);
+  writeFileSync(lockPath, '999999999\n');
+  const oldTime = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(lockPath, oldTime, oldTime);
+
+  const r = syncPassengerCheckout(ship.d, undefined, 'origin', 'main');
+  assert.equal(r.action, 'level');
 });
