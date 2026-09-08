@@ -62,7 +62,7 @@ import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { dockerAvailable, planContainers, syncAllPassengerCheckouts, syncPassengerContainers } from './passenger-containers.ts';
-import { syncPassengerTunnels } from './tunnel.ts';
+import { syncPassengerTunnels, readPersistedTunnel, isPidAlive } from './tunnel.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
@@ -229,6 +229,7 @@ function usage(): never {
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
+  crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [route] [R]  pause everything, or one role
@@ -2077,6 +2078,67 @@ switch (command) {
     if (branch) gitOk(target.dir, ['branch', '-D', branch]);
     else emit.warn(`no branch found for ISSUE-${n} in ${target.name} — worktree removed, nothing to delete`);
     emit.emit(`dropped ISSUE-${n} from ${target.name}`);
+    break;
+  }
+
+  case 'rotate-passenger-url': {
+    // ISSUE-555's narrowed scope (see the ticket's own comment trail):
+    // the relay already mints a fresh `tunnelSlug` on every reconnect
+    // (RELAY.md), so "rotation" doesn't need a stable-slug protocol built
+    // first — it's just forcing a reconnect. This is the escape hatch for
+    // a leaked passenger URL: the ship's SSH keypair is never touched,
+    // only the tunnel (and therefore the public label) is replaced.
+    emit.enter('passengers');
+    if (!route.hostPassengers) {
+      process.stderr.write(
+        `crew rotate-passenger-url: route "${route.route}" does not have hostPassengers enabled\n`,
+      );
+      process.exit(2);
+    }
+    if (!cfg.ship.relayHost) {
+      process.stderr.write('crew rotate-passenger-url: this ship has no relayHost configured — nothing to rotate\n');
+      process.exit(2);
+    }
+    const workspaceId = route.resolved?.workspaceId;
+    if (!workspaceId) {
+      process.stderr.write(`crew rotate-passenger-url: route "${route.route}" has no resolved ids — run \`crew connect\`\n`);
+      process.exit(2);
+    }
+    const plans = planContainers(cfg).filter((p) => p.workspaceId === workspaceId);
+    if (!plans.length) {
+      process.stderr.write(
+        `crew rotate-passenger-url: no Host Passengers container is planned for "${route.route}" right now\n`,
+      );
+      process.exit(2);
+    }
+    const existing = readPersistedTunnel(cfg.ship.stateDir, workspaceId);
+    const hasLiveTunnel = existing !== undefined && isPidAlive(existing.pid);
+    if (dryRun) {
+      emit.emit(
+        hasLiveTunnel
+          ? `would kill tunnel pid ${existing!.pid} for ${route.route} and reconnect with a fresh public URL`
+          : `would reconnect ${route.route} with a fresh public URL (no live tunnel to kill)`,
+      );
+      break;
+    }
+    // Kill the old tunnel before dialing a new one — the same
+    // kill-then-respawn shape `syncPassengerTunnels` already uses when a
+    // container's mounts change out from under a running tunnel. Not
+    // strictly required for the URL to change (the relay evicts the old
+    // mapping the instant the new connection lands, per CREW_PRD.md
+    // §9.9), but leaving a superseded tunnel running for no reason isn't
+    // the point of a rotation.
+    if (hasLiveTunnel) {
+      try { process.kill(existing!.pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
+    const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
+    syncPassengerTunnels(plans, cfg.ship.relayHost, privateKeyPath, cfg.ship.stateDir, {
+      onStatus: (wsId, status) => {
+        new Tracker(route, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
+          .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
+      },
+    });
+    emit.emit(`rotated the passenger tunnel for ${route.route} — a fresh public URL will be minted on reconnect`);
     break;
   }
 
