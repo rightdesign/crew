@@ -448,6 +448,58 @@ test('discover() leaves an existing Ships row alone when host_passengers already
   assert.ok(!calls.some((c) => c.method === 'PATCH' && c.key.includes('/ships-model/records/')));
 });
 
+test('discover() PATCHes ssh_public_key onto an existing Ships row when it disagrees with what this ship holds (ISSUE-553)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [
+      { id: 'ship-1', name: "Brad's MacBook", ssh_public_key: 'ssh-ed25519 OLD crew-ship' },
+    ],
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar',
+    ship: { name: "Brad's MacBook", sshPublicKey: 'ssh-ed25519 NEW crew-ship' },
+  });
+  assert.ok(found.provisioning.some((p) => p.includes('synced ssh_public_key')));
+  const patchShip = calls.find((c) => c.method === 'PATCH' && c.key === '/api/data-models/ships-model/records/ship-1');
+  assert.deepEqual(patchShip?.body, { ssh_public_key: 'ssh-ed25519 NEW crew-ship' });
+});
+
+test('discover() leaves ssh_public_key alone when this ship offers none (e.g. ssh-keygen unavailable) — never clobbers a working key with nothing (ISSUE-553)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [
+      { id: 'ship-1', name: "Brad's MacBook", ssh_public_key: 'ssh-ed25519 EXISTING crew-ship' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar',
+    ship: { name: "Brad's MacBook" },
+  });
+  assert.ok(!found.provisioning.some((p) => p.includes('ssh_public_key')));
+  assert.ok(!calls.some((c) => c.method === 'PATCH' && c.key.includes('/ships-model/records/')));
+});
+
 test('discover() claims a pre-existing, unscoped Crew row for this ship rather than creating a duplicate (ISSUE-610)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },

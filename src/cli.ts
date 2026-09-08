@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease,
+  DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
 } from './config.ts';
@@ -60,6 +60,9 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
+import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
+import { dockerAvailable, planContainers, syncPassengerContainers } from './passenger-containers.ts';
+import { syncPassengerTunnels } from './tunnel.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -842,6 +845,62 @@ switch (command) {
     // itself skips its inline release under `--no-release`, which is what
     // that companion unit's `crew run` passes — see `install.ts`.
     const skipInlineRelease = flag('no-release');
+
+    // Host Passengers container + tunnel lifecycle (ISSUE-553) — once per
+    // cycle, spanning every route this ship declares, not scoped to
+    // whichever route/workspace this particular cycle's fleet-wide pick
+    // happens to be. A workspace's container has to stay up even on a
+    // cycle where nothing in it won the pick, and `--dry-run`'s whole
+    // point is "perform nothing", so this is skipped entirely under it —
+    // same guard `beatShip`'s call site further down uses.
+    if (!dryRun) {
+      const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
+      if (passengerRoutes.length > 0) {
+        if (!dockerAvailable()) {
+          emit.warn(
+            'Host Passengers is on for at least one route but Docker is not available — skipping container sync this cycle',
+            { step: 'passengers' },
+          );
+        } else {
+          try {
+            const tablationApiBaseUrl = passengerRoutes[0]!.baseUrl || DEFAULT_BASE_URL;
+            const result = syncPassengerContainers(cfg, tablationApiBaseUrl);
+            if (result.started.length || result.recreated.length || result.stopped.length) {
+              emit.emit(
+                `passenger containers: ${result.started.length} started, ${result.recreated.length} recreated, ` +
+                  `${result.stopped.length} stopped`,
+                { step: 'passengers', data: { ...result } },
+              );
+            }
+            // The tunnel needs this ship's own keypair, minted by `crew
+            // connect` (or here, best-effort, if it's somehow still
+            // missing) — and a relay to dial, which `ship.relayHost` may
+            // legitimately be unset for (containers still run locally with
+            // no tunnel; `crew doctor` says so). Neither missing piece
+            // should stop the container sync above, which already ran.
+            if (cfg.ship.relayHost) {
+              try {
+                const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
+                const plans = planContainers(cfg);
+                syncPassengerTunnels(plans, cfg.ship.relayHost, privateKeyPath, cfg.ship.stateDir, {
+                  onStatus: (workspaceId, status) => {
+                    const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
+                    if (!owningRoute) return;
+                    new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
+                      .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
+                  },
+                });
+              } catch (e) {
+                emit.warn(`passenger tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
+              }
+            }
+          } catch (e) {
+            emit.warn(`passenger container sync failed: ${(e as Error).message}`, { step: 'passengers' });
+          }
+        }
+      }
+    }
+
     // Many routes and none named: poll them all and pick the most
     // urgent across the fleet (ISSUE-338).
     if (fleetWide) {
@@ -1604,7 +1663,27 @@ switch (command) {
     // so it stays false until the operator adds `hostPassengers: true` to
     // the pasted route block and reconnects.
     const existingRoute = arg ? cfg.routes.find((r) => r.route === arg) : undefined;
-    const ship = { name: cfg.ship.name, platform: cfg.ship.platform, hostPassengers: existingRoute?.hostPassengers === true };
+    // This ship's own SSH identity for the Host Passengers tunnel
+    // (ISSUE-553) — found-or-generated once per machine (`ensureShipSshKeypair`
+    // persists it under stateDir, same convention as `apiKeyPathFor`), then
+    // synced onto this workspace's Ships row the same way `hostPassengers`
+    // is, right below. Best-effort: no `ssh-keygen` on PATH (or a dry run)
+    // must not block `crew connect` itself — the row simply keeps whatever
+    // key (or none) it already had until a machine that CAN generate one
+    // connects.
+    let sshPublicKey: string | undefined;
+    if (!dryRun) {
+      try {
+        sshPublicKey = ensureShipSshKeypair(cfg.ship.stateDir).publicKey;
+      } catch (e) {
+        process.stderr.write(`(no SSH keypair synced — ${(e as Error).message})\n`);
+      }
+    }
+    const ship = {
+      name: cfg.ship.name, platform: cfg.ship.platform,
+      hostPassengers: existingRoute?.hostPassengers === true,
+      sshPublicKey,
+    };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
       let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun });
@@ -2312,6 +2391,44 @@ switch (command) {
           `ship record:       ${row.name} (${declared ?? 'no platform'})` +
             `${declared && declared !== host ? ` — MISMATCH, this host is ${host}` : ''}\n` +
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
+        );
+      }
+    }
+
+    // Host Passengers preflight (ISSUE-553): a route can declare
+    // `hostPassengers: true` with no way for `crew connect`/`crew run` to
+    // have warned about it yet, so `doctor` is where a missing prerequisite
+    // has to surface — clearly, not as a container-lifecycle crash three
+    // commands from now.
+    const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
+    if (passengerRoutes.length === 0) {
+      process.stdout.write('host passengers:   off (no enabled route sets hostPassengers: true)\n');
+    } else {
+      const dockerOk = dockerAvailable();
+      const keygenOk = sshKeygenAvailable();
+      process.stdout.write(
+        `host passengers:   ON for ${passengerRoutes.map((r) => r.route).join(', ')}\n` +
+          `                   docker:     ${dockerOk ? 'OK' : 'NOT AVAILABLE'}\n` +
+          `                   ssh-keygen: ${keygenOk ? 'OK' : 'NOT AVAILABLE'}\n` +
+          `                   relay host: ${cfg.ship.relayHost ? cfg.ship.relayHost : 'not set (ship.relayHost) — containers will run with no tunnel'}\n`,
+      );
+      if (!dockerOk) {
+        process.stdout.write(
+          '                   Docker Desktop (or another Docker daemon) is required for Host Passengers — ' +
+            'install/start it, then re-run `crew doctor`. The toggle stays armed in crew.yaml but nothing will ' +
+            'start until Docker answers `docker info`.\n',
+        );
+      }
+      if (!keygenOk) {
+        process.stdout.write(
+          '                   `ssh-keygen` is required to mint this ship\'s tunnel identity — install OpenSSH, ' +
+            'then re-run `crew connect` to sync a key onto this workspace\'s Ships row.\n',
+        );
+      }
+      for (const r of passengerRoutes) {
+        const included = passengerRepoTargets(r);
+        process.stdout.write(
+          `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
       }
     }

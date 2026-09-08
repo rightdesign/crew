@@ -42,7 +42,7 @@ export interface DiscoverOptions extends AuthOptions {
    * the read-only lookup it always was: no ship-scoping, no writes, the
    * old workspace-wide-by-name seat search.
    */
-  ship?: { name: string; platform?: string; hostPassengers?: boolean };
+  ship?: { name: string; platform?: string; hostPassengers?: boolean; sshPublicKey?: string };
   /**
    * Same meaning as everywhere else in the CLI: report what discovery would
    * do without writing anything. Provisioning (the `ship` option above) is
@@ -430,7 +430,9 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // person the same way `Tracker.myShipRow` leaves it).
   let shipRowId: string | undefined;
   if (out.shipsModelId && o.ship && !o.dryRun) {
-    const shipRows = await get<Array<{ id: string; name?: string | null; host_passengers?: boolean | null }>>(
+    const shipRows = await get<Array<{
+      id: string; name?: string | null; host_passengers?: boolean | null; ssh_public_key?: string | null;
+    }>>(
       o, `/data-models/${out.shipsModelId}/records?limit=200`,
     );
     const mine = shipRows.filter((r) => (r.name ?? '').trim() === o.ship!.name.trim());
@@ -443,17 +445,33 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // (ISSUE-553/554), and stamping a default here could clobber a real
     // value a future tunnel client is maintaining.
     const hostPassengers = o.ship.hostPassengers ?? false;
+    // Same reasoning as `hostPassengers`, for the ship's own SSH public key
+    // (ISSUE-553): the keypair itself is generated and persisted on this
+    // machine (`ssh-keys.ts`), never on the Ships row — the row only ever
+    // reflects whatever public key this machine currently holds, synced on
+    // every connect so a regenerated key takes effect the next time this
+    // route reconnects. Absent (no `sshPublicKey` given, e.g. Docker/ssh-keygen
+    // unavailable) means "leave whatever is on the row alone" rather than
+    // clobbering a working key with nothing.
+    const sshPublicKey = o.ship.sshPublicKey;
     if (mine.length === 1) {
       shipRowId = mine[0]!.id;
-      if ((mine[0]!.host_passengers ?? false) !== hostPassengers) {
-        await patch(o, `/data-models/${out.shipsModelId}/records/${shipRowId}`, { host_passengers: hostPassengers });
-        provisioning.push(`synced host_passengers=${hostPassengers} onto Ships row "${o.ship.name}"`);
+      const patchBody: Record<string, unknown> = {};
+      if ((mine[0]!.host_passengers ?? false) !== hostPassengers) patchBody.host_passengers = hostPassengers;
+      if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
+        patchBody.ssh_public_key = sshPublicKey;
+      }
+      if (Object.keys(patchBody).length > 0) {
+        await patch(o, `/data-models/${out.shipsModelId}/records/${shipRowId}`, patchBody);
+        if ('host_passengers' in patchBody) provisioning.push(`synced host_passengers=${hostPassengers} onto Ships row "${o.ship.name}"`);
+        if ('ssh_public_key' in patchBody) provisioning.push(`synced ssh_public_key onto Ships row "${o.ship.name}"`);
       }
     } else if (mine.length === 0) {
       const created = await post<{ id: string }>(o, `/data-models/${out.shipsModelId}/records`, {
         name: o.ship.name,
         ...(o.ship.platform ? { platform: o.ship.platform } : {}),
         host_passengers: hostPassengers,
+        ...(sshPublicKey !== undefined ? { ssh_public_key: sshPublicKey } : {}),
       });
       shipRowId = created.id;
       provisioning.push(`created Ships row "${o.ship.name}"`);

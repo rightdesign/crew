@@ -1,0 +1,216 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  planContainers, portFor, containerNameFor, listPassengerContainers, startContainer, stopContainer,
+  syncPassengerContainers, dockerAvailable, IMAGE_TAG, type Exec, type ContainerPlan,
+} from '../src/passenger-containers.ts';
+import type { CrewConfig, Route } from '../src/config.ts';
+
+function makeRoute(opts: {
+  route: string; enabled?: boolean; hostPassengers?: boolean; workspaceId?: string;
+  repos?: Record<string, string>; repoOverrides?: Record<string, { hostPassengers?: boolean }>;
+}): Route {
+  return {
+    route: opts.route,
+    enabled: opts.enabled ?? true,
+    dir: '/tmp/does-not-matter',
+    repos: opts.repos ?? { only: '/tmp/only' },
+    repoOverrides: opts.repoOverrides ?? {},
+    hostPassengers: opts.hostPassengers ?? false,
+    baseUrl: 'https://example.test',
+    apiKey: 'sk_test',
+    hooks: {},
+    labels: {},
+    release: {},
+    resolved: opts.workspaceId ? {
+      workspaceId: opts.workspaceId,
+      models: { issues: 'i', comments: 'c', crew: 'm' },
+      seats: {},
+      operator: 'op-1',
+      holds: [],
+    } : undefined,
+  } as unknown as Route;
+}
+
+function makeConfig(routes: Route[]): CrewConfig {
+  return { ship: { stateDir: '/tmp/state' }, routes, crewHome: '/tmp/crew' } as unknown as CrewConfig;
+}
+
+test('planContainers() ignores a route with hostPassengers off', () => {
+  const cfg = makeConfig([makeRoute({ route: 'w/a', hostPassengers: false, workspaceId: 'ws-1' })]);
+  assert.deepEqual(planContainers(cfg), []);
+});
+
+test('planContainers() ignores a route with hostPassengers on but not yet resolved (no workspaceId)', () => {
+  const cfg = makeConfig([makeRoute({ route: 'w/a', hostPassengers: true })]);
+  assert.deepEqual(planContainers(cfg), []);
+});
+
+test('planContainers() ignores a disabled route even with hostPassengers on', () => {
+  const cfg = makeConfig([makeRoute({ route: 'w/a', hostPassengers: true, enabled: false, workspaceId: 'ws-1' })]);
+  assert.deepEqual(planContainers(cfg), []);
+});
+
+test('planContainers() produces one plan per workspace, with a stable deterministic port', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { alpha: '/tmp/alpha' } }),
+  ]);
+  const plans = planContainers(cfg);
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0]!.workspaceId, 'ws-1');
+  assert.equal(plans[0]!.containerName, containerNameFor('ws-1'));
+  assert.equal(plans[0]!.port, portFor('ws-1'));
+  assert.deepEqual(plans[0]!.mounts, [{ hostPath: '/tmp/alpha', containerPath: '/workspace/alpha' }]);
+});
+
+test('portFor() is deterministic — same workspace id, same port, every call', () => {
+  assert.equal(portFor('ws-1'), portFor('ws-1'));
+  assert.notEqual(portFor('ws-1'), portFor('ws-2'));
+});
+
+test('planContainers() merges repo targets across two routes that share a workspace, deduped by repo name', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { crew: '/tmp/crew' } }),
+    makeRoute({ route: 'w/b', hostPassengers: true, workspaceId: 'ws-1', repos: { crew: '/tmp/crew', other: '/tmp/other' } }),
+  ]);
+  const plans = planContainers(cfg);
+  assert.equal(plans.length, 1);
+  assert.deepEqual(
+    plans[0]!.mounts.map((m) => m.containerPath).sort(),
+    ['/workspace/crew', '/workspace/other'],
+  );
+});
+
+test('planContainers() excludes a workspace whose only route opted every repo out (repos: <name>: hostPassengers: false)', () => {
+  const cfg = makeConfig([
+    makeRoute({
+      route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' },
+      repoOverrides: { only: { hostPassengers: false } },
+    }),
+  ]);
+  assert.deepEqual(planContainers(cfg), []);
+});
+
+test('planContainers() gives two different workspaces two different mountsHash values for the same single repo name', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/a' } }),
+    makeRoute({ route: 'w/b', hostPassengers: true, workspaceId: 'ws-2', repos: { only: '/tmp/b' } }),
+  ]);
+  const plans = planContainers(cfg);
+  assert.equal(plans.length, 2);
+  assert.notEqual(plans[0]!.mountsHash, plans[1]!.mountsHash);
+});
+
+/** Records every docker invocation and lets a test script canned responses per argv-joined key. */
+function fakeExec(responses: Record<string, string> = {}): { exec: Exec; calls: string[][] } {
+  const calls: string[][] = [];
+  const exec: Exec = (cmd, args) => {
+    calls.push([cmd, ...args]);
+    const key = [cmd, ...args].join(' ');
+    if (key in responses) return responses[key]!;
+    // `docker ps -a --filter ...` etc. default to empty output unless a test overrides it.
+    return '';
+  };
+  return { exec, calls };
+}
+
+test('dockerAvailable() is true when `docker info` succeeds, false when it throws', () => {
+  const ok: Exec = () => '';
+  assert.equal(dockerAvailable(ok), true);
+  const broken: Exec = () => { throw new Error('no docker'); };
+  assert.equal(dockerAvailable(broken), false);
+});
+
+test('listPassengerContainers() parses newline-separated container names, dropping blanks', () => {
+  const { exec } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': 'crew-passenger-ws-1\ncrew-passenger-ws-2\n',
+  });
+  assert.deepEqual(listPassengerContainers(exec), ['crew-passenger-ws-1', 'crew-passenger-ws-2']);
+});
+
+test('startContainer() runs `docker run -d` with one -v per mount, the mountsHash label, and the fixed image tag', () => {
+  const { exec, calls } = fakeExec();
+  const plan: ContainerPlan = {
+    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800,
+    mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }, { hostPath: '/tmp/b', containerPath: '/workspace/b' }],
+    mountsHash: 'deadbeef',
+  };
+  startContainer(plan, 'https://app.tablation.com/api', exec);
+
+  assert.equal(calls.length, 1);
+  const [cmd, ...args] = calls[0]!;
+  assert.equal(cmd, 'docker');
+  assert.deepEqual(args.slice(0, 3), ['run', '-d', '--name']);
+  assert.ok(args.includes('crew-passenger-ws-1'));
+  assert.ok(args.includes('28800:8765'));
+  assert.ok(args.includes('PASSENGER_MCP_WORKSPACE_ID=ws-1'));
+  assert.ok(args.includes('TABLATION_API_BASE_URL=https://app.tablation.com/api'));
+  assert.ok(args.includes('crew.mounts.hash=deadbeef'));
+  assert.ok(args.includes('/tmp/a:/workspace/a:ro'));
+  assert.ok(args.includes('/tmp/b:/workspace/b:ro'));
+  assert.equal(args[args.length - 1], IMAGE_TAG);
+});
+
+test('stopContainer() swallows an already-gone container rather than throwing', () => {
+  const broken: Exec = () => { throw new Error('no such container'); };
+  assert.doesNotThrow(() => stopContainer('crew-passenger-ws-1', broken));
+});
+
+test('syncPassengerContainers() starts a planned container that is not yet running', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
+  ]);
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': '',
+  });
+  const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
+
+  assert.deepEqual(result.started, [containerNameFor('ws-1')]);
+  assert.deepEqual(result.recreated, []);
+  assert.deepEqual(result.stopped, []);
+  assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'run'));
+});
+
+test('syncPassengerContainers() leaves a running container alone when its mountsHash label already matches the plan', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
+  ]);
+  const plans = planContainers(cfg);
+  const name = plans[0]!.containerName;
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': `${name}\n`,
+    [`docker inspect --format {{ index .Config.Labels "crew.mounts.hash" }} ${name}`]: `${plans[0]!.mountsHash}\n`,
+  });
+  const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
+
+  assert.deepEqual(result, { started: [], recreated: [], stopped: [] });
+  assert.ok(!calls.some((c) => c[0] === 'docker' && (c[1] === 'run' || c[1] === 'rm')));
+});
+
+test('syncPassengerContainers() recreates a running container whose mountsHash label has gone stale', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
+  ]);
+  const plans = planContainers(cfg);
+  const name = plans[0]!.containerName;
+  const { exec } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': `${name}\n`,
+    [`docker inspect --format {{ index .Config.Labels "crew.mounts.hash" }} ${name}`]: 'stale-hash\n',
+  });
+  const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
+
+  assert.deepEqual(result.recreated, [name]);
+  assert.deepEqual(result.started, []);
+  assert.deepEqual(result.stopped, []);
+});
+
+test('syncPassengerContainers() stops a running container whose workspace is no longer planned (toggle went off)', () => {
+  const cfg = makeConfig([]); // no routes at all -> nothing planned
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': 'crew-passenger-ws-old\n',
+  });
+  const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
+
+  assert.deepEqual(result.stopped, ['crew-passenger-ws-old']);
+  assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'rm' && c.includes('crew-passenger-ws-old')));
+});

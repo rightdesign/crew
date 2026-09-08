@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
-  resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo,
+  resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo, passengerRepoTargets,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -74,6 +74,44 @@ test('hostPassengers defaults to false, and a route may opt in explicitly (ISSUE
   const { dir: dir2, file: file2 } = withConfig(ONE);
   const cfg2 = loadConfig(dir2, file2);
   assert.equal(cfg2.routes[0]!.hostPassengers, false);
+});
+
+test('ship.relayHost is undefined unless set — the tunnel client has no relay to dial otherwise (ISSUE-553)', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.ship.relayHost, undefined);
+
+  const withRelay = ONE.replace('ship:\n  agent: { bin: /bin/true }', 'ship:\n  agent: { bin: /bin/true }\n  relayHost: crewd@ships.tablation.dev');
+  const { dir: dir2, file: file2 } = withConfig(withRelay);
+  const cfg2 = loadConfig(dir2, file2);
+  assert.equal(cfg2.ship.relayHost, 'crewd@ships.tablation.dev');
+});
+
+test('passengerRepoTargets() is empty when the route has hostPassengers off, regardless of repos:', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.deepEqual(passengerRepoTargets(cfg.routes[0]!), []);
+});
+
+test('passengerRepoTargets() includes every repos: entry once hostPassengers is on, minus a per-repo opt-out (ISSUE-553)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: w/multi',
+    '    apiKey: k',
+    '    baseUrl: https://example.com',
+    '    hostPassengers: true',
+    '    repos:',
+    '      frontend: /tmp/frontend',
+    '      backend:',
+    '        dir: /tmp/backend',
+    '        hostPassengers: false',
+  ].join('\n'));
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'));
+  const route = findRoute(cfg, 'w/multi');
+
+  assert.deepEqual(passengerRepoTargets(route).map((t) => t.name), ['frontend']);
 });
 
 test('maxThinkingTokens defaults to a non-zero value — extended thinking must be on for cycles reporting to have anything to report', () => {

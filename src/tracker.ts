@@ -84,6 +84,10 @@ export interface ShipRow {
   engaged_ticket_id?: string | null;
   host?: string | null;
   pid?: number | null;
+  host_passengers?: boolean | null;
+  ssh_public_key?: string | null;
+  tunnel_status?: string | null;
+  mcp_url?: string | null;
 }
 
 /**
@@ -316,6 +320,23 @@ export class Tracker {
       engaged_connection: connectionName,
       engaged_ticket_id: ticketRecordId,
     });
+  }
+
+  /**
+   * Writes this ship's own tunnel state for Host Passengers (ISSUE-553):
+   * `tunnel_status` (disconnected/connecting/connected) and `mcp_url`, as
+   * the tunnel client (`tunnel.ts`) brings a workspace's container's tunnel
+   * up or down. A no-op, like every other `myShipRow`-backed write here, on
+   * a workspace with no Ships table or no row for this ship's name — the
+   * tunnel client itself still runs the tunnel either way, it just has
+   * nowhere on the board to report the state.
+   */
+  async updateTunnelState(
+    shipName: string, patch: { tunnel_status: string; mcp_url?: string | null },
+  ): Promise<void> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return;
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, patch);
   }
 
   /** The other half of `beatEngaged` — clears engagement back to idle. */

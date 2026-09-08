@@ -275,6 +275,18 @@ export interface Route {
     labels?: { test?: string; build?: string; deploy?: string };
     release?: Route['release'];
     branch?: Partial<BranchNaming>;
+    /**
+     * Per-connection opt-OUT of Host Passengers (ISSUE-553), when this
+     * route's own `hostPassengers: true` would otherwise include every repo
+     * it serves in that workspace's container. Absent (the common case)
+     * means included — the design (CREW_PRD.md §9.8) is "every repo that
+     * ship already has a connection for in that workspace", not a second
+     * opt-in gate on top of the route-level one. Set `hostPassengers: false`
+     * on one `repos: <name>:` entry to keep that one repo's checkout out of
+     * the container while the rest of the route's repos are still exposed —
+     * e.g. a repo with sensitive history the others don't have.
+     */
+    hostPassengers?: boolean;
   }>;
   /**
    * This workspace's own rules, where they differ from the default (see
@@ -351,6 +363,18 @@ export interface Ship {
    * machine that runs agents constantly becomes real disk with no owner.
    */
   streamRetentionDays: number;
+  /**
+   * The Host Passengers relay this ship dials out to (`ssh -R
+   * workspace-<id>:0:127.0.0.1:<port> <relayHost>`) — docs/RELAY.md in the
+   * synthesis repo, e.g. `crewd@ships.tablation.dev`. Ship-level, not
+   * per-route: one ship dials one relay deployment regardless of how many
+   * workspaces' containers it's tunneling. `undefined` means Host
+   * Passengers containers still run locally (any route with
+   * `hostPassengers: true` still gets its container), but no tunnel client
+   * starts for them — `crew doctor` flags this as "toggle armed, nothing to
+   * dial" rather than crashing the poll loop trying to `ssh` to nothing.
+   */
+  relayHost?: string;
 }
 
 export interface CrewConfig {
@@ -374,7 +398,7 @@ export class ConfigError extends Error {}
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
-  'reposBasePath',
+  'reposBasePath', 'relayHost',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -382,7 +406,7 @@ const ROUTE_KEYS = new Set([
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
-const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch']);
+const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch', 'hostPassengers']);
 const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
 // `versionFile` (singular) is a ship-level-only alias for a one-entry
 // `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
@@ -826,6 +850,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       userAgent: shipRaw.userAgent ?? `Mozilla/5.0 CrewAgent/${crewVersion(crewHome)}`,
       maxConcurrentAgents,
       streamRetentionDays,
+      relayHost: shipRaw.relayHost ? String(shipRaw.relayHost) : undefined,
     },
     routes,
     crewHome,
@@ -856,7 +881,7 @@ function parseOneRoute(
         const e = entry as Record<string, any>;
         rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
         repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
-        if (e.hooks || e.labels || e.release || e.branch) {
+        if (e.hooks || e.labels || e.release || e.branch || e.hostPassengers !== undefined) {
           repoOverrides[name] = {
             hooks: e.hooks, labels: e.labels,
             release: e.release ? parseReleaseOverride(e.release, `${where}.repos.${name}`, file) : undefined,
@@ -865,6 +890,7 @@ function parseOneRoute(
             // shape as one that never had the key, and existing callers
             // compare this literally.
             ...(e.branch ? { branch: parseBranchOverride(e.branch, `${where}.repos.${name}`, file) } : {}),
+            ...(e.hostPassengers !== undefined ? { hostPassengers: e.hostPassengers === true } : {}),
           };
         }
       } else {
@@ -1101,6 +1127,19 @@ export function reposOf(r: Route): RepoTarget[] {
   return trackerNames.map((name) => ({
     name, dir: defaultRepoDir(r.reposBasePath, workspace, name), remote: remoteByName[name],
   }));
+}
+
+/**
+ * Which of this route's repos actually go into its workspace's Host
+ * Passengers container (ISSUE-553) — every repo `reposOf` lists, minus any
+ * one whose `repos: <name>: hostPassengers: false` opts it out (see
+ * `Route.repoOverrides`'s own doc comment). Returns `[]` when the route
+ * itself has `hostPassengers` off; the caller (`passenger-containers.ts`)
+ * shouldn't need to check both.
+ */
+export function passengerRepoTargets(r: Route): RepoTarget[] {
+  if (!r.hostPassengers) return [];
+  return reposOf(r).filter((t) => r.repoOverrides[t.name]?.hostPassengers !== false);
 }
 
 /**

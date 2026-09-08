@@ -1,0 +1,52 @@
+# Host Passengers per-workspace MCP server (ISSUE-553, CREW_PRD.md §9.10-9.11).
+#
+# One container per workspace a ship has host_passengers on for (decision 6 in
+# the Map) -- this image runs the read-only tool surface from
+# src/passenger-mcp.ts, never the full `crew` CLI. Every repo the container
+# serves is bind-mounted read-only under /workspace at `docker run` time;
+# nothing inside the image itself is per-workspace.
+#
+# Build from the crew repo root:
+#   docker build -f Dockerfile.passenger-mcp -t crew-passenger-mcp:latest .
+#
+# Run (repeated -v per repo this workspace's connections cover):
+#   docker run -d \
+#     --name crew-passenger-<workspaceId> \
+#     -p <hostPort>:8765 \
+#     -e PASSENGER_MCP_WORKSPACE_ID=<workspaceId> \
+#     -e TABLATION_API_BASE_URL=https://app.tablation.com/api \
+#     -v /host/path/to/repo-a:/workspace/repo-a:ro \
+#     -v /host/path/to/repo-b:/workspace/repo-b:ro \
+#     crew-passenger-mcp:latest
+#
+# `PASSENGER_MCP_ROOT` is fixed at /workspace: `createPassengerHttpServer`
+# treats it as the one allowed root, and every bind-mounted repo is a
+# subdirectory of it, so no per-run env is needed for that half.
+#
+# Deliberately not multi-stage: this is a thin process with three runtime
+# dependencies (see docker/passenger-mcp/package.json) and no build step of
+# its own (src/passenger-mcp-main.ts runs directly via
+# `node --experimental-strip-types`, same as this repo's own dev/test
+# invocation) -- a second stage would trim nothing worth trimming.
+FROM node:22-slim
+
+WORKDIR /app
+
+# git is a RUNTIME dependency here, not a build tool: src/git.ts shells out
+# to the real `git` binary for the git_log/git_blame tools.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# A standalone package.json (see its own doc comment) -- NOT this repo's
+# root package.json, which carries an unresolvable-in-this-context
+# `link:../tablation-js/...` dependency that passenger-mcp.ts never imports.
+COPY docker/passenger-mcp/package.json ./package.json
+RUN npm install --omit=dev
+
+COPY src ./src
+
+ENV PASSENGER_MCP_ROOT=/workspace
+ENV PASSENGER_MCP_PORT=8765
+EXPOSE 8765
+
+CMD ["node", "--experimental-strip-types", "src/passenger-mcp-main.ts"]

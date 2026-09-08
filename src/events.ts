@@ -21,7 +21,7 @@ import { join, dirname } from 'node:path';
 
 /** Where a cycle is. Ordered as they occur, which is what a view renders as progress. */
 export const STEPS = [
-  'poll', 'sweep', 'select', 'worktree', 'agent', 'reconcile', 'merge', 'release', 'idle',
+  'poll', 'sweep', 'select', 'worktree', 'agent', 'reconcile', 'merge', 'release', 'idle', 'passengers',
 ] as const;
 export type Step = (typeof STEPS)[number];
 
