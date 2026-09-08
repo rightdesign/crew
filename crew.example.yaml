@@ -76,6 +76,12 @@ routes:
 
     worktreePrefix: "myproject-issue-"
 
+    # Opt this route's ship into Host Passengers for this route's workspace
+    # (ISSUE-644): `crew connect` syncs this onto that workspace's own Ships
+    # row. Config-truth lives here, on the machine — never edit a Ships row
+    # by hand expecting it to stick. Defaults to false (not hosting).
+    # hostPassengers: true
+
     # Which lane-behavior policy this workspace's agents follow — the
     # prose in prompts/<name>/personas/{common.md,lane-<role>.md}, plus
     # whatever prompts/<name>/skills/*.md it ships. Bare name ("dev-qa")

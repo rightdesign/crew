@@ -64,6 +64,18 @@ test('ship-level settings are shared; route settings are not', () => {
   assert.equal(cfg.routes[1]!.worktreePrefix, 'js-issue-');
 });
 
+test('hostPassengers defaults to false, and a route may opt in explicitly (ISSUE-644)', () => {
+  const { dir, file } = withConfig(ONE.replace(
+    'worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    hostPassengers: true',
+  ));
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.hostPassengers, true);
+
+  const { dir: dir2, file: file2 } = withConfig(ONE);
+  const cfg2 = loadConfig(dir2, file2);
+  assert.equal(cfg2.routes[0]!.hostPassengers, false);
+});
+
 test('maxThinkingTokens defaults to a non-zero value — extended thinking must be on for cycles reporting to have anything to report', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);

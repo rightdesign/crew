@@ -1597,7 +1597,14 @@ switch (command) {
     // against. Threaded through explicitly rather than read again inside
     // `discover()`: this file already has `cfg` in scope, and `discover()`
     // stays a pure function of its options, testable without a config file.
-    const ship = { name: cfg.ship.name, platform: cfg.ship.platform };
+    //
+    // `hostPassengers` (ISSUE-644) comes from whatever route this exact
+    // `workspace/project` argument already names in crew.yaml, if any — a
+    // brand-new connect (nothing configured yet) has no preference to sync,
+    // so it stays false until the operator adds `hostPassengers: true` to
+    // the pasted route block and reconnects.
+    const existingRoute = arg ? cfg.routes.find((r) => r.route === arg) : undefined;
+    const ship = { name: cfg.ship.name, platform: cfg.ship.platform, hostPassengers: existingRoute?.hostPassengers === true };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
       let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun });

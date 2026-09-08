@@ -369,7 +369,83 @@ test('discover() creates the Ships row when this ship has no row yet, and report
   assert.equal(found.seats.dev, 'seat-dev');
   assert.ok(found.provisioning.some((p) => p.includes('created Ships row')));
   const createShip = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
-  assert.deepEqual(createShip?.body, { name: "Brad's MacBook", platform: 'macos' });
+  assert.deepEqual(createShip?.body, { name: "Brad's MacBook", platform: 'macos', host_passengers: false });
+});
+
+test('discover() stamps host_passengers on a newly-created Ships row when this route\'s config says true (ISSUE-644)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [],
+    '/api/data-models/ships-model/records': { id: 'ship-new' },
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  await discover({
+    ...BASE, workspace: 'issues', project: 'bar',
+    ship: { name: "Brad's MacBook", platform: 'macos', hostPassengers: true },
+  });
+  const createShip = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
+  assert.deepEqual(createShip?.body, { name: "Brad's MacBook", platform: 'macos', host_passengers: true });
+});
+
+test('discover() PATCHes host_passengers onto an existing Ships row when it disagrees with this route\'s config (ISSUE-644)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [
+      { id: 'ship-1', name: "Brad's MacBook", host_passengers: false },
+    ],
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar',
+    ship: { name: "Brad's MacBook", hostPassengers: true },
+  });
+  assert.ok(found.provisioning.some((p) => p.includes('synced host_passengers=true')));
+  const patchShip = calls.find((c) => c.method === 'PATCH' && c.key === '/api/data-models/ships-model/records/ship-1');
+  assert.deepEqual(patchShip?.body, { host_passengers: true });
+});
+
+test('discover() leaves an existing Ships row alone when host_passengers already matches this route\'s config (ISSUE-644)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [
+      { id: 'ship-1', name: "Brad's MacBook", host_passengers: true },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar',
+    ship: { name: "Brad's MacBook", hostPassengers: true },
+  });
+  assert.ok(!found.provisioning.some((p) => p.includes('host_passengers')));
+  assert.ok(!calls.some((c) => c.method === 'PATCH' && c.key.includes('/ships-model/records/')));
 });
 
 test('discover() claims a pre-existing, unscoped Crew row for this ship rather than creating a duplicate (ISSUE-610)', async (t) => {

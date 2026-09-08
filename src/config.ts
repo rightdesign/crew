@@ -301,6 +301,15 @@ export interface Route {
    * this machine.
    */
   promptsDir: string;
+  /**
+   * Opt this route's ship into Host Passengers for this route's workspace
+   * (ISSUE-644): `crew connect` syncs this flag onto that workspace's own
+   * `Ships` row, alongside the live `tunnel_status`. Config-truth lives on
+   * this machine, not on the Ships row — the row is a read-only reflection
+   * of what this route says, never the other way around. Default false:
+   * hosting is opt-in per route, not implied by connecting.
+   */
+  hostPassengers?: boolean;
 }
 
 export interface Ship {
@@ -370,7 +379,7 @@ const SHIP_KEYS = new Set([
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
-  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch']);
@@ -903,6 +912,7 @@ function parseOneRoute(
     },
     release: parseReleaseOverride(c?.release, where, file),
     branch: parseBranchOverride(c?.branch, where, file),
+    hostPassengers: c?.hostPassengers === true,
   };
   // The state-tree file wins when both exist: it's what `crew connect`
   // manages going forward, and an authored `resolved:`/`contract:` block in

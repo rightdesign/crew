@@ -42,7 +42,7 @@ export interface DiscoverOptions extends AuthOptions {
    * the read-only lookup it always was: no ship-scoping, no writes, the
    * old workspace-wide-by-name seat search.
    */
-  ship?: { name: string; platform?: string };
+  ship?: { name: string; platform?: string; hostPassengers?: boolean };
   /**
    * Same meaning as everywhere else in the CLI: report what discovery would
    * do without writing anything. Provisioning (the `ship` option above) is
@@ -430,16 +430,30 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // person the same way `Tracker.myShipRow` leaves it).
   let shipRowId: string | undefined;
   if (out.shipsModelId && o.ship && !o.dryRun) {
-    const shipRows = await get<Array<{ id: string; name?: string | null }>>(
+    const shipRows = await get<Array<{ id: string; name?: string | null; host_passengers?: boolean | null }>>(
       o, `/data-models/${out.shipsModelId}/records?limit=200`,
     );
     const mine = shipRows.filter((r) => (r.name ?? '').trim() === o.ship!.name.trim());
+    // Config-truth for this flag lives on this machine (this route's own
+    // `hostPassengers:`), never on the Ships row itself (ISSUE-644) — the
+    // row is a read-only reflection, synced here on every connect so a
+    // change to crew.yaml takes effect the next time this route reconnects.
+    // `tunnel_status`/`mcp_url` are deliberately left untouched: nothing in
+    // this repo runs an actual tunnel yet to report a live state for
+    // (ISSUE-553/554), and stamping a default here could clobber a real
+    // value a future tunnel client is maintaining.
+    const hostPassengers = o.ship.hostPassengers ?? false;
     if (mine.length === 1) {
       shipRowId = mine[0]!.id;
+      if ((mine[0]!.host_passengers ?? false) !== hostPassengers) {
+        await patch(o, `/data-models/${out.shipsModelId}/records/${shipRowId}`, { host_passengers: hostPassengers });
+        provisioning.push(`synced host_passengers=${hostPassengers} onto Ships row "${o.ship.name}"`);
+      }
     } else if (mine.length === 0) {
       const created = await post<{ id: string }>(o, `/data-models/${out.shipsModelId}/records`, {
         name: o.ship.name,
         ...(o.ship.platform ? { platform: o.ship.platform } : {}),
+        host_passengers: hostPassengers,
       });
       shipRowId = created.id;
       provisioning.push(`created Ships row "${o.ship.name}"`);
