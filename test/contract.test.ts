@@ -22,6 +22,16 @@ test('no override at all is the default', () => {
   assert.deepEqual(resolveContract(null), DEFAULT_CONTRACT);
 });
 
+test('renaming coordinatingValue carries the rename into repoExemptReportTypes (ISSUE-387)', () => {
+  const c = resolveContract({ coordinatingValue: 'epic' });
+  assert.deepEqual(c.repoExemptReportTypes, ['epic', 'question', 'investigation']);
+});
+
+test('an explicit repoExemptReportTypes overrides the derived default', () => {
+  const c = resolveContract({ coordinatingValue: 'epic', repoExemptReportTypes: ['epic'] });
+  assert.deepEqual(c.repoExemptReportTypes, ['epic']);
+});
+
 test('two routes can disagree about everything and both be right', () => {
   const acme = resolveContract({
     statuses: {

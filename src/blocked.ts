@@ -185,6 +185,24 @@ const isCoordinating = (t: Ticket, opts: Required<CoordinatingOptions>): boolean
   (t as Record<string, unknown>)[opts.reportTypeColumn] === opts.coordinatingValue;
 
 /**
+ * `filingErrors`' own marker set (ISSUE-387), separate from `coordinatingValue`.
+ * A `question` or `investigation` ticket is legitimately repo-less by design —
+ * a discussion or a spike has no code to touch — but it is a standalone
+ * ticket, not a parent with children the way a `coordinating` ticket is
+ * (Brad, 2026-09-07: investigation tickets are ordinary dev/design work, not
+ * a distinct lane, and are referenced from an epic's description rather than
+ * linked via `parent_id`). Keeping this list independent of `coordinatingValue`
+ * means a workspace renaming the rollup marker doesn't also have to repeat
+ * that rename here, and `rollUpParents` never mistakes a question/investigation
+ * ticket for a parent to roll up.
+ */
+export interface FilingErrorOptions extends CoordinatingOptions {
+  repoExemptValues?: string[];
+}
+
+const FILING_ERROR_DEFAULT_EXEMPT = ['coordinating', 'question', 'investigation'];
+
+/**
  * Roll a coordinating parent up from its children.
  *
  * Computed each cycle, never stored — the same discipline as blocked-ness, and
@@ -218,18 +236,30 @@ export function rollUpParents(
 }
 
 /**
- * A ticket naming no repo and carrying no coordinating marker: not an epic,
- * a filing error. `rollUpParents` only ever looks at tickets that turn out to
- * have children — this is the sibling check for the ISSUE-344 shape, a
- * repo-less ticket that isn't rolling anything up either: fetched every
- * cycle, placeable in no checkout, and silently never worked.
+ * A ticket naming no repo and carrying no repo-exempt marker: not an epic, a
+ * question, an investigation — a filing error. `rollUpParents` only ever
+ * looks at tickets that turn out to have children — this is the sibling
+ * check for the ISSUE-344 shape, a repo-less ticket that isn't rolling
+ * anything up either: fetched every cycle, placeable in no checkout, and
+ * silently never worked.
  *
  * Reported the way `strandedNeedsInfo` reports its case — every cycle, until
- * a human fixes the filing (adds a Repo or marks it coordinating).
+ * a human fixes the filing (adds a Repo, or marks it coordinating/question/
+ * investigation).
  */
-export function filingErrors(tickets: Ticket[], opts: CoordinatingOptions = {}): Ticket[] {
-  const resolved = { ...COORDINATING_DEFAULTS, ...opts };
-  return tickets.filter((t) => !t.repo_id && !isCoordinating(t, resolved));
+export function filingErrors(tickets: Ticket[], opts: FilingErrorOptions = {}): Ticket[] {
+  const reportTypeColumn = opts.reportTypeColumn ?? COORDINATING_DEFAULTS.reportTypeColumn;
+  // A workspace that renames `coordinatingValue` still has that renamed value
+  // exempted here by default, without also having to repeat it in
+  // `repoExemptValues` — only an explicit `repoExemptValues` overrides this.
+  const coordinatingValue = opts.coordinatingValue ?? COORDINATING_DEFAULTS.coordinatingValue;
+  const exempt = new Set(
+    opts.repoExemptValues ?? [coordinatingValue, ...FILING_ERROR_DEFAULT_EXEMPT.filter((v) => v !== 'coordinating')],
+  );
+  return tickets.filter((t) => {
+    if (t.repo_id) return false;
+    return !exempt.has((t as Record<string, unknown>)[reportTypeColumn] as string);
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -134,6 +134,33 @@ test('a repo-less, unmarked ticket is a filing error', () => {
   );
 });
 
+test('a question or investigation ticket is repo-exempt without being coordinating (ISSUE-387)', () => {
+  const noRepoNoMarker = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' });
+  const question = { ...T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' }), report_type: 'question' };
+  const investigation = { ...T({ id: 'c', issue_id: 'ISSUE-3', status: 'accepted' }), report_type: 'investigation' };
+  assert.deepEqual(
+    filingErrors([noRepoNoMarker, question as Ticket, investigation as Ticket]).map((t) => t.issue_id),
+    ['ISSUE-1'],
+  );
+});
+
+test('a repo-exempt question/investigation ticket never rolls up as a coordinating parent', () => {
+  // Same shape as the coordinating-parent test, but marked `question` instead
+  // — it must not be mistaken for a parent with children just because it is
+  // also repo-exempt in `filingErrors`.
+  const parent = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), report_type: 'question' };
+  const kid = { ...T({ id: 'k', issue_id: 'ISSUE-2', status: 'in_progress' }), parent_id: 'p' };
+  assert.deepEqual(rollUpParents([parent as Ticket, kid as Ticket]), []);
+});
+
+test('an explicit repoExemptValues list overrides the default entirely', () => {
+  const question = { ...T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' }), report_type: 'question' };
+  assert.deepEqual(
+    filingErrors([question as Ticket], { repoExemptValues: ['coordinating'] }).map((t) => t.issue_id),
+    ['ISSUE-1'], // 'question' no longer exempt once the caller supplies its own list
+  );
+});
+
 test('a stranded ticket assigned to a human is NOT reported — the ball is in their court', () => {
   const done = T({ id: 'x', issue_id: 'ISSUE-9', status: 'closed_deployed' });
   const held = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', blocked_by: ['x'], assignee_id: 'op-1' });

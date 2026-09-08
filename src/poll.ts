@@ -129,10 +129,14 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
       emit.emit(`every child is done — this coordinating ticket is too`, { ticket: r.parent.issue_id });
     }
   }
-  for (const t of filingErrors(tickets, coordinating)) {
-    emit.warn('no repo and not marked coordinating — a filing error, not an epic, and unroutable as written', {
-      ticket: t.issue_id,
-    });
+  for (const t of filingErrors(tickets, {
+    ...coordinating,
+    repoExemptValues: tracker.contract.repoExemptReportTypes,
+  })) {
+    emit.warn(
+      'no repo and not marked coordinating/question/investigation — a filing error, not an epic, and unroutable as written',
+      { ticket: t.issue_id },
+    );
   }
 
   emit.enter('select');

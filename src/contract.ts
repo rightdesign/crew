@@ -120,6 +120,17 @@ export interface Contract {
    * `rollUpParents` keys off instead of an absent `columns.repo`.
    */
   coordinatingValue: string;
+  /**
+   * Every `columns.reportType` value that legitimately needs no Repo
+   * (ISSUE-387) — what `filingErrors` treats as exempt, kept separate from
+   * `coordinatingValue`. A `question` or `investigation` ticket is
+   * repo-less by design (a discussion or a spike, not a build) but is a
+   * standalone ticket, not a coordinating parent with children — so it must
+   * not also make `rollUpParents` treat it as one. Defaults to
+   * `coordinatingValue` plus the two Report-type values an unmodified Issue
+   * Tracker ships with for this.
+   */
+  repoExemptReportTypes: string[];
 }
 
 /**
@@ -176,6 +187,7 @@ export const DEFAULT_CONTRACT: Contract = {
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
   coordinatingValue: 'coordinating',
+  repoExemptReportTypes: ['coordinating', 'question', 'investigation'],
 };
 
 export class ContractError extends Error {}
@@ -191,6 +203,14 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
     coordinatingValue: override.coordinatingValue ?? DEFAULT_CONTRACT.coordinatingValue,
+    // A workspace overriding `coordinatingValue` alone (renaming the rollup
+    // marker) still gets that renamed value exempted here by default,
+    // without also having to repeat it — only an explicit
+    // `repoExemptReportTypes` overrides this derived default.
+    repoExemptReportTypes:
+      override.repoExemptReportTypes ??
+      (override.coordinatingValue ? [override.coordinatingValue, 'question', 'investigation']
+        : DEFAULT_CONTRACT.repoExemptReportTypes),
   };
 }
 
