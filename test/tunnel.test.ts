@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, startTunnel, syncPassengerTunnels, readPersistedTunnel, type SpawnFn, type TunnelStatus,
+  sshArgsFor, startTunnel, syncPassengerTunnels, readPersistedTunnel, DEFAULT_SPAWN_OPTIONS,
+  type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
 
@@ -15,8 +16,23 @@ class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   pid = 4242;
+  unrefCalled = false;
   kill(_signal?: string) { this.emit('killed'); }
+  unref() { this.unrefCalled = true; }
 }
+
+test('the real ssh child is spawned detached (ISSUE-680) — crew run must not block on a tunnel meant to outlive this cycle', () => {
+  assert.equal(DEFAULT_SPAWN_OPTIONS.detached, true);
+});
+
+test('startTunnel() unrefs the child so the parent event loop does not wait on it (ISSUE-680)', () => {
+  const child = new FakeChild();
+  const { spawnFn } = fakeSpawn(child);
+  startTunnel({
+    relayHost: 'crewd@ships.tablation.dev', workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519', spawnFn,
+  });
+  assert.equal(child.unrefCalled, true);
+});
 
 function fakeSpawn(child: FakeChild): { spawnFn: SpawnFn; calls: Array<{ cmd: string; args: string[] }> } {
   const calls: Array<{ cmd: string; args: string[] }> = [];

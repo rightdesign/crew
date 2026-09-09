@@ -28,7 +28,7 @@
  * a side channel) is what `mcp_url` actually depends on.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ContainerPlan } from './passenger-containers.ts';
@@ -37,7 +37,21 @@ export type TunnelStatus = 'connecting' | 'connected' | 'disconnected';
 
 export type SpawnFn = (cmd: string, args: string[]) => ChildProcess;
 
-const defaultSpawn: SpawnFn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+// `detached: true` is load-bearing (ISSUE-680): `crew run` is a short-lived
+// process relaunched every cycle, not a daemon — without this, Node's
+// default child_process behavior keeps the parent's event loop alive until
+// the child exits, so `crew run` could never finish the cycle that spawned
+// a tunnel meant to keep running indefinitely. `startTunnel` below also
+// calls `.unref()` on the returned child for the same reason. Note: stderr
+// stays piped (not fully 'ignore'd) so the immediate "Allocated port" signal
+// below still works within the spawning cycle; a detached child whose
+// parent has since exited could in principle see a write to that pipe fail
+// once the parent's read end is gone, but `ssh -N` writes to stderr once at
+// connect time and essentially never again in the steady state, so this is
+// a narrow residual risk, not addressed here.
+/** Pulled out to its own constant so a test can assert on it without mocking `node:child_process`. */
+export const DEFAULT_SPAWN_OPTIONS: SpawnOptions = { stdio: ['ignore', 'ignore', 'pipe'], detached: true };
+const defaultSpawn: SpawnFn = (cmd, args) => spawn(cmd, args, DEFAULT_SPAWN_OPTIONS);
 
 export interface TunnelOptions {
   /** e.g. `crewd@ships.tablation.dev` — `Ship.relayHost`. */
@@ -95,6 +109,11 @@ export function startTunnel(opts: TunnelOptions): Tunnel {
   opts.onStatus?.('connecting');
 
   const child = spawnFn('ssh', sshArgsFor(opts));
+  // Same reasoning as `defaultSpawn`'s `detached: true` (ISSUE-680): don't
+  // let this child keep `crew run`'s event loop — and therefore the whole
+  // process — alive until the tunnel itself exits. A test-injected
+  // `spawnFn` may return a fake without a real `.unref()`; guard for that.
+  child.unref?.();
   let stderrBuf = '';
   child.stderr?.on('data', (chunk: Buffer | string) => {
     stderrBuf += chunk.toString();
