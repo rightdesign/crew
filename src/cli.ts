@@ -241,6 +241,7 @@ function usage(): never {
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
+  crew passengers [route]       sync Host Passengers containers/tunnels once; what the passengers unit invokes
   crew install                  write and load this platform's scheduler unit
   crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
@@ -317,7 +318,10 @@ for (const w of cfg.warnings) process.stderr.write(`crew: warning: ${w}\n`);
 // slug on the TRACKER, not the name of a route already in crew.yaml, so
 // it must not be forced through the same by-name lookup every other command
 // uses.
-const FLEET_CAPABLE = new Set(['poll', 'run']);
+// `passengers` spans every route this ship declares the same way `poll`/
+// `run` do (see `syncHostPassengers`'s own doc comment) — it must not
+// demand one be named either.
+const FLEET_CAPABLE = new Set(['poll', 'run', 'passengers']);
 // `--fleet` is release/merge/deploy's own opt-in to the same fleet-wide path
 // `poll`/`run` take automatically — release stays "a deliberate act on one
 // repo" by default (README), so an operator naming no route on a multi-route
@@ -351,8 +355,14 @@ const dryRun = flag('dry-run');
  *
  * `release`/`merge`/`deploy` take their own lock inside releasePhase(), so
  * a long release never blocks the next poll from starting.
+ *
+ * `passengers` (ISSUE-677) DOES get a blanket lock here — unlike `run`, it
+ * has no role-distinct/capacity-limited concept to be more precise about,
+ * and container/tunnel sync is cheap enough that a scheduler firing again
+ * before the previous sync finished should simply skip, not queue up a
+ * second concurrent `docker` sweep.
  */
-const EXCLUSIVE: Record<string, string> = {};
+const EXCLUSIVE: Record<string, string> = { passengers: 'passengers' };
 
 // A dry run writes to the terminal ONLY.
 //
@@ -380,6 +390,99 @@ function requireArmed(what: string): void {
   process.exit(0);
 }
 
+/**
+ * Host Passengers container + tunnel lifecycle (ISSUE-553), spanning every
+ * route this ship declares — not scoped to whichever route/workspace a
+ * particular `run` cycle's fleet-wide pick happens to be, since a
+ * workspace's container has to stay up even on a cycle where nothing in it
+ * won the pick.
+ *
+ * This used to run inline at the top of `case 'run'`, but `run` only fires
+ * every `StartInterval` and a scheduler will not start an overlapping
+ * instance while one is still executing — so a single long agent turn
+ * blocked the next passenger sync check for as long as that turn took, even
+ * though container/tunnel health has nothing to do with which ticket a
+ * cycle happens to work (ISSUE-677, observed live: a 20+ minute agent turn
+ * left a freshly-fixed container sync unable to get a second attempt at
+ * all). `crew install` now writes this its own `passengers` unit on its own
+ * timer, decoupled entirely from poll/select/agent execution — see
+ * `install.ts`'s `InstallJob`.
+ *
+ * `--dry-run`'s whole point is "perform nothing", so this is a no-op under
+ * it — same guard `beatShip`'s call site further down uses.
+ */
+async function syncHostPassengers(): Promise<void> {
+  if (dryRun) return;
+  const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
+  if (passengerRoutes.length === 0) return;
+  if (!dockerAvailable()) {
+    emit.warn(
+      'Host Passengers is on for at least one route but Docker is not available — skipping container sync this cycle',
+      { step: 'passengers' },
+    );
+    return;
+  }
+  try {
+    // Dedicated checkouts (ISSUE-554, decision 7 in the Map) must be
+    // cloned and fast-forwarded to `branch.base` BEFORE the container
+    // sync below can mount them — decision 8's poll-cadence half of
+    // freshness. A checkout that won't fast-forward (diverged
+    // upstream) is reported, not force-reset past.
+    for (const r of syncAllPassengerCheckouts(cfg)) {
+      if (r.outcome.action === 'diverged' || r.outcome.action === 'ff-failed') {
+        emit.warn(
+          `passenger checkout for ${r.name} is stale: ${r.outcome.detail}`,
+          { step: 'passengers', data: { workspaceId: r.workspaceId, repo: r.name } },
+        );
+      }
+    }
+    const tablationApiBaseUrl = passengerRoutes[0]!.baseUrl || DEFAULT_BASE_URL;
+    // Sync-daemon listeners (ISSUE-554, decision 8's `initialize`-
+    // triggered half) MUST be resolved before `syncPassengerContainers`
+    // below — a container's env (including its callback secret) is
+    // fixed at `docker run` time, so the daemon it's told to call has
+    // to already exist, with a matching secret, by the time that runs.
+    let syncEndpoints;
+    try {
+      syncEndpoints = syncPassengerSyncDaemons(planContainers(cfg), cfg, cfg.ship.stateDir);
+    } catch (e) {
+      emit.warn(`passenger sync-daemon lifecycle failed: ${(e as Error).message}`, { step: 'passengers' });
+      syncEndpoints = new Map();
+    }
+    const result = syncPassengerContainers(cfg, tablationApiBaseUrl, undefined, syncEndpoints);
+    if (result.started.length || result.recreated.length || result.stopped.length) {
+      emit.emit(
+        `passenger containers: ${result.started.length} started, ${result.recreated.length} recreated, ` +
+          `${result.stopped.length} stopped`,
+        { step: 'passengers', data: { ...result } },
+      );
+    }
+    // The tunnel needs this ship's own keypair, minted by `crew
+    // connect` (or here, best-effort, if it's somehow still
+    // missing) — and a relay to dial, which `ship.relayHost` may
+    // legitimately be unset for (containers still run locally with
+    // no tunnel; `crew doctor` says so). Neither missing piece
+    // should stop the container sync above, which already ran.
+    if (cfg.ship.relayHost) {
+      try {
+        const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
+        const plans = planContainers(cfg);
+        syncPassengerTunnels(plans, cfg.ship.relayHost, privateKeyPath, cfg.ship.stateDir, {
+          onStatus: (workspaceId, status) => {
+            const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
+            if (!owningRoute) return;
+            new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
+              .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
+          },
+        });
+      } catch (e) {
+        emit.warn(`passenger tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
+      }
+    }
+  } catch (e) {
+    emit.warn(`passenger container sync failed: ${(e as Error).message}`, { step: 'passengers' });
+  }
+}
 
 /**
  * Release every route, whoever won the agent slot.
@@ -864,86 +967,6 @@ switch (command) {
     // itself skips its inline release under `--no-release`, which is what
     // that companion unit's `crew run` passes — see `install.ts`.
     const skipInlineRelease = flag('no-release');
-
-    // Host Passengers container + tunnel lifecycle (ISSUE-553) — once per
-    // cycle, spanning every route this ship declares, not scoped to
-    // whichever route/workspace this particular cycle's fleet-wide pick
-    // happens to be. A workspace's container has to stay up even on a
-    // cycle where nothing in it won the pick, and `--dry-run`'s whole
-    // point is "perform nothing", so this is skipped entirely under it —
-    // same guard `beatShip`'s call site further down uses.
-    if (!dryRun) {
-      const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
-      if (passengerRoutes.length > 0) {
-        if (!dockerAvailable()) {
-          emit.warn(
-            'Host Passengers is on for at least one route but Docker is not available — skipping container sync this cycle',
-            { step: 'passengers' },
-          );
-        } else {
-          try {
-            // Dedicated checkouts (ISSUE-554, decision 7 in the Map) must be
-            // cloned and fast-forwarded to `branch.base` BEFORE the container
-            // sync below can mount them — decision 8's poll-cadence half of
-            // freshness. A checkout that won't fast-forward (diverged
-            // upstream) is reported, not force-reset past.
-            for (const r of syncAllPassengerCheckouts(cfg)) {
-              if (r.outcome.action === 'diverged' || r.outcome.action === 'ff-failed') {
-                emit.warn(
-                  `passenger checkout for ${r.name} is stale: ${r.outcome.detail}`,
-                  { step: 'passengers', data: { workspaceId: r.workspaceId, repo: r.name } },
-                );
-              }
-            }
-            const tablationApiBaseUrl = passengerRoutes[0]!.baseUrl || DEFAULT_BASE_URL;
-            // Sync-daemon listeners (ISSUE-554, decision 8's `initialize`-
-            // triggered half) MUST be resolved before `syncPassengerContainers`
-            // below — a container's env (including its callback secret) is
-            // fixed at `docker run` time, so the daemon it's told to call has
-            // to already exist, with a matching secret, by the time that runs.
-            let syncEndpoints;
-            try {
-              syncEndpoints = syncPassengerSyncDaemons(planContainers(cfg), cfg, cfg.ship.stateDir);
-            } catch (e) {
-              emit.warn(`passenger sync-daemon lifecycle failed: ${(e as Error).message}`, { step: 'passengers' });
-              syncEndpoints = new Map();
-            }
-            const result = syncPassengerContainers(cfg, tablationApiBaseUrl, undefined, syncEndpoints);
-            if (result.started.length || result.recreated.length || result.stopped.length) {
-              emit.emit(
-                `passenger containers: ${result.started.length} started, ${result.recreated.length} recreated, ` +
-                  `${result.stopped.length} stopped`,
-                { step: 'passengers', data: { ...result } },
-              );
-            }
-            // The tunnel needs this ship's own keypair, minted by `crew
-            // connect` (or here, best-effort, if it's somehow still
-            // missing) — and a relay to dial, which `ship.relayHost` may
-            // legitimately be unset for (containers still run locally with
-            // no tunnel; `crew doctor` says so). Neither missing piece
-            // should stop the container sync above, which already ran.
-            if (cfg.ship.relayHost) {
-              try {
-                const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
-                const plans = planContainers(cfg);
-                syncPassengerTunnels(plans, cfg.ship.relayHost, privateKeyPath, cfg.ship.stateDir, {
-                  onStatus: (workspaceId, status) => {
-                    const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
-                    if (!owningRoute) return;
-                    new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
-                      .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
-                  },
-                });
-              } catch (e) {
-                emit.warn(`passenger tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
-              }
-            }
-          } catch (e) {
-            emit.warn(`passenger container sync failed: ${(e as Error).message}`, { step: 'passengers' });
-          }
-        }
-      }
-    }
 
     // Many routes and none named: poll them all and pick the most
     // urgent across the fleet (ISSUE-338).
@@ -2249,13 +2272,14 @@ switch (command) {
       process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
       process.exit(2);
     }
-    // Two units, not one: `run` (poll/select/one agent session) and
-    // `release` (test/build/deploy) now run on independent timers, so a
-    // slow release no longer holds every board's next poll hostage — see
-    // the release-lane comment on `case 'run'`. `run`'s own unit passes
-    // itself `--no-release` (baked into `planInstall`'s `run` job), since
-    // the `release` unit owns that now.
-    for (const job of ['run', 'release'] as const) {
+    // Three units, not one: `run` (poll/select/one agent session), `release`
+    // (test/build/deploy) and `passengers` (Host Passengers container/tunnel
+    // sync) now run on independent timers, so a slow release or a long agent
+    // turn no longer holds the others hostage — see the release-lane comment
+    // on `case 'run'` and `syncHostPassengers`'s own doc comment (ISSUE-677).
+    // `run`'s own unit passes itself `--no-release` (baked into
+    // `planInstall`'s `run` job), since the `release` unit owns that now.
+    for (const job of ['run', 'release', 'passengers'] as const) {
       const plan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
       process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
       await applyInstall(plan, CREW_HOME, dryRun, {
@@ -2272,7 +2296,7 @@ switch (command) {
       process.stdout.write('nothing installed on Windows\n');
       break;
     }
-    for (const job of ['run', 'release'] as const) {
+    for (const job of ['run', 'release', 'passengers'] as const) {
       const plan = planUninstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
       process.stdout.write(`uninstalling ${job} ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
       await applyUninstall(plan, CREW_HOME, dryRun, {
@@ -2280,6 +2304,14 @@ switch (command) {
         warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
       });
     }
+    break;
+  }
+
+  case 'passengers': {
+    // The standalone entry point the `passengers` scheduler unit invokes
+    // (ISSUE-677) — see `syncHostPassengers`'s own doc comment for why this
+    // is no longer inline in `case 'run'`.
+    await syncHostPassengers();
     break;
   }
 

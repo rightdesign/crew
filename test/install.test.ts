@@ -152,6 +152,39 @@ test('uninstalling the release job targets only the release unit, never run\'s',
   assert.notDeepEqual(runOut.unitPaths, releaseOut.unitPaths);
 });
 
+test('the passengers job gets its own unit, distinct from run and release (ISSUE-677)', () => {
+  const runPlan = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
+  const releasePlan = planInstall(ship(), '/opt/crew', 'macos', true, 'release');
+  const passengersPlan = planInstall(ship(), '/opt/crew', 'macos', true, 'passengers');
+  assert.notEqual(passengersPlan.unitPaths[0], runPlan.unitPaths[0]);
+  assert.notEqual(passengersPlan.unitPaths[0], releasePlan.unitPaths[0]);
+  assert.match(passengersPlan.unitPaths[0]!, /com\.tablation\.crew-passengers\.[0-9a-f]{8}\.plist$/);
+  assert.notEqual(passengersPlan.schedulerLog, runPlan.schedulerLog);
+});
+
+test('the passengers unit runs `crew passengers`, no --no-release/--fleet flag', () => {
+  const xml = Object.values(planInstall(ship(), '/opt/crew', 'macos', true, 'passengers').unitContent)[0]!;
+  assert.match(xml, /<string>passengers<\/string>/);
+  assert.ok(!xml.includes('<string>--no-release</string>'));
+  assert.ok(!xml.includes('<string>--fleet</string>'));
+});
+
+test('on systemd, the passengers job gets its own service+timer pair', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'passengers');
+  assert.equal(plan.mechanism, 'systemd');
+  assert.ok(plan.unitPaths.every((p) => p.includes('crew-passengers')));
+  const service = plan.unitContent[plan.unitPaths[0]!]!;
+  assert.match(service, /ExecStart=.*\bpassengers\b/);
+});
+
+test('uninstalling the passengers job targets only its own unit', () => {
+  const passengersIn = planInstall(ship(), '/opt/crew', 'macos', true, 'passengers');
+  const passengersOut = planUninstall(ship(), '/opt/crew', 'macos', true, 'passengers');
+  assert.deepEqual(passengersOut.unitPaths, passengersIn.unitPaths);
+  const runOut = planUninstall(ship(), '/opt/crew', 'macos', true, 'run');
+  assert.notDeepEqual(runOut.unitPaths, passengersOut.unitPaths);
+});
+
 test('uninstall targets exactly what install would have written, on each mechanism', () => {
   const macIn = planInstall(ship(), '/opt/crew', 'macos', true);
   const macOut = planUninstall(ship(), '/opt/crew', 'macos', true);

@@ -53,15 +53,20 @@ function crewInvocation(crewHome: string): string[] {
 export const INTERVAL_SECONDS = 120;
 
 /**
- * `run` (poll, select, one agent session) and `release` (test, build,
- * deploy) are now two SEPARATE scheduler units, each on its own timer — see
- * the release-lane comment on `case 'run'` in cli.ts. A release is minutes,
- * not seconds, and used to run inline at the end of `run`, so every board
- * sat idle behind whichever one's release was slow. `install` writes both
- * units by default; `run`'s own gets `--no-release` appended, since the
- * `release` unit now owns that.
+ * `run` (poll, select, one agent session), `release` (test, build, deploy)
+ * and `passengers` (Host Passengers container/tunnel lifecycle sync) are
+ * three SEPARATE scheduler units, each on its own timer — see the
+ * release-lane comment on `case 'run'` in cli.ts. A release is minutes, not
+ * seconds, and used to run inline at the end of `run`, so every board sat
+ * idle behind whichever one's release was slow; `passengers` used to run
+ * inline at the top of `run` for the same reason — a long agent turn could
+ * block the next container/tunnel health check for as long as that turn
+ * took, even though passenger health has nothing to do with which ticket a
+ * cycle happens to work (ISSUE-677). `install` writes all three units by
+ * default; `run`'s own gets `--no-release` appended, since the `release`
+ * unit now owns that.
  */
-export type InstallJob = 'run' | 'release';
+export type InstallJob = 'run' | 'release' | 'passengers';
 
 /**
  * A launchd label / systemd unit stem / cron marker unique to this checkout
@@ -85,7 +90,10 @@ function labelFor(crewHome: string, job: InstallJob): string {
     }
   })();
   const hash = createHash('sha1').update(real).digest('hex').slice(0, 8);
-  const stem = job === 'release' ? 'com.tablation.crew-release' : 'com.tablation.crew';
+  const stem =
+    job === 'release' ? 'com.tablation.crew-release' :
+    job === 'passengers' ? 'com.tablation.crew-passengers' :
+    'com.tablation.crew';
   return `${stem}.${hash}`;
 }
 
@@ -95,7 +103,9 @@ function cronMarkerFor(label: string): string {
 
 /** The subcommand a unit actually runs, per job. */
 function subcommandFor(job: InstallJob): string[] {
-  return job === 'release' ? ['release', '--fleet'] : ['run', '--no-release'];
+  if (job === 'release') return ['release', '--fleet'];
+  if (job === 'passengers') return ['passengers'];
+  return ['run', '--no-release'];
 }
 
 export type InstallMechanism = 'launchd' | 'systemd' | 'cron';
@@ -142,7 +152,10 @@ export interface UninstallPlan {
 function schedulerLogFor(crewLog: string, job: InstallJob): string {
   const ext = extname(crewLog);
   const stem = ext ? crewLog.slice(0, -ext.length) : crewLog;
-  const suffix = job === 'release' ? 'release-scheduler' : 'scheduler';
+  const suffix =
+    job === 'release' ? 'release-scheduler' :
+    job === 'passengers' ? 'passengers-scheduler' :
+    'scheduler';
   return `${stem}.${suffix}${ext || '.log'}`;
 }
 
@@ -213,7 +226,10 @@ function planSystemd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   const timerPath = join(unitDir, `${label}.timer`);
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog, job);
-  const description = job === 'release' ? 'Tablation crew — release' : 'Tablation crew — one poll cycle';
+  const description =
+    job === 'release' ? 'Tablation crew — release' :
+    job === 'passengers' ? 'Tablation crew — Host Passengers sync' :
+    'Tablation crew — one poll cycle';
 
   const service = `# Written by \`crew install\` — re-run it rather than hand-editing this file.
 [Unit]
