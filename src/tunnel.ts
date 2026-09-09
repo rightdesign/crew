@@ -6,7 +6,7 @@
  * what worked `ssh2`-to-`ssh2`, so this client's own fidelity comes from
  * running literally the same command a person would type by hand:
  *
- *   ssh -N -R workspace-<workspaceId>:0:127.0.0.1:<localPort> <relayHost>
+ *   ssh -N -p <relayPort> -R workspace-<workspaceId>:0:127.0.0.1:<localPort> <relayHost>
  *
  * `-N`: no remote command, this connection exists purely to hold the
  * forward open. The bind address's `workspace-<id>` prefix and `:0` dynamic
@@ -39,9 +39,9 @@ export type SpawnFn = (cmd: string, args: string[]) => ChildProcess;
 
 // `detached: true` + fully `'ignore'`d stdio (ISSUE-680) — matches
 // `passenger-sync-daemon.ts`'s own `defaultSpawn`, the proven shape for
-// anything that has to outlive the `crew run`/`passengers` invocation that
-// spawned it (a short-lived process relaunched every cycle, never a
-// daemon). An earlier version of this piped stderr back to the parent so
+// anything that has to outlive the short-lived invocation that spawned it
+// (the `passengers` unit as of ISSUE-677, or a manual `rotate-passenger-url`
+// run — never a daemon). An earlier version of this piped stderr back to the parent so
 // `startTunnel` could detect the "Allocated port" line immediately — that
 // pipe's read end closes the instant the short-lived parent exits, and a
 // detached child writing to it afterward can die (confirmed live: both
@@ -57,6 +57,8 @@ const defaultSpawn: SpawnFn = (cmd, args) => spawn(cmd, args, DEFAULT_SPAWN_OPTI
 export interface TunnelOptions {
   /** e.g. `crewd@ships.tablation.dev` — `Ship.relayHost`. */
   relayHost: string;
+  /** The port `relayHost` listens for `ssh -R` on — `Ship.relayPort` (ISSUE-681). */
+  relayPort: number;
   workspaceId: string;
   /** The Host Passengers container's published port on this host. */
   localPort: number;
@@ -72,7 +74,7 @@ export interface Tunnel {
   stop(): void;
 }
 
-export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'workspaceId' | 'localPort' | 'privateKeyPath'>): string[] {
+export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'localPort' | 'privateKeyPath'>): string[] {
   return [
     '-N',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -80,6 +82,7 @@ export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'workspaceId' | 
     '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
     '-i', o.privateKeyPath,
+    '-p', String(o.relayPort),
     '-R', `workspace-${o.workspaceId}:0:127.0.0.1:${o.localPort}`,
     o.relayHost,
   ];
@@ -99,8 +102,8 @@ export function startTunnel(opts: TunnelOptions): Tunnel {
 
   const child = spawnFn('ssh', sshArgsFor(opts));
   // Same reasoning as `defaultSpawn`'s `detached: true` (ISSUE-680): don't
-  // let this child keep `crew run`'s event loop — and therefore the whole
-  // process — alive until the tunnel itself exits. A test-injected
+  // let this child keep the spawning process's event loop — and therefore
+  // the whole process — alive until the tunnel itself exits. A test-injected
   // `spawnFn` may return a fake without a real `.unref()`; guard for that.
   child.unref?.();
   // No stderr-based "connected" detection any more (ISSUE-680) — stdio is
@@ -129,8 +132,8 @@ export function startTunnel(opts: TunnelOptions): Tunnel {
 }
 
 /**
- * Persisted across `crew run`/`poll` invocations — each is its own short-
- * lived process (a systemd/launchd timer, not a daemon loop; see
+ * Persisted across `passengers` unit invocations (ISSUE-677) — each is its
+ * own short-lived process (a systemd/launchd timer, not a daemon loop; see
  * `install.ts`), so a tunnel's actual `ssh` child has to be spawned
  * DETACHED and tracked by pid in a state file, the same way nothing else
  * in this repo holds a live handle across cycles. One file per workspace:
@@ -209,6 +212,7 @@ export interface SyncTunnelsDeps {
 export function syncPassengerTunnels(
   plans: ContainerPlan[],
   relayHost: string,
+  relayPort: number,
   privateKeyPath: string,
   stateDir: string,
   deps: SyncTunnelsDeps = {},
@@ -233,7 +237,7 @@ export function syncPassengerTunnels(
     }
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
-      relayHost, workspaceId: plan.workspaceId, localPort: plan.port, privateKeyPath,
+      relayHost, relayPort, workspaceId: plan.workspaceId, localPort: plan.port, privateKeyPath,
       spawnFn: deps.spawnFn, onStatus: (s) => { settledStatus = s; },
     });
     writePersistedTunnel(stateDir, {
