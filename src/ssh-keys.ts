@@ -80,13 +80,13 @@ export function sshKeygenAvailable(): boolean {
   try {
     execFileSync('ssh-keygen', ['-V'], { stdio: ['ignore', 'ignore', 'ignore'] });
     return true;
-  } catch {
-    // `ssh-keygen -V` on some builds exits non-zero while still printing a
-    // version to stderr (it's meant to be paired with -A) — command not
-    // found is the failure this actually cares about, and that throws
-    // synchronously with no output at all either way, so a non-zero exit
-    // here is treated the same as "no ssh-keygen": callers can't provision
-    // a key regardless of which case it was.
-    return false;
+  } catch (e) {
+    // ISSUE-662: `-V` isn't a version flag on macOS's OpenSSH build — it's
+    // `-V validity_interval`, only valid alongside `-I` — so it prints a
+    // usage error and exits 1 even though ssh-keygen is present and
+    // `ensureShipSshKeypair` above would succeed. A spawn ENOENT (binary
+    // genuinely missing) is the only failure mode this actually cares
+    // about; any other error means the binary ran and is available.
+    return (e as NodeJS.ErrnoException).code !== 'ENOENT';
   }
 }

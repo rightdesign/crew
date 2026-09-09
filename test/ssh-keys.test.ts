@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ensureShipSshKeypair, shipSshKeyPathFor, sshKeygenAvailable, SshKeyError } from '../src/ssh-keys.ts';
@@ -51,4 +52,30 @@ test('sshKeygenAvailable() reflects whatever this test machine actually has on P
   // about `docker`), so this just asserts the probe returns a boolean and
   // doesn't throw, rather than asserting a specific answer.
   assert.equal(typeof sshKeygenAvailable(), 'boolean');
+});
+
+test('sshKeygenAvailable() returns true even when `ssh-keygen -V` itself exits non-zero (ISSUE-662)', () => {
+  // macOS's OpenSSH build treats `-V` as `-V validity_interval` (only valid
+  // alongside `-I`), so it prints a usage error and exits 1 even though
+  // ssh-keygen is genuinely present and ensureShipSshKeypair() would
+  // succeed. Skip on a machine where ssh-keygen isn't installed at all —
+  // this test is specifically about the "present but -V errors" case.
+  try {
+    execFileSync('ssh-keygen', ['-V'], { stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      return; // no ssh-keygen on this machine — nothing to regress-test here
+    }
+  }
+  assert.equal(sshKeygenAvailable(), true);
+});
+
+test('sshKeygenAvailable() returns false when the binary genuinely is not on PATH', () => {
+  const originalPath = process.env.PATH;
+  process.env.PATH = '';
+  try {
+    assert.equal(sshKeygenAvailable(), false);
+  } finally {
+    process.env.PATH = originalPath;
+  }
 });
