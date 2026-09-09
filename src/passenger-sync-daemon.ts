@@ -13,6 +13,20 @@
  * the listener has to outlive it. `passenger-mcp.ts` (inside the container)
  * calls this listener's `/sync` route from `server.server.oninitialized`.
  *
+ * ISSUE-661 added a second route on the same listener, `/activity`, that
+ * `passenger-mcp.ts` pings (fire-and-forget, same secret) on every real
+ * `tools/call` a Passenger session makes, not just `initialize`. It exists
+ * to answer "is a Passenger actively calling tools right now", which
+ * `/sync` alone can't: `/sync` only fires once per session, at startup.
+ * `GET /activity` reports the raw last-activity timestamp back to whoever
+ * on the host asks (`crew status`, crew-macos) — it deliberately does not
+ * decide "active" vs "idle" itself, and it never writes anything to
+ * Tablation; see that route's own doc comment for why.
+ *
+ * Because `req.url === '/sync' || '/activity'` are the ONLY two routes this
+ * listener exposes, the `host.docker.internal` reachability, single-secret
+ * auth, and no-rotation reasoning below apply identically to both.
+ *
  * The container reaches this listener via `host.docker.internal`, wired up
  * by `startContainer`'s `--add-host host.docker.internal:host-gateway` —
  * deliberately NOT real loopback. On Docker Desktop (macOS/Windows)
@@ -79,24 +93,64 @@ export interface SyncOutcome {
 }
 
 /**
- * The actual `/sync` HTTP handler — testable directly against real git
- * fixtures, with no child process or Docker involved (mirrors
- * `passenger-mcp.ts`'s own `createPassengerHttpServer`/
+ * ISSUE-661: the missing data source for `crew status`/crew-macos's
+ * "connected, active" state (ISSUE-629). This is deliberately in-memory
+ * only, scoped to this one daemon process — it is NOT written to the
+ * `Ships` row from here. This daemon has no Tablation credentials (it's a
+ * detached, `stdio: 'ignore'` child spawned per-container with only the
+ * sync port/secret/targets in its env — see this module's own doc comment
+ * on the auth model), so it never talks to the board directly. The
+ * already-authenticated `crew run`/`poll` cycle that writes `tunnel_status`
+ * (`cli.ts`) can, if a future ticket wants remote/Ships-row visibility,
+ * query `GET /activity` on this same host-reachable listener and fold the
+ * answer into that existing write — but that's a separate design decision
+ * (a new field, a debounce policy for the write itself) left to whoever
+ * picks up ISSUE-629, not assumed here. What this ticket owns is just: a
+ * live "was a tool called recently" signal, queryable locally.
+ */
+function activityTracker() {
+  let lastActivityAt: number | undefined;
+  return {
+    record: () => { lastActivityAt = Date.now(); },
+    /** Caller decides the active-window threshold; this only ever reports the raw timestamp. */
+    snapshot: () => ({ lastActivityAt: lastActivityAt === undefined ? null : new Date(lastActivityAt).toISOString() }),
+  };
+}
+
+/**
+ * The actual `/sync` and `/activity` HTTP handlers — testable directly
+ * against real git fixtures, with no child process or Docker involved
+ * (mirrors `passenger-mcp.ts`'s own `createPassengerHttpServer`/
  * `createPassengerMcpServer` split for the same reason: the wire protocol
  * and the "how does this process get launched and torn down" concerns are
  * independently testable).
  */
 export function createSyncDaemonServer(targets: PassengerCheckoutSyncSpec[], secret: string): Server {
+  const activity = activityTracker();
   return createHttpServer((req: IncomingMessage, res: ServerResponse) => {
-    if (req.url !== '/sync' || req.method !== 'POST') {
+    const isActivityRoute = req.url === '/activity' && (req.method === 'POST' || req.method === 'GET');
+    const isSyncRoute = req.url === '/sync' && req.method === 'POST';
+    if (!isActivityRoute && !isSyncRoute) {
       res.writeHead(404).end();
       return;
     }
+
     const authHeader = req.headers.authorization;
     if (typeof authHeader !== 'string' || !secretsMatch(authHeader, `Bearer ${secret}`)) {
       res.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'invalid or missing sync secret' }));
       return;
     }
+
+    if (isActivityRoute) {
+      if (req.method === 'POST') {
+        activity.record();
+        res.writeHead(204).end();
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(activity.snapshot()));
+      }
+      return;
+    }
+
     try {
       const synced: SyncOutcome[] = targets.map((t) => ({
         name: t.name,

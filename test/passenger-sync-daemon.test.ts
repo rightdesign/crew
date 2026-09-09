@@ -64,14 +64,52 @@ test('createSyncDaemonServer() rejects a request with no/wrong bearer secret bef
   assert.equal(wrongAuth.status, 401);
 });
 
-test('createSyncDaemonServer() 404s anything but POST /sync', async (t) => {
+test('createSyncDaemonServer() 404s anything but POST /sync or GET/POST /activity, even unauthenticated', async (t) => {
   const server = createSyncDaemonServer([], 'secret');
   await new Promise<void>((resolve) => server.listen(0, resolve));
   t.after(() => server.close());
   const port = (server.address() as AddressInfo).port;
 
-  const res = await fetch(`http://127.0.0.1:${port}/other`, { method: 'POST', headers: { Authorization: 'Bearer secret' } });
-  assert.equal(res.status, 404);
+  const withAuth = await fetch(`http://127.0.0.1:${port}/other`, { method: 'POST', headers: { Authorization: 'Bearer secret' } });
+  assert.equal(withAuth.status, 404);
+
+  const withoutAuth = await fetch(`http://127.0.0.1:${port}/other`, { method: 'POST' });
+  assert.equal(withoutAuth.status, 404, 'an unrecognized route 404s before the secret is even checked');
+});
+
+test('GET /activity reports null until a POST /activity lands, then the timestamp of the most recent one', async (t) => {
+  const server = createSyncDaemonServer([], 'right-secret');
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const authHeader = { Authorization: 'Bearer right-secret' };
+
+  const before = await fetch(`${baseUrl}/activity`, { headers: authHeader });
+  assert.equal(before.status, 200);
+  assert.deepEqual(await before.json(), { lastActivityAt: null });
+
+  const posted = await fetch(`${baseUrl}/activity`, { method: 'POST', headers: authHeader });
+  assert.equal(posted.status, 204);
+
+  const after = await fetch(`${baseUrl}/activity`, { headers: authHeader });
+  const body = await after.json() as { lastActivityAt: string | null };
+  assert.ok(body.lastActivityAt, 'expected a timestamp after a ping');
+  assert.ok(!Number.isNaN(Date.parse(body.lastActivityAt!)), 'expected an ISO timestamp');
+});
+
+test('/activity requires the same bearer secret as /sync', async (t) => {
+  const server = createSyncDaemonServer([], 'right-secret');
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const noAuth = await fetch(`${baseUrl}/activity`, { method: 'POST' });
+  assert.equal(noAuth.status, 401);
+
+  const wrongAuth = await fetch(`${baseUrl}/activity`, { headers: { Authorization: 'Bearer wrong-secret' } });
+  assert.equal(wrongAuth.status, 401);
 });
 
 test('createSyncDaemonServer() fast-forwards every target checkout and reports outcomes, given a valid secret', async (t) => {

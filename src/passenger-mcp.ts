@@ -91,6 +91,35 @@ export interface PassengerMcpServerOptions {
   syncOnInitialize?: { url: string; secret: string };
 }
 
+/**
+ * ISSUE-661: `syncOnInitialize`'s `url` already points at this workspace's
+ * per-container sync-daemon listener (`passenger-sync-daemon.ts`) — the
+ * daemon's `/activity` route lives on that same host:port, so this just
+ * swaps the path rather than needing a second env var alongside
+ * `PASSENGER_SYNC_URL`/`PASSENGER_SYNC_SECRET`.
+ */
+function activityUrlFor(syncUrl: string): string {
+  const url = new URL(syncUrl);
+  url.pathname = '/activity';
+  return url.toString();
+}
+
+/**
+ * Fire-and-forget, same shape as `oninitialized`'s own sync callback below
+ * — a tool call must never wait on (or fail because of) this. Failure is
+ * expected and harmless whenever `syncOnInitialize` is undefined (no
+ * daemon for this workspace) or the daemon is momentarily down; the only
+ * consequence is a stale "last activity" answer for `crew status`, not a
+ * broken tool call.
+ */
+function pingActivity(sync: { url: string; secret: string } | undefined): void {
+  if (!sync) return;
+  fetch(activityUrlFor(sync.url), { method: 'POST', headers: { Authorization: `Bearer ${sync.secret}` } })
+    .catch((error) => {
+      console.error(`Passenger activity callback to ${sync.url} failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+}
+
 export interface PassengerAuthConfig {
   /** Base URL of the Tablation API, e.g. `https://app.tablation.com/api`. */
   tablationApiBaseUrl: string;
@@ -387,6 +416,11 @@ export function createPassengerHttpServer(options: PassengerMcpServerOptions, au
         req.on('end', async () => {
           try {
             const parsed = body ? JSON.parse(body) : undefined;
+            // ISSUE-661: a real tool invocation, not `initialize`/`tools/list`/
+            // anything else the transport carries over this same route.
+            if (parsed && !Array.isArray(parsed) && parsed.method === 'tools/call') {
+              pingActivity(options.syncOnInitialize);
+            }
             const server = await createPassengerMcpServer(options);
             const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
             await server.connect(transport);

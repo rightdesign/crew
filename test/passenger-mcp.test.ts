@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { createPassengerMcpServer, createPassengerHttpServer, type PassengerAuthConfig } from '../src/passenger-mcp.ts';
+import { createSyncDaemonServer } from '../src/passenger-sync-daemon.ts';
 
 const WRITE_SHAPED_TOOL_NAMES = ['write_file', 'edit_file', 'move_file', 'create_directory', 'delete_file'];
 
@@ -168,6 +169,37 @@ test('a real HTTP round trip: read_file, list_directory, search_files, git_log, 
 
   const allowedOut = await callTool(baseUrl, 'list_allowed_directories', {});
   assert.equal(allowedOut, dir);
+}));
+
+test('ISSUE-661: a real tools/call pings the sync-daemon /activity route; tools/list does not', async (t) => withMockedAuthEndpoint(async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
+
+  const daemon = createSyncDaemonServer([], 'daemon-secret');
+  await new Promise<void>((resolve) => daemon.listen(0, resolve));
+  t.after(() => daemon.close());
+  const daemonPort = (daemon.address() as AddressInfo).port;
+  const daemonAuth = { Authorization: 'Bearer daemon-secret' };
+  const activitySnapshot = async () => {
+    const res = await fetch(`http://127.0.0.1:${daemonPort}/activity`, { headers: daemonAuth });
+    return (await res.json()) as { lastActivityAt: string | null };
+  };
+
+  const syncOnInitialize = { url: `http://127.0.0.1:${daemonPort}/sync`, secret: 'daemon-secret' };
+  const server = createPassengerHttpServer({ allowedDirectories: [dir], syncOnInitialize }, AUTH);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+
+  assert.equal((await activitySnapshot()).lastActivityAt, null);
+
+  await listTools(`http://127.0.0.1:${port}`);
+  assert.equal((await activitySnapshot()).lastActivityAt, null, 'tools/list must not count as tool-call activity');
+
+  await callTool(`http://127.0.0.1:${port}`, 'list_allowed_directories', {});
+  // Fire-and-forget: give the outstanding ping a tick to actually land on
+  // the daemon before asserting on it.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok((await activitySnapshot()).lastActivityAt, 'a real tools/call must ping /activity');
 }));
 
 test('read_file rejects a path outside the allowed directories over the wire', async (t) => withMockedAuthEndpoint(async () => {
