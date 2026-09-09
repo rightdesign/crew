@@ -47,7 +47,7 @@ import {
   listLibraryTemplates, previewTemplateInstall, installTemplate,
 } from './connect.ts';
 import { authorizeDevice, pollForDeviceToken, DeviceAuthExpired, DeviceAuthDenied } from './device-auth.ts';
-import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
@@ -1031,6 +1031,7 @@ switch (command) {
           cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
           divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+          resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         });
         process.stdout.write(`${describePlan(fleetPlan)}\n`);
         break;
@@ -1114,6 +1115,7 @@ switch (command) {
         cycle: emit.cycle, ticket: fleetTicketHint,
         divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+        resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
       });
       emit.enter('agent', w.role);
       emit.emit(`starting agent run for ${w.route.route}`);
@@ -1312,6 +1314,7 @@ switch (command) {
         cycle: emit.cycle, ticket: ticketHint,
         divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
         agentModel: await fetchSeatAgentModel(route, current, { userAgent: cfg.ship.userAgent }),
+        resolvedAgentId: await resolveAgentId(route, current, { userAgent: cfg.ship.userAgent }),
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);

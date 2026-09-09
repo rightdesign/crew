@@ -100,7 +100,7 @@ interface AgentRow {
  * time (ISSUE-611), so a session should not need a separate local sync step
  * just to see the workspace's own copy of its prompt/model.
  */
-async function resolveAgentId(
+export async function resolveAgentId(
   route: Route,
   role: RoleName,
   opts: { userAgent?: string },

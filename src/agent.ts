@@ -215,6 +215,20 @@ export interface PlanOptions {
    * Fetching it is the caller's job, same as `divergedPrompt` above.
    */
   agentModel?: string;
+  /**
+   * `role`'s linked Agent row id, straight from `agents.ts`'s
+   * `resolveAgentId` (ISSUE-670) — the same cache-then-seat-fallback
+   * resolution `fetchDivergedPrompt`/`fetchSeatAgentModel` already use, so
+   * Agent Log attribution stops depending on `crew agents sync` ever having
+   * run. Before this field existed, `agentLog.agentId` below read the sync
+   * cache directly and stayed empty for any route provisioned solely
+   * through `crew connect` (ISSUE-609/610/611) — every one of that route's
+   * runs then logged as "Unknown persona" in the Activity Log, since the
+   * seat-linked Agent row was resolvable but nothing was resolving it for
+   * logging. Undefined (no seat, no linked Agent, unreachable tracker) keeps
+   * today's no-Agent-reference report.
+   */
+  resolvedAgentId?: string;
 }
 
 export class AgentError extends Error {}
@@ -267,15 +281,17 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   // Reporting needs a resolved workspace (`crew connect`) and a key to call
   // it with — either is missing for a route that hasn't been connected, or
   // in tests that build a bare Route by hand. `agentId` is best-effort on
-  // top of that: absent until `crew agents sync` has run once for this
-  // role, and the endpoint accepts a run with no Agent reference.
+  // top of that: `o.resolvedAgentId` (ISSUE-670) already fell back to the
+  // seat's own linked Agent row when `crew agents sync` has never run, and
+  // the endpoint accepts a run with no Agent reference for the cases even
+  // that can't resolve (no seat, no linked Agent, unreachable tracker).
   const agentLog: AgentPlan['agentLog'] = o.route.resolved && o.apiKey
     ? {
         baseUrl: o.route.baseUrl,
         workspaceId: o.route.resolved.workspaceId,
         apiKey: o.apiKey,
         userAgent: o.ship.userAgent,
-        agentId: o.route.resolved.agentPersonas?.[o.role]?.agentId,
+        agentId: o.resolvedAgentId,
       }
     : undefined;
 

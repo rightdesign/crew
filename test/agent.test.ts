@@ -195,22 +195,27 @@ test('a plan carries no agentLog target when the route has never been connected'
   assert.equal(plan.agentLog, undefined);
 });
 
-test('a resolved route with a synced persona carries a full agentLog target', () => {
+test('a resolved route with a resolvedAgentId carries a full agentLog target', () => {
   const { home, state, ship } = rig();
   const route = {
     route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
-    resolved: { workspaceId: 'ws-1', agentPersonas: { dev: { agentId: 'agent-9', lastSyncedUpdatedAt: 't' } } },
+    resolved: { workspaceId: 'ws-1' },
   } as any;
   const plan = planAgentRun({
     role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, stateDir: state,
-    roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1',
+    roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', resolvedAgentId: 'agent-9',
   });
   assert.deepEqual(plan.agentLog, {
     baseUrl: 'https://example.test', workspaceId: 'ws-1', apiKey: 'k', userAgent: 'crew-test', agentId: 'agent-9',
   });
 });
 
-test('a resolved route with no synced persona for this role still reports, with no agentId', () => {
+// ISSUE-670: `resolvedAgentId` is the caller's job to fetch (agents.ts's
+// resolveAgentId, cache-then-seat-fallback) — planAgentRun itself no longer
+// reads `route.resolved.agentPersonas` directly, so a route with neither a
+// synced persona nor a `resolvedAgentId` passed in must still report, just
+// with no Agent reference, rather than silently reading a stale field.
+test('a resolved route with no resolvedAgentId still reports, with no agentId', () => {
   const { home, state, ship } = rig();
   const route = {
     route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
@@ -344,11 +349,12 @@ test('spawnAgent reports the run as one Agent Log row, its thinking block and it
   const { home, state, ship } = rig();
   const route = {
     route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
-    resolved: { workspaceId: 'ws-1', agentPersonas: { dev: { agentId: 'agent-9', lastSyncedUpdatedAt: 't' } } },
+    resolved: { workspaceId: 'ws-1' },
   } as any;
   const plan = planAgentRun({
     role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
     stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-401',
+    resolvedAgentId: 'agent-9',
   });
   plan.bin = process.execPath;
   plan.args = [FAKE_CLAUDE];
