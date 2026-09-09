@@ -59,7 +59,7 @@ test('sshArgsFor() builds the exact -R remote-forward argv the relay expects', (
   ]);
 });
 
-test('startTunnel() starts as "connecting" and reports "connected" once stderr shows the allocated-port line', () => {
+test('startTunnel() starts as "connecting" and stays there — no in-process "connected" signal any more (ISSUE-680)', () => {
   const child = new FakeChild();
   const { spawnFn, calls } = fakeSpawn(child);
   const statuses: TunnelStatus[] = [];
@@ -73,9 +73,11 @@ test('startTunnel() starts as "connecting" and reports "connected" once stderr s
   assert.equal(tunnel.status, 'connecting');
   assert.deepEqual(statuses, ['connecting']);
 
+  // Emitting on the (now unused) stderr stream must not change anything —
+  // stdio is fully 'ignore'd on the real spawn now, so nothing reads it.
   child.stderr.emit('data', 'Allocated port 54321 for remote forward to workspace-ws-1\n');
-  assert.equal(tunnel.status, 'connected');
-  assert.deepEqual(statuses, ['connecting', 'connected']);
+  assert.equal(tunnel.status, 'connecting');
+  assert.deepEqual(statuses, ['connecting']);
 });
 
 test('startTunnel() reports "disconnected" when the ssh child exits', () => {

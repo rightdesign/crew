@@ -37,20 +37,21 @@ export type TunnelStatus = 'connecting' | 'connected' | 'disconnected';
 
 export type SpawnFn = (cmd: string, args: string[]) => ChildProcess;
 
-// `detached: true` is load-bearing (ISSUE-680): `crew run` is a short-lived
-// process relaunched every cycle, not a daemon — without this, Node's
-// default child_process behavior keeps the parent's event loop alive until
-// the child exits, so `crew run` could never finish the cycle that spawned
-// a tunnel meant to keep running indefinitely. `startTunnel` below also
-// calls `.unref()` on the returned child for the same reason. Note: stderr
-// stays piped (not fully 'ignore'd) so the immediate "Allocated port" signal
-// below still works within the spawning cycle; a detached child whose
-// parent has since exited could in principle see a write to that pipe fail
-// once the parent's read end is gone, but `ssh -N` writes to stderr once at
-// connect time and essentially never again in the steady state, so this is
-// a narrow residual risk, not addressed here.
+// `detached: true` + fully `'ignore'`d stdio (ISSUE-680) — matches
+// `passenger-sync-daemon.ts`'s own `defaultSpawn`, the proven shape for
+// anything that has to outlive the `crew run`/`passengers` invocation that
+// spawned it (a short-lived process relaunched every cycle, never a
+// daemon). An earlier version of this piped stderr back to the parent so
+// `startTunnel` could detect the "Allocated port" line immediately — that
+// pipe's read end closes the instant the short-lived parent exits, and a
+// detached child writing to it afterward can die (confirmed live: both
+// `detached: true` alone AND a piped stderr still left the ssh child dead
+// moments after the parent exited). No pipe at all sidesteps that
+// entirely; `syncPassengerTunnels`'s existing "promote a still-connecting
+// tunnel to connected once it has survived a cycle" logic is what confirms
+// connection now, not an immediate in-process signal.
 /** Pulled out to its own constant so a test can assert on it without mocking `node:child_process`. */
-export const DEFAULT_SPAWN_OPTIONS: SpawnOptions = { stdio: ['ignore', 'ignore', 'pipe'], detached: true };
+export const DEFAULT_SPAWN_OPTIONS: SpawnOptions = { stdio: 'ignore', detached: true };
 const defaultSpawn: SpawnFn = (cmd, args) => spawn(cmd, args, DEFAULT_SPAWN_OPTIONS);
 
 export interface TunnelOptions {
@@ -70,18 +71,6 @@ export interface Tunnel {
   readonly pid: number | undefined;
   stop(): void;
 }
-
-/**
- * OpenSSH's own confirmation that a dynamic `-R ...:0:...` bind actually
- * took: with a real port requested, the client has to be TOLD which port
- * the far end picked, and it prints that to stderr the moment the
- * remote-forward request succeeds — independent of whether the relay does
- * anything useful with it afterward. This is the earliest real signal this
- * client has that the tunnel itself is up, as opposed to just "the ssh
- * process is still running" (which is also true while it's stuck in the
- * TCP handshake).
- */
-const ALLOCATED_PORT_RE = /Allocated port \d+ for remote forward/;
 
 export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'workspaceId' | 'localPort' | 'privateKeyPath'>): string[] {
   return [
@@ -114,14 +103,11 @@ export function startTunnel(opts: TunnelOptions): Tunnel {
   // process — alive until the tunnel itself exits. A test-injected
   // `spawnFn` may return a fake without a real `.unref()`; guard for that.
   child.unref?.();
-  let stderrBuf = '';
-  child.stderr?.on('data', (chunk: Buffer | string) => {
-    stderrBuf += chunk.toString();
-    if (status === 'connecting' && ALLOCATED_PORT_RE.test(stderrBuf)) {
-      status = 'connected';
-      opts.onStatus?.('connected');
-    }
-  });
+  // No stderr-based "connected" detection any more (ISSUE-680) — stdio is
+  // fully 'ignore'd now, so the only way this settles as 'connected' is
+  // `syncPassengerTunnels` finding the pid still alive on a later cycle.
+  // These two listeners only matter for a fast, synchronous failure within
+  // THIS cycle (spawn itself erroring, or the child exiting immediately).
   child.on('exit', () => {
     if (status !== 'disconnected') {
       status = 'disconnected';
