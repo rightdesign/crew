@@ -29,7 +29,7 @@ test('startTunnel() unrefs the child so the parent event loop does not wait on i
   const child = new FakeChild();
   const { spawnFn } = fakeSpawn(child);
   startTunnel({
-    relayHost: 'crewd@ships.tablation.dev', workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519', spawnFn,
+    relayHost: 'crewd@ships.tablation.dev', relayPort: 2222, workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519', spawnFn,
   });
   assert.equal(child.unrefCalled, true);
 });
@@ -45,7 +45,7 @@ function fakeSpawn(child: FakeChild): { spawnFn: SpawnFn; calls: Array<{ cmd: st
 
 test('sshArgsFor() builds the exact -R remote-forward argv the relay expects', () => {
   const args = sshArgsFor({
-    relayHost: 'crewd@ships.tablation.dev', workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519',
+    relayHost: 'crewd@ships.tablation.dev', relayPort: 2222, workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519',
   });
   assert.deepEqual(args, [
     '-N',
@@ -54,9 +54,19 @@ test('sshArgsFor() builds the exact -R remote-forward argv the relay expects', (
     '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
     '-i', '/keys/id_ed25519',
+    '-p', '2222',
     '-R', 'workspace-ws-1:0:127.0.0.1:28800',
     'crewd@ships.tablation.dev',
   ]);
+});
+
+test('sshArgsFor() dials relayPort, not the ssh default of 22 (ISSUE-681)', () => {
+  const args = sshArgsFor({
+    relayHost: 'crewd@ships.tablation.dev', relayPort: 9999, workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519',
+  });
+  const portFlagIndex = args.indexOf('-p');
+  assert.ok(portFlagIndex >= 0, 'must pass -p explicitly rather than relying on ssh_config/the default port');
+  assert.equal(args[portFlagIndex + 1], '9999');
 });
 
 test('startTunnel() starts as "connecting" and stays there — no in-process "connected" signal any more (ISSUE-680)', () => {
@@ -65,7 +75,7 @@ test('startTunnel() starts as "connecting" and stays there — no in-process "co
   const statuses: TunnelStatus[] = [];
 
   const tunnel = startTunnel({
-    relayHost: 'crewd@ships.tablation.dev', workspaceId: 'ws-1', localPort: 28800,
+    relayHost: 'crewd@ships.tablation.dev', relayPort: 2222, workspaceId: 'ws-1', localPort: 28800,
     privateKeyPath: '/keys/id_ed25519', spawnFn, onStatus: (s) => statuses.push(s),
   });
 
@@ -86,7 +96,7 @@ test('startTunnel() reports "disconnected" when the ssh child exits', () => {
   const statuses: TunnelStatus[] = [];
 
   const tunnel = startTunnel({
-    relayHost: 'h', workspaceId: 'ws-1', localPort: 1, privateKeyPath: '/k', spawnFn, onStatus: (s) => statuses.push(s),
+    relayHost: 'h', relayPort: 2222, workspaceId: 'ws-1', localPort: 1, privateKeyPath: '/k', spawnFn, onStatus: (s) => statuses.push(s),
   });
   child.emit('exit', 1, null);
 
@@ -100,7 +110,7 @@ test('startTunnel().stop() sends SIGTERM to the child', () => {
   let killed = false;
   child.on('killed', () => { killed = true; });
 
-  const tunnel = startTunnel({ relayHost: 'h', workspaceId: 'ws-1', localPort: 1, privateKeyPath: '/k', spawnFn });
+  const tunnel = startTunnel({ relayHost: 'h', relayPort: 2222, workspaceId: 'ws-1', localPort: 1, privateKeyPath: '/k', spawnFn });
   tunnel.stop();
 
   assert.ok(killed);
@@ -118,7 +128,7 @@ test('syncPassengerTunnels() spawns a new tunnel when nothing is persisted for a
   const child = new FakeChild();
   const { spawnFn, calls } = fakeSpawn(child);
 
-  syncPassengerTunnels([makePlan('ws-1')], 'crewd@ships.tablation.dev', '/keys/id_ed25519', stateDir, { spawnFn });
+  syncPassengerTunnels([makePlan('ws-1')], 'crewd@ships.tablation.dev', 2222, '/keys/id_ed25519', stateDir, { spawnFn });
 
   assert.equal(calls.length, 1);
   const persisted = readPersistedTunnel(stateDir, 'ws-1');
@@ -132,11 +142,11 @@ test('syncPassengerTunnels() leaves an alive tunnel with unchanged mounts alone 
   const child = new FakeChild();
   const { spawnFn, calls } = fakeSpawn(child);
 
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, { spawnFn });
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, { spawnFn });
   assert.equal(calls.length, 1);
 
   // Second cycle: same plan, pid reported alive.
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, { spawnFn, isPidAlive: () => true });
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, { spawnFn, isPidAlive: () => true });
   assert.equal(calls.length, 1, 'should not have spawned a second ssh process');
 });
 
@@ -147,11 +157,11 @@ test('syncPassengerTunnels() promotes a still-"connecting" persisted tunnel to "
   const statuses: Array<[string, TunnelStatus]> = [];
 
   // First cycle: spawns, settles at "connecting" (no stderr line emitted).
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, { spawnFn, onStatus: (w, s) => statuses.push([w, s]) });
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, { spawnFn, onStatus: (w, s) => statuses.push([w, s]) });
   assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.status, 'connecting');
 
   // Second cycle: pid still alive, mounts unchanged -> promoted to connected.
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, {
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, {
     spawnFn, isPidAlive: () => true, onStatus: (w, s) => statuses.push([w, s]),
   });
   assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.status, 'connected');
@@ -162,11 +172,11 @@ test('syncPassengerTunnels() respawns when a persisted tunnel\'s pid has died', 
   const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
   const child1 = new FakeChild();
   const { spawnFn: spawn1 } = fakeSpawn(child1);
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, { spawnFn: spawn1 });
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, { spawnFn: spawn1 });
 
   const child2 = new FakeChild();
   const { spawnFn: spawn2, calls: calls2 } = fakeSpawn(child2);
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, { spawnFn: spawn2, isPidAlive: () => false });
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, { spawnFn: spawn2, isPidAlive: () => false });
 
   assert.equal(calls2.length, 1, 'a dead pid should trigger a respawn');
   assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.pid, child2.pid);
@@ -176,11 +186,11 @@ test('syncPassengerTunnels() respawns when the container behind an alive tunnel 
   const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
   const child1 = new FakeChild();
   const { spawnFn: spawn1 } = fakeSpawn(child1);
-  syncPassengerTunnels([makePlan('ws-1', 'hash-1')], 'h', '/k', stateDir, { spawnFn: spawn1 });
+  syncPassengerTunnels([makePlan('ws-1', 'hash-1')], 'h', 2222, '/k', stateDir, { spawnFn: spawn1 });
 
   const child2 = new FakeChild();
   const { spawnFn: spawn2, calls: calls2 } = fakeSpawn(child2);
-  syncPassengerTunnels([makePlan('ws-1', 'hash-2')], 'h', '/k', stateDir, { spawnFn: spawn2, isPidAlive: () => true });
+  syncPassengerTunnels([makePlan('ws-1', 'hash-2')], 'h', 2222, '/k', stateDir, { spawnFn: spawn2, isPidAlive: () => true });
 
   assert.equal(calls2.length, 1, 'a changed mountsHash should trigger a respawn');
   assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.mountsHash, 'hash-2');
@@ -190,11 +200,11 @@ test('syncPassengerTunnels() kills and drops a persisted tunnel whose workspace 
   const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
   const child = new FakeChild();
   const { spawnFn } = fakeSpawn(child);
-  syncPassengerTunnels([makePlan('ws-1')], 'h', '/k', stateDir, { spawnFn });
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, { spawnFn });
   assert.ok(readPersistedTunnel(stateDir, 'ws-1'));
 
   const statuses: Array<[string, TunnelStatus]> = [];
-  syncPassengerTunnels([], 'h', '/k', stateDir, {
+  syncPassengerTunnels([], 'h', 2222, '/k', stateDir, {
     spawnFn, isPidAlive: () => true, onStatus: (w, s) => statuses.push([w, s]),
   });
 

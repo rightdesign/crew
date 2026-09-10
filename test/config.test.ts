@@ -88,6 +88,17 @@ test('ship.relayHost is undefined unless set — the tunnel client has no relay 
   assert.equal(cfg2.ship.relayHost, 'crewd@ships.tablation.dev');
 });
 
+test('ship.relayPort defaults to 2222 (the relay\'s own RELAY_SSH_PORT default) and is overridable (ISSUE-681)', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.ship.relayPort, 2222);
+
+  const withPort = ONE.replace('ship:\n  agent: { bin: /bin/true }', 'ship:\n  agent: { bin: /bin/true }\n  relayPort: 9999');
+  const { dir: dir2, file: file2 } = withConfig(withPort);
+  const cfg2 = loadConfig(dir2, file2);
+  assert.equal(cfg2.ship.relayPort, 9999);
+});
+
 test('passengerRepoTargets() is empty when the route has hostPassengers off, regardless of repos:', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);

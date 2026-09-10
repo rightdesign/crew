@@ -467,7 +467,7 @@ async function syncHostPassengers(): Promise<void> {
       try {
         const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
         const plans = planContainers(cfg);
-        syncPassengerTunnels(plans, cfg.ship.relayHost, privateKeyPath, cfg.ship.stateDir, {
+        syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, {
           onStatus: (workspaceId, status) => {
             const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
             if (!owningRoute) return;
@@ -2158,7 +2158,7 @@ switch (command) {
       try { process.kill(existing!.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
     const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
-    syncPassengerTunnels(plans, cfg.ship.relayHost, privateKeyPath, cfg.ship.stateDir, {
+    syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, {
       onStatus: (wsId, status) => {
         new Tracker(route, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
           .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
@@ -2550,7 +2550,7 @@ switch (command) {
         `host passengers:   ON for ${passengerRoutes.map((r) => r.route).join(', ')}\n` +
           `                   docker:     ${dockerOk ? 'OK' : 'NOT AVAILABLE'}\n` +
           `                   ssh-keygen: ${keygenOk ? 'OK' : 'NOT AVAILABLE'}\n` +
-          `                   relay host: ${cfg.ship.relayHost ? cfg.ship.relayHost : 'not set (ship.relayHost) — containers will run with no tunnel'}\n`,
+          `                   relay host: ${cfg.ship.relayHost ? `${cfg.ship.relayHost}:${cfg.ship.relayPort}` : 'not set (ship.relayHost) — containers will run with no tunnel'}\n`,
       );
       if (!dockerOk) {
         process.stdout.write(

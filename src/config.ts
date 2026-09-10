@@ -375,6 +375,19 @@ export interface Ship {
    * dial" rather than crashing the poll loop trying to `ssh` to nothing.
    */
   relayHost?: string;
+  /**
+   * The port `relayHost` listens for `ssh -R` on (ISSUE-681) — the relay's
+   * own `RELAY_SSH_PORT` (docs/RELAY.md), deliberately NOT 22 so it never
+   * collides with a box's own admin SSH daemon. Default 2222 matches the
+   * relay's own default. This has to be a separate field, not folded into
+   * `relayHost` itself: `relayHost` is handed to `ssh` as a plain
+   * `user@host` destination argument, which has no port syntax of its own
+   * (unlike an `ssh://user@host:port` URI) — every tunnel this ship ever
+   * spawned connected to the default port 22 instead of the relay's real
+   * port until this field existed, silently hanging forever against a
+   * firewalled port with zero visible error.
+   */
+  relayPort: number;
 }
 
 export interface CrewConfig {
@@ -398,7 +411,7 @@ export class ConfigError extends Error {}
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
-  'reposBasePath', 'relayHost',
+  'reposBasePath', 'relayHost', 'relayPort',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -851,6 +864,8 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
       maxConcurrentAgents,
       streamRetentionDays,
       relayHost: shipRaw.relayHost ? String(shipRaw.relayHost) : undefined,
+      // 2222 matches the relay's own RELAY_SSH_PORT default (docs/RELAY.md).
+      relayPort: shipRaw.relayPort !== undefined ? Number(shipRaw.relayPort) : 2222,
     },
     routes,
     crewHome,
