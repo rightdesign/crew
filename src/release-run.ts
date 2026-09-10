@@ -232,6 +232,27 @@ function looksLikeWorkerCrash(output: string): boolean {
   return crashSignature.test(output) && !assertionDiff.test(output);
 }
 
+/**
+ * Whether a failed build/deploy hook's output looks like a bundler unable to
+ * resolve an already-declared dependency, rather than a real code problem —
+ * ISSUE-703: a release's `deploy` hook (`scripts/deploy-all.sh`, which builds
+ * `apps/frontend` a second time, independently of `hooks.build`'s own build a
+ * few seconds earlier in the same run) failed with `[vite]: Rolldown failed
+ * to resolve import "react-router-dom"`, a package that was confirmed present
+ * in both `package.json` and `node_modules` on that exact commit — a fresh
+ * local rebuild with no code changes succeeded immediately. That signature
+ * (bundler resolve failure, not a type/syntax error) means the checkout's
+ * `node_modules` was transiently inconsistent at the moment this build read
+ * it, not that the import is actually wrong — one retry a few seconds later
+ * reads a settled `node_modules` and should succeed, same reasoning as
+ * `looksLikeWorkerCrash` above.
+ */
+function looksLikeTransientResolveFailure(output: string): boolean {
+  const resolveFailure = /Rolldown failed to resolve import|Could not resolve|\[vite\]: Failed to resolve import/i;
+  const realBuildError = /(TS\d{4}:|SyntaxError|error TS|Cannot find module '\.)/;
+  return resolveFailure.test(output) && !realBuildError.test(output);
+}
+
 const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'bump' | 'released',
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
@@ -700,7 +721,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   if (o.repo.hooks.build) {
     if (o.dryRun) o.emit.emit(`would run: ${hookLabel(o.repo, 'build')}`);
     else {
-      const r = await hook(o, 'build');
+      let r = await hook(o, 'build');
+      if (r && r.code !== 0 && looksLikeTransientResolveFailure(r.output)) {
+        o.emit.warn('build failed with what looks like a transient dependency-resolution glitch, not a real failure — retrying once');
+        r = await hook(o, 'build');
+      }
       if (r && r.code !== 0) {
         o.emit.error('build failed — not deploying');
         return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision };
@@ -719,7 +744,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   } else if (o.repo.release.mode === 'local' && o.repo.hooks.deploy) {
     if (o.dryRun) o.emit.emit(`would run: ${hookLabel(o.repo, 'deploy')}`);
     else {
-      const r = await hook(o, 'deploy');
+      let r = await hook(o, 'deploy');
+      if (r && r.code !== 0 && looksLikeTransientResolveFailure(r.output)) {
+        o.emit.warn('deploy failed with what looks like a transient dependency-resolution glitch, not a real failure — retrying once');
+        r = await hook(o, 'deploy');
+      }
       if (r && r.code !== 0) {
         o.emit.error(`deploy FAILED (exit ${r.code}) — the target may be partially deployed`);
         o.state?.noteDeployFailed(headSha(o.cwd));

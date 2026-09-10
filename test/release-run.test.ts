@@ -186,6 +186,48 @@ test('a failed deploy leaves no tag — the next cycle must not think it shipped
   assert.doesNotMatch(execFileSync('git', ['tag', '--list'], { cwd: dir, encoding: 'utf8' }), /v1\.3\.0/);
 });
 
+test('a transient-resolve-failure-shaped build failure is retried once, and a clean retry proceeds (ISSUE-703)', async () => {
+  const { dir, repo } = project(LOCAL.replace('build: exit 0', `build: |
+    if [ -f .build-ran-once ]; then exit 0; else touch .build-ran-once; echo 'Error: [vite]: Rolldown failed to resolve import "react-router-dom" from "src/main.tsx".'; exit 1; fi`));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, undefined);
+  assert.equal(out.deployed, true);
+  assert.ok(lines.some((l) => /transient dependency-resolution glitch.*retrying once/.test(l)));
+});
+
+test('a transient-resolve-failure-shaped build failure that recurs on retry still stops the release', async () => {
+  const { dir, repo } = project(LOCAL.replace('build: exit 0',
+    'build: echo "Rolldown failed to resolve import" && exit 1'));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'build failed');
+  assert.ok(lines.some((l) => /transient dependency-resolution glitch.*retrying once/.test(l)));
+});
+
+test('a transient-resolve-failure-shaped deploy failure is retried once, and a clean retry proceeds', async () => {
+  const { dir, repo } = project(LOCAL.replace('deploy: exit 0', `deploy: |
+    if [ -f .deploy-ran-once ]; then exit 0; else touch .deploy-ran-once; echo 'Could not resolve "react-router-dom"'; exit 1; fi`));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, undefined);
+  assert.equal(out.deployed, true);
+  assert.ok(lines.some((l) => /transient dependency-resolution glitch.*retrying once/.test(l)));
+});
+
+test('a real build error is never retried, even if it also mentions "resolve"', async () => {
+  const { dir, repo } = project(LOCAL.replace('build: exit 0', `build: |
+    echo 'Failed to resolve import, and also error TS2307 Cannot find module'; exit 1`));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'build failed');
+  assert.ok(!lines.some((l) => /retrying once/.test(l)));
+});
+
 test('external mode does not merge, version, tag or deploy', async () => {
   const { dir, repo } = project(`version: 1
 hooks:
