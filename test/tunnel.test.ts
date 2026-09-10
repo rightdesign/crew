@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, startTunnel, syncPassengerTunnels, readPersistedTunnel, type SpawnFn, type TunnelStatus,
+  sshArgsFor, startTunnel, syncPassengerTunnels, readPersistedTunnel, DEFAULT_SPAWN_OPTIONS,
+  type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
 
@@ -15,8 +16,23 @@ class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   pid = 4242;
+  unrefCalled = false;
   kill(_signal?: string) { this.emit('killed'); }
+  unref() { this.unrefCalled = true; }
 }
+
+test('the real ssh child is spawned detached (ISSUE-680) — crew run must not block on a tunnel meant to outlive this cycle', () => {
+  assert.equal(DEFAULT_SPAWN_OPTIONS.detached, true);
+});
+
+test('startTunnel() unrefs the child so the parent event loop does not wait on it (ISSUE-680)', () => {
+  const child = new FakeChild();
+  const { spawnFn } = fakeSpawn(child);
+  startTunnel({
+    relayHost: 'crewd@ships.tablation.dev', workspaceId: 'ws-1', localPort: 28800, privateKeyPath: '/keys/id_ed25519', spawnFn,
+  });
+  assert.equal(child.unrefCalled, true);
+});
 
 function fakeSpawn(child: FakeChild): { spawnFn: SpawnFn; calls: Array<{ cmd: string; args: string[] }> } {
   const calls: Array<{ cmd: string; args: string[] }> = [];
@@ -43,7 +59,7 @@ test('sshArgsFor() builds the exact -R remote-forward argv the relay expects', (
   ]);
 });
 
-test('startTunnel() starts as "connecting" and reports "connected" once stderr shows the allocated-port line', () => {
+test('startTunnel() starts as "connecting" and stays there — no in-process "connected" signal any more (ISSUE-680)', () => {
   const child = new FakeChild();
   const { spawnFn, calls } = fakeSpawn(child);
   const statuses: TunnelStatus[] = [];
@@ -57,9 +73,11 @@ test('startTunnel() starts as "connecting" and reports "connected" once stderr s
   assert.equal(tunnel.status, 'connecting');
   assert.deepEqual(statuses, ['connecting']);
 
+  // Emitting on the (now unused) stderr stream must not change anything —
+  // stdio is fully 'ignore'd on the real spawn now, so nothing reads it.
   child.stderr.emit('data', 'Allocated port 54321 for remote forward to workspace-ws-1\n');
-  assert.equal(tunnel.status, 'connected');
-  assert.deepEqual(statuses, ['connecting', 'connected']);
+  assert.equal(tunnel.status, 'connecting');
+  assert.deepEqual(statuses, ['connecting']);
 });
 
 test('startTunnel() reports "disconnected" when the ssh child exits', () => {

@@ -28,7 +28,7 @@
  * a side channel) is what `mcp_url` actually depends on.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ContainerPlan } from './passenger-containers.ts';
@@ -37,7 +37,22 @@ export type TunnelStatus = 'connecting' | 'connected' | 'disconnected';
 
 export type SpawnFn = (cmd: string, args: string[]) => ChildProcess;
 
-const defaultSpawn: SpawnFn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+// `detached: true` + fully `'ignore'`d stdio (ISSUE-680) — matches
+// `passenger-sync-daemon.ts`'s own `defaultSpawn`, the proven shape for
+// anything that has to outlive the `crew run`/`passengers` invocation that
+// spawned it (a short-lived process relaunched every cycle, never a
+// daemon). An earlier version of this piped stderr back to the parent so
+// `startTunnel` could detect the "Allocated port" line immediately — that
+// pipe's read end closes the instant the short-lived parent exits, and a
+// detached child writing to it afterward can die (confirmed live: both
+// `detached: true` alone AND a piped stderr still left the ssh child dead
+// moments after the parent exited). No pipe at all sidesteps that
+// entirely; `syncPassengerTunnels`'s existing "promote a still-connecting
+// tunnel to connected once it has survived a cycle" logic is what confirms
+// connection now, not an immediate in-process signal.
+/** Pulled out to its own constant so a test can assert on it without mocking `node:child_process`. */
+export const DEFAULT_SPAWN_OPTIONS: SpawnOptions = { stdio: 'ignore', detached: true };
+const defaultSpawn: SpawnFn = (cmd, args) => spawn(cmd, args, DEFAULT_SPAWN_OPTIONS);
 
 export interface TunnelOptions {
   /** e.g. `crewd@ships.tablation.dev` — `Ship.relayHost`. */
@@ -56,18 +71,6 @@ export interface Tunnel {
   readonly pid: number | undefined;
   stop(): void;
 }
-
-/**
- * OpenSSH's own confirmation that a dynamic `-R ...:0:...` bind actually
- * took: with a real port requested, the client has to be TOLD which port
- * the far end picked, and it prints that to stderr the moment the
- * remote-forward request succeeds — independent of whether the relay does
- * anything useful with it afterward. This is the earliest real signal this
- * client has that the tunnel itself is up, as opposed to just "the ssh
- * process is still running" (which is also true while it's stuck in the
- * TCP handshake).
- */
-const ALLOCATED_PORT_RE = /Allocated port \d+ for remote forward/;
 
 export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'workspaceId' | 'localPort' | 'privateKeyPath'>): string[] {
   return [
@@ -95,14 +98,16 @@ export function startTunnel(opts: TunnelOptions): Tunnel {
   opts.onStatus?.('connecting');
 
   const child = spawnFn('ssh', sshArgsFor(opts));
-  let stderrBuf = '';
-  child.stderr?.on('data', (chunk: Buffer | string) => {
-    stderrBuf += chunk.toString();
-    if (status === 'connecting' && ALLOCATED_PORT_RE.test(stderrBuf)) {
-      status = 'connected';
-      opts.onStatus?.('connected');
-    }
-  });
+  // Same reasoning as `defaultSpawn`'s `detached: true` (ISSUE-680): don't
+  // let this child keep `crew run`'s event loop — and therefore the whole
+  // process — alive until the tunnel itself exits. A test-injected
+  // `spawnFn` may return a fake without a real `.unref()`; guard for that.
+  child.unref?.();
+  // No stderr-based "connected" detection any more (ISSUE-680) — stdio is
+  // fully 'ignore'd now, so the only way this settles as 'connected' is
+  // `syncPassengerTunnels` finding the pid still alive on a later cycle.
+  // These two listeners only matter for a fast, synchronous failure within
+  // THIS cycle (spawn itself erroring, or the child exiting immediately).
   child.on('exit', () => {
     if (status !== 'disconnected') {
       status = 'disconnected';
