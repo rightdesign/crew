@@ -313,5 +313,11 @@ export function syncPassengerTunnels(
 function readAllPersistedWorkspaceIds(stateDir: string): string[] {
   const dir = join(stateDir, 'passengers');
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -'.json'.length));
+  // Exclude passenger-sync-daemon.ts's own `<workspaceId>-sync.json` files (ISSUE-705)
+  // — this loop only owns the bare `<workspaceId>.json` tunnel-state files, and used
+  // to also match the sync-daemon's, treating it as an orphaned tunnel and deleting it
+  // every cycle.
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.json') && !f.endsWith('-sync.json'))
+    .map((f) => f.slice(0, -'.json'.length));
 }

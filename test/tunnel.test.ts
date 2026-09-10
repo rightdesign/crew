@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
@@ -269,6 +269,25 @@ test('syncPassengerTunnels() leaves an alive tunnel alone when mcpSecret is unch
   });
 
   assert.equal(calls2.length, 0, 'no mcpSecret before or after should not be treated as a drift');
+});
+
+test('syncPassengerTunnels() does not delete passenger-sync-daemon.ts\'s own <workspaceId>-sync.json state file (ISSUE-705)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const passengersDir = join(stateDir, 'passengers');
+  mkdirSync(passengersDir, { recursive: true });
+  // Mimics writePersistedSyncDaemon() in passenger-sync-daemon.ts, which
+  // shares this same directory but with a `-sync.json` suffix.
+  const syncDaemonStatePath = join(passengersDir, 'ws-1-sync.json');
+  writeFileSync(syncDaemonStatePath, '{}\n');
+
+  const child = new FakeChild();
+  const { spawnFn } = fakeSpawn(child);
+  // ws-1 is planned, so its own tunnel state file gets created too — the
+  // cleanup loop below used to also match "ws-1-sync" (stripped only of
+  // ".json") as an unplanned workspace and delete the sync-daemon's file.
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, new Map(), { spawnFn });
+
+  assert.ok(existsSync(syncDaemonStatePath), 'the sync-daemon\'s own state file must survive a tunnel sync cycle');
 });
 
 test('syncPassengerTunnels() kills and drops a persisted tunnel whose workspace is no longer planned', () => {
