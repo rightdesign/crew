@@ -73,7 +73,7 @@ import {
   validatePath,
 } from '@modelcontextprotocol/server-filesystem/dist/lib.js';
 import { git, gitOk, GitError } from './git.ts';
-import { secretsMatch } from './passenger-sync-daemon.ts';
+import { secretsMatch } from './secret-compare.ts';
 
 export interface PassengerMcpServerOptions {
   /** Absolute directory paths this server may read from. Never empty. */
@@ -176,7 +176,15 @@ async function validateCredential(
   if (auth.mcpSecret && secretsMatch(presentedToken, auth.mcpSecret)) {
     return { ok: true };
   }
-  const url = `${auth.tablationApiBaseUrl.replace(/\/+$/, '')}/auth/me?workspaceId=${encodeURIComponent(auth.workspaceId)}`;
+  // ISSUE-694 (security): every OTHER call site in this repo appends /api
+  // to baseUrl (agent-log.ts, agent.ts, agents.ts, connect.ts,
+  // device-auth.ts, logbook.ts, skills.ts, tracker.ts) — this was the one
+  // place that didn't. Without it, this request hits Tablation's own
+  // frontend SPA's client-side-routing catch-all, which answers ANY path
+  // with its index.html at 200 OK regardless of the Authorization header's
+  // value — a complete auth bypass, since the code below only checked
+  // `res.ok`. Confirmed live against the real production API base URL.
+  const url = `${auth.tablationApiBaseUrl.replace(/\/+$/, '')}/api/auth/me?workspaceId=${encodeURIComponent(auth.workspaceId)}`;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -192,6 +200,14 @@ async function validateCredential(
   if (res.status === 401) return { ok: false, status: 401, message: 'Invalid or revoked API key' };
   if (res.status === 403) return { ok: false, status: 403, message: 'Not a member of this workspace' };
   if (!res.ok) return { ok: false, status: 502, message: `Credential check failed: ${res.status} ${res.statusText}` };
+  // Defense in depth (ISSUE-694): a 200 alone isn't proof this was really
+  // /auth/me's own JSON response rather than some other 200-for-anything
+  // route (a misconfigured base URL hitting a SPA catch-all, a proxy
+  // misroute, etc.) — fail closed rather than trust status code alone.
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return { ok: false, status: 502, message: `Credential check returned an unexpected content-type: ${contentType || '(none)'}` };
+  }
   return { ok: true };
 }
 

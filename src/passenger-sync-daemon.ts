@@ -54,7 +54,7 @@
 
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CrewConfig } from './config.ts';
@@ -63,22 +63,10 @@ import {
 } from './passenger-containers.ts';
 import { syncPassengerCheckout, type PassengerCheckoutOutcome } from './git.ts';
 import { isPidAlive } from './tunnel.ts';
+import { secretsMatch } from './secret-compare.ts';
 
 export function generateSyncSecret(): string {
   return randomBytes(32).toString('hex');
-}
-
-/**
- * `Buffer.from`/`timingSafeEqual` throw on a length mismatch rather than
- * reporting one — a client sending a malformed or wrong-length header is
- * just "not the secret", not an error condition. Exported (ISSUE-685) so
- * `passenger-mcp.ts`'s own `PASSENGER_MCP_SECRET` check reuses this exact
- * timing-safe comparison rather than a second, possibly-drifting copy.
- */
-export function secretsMatch(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
 }
 
 /**
