@@ -10,7 +10,13 @@ import { createSyncDaemonServer } from '../src/passenger-sync-daemon.ts';
 
 const WRITE_SHAPED_TOOL_NAMES = ['write_file', 'edit_file', 'move_file', 'create_directory', 'delete_file'];
 
-const FAKE_TABLATION_BASE = 'https://fake-tablation.test/api';
+// Bare host, NO /api suffix (ISSUE-694) — matching the real convention
+// every other crew call site follows (agent-log.ts, agent.ts, agents.ts,
+// connect.ts, device-auth.ts, logbook.ts, skills.ts, tracker.ts all
+// append /api themselves). Keeping this bare is what makes these tests
+// actually exercise validateCredential's own /api-appending, rather than
+// papering over it the way the pre-ISSUE-694 fixture did.
+const FAKE_TABLATION_BASE = 'https://fake-tablation.test';
 const VALID_TOKEN = 'valid-token';
 const WORKSPACE_ID = 'ws-under-test';
 const AUTH: PassengerAuthConfig = { tablationApiBaseUrl: FAKE_TABLATION_BASE, workspaceId: WORKSPACE_ID };
@@ -18,29 +24,33 @@ const AUTH_HEADER = { Authorization: `Bearer ${VALID_TOKEN}` };
 const DEFAULT_MEMBERS = new Map([[VALID_TOKEN, WORKSPACE_ID]]);
 
 /**
- * Stands in for Tablation's own `GET /auth/me`: 401 for an unrecognized
+ * Stands in for Tablation's own `GET /api/auth/me`: 401 for an unrecognized
  * token, 403 for a token whose workspace doesn't match the `workspaceId`
  * query param, 200 otherwise — the same three outcomes `validateCredential`
  * (passenger-mcp.ts) actually branches on. Only intercepts calls to
  * `FAKE_TABLATION_BASE`; every other URL (the test's own calls to the
- * server under test) passes through to the real global `fetch`.
+ * server under test) passes through to the real global `fetch`. Every
+ * response sets `content-type: application/json` explicitly — a bare
+ * `new Response(jsonString)` defaults to `text/plain`, which would trip
+ * `validateCredential`'s own ISSUE-694 content-type defense-in-depth check.
  */
 function withMockedAuthEndpoint<T>(fn: () => Promise<T>, memberWorkspaces: Map<string, string> = DEFAULT_MEMBERS): Promise<T> {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (!url.startsWith(FAKE_TABLATION_BASE)) return realFetch(input, init);
+    const jsonHeaders = { 'content-type': 'application/json' };
     const parsed = new URL(url);
     const headers = new Headers(init?.headers);
     const authHeader = headers.get('Authorization') ?? '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : '';
     const memberOf = memberWorkspaces.get(token);
-    if (!memberOf) return new Response(JSON.stringify({ message: 'Invalid or revoked API key' }), { status: 401 });
+    if (!memberOf) return new Response(JSON.stringify({ message: 'Invalid or revoked API key' }), { status: 401, headers: jsonHeaders });
     const requestedWorkspace = parsed.searchParams.get('workspaceId');
     if (requestedWorkspace !== memberOf) {
-      return new Response(JSON.stringify({ message: 'Not a member of this workspace' }), { status: 403 });
+      return new Response(JSON.stringify({ message: 'Not a member of this workspace' }), { status: 403, headers: jsonHeaders });
     }
-    return new Response(JSON.stringify({ id: 'user-1', workspaceId: memberOf }), { status: 200 });
+    return new Response(JSON.stringify({ id: 'user-1', workspaceId: memberOf }), { status: 200, headers: jsonHeaders });
   }) as typeof fetch;
   return fn().finally(() => { globalThis.fetch = realFetch; });
 }
@@ -309,6 +319,63 @@ test('rejects an invalid or revoked API key', async (t) => withMockedAuthEndpoin
   const body = await res.json() as { error: { message: string } };
   assert.match(body.error.message, /Invalid or revoked API key/);
 }));
+
+test('calls /api/auth/me, not bare /auth/me (ISSUE-694 security fix — regression guard)', async (t) => {
+  const realFetch = globalThis.fetch;
+  let calledUrl: string | undefined;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (!url.startsWith(FAKE_TABLATION_BASE)) return realFetch(input, init);
+    calledUrl = url;
+    return new Response(JSON.stringify({ id: 'user-1', workspaceId: WORKSPACE_ID }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+
+  const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
+  const server = createPassengerHttpServer({ allowedDirectories: [dir] }, AUTH);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+
+  await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...AUTH_HEADER },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+
+  assert.ok(calledUrl, 'the credential check must actually have been called');
+  assert.match(calledUrl!, /\/api\/auth\/me\?/, 'must hit /api/auth/me, not a bare /auth/me that a SPA catch-all could answer');
+});
+
+test('SECURITY (ISSUE-694): a 200 response that is not real JSON (e.g. a misrouted SPA catch-all) is rejected, not treated as valid auth', async (t) => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (!url.startsWith(FAKE_TABLATION_BASE)) return realFetch(input, init);
+    // Simulates exactly what a missing /api prefix would have hit: a 200
+    // HTML page, not /auth/me's real JSON response.
+    return new Response('<!doctype html><html>...</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+
+  const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
+  const server = createPassengerHttpServer({ allowedDirectories: [dir] }, AUTH);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+
+  const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer literally-anything-at-all' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+
+  assert.equal(res.status, 502, 'must fail closed, never treat a non-JSON 200 as a successful credential check');
+  const body = await res.json() as { error: { message: string } };
+  assert.match(body.error.message, /unexpected content-type/);
+});
 
 test('rejects a valid key that belongs to a different workspace than this container serves', async (t) => withMockedAuthEndpoint(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
