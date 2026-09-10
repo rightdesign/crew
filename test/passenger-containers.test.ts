@@ -156,11 +156,15 @@ test('dockerAvailable() is true when `docker info` succeeds, false when it throw
   assert.equal(dockerAvailable(broken), false);
 });
 
-test('listPassengerContainers() parses newline-separated container names, dropping blanks', () => {
+test('listPassengerContainers() parses newline-separated name+state pairs, dropping blanks', () => {
   const { exec } = fakeExec({
-    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': 'crew-passenger-ws-1\ncrew-passenger-ws-2\n',
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}':
+      'crew-passenger-ws-1\trunning\ncrew-passenger-ws-2\texited\n',
   });
-  assert.deepEqual(listPassengerContainers(exec), ['crew-passenger-ws-1', 'crew-passenger-ws-2']);
+  assert.deepEqual(listPassengerContainers(exec), [
+    { name: 'crew-passenger-ws-1', running: true },
+    { name: 'crew-passenger-ws-2', running: false },
+  ]);
 });
 
 test('startContainer() runs `docker run -d` with one -v per mount, the mountsHash label, and the fixed image tag', () => {
@@ -227,7 +231,7 @@ test('syncPassengerContainers() starts a planned container that is not yet runni
     makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
   ]);
   const { exec, calls } = fakeExec({
-    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': '',
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': '',
   });
   const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
 
@@ -244,7 +248,7 @@ test('syncPassengerContainers() leaves a running container alone when its mounts
   const plans = planContainers(cfg);
   const name = plans[0]!.containerName;
   const { exec, calls } = fakeExec({
-    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': `${name}\n`,
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': `${name}\trunning\n`,
     [`docker inspect --format {{ index .Config.Labels "crew.mounts.hash" }} ${name}`]: `${plans[0]!.mountsHash}\n`,
   });
   const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
@@ -260,7 +264,7 @@ test('syncPassengerContainers() recreates a running container whose mountsHash l
   const plans = planContainers(cfg);
   const name = plans[0]!.containerName;
   const { exec } = fakeExec({
-    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': `${name}\n`,
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': `${name}\trunning\n`,
     [`docker inspect --format {{ index .Config.Labels "crew.mounts.hash" }} ${name}`]: 'stale-hash\n',
   });
   const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
@@ -273,7 +277,38 @@ test('syncPassengerContainers() recreates a running container whose mountsHash l
 test('syncPassengerContainers() stops a running container whose workspace is no longer planned (toggle went off)', () => {
   const cfg = makeConfig([]); // no routes at all -> nothing planned
   const { exec, calls } = fakeExec({
-    'docker ps -a --filter name=crew-passenger- --format {{.Names}}': 'crew-passenger-ws-old\n',
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': 'crew-passenger-ws-old\trunning\n',
+  });
+  const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
+
+  assert.deepEqual(result.stopped, ['crew-passenger-ws-old']);
+  assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'rm' && c.includes('crew-passenger-ws-old')));
+});
+
+test('syncPassengerContainers() restarts a planned container that is present but Exited, rather than leaving it alone (ISSUE-700)', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
+  ]);
+  const plans = planContainers(cfg);
+  const name = plans[0]!.containerName;
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': `${name}\texited\n`,
+  });
+  const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
+
+  assert.deepEqual(result.started, [name]);
+  assert.deepEqual(result.recreated, []);
+  assert.deepEqual(result.stopped, []);
+  assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'rm' && c.includes(name)));
+  assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'run'));
+  // never asks docker inspect about a container it's about to remove and recreate
+  assert.ok(!calls.some((c) => c.join(' ').includes('docker inspect')));
+});
+
+test('syncPassengerContainers() stops (rm -f) a no-longer-planned container even when it is already Exited, not just running ones', () => {
+  const cfg = makeConfig([]); // no routes at all -> nothing planned
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': 'crew-passenger-ws-old\texited\n',
   });
   const result = syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec);
 

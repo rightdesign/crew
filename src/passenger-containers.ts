@@ -123,10 +123,25 @@ export function planContainers(cfg: CrewConfig): ContainerPlan[] {
     });
 }
 
-/** Every `crew-passenger-*` container `docker ps -a` currently knows about, running or not. */
-export function listPassengerContainers(exec: Exec = realExec): string[] {
-  const out = exec('docker', ['ps', '-a', '--filter', 'name=crew-passenger-', '--format', '{{.Names}}']);
-  return out.split('\n').map((l) => l.trim()).filter(Boolean);
+export interface ExistingContainer {
+  name: string;
+  /** Whether Docker currently has this container running, not merely present. */
+  running: boolean;
+}
+
+/**
+ * Every `crew-passenger-*` container `docker ps -a` currently knows about,
+ * running or not, and which of those two it is — a container name existing
+ * is not the same as it doing anything: `docker stop`/`kill`/an OOM/a crash
+ * all leave the name present but `Exited`, and the reconciliation loop below
+ * must treat that the same as "missing" rather than "healthy" (ISSUE-700).
+ */
+export function listPassengerContainers(exec: Exec = realExec): ExistingContainer[] {
+  const out = exec('docker', ['ps', '-a', '--filter', 'name=crew-passenger-', '--format', '{{.Names}}\t{{.State}}']);
+  return out.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+    const [name, state] = line.split('\t');
+    return { name: name!, running: state === 'running' };
+  });
 }
 
 /** The `crew.mounts.hash` label on a container, or undefined if it has none / doesn't exist. */
@@ -221,12 +236,17 @@ export interface SyncResult {
  * cycle hook `crew run`/`crew poll` calls (see cli.ts). Idempotent: a
  * container already running with the right mount set is left alone.
  *
- * - not running, planned            -> start
+ * - missing, planned                -> start
+ * - present but not running, planned -> stop (clears the name) + start,
+ *   same as missing: an Exited/crashed container is not a healthy one, and
+ *   leaving it alone forever with no log output was ISSUE-700
  * - running, planned, mounts changed -> stop + start (docker can't hot-swap
  *   a bind mount; a repo added/removed from `hostPassengers` scope only
  *   takes effect on the next sync after this, not mid-session)
  * - running, no longer planned      -> stop (toggle went off, or the last
  *   included connection for that workspace was removed)
+ * - present but not running, no longer planned -> stop (clears the name;
+ *   same rm -f either way, running or not)
  *
  * Never called at all when `dockerAvailable()` is false — the caller checks
  * that first, same as `crew doctor` does, and reports it rather than
@@ -247,7 +267,8 @@ export function syncPassengerContainers(
 ): SyncResult {
   const plans = planContainers(cfg);
   const plannedByName = new Map(plans.map((p) => [p.containerName, p]));
-  const existing = new Set(listPassengerContainers(exec));
+  const existing = listPassengerContainers(exec);
+  const existingByName = new Map(existing.map((c) => [c.name, c]));
 
   const started: string[] = [];
   const recreated: string[] = [];
@@ -255,7 +276,12 @@ export function syncPassengerContainers(
 
   for (const plan of plans) {
     const sync = syncEndpoints.get(plan.workspaceId);
-    if (!existing.has(plan.containerName)) {
+    const current = existingByName.get(plan.containerName);
+    if (!current) {
+      startContainer(plan, tablationApiBaseUrl, sync, exec);
+      started.push(plan.containerName);
+    } else if (!current.running) {
+      stopContainer(plan.containerName, exec);
       startContainer(plan, tablationApiBaseUrl, sync, exec);
       started.push(plan.containerName);
     } else if (currentMountsHash(plan.containerName, exec) !== plan.mountsHash) {
@@ -264,7 +290,7 @@ export function syncPassengerContainers(
       recreated.push(plan.containerName);
     }
   }
-  for (const name of existing) {
+  for (const { name } of existing) {
     if (!plannedByName.has(name)) {
       stopContainer(name, exec);
       stopped.push(name);
