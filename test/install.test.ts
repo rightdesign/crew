@@ -25,6 +25,21 @@ test('macOS gets a launchd plist, never systemd or cron', () => {
   assert.equal(plan.crontabLine, null);
 });
 
+test('launchd\'s plan unloads before loading, so a changed plist actually takes effect on reinstall (ISSUE-678)', () => {
+  const plan = planInstall(ship(), '/opt/crew', 'macos', true);
+  assert.equal(plan.preLoadCommands.length, 1);
+  assert.deepEqual(plan.preLoadCommands[0]!.slice(0, 2), ['launchctl', 'unload']);
+  assert.equal(plan.preLoadCommands[0]![2], plan.unitPaths[0]);
+  assert.deepEqual(plan.loadCommands[0], ['launchctl', 'load', plan.unitPaths[0]]);
+});
+
+test('systemd and cron need no unload step — daemon-reload/enable and a plain crontab overwrite already pick up a changed unit', () => {
+  const sdPlan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+  assert.deepEqual(sdPlan.preLoadCommands, []);
+  const cronPlan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false);
+  assert.deepEqual(cronPlan.preLoadCommands, []);
+});
+
 test('the unit label is derived from crewHome, so two checkouts never collide', () => {
   // Same checkout, planned twice: same label, so a reinstall targets the
   // unit it wrote last time rather than minting a fresh name every run.

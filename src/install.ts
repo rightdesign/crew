@@ -118,6 +118,17 @@ export interface InstallPlan {
   unitContent: Record<string, string>;
   /** The one line appended to the user's crontab. Only set for `cron`. */
   crontabLine: string | null;
+  /**
+   * argv to run, in order, BEFORE `loadCommands`, on a reinstall. Only
+   * launchd needs this: `launchctl load` on an already-loaded job is a
+   * documented no-op that keeps running the OLD in-memory definition even
+   * after the plist on disk has changed, so a reinstall must unload first.
+   * systemd's `daemon-reload` + `enable --now` and cron's plain crontab
+   * overwrite both already pick up a changed unit on every install with no
+   * separate unload step, so they leave this empty. Tolerated to fail (a
+   * fresh install has nothing loaded yet) — see `applyInstall`.
+   */
+  preLoadCommands: string[][];
   /** argv to run, in order, once the unit files exist. */
   loadCommands: string[][];
   /** Where the crew's own emitter writes — from config, never invented here. */
@@ -213,6 +224,7 @@ function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
     unitContent: { [unitPath]: content },
     crontabLine: null,
     cronMarker: null,
+    preLoadCommands: [['launchctl', 'unload', unitPath]],
     loadCommands: [['launchctl', 'load', unitPath]],
     crewLog,
     schedulerLog,
@@ -266,6 +278,7 @@ WantedBy=timers.target
     unitContent: { [servicePath]: service, [timerPath]: timer },
     crontabLine: null,
     cronMarker: null,
+    preLoadCommands: [],
     loadCommands: [
       ['systemctl', '--user', 'daemon-reload'],
       ['systemctl', '--user', 'enable', '--now', `${label}.timer`],
@@ -289,6 +302,7 @@ function planCron(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
     unitContent: {},
     crontabLine: line,
     cronMarker: cronMarkerFor(label),
+    preLoadCommands: [],
     loadCommands: [],
     crewLog,
     schedulerLog,
@@ -377,6 +391,19 @@ export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: 
     } else {
       addCrontabLine(plan.cronMarker!, plan.crontabLine);
       log.emit('added crontab entry');
+    }
+  }
+
+  if (plan.preLoadCommands.length) {
+    if (dryRun) {
+      for (const c of plan.preLoadCommands) log.emit(`would run: ${c.join(' ')}`);
+    } else {
+      // A unit that isn't loaded yet (first install) fails to unload — that
+      // is expected, not a failure of this install, so it's only logged,
+      // never thrown. See preLoadCommands' own doc comment for why this
+      // step exists at all.
+      const ok = runAll(plan.preLoadCommands, crewHome, log);
+      if (!ok) log.emit('unload before reload failed — likely not loaded yet, continuing');
     }
   }
 
