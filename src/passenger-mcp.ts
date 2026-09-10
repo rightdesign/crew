@@ -73,6 +73,7 @@ import {
   validatePath,
 } from '@modelcontextprotocol/server-filesystem/dist/lib.js';
 import { git, gitOk, GitError } from './git.ts';
+import { secretsMatch } from './passenger-sync-daemon.ts';
 
 export interface PassengerMcpServerOptions {
   /** Absolute directory paths this server may read from. Never empty. */
@@ -130,6 +131,19 @@ export interface PassengerAuthConfig {
    * exactly this workspace.
    */
   workspaceId: string;
+  /**
+   * This container's own identity secret (ISSUE-685, `PASSENGER_MCP_SECRET`
+   * — the same value handed to `passenger-sync-daemon.ts` as
+   * `PASSENGER_SYNC_SECRET`). A caller presenting exactly this as its
+   * Bearer token skips the `/auth/me` round trip entirely — this is the
+   * path a cookie-authenticated in-app chat session uses (synthesis
+   * ISSUE-684): it has no Tablation API key of its own to forward, but the
+   * relay already wrote this same secret onto the Ships row alongside
+   * `mcp_url`, so the backend can read it back and present it here.
+   * Undefined disables this path entirely (e.g. the sync daemon never
+   * started for this container) — every caller then needs a real API key.
+   */
+  mcpSecret?: string;
 }
 
 type CredentialCheck =
@@ -137,7 +151,11 @@ type CredentialCheck =
   | { ok: false; status: number; message: string };
 
 /**
- * Resolves the caller's `Authorization` header against Tablation's own
+ * Resolves the caller's `Authorization` header one of two ways: first, a
+ * fast constant-time match against this container's own `mcpSecret`
+ * (ISSUE-685) — no network round trip, and the only path available to a
+ * caller with no real Tablation credential of its own. Failing that, falls
+ * back to the original check: the header resolved against Tablation's own
  * `GET /auth/me` — the same loopback-to-Tablation shape the relay's
  * `TablationShipRegistry` already uses for its own Ships-row lookup
  * (apps/relay/src/shipRegistry.ts), just against a different route. Passes
@@ -153,6 +171,10 @@ async function validateCredential(
 ): Promise<CredentialCheck> {
   if (!authHeader?.startsWith('Bearer ')) {
     return { ok: false, status: 401, message: 'Missing or malformed Authorization header' };
+  }
+  const presentedToken = authHeader.slice('Bearer '.length);
+  if (auth.mcpSecret && secretsMatch(presentedToken, auth.mcpSecret)) {
+    return { ok: true };
   }
   const url = `${auth.tablationApiBaseUrl.replace(/\/+$/, '')}/auth/me?workspaceId=${encodeURIComponent(auth.workspaceId)}`;
   let res: Response;

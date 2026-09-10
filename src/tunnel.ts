@@ -6,12 +6,19 @@
  * what worked `ssh2`-to-`ssh2`, so this client's own fidelity comes from
  * running literally the same command a person would type by hand:
  *
- *   ssh -N -p <relayPort> -R workspace-<workspaceId>:0:127.0.0.1:<localPort> <relayHost>
+ *   ssh -N -p <relayPort> -R workspace-<workspaceId>-secret-<mcpSecret>:0:127.0.0.1:<localPort> <relayHost>
  *
  * `-N`: no remote command, this connection exists purely to hold the
  * forward open. The bind address's `workspace-<id>` prefix and `:0` dynamic
  * port are the relay's own addressing convention (RELAY.md) — not something
- * this client interprets, just what it's told to ask for.
+ * this client interprets, just what it's told to ask for. The bind address
+ * is advisory to the SSH protocol (RFC 4254 §7.1 doesn't require it name a
+ * real interface), which is exactly what already let `workspace-<id>` ride
+ * over to the relay as routing metadata — the optional `-secret-<hex>`
+ * suffix (ISSUE-685) reuses that same free-form-string property to also
+ * carry this container's own identity secret, so the relay can write it
+ * onto the Ships row alongside `mcp_url` (synthesis ISSUE-684) without a
+ * second side channel.
  *
  * There is no live relay to test this against (ISSUE-652 blocks real
  * ship->workspace entitlement on the relay side, filed separately, not
@@ -19,13 +26,11 @@
  * this module builds the right argv and reacts correctly to a fake child
  * process's stdout/exit, not that a real tunnel actually comes up.
  *
- * `mcp_url` publishing is a known, explicit gap, not an oversight: per
- * RELAY.md's own "what's real vs. what still needs" section, nothing on the
- * relay side publishes a tunnel's `tunnelSlug` back to the ship yet, so
- * there is no signal this client could read to learn its own public URL.
- * This module only ever writes `tunnel_status`; a future ticket on the
- * relay side (making it tell the ship its slug, e.g. over the SSH banner or
- * a side channel) is what `mcp_url` actually depends on.
+ * `mcp_url` publishing itself is no longer a gap (synthesis ISSUE-664) —
+ * the relay writes both `tunnel_status` and `mcp_url` onto the Ships row
+ * once it accepts this tunnel's `tcpip-forward` request; this module still
+ * only ever writes `tunnel_status` itself, promoting a still-`connecting`
+ * persisted tunnel once it survives a cycle (see `syncPassengerTunnels`).
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
@@ -63,6 +68,17 @@ export interface TunnelOptions {
   /** The Host Passengers container's published port on this host. */
   localPort: number;
   privateKeyPath: string;
+  /**
+   * This container's own identity secret (ISSUE-685) — the same value
+   * passed to it as `PASSENGER_MCP_SECRET` at `docker run` time
+   * (`passenger-containers.ts`'s `startContainer`, sourced from
+   * `syncPassengerSyncDaemons`'s per-container secret). Undefined whenever
+   * that secret isn't available for this workspace (e.g. the sync daemon
+   * didn't start) — the tunnel still opens, just without the extra
+   * credential riding along; `passenger-mcp.ts`'s real-API-key path is the
+   * fallback for that case.
+   */
+  mcpSecret?: string;
   onStatus?: (status: TunnelStatus) => void;
   spawnFn?: SpawnFn;
 }
@@ -74,7 +90,24 @@ export interface Tunnel {
   stop(): void;
 }
 
-export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'localPort' | 'privateKeyPath'>): string[] {
+/**
+ * `-secret-<hex>` is a literal marker, not a generic delimiter — a
+ * workspace id (a UUID) already contains hyphens of its own, so splitting
+ * on any bare `-` would be ambiguous. The secret itself is always hex
+ * (`generateSyncSecret()`, `passenger-sync-daemon.ts`), so it never
+ * contains a hyphen either; only the literal string `-secret-` marks the
+ * boundary. The relay's own parser (synthesis `sshServer.ts`) must use the
+ * exact same marker.
+ */
+const SECRET_MARKER = '-secret-';
+
+export function bindAddrFor(o: Pick<TunnelOptions, 'workspaceId' | 'mcpSecret'>): string {
+  return o.mcpSecret ? `workspace-${o.workspaceId}${SECRET_MARKER}${o.mcpSecret}` : `workspace-${o.workspaceId}`;
+}
+
+export function sshArgsFor(
+  o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'localPort' | 'privateKeyPath' | 'mcpSecret'>,
+): string[] {
   return [
     '-N',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -83,7 +116,7 @@ export function sshArgsFor(o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'w
     '-o', 'ExitOnForwardFailure=yes',
     '-i', o.privateKeyPath,
     '-p', String(o.relayPort),
-    '-R', `workspace-${o.workspaceId}:0:127.0.0.1:${o.localPort}`,
+    '-R', `${bindAddrFor(o)}:0:127.0.0.1:${o.localPort}`,
     o.relayHost,
   ];
 }
@@ -215,6 +248,8 @@ export function syncPassengerTunnels(
   relayPort: number,
   privateKeyPath: string,
   stateDir: string,
+  /** workspaceId -> this container's PASSENGER_MCP_SECRET (ISSUE-685) — from `syncPassengerSyncDaemons`'s resolved endpoints. Missing entries just spawn without one. */
+  mcpSecrets: Map<string, string> = new Map(),
   deps: SyncTunnelsDeps = {},
 ): void {
   const alive = deps.isPidAlive ?? isPidAlive;
@@ -238,6 +273,7 @@ export function syncPassengerTunnels(
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
       relayHost, relayPort, workspaceId: plan.workspaceId, localPort: plan.port, privateKeyPath,
+      mcpSecret: mcpSecrets.get(plan.workspaceId),
       spawnFn: deps.spawnFn, onStatus: (s) => { settledStatus = s; },
     });
     writePersistedTunnel(stateDir, {

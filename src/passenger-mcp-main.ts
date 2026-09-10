@@ -34,10 +34,13 @@ const port = Number.parseInt(process.env.PASSENGER_MCP_PORT ?? '8765', 10);
 const syncUrl = process.env.PASSENGER_SYNC_URL;
 const syncSecret = process.env.PASSENGER_SYNC_SECRET;
 const syncOnInitialize = syncUrl && syncSecret ? { url: syncUrl, secret: syncSecret } : undefined;
+// ISSUE-685: same optionality as the sync env vars above — absent whenever
+// `startContainer` had no sync-daemon endpoint to source it from.
+const mcpSecret = process.env.PASSENGER_MCP_SECRET;
 
 const server = createPassengerHttpServer(
   { allowedDirectories: [root], syncOnInitialize },
-  { tablationApiBaseUrl, workspaceId },
+  { tablationApiBaseUrl, workspaceId, mcpSecret },
 );
 server.listen(port, () => {
   console.error(`Passenger MCP server for ${root} (workspace ${workspaceId}) listening on :${port}/mcp`);
