@@ -173,6 +173,17 @@ export interface SyncDaemonEndpoint {
  * in which case the container still runs, just without that extra
  * freshness path (the poll-cadence sync in `syncAllPassengerCheckouts`
  * still applies regardless).
+ *
+ * `sync.secret` also becomes `PASSENGER_MCP_SECRET` (ISSUE-685) — a second,
+ * distinctly-named use of the SAME per-container identity secret the sync
+ * callback already has, not a new generation/persistence mechanism. It's
+ * threaded onward to the relay over the tunnel's own bind address
+ * (`tunnel.ts`'s `sshArgsFor`) so a caller with no Tablation credential of
+ * their own (a cookie-authenticated chat session — see ISSUE-684 in the
+ * synthesis repo) can still be let in by the passenger server, once the
+ * relay has written this same secret onto the Ships row alongside
+ * `mcp_url`. Omitted, same as the sync env vars, whenever `sync` itself is
+ * unavailable — `validateCredential`'s real-API-key path is the fallback.
  */
 export function startContainer(
   plan: ContainerPlan, tablationApiBaseUrl: string, sync: SyncDaemonEndpoint | undefined, exec: Exec = realExec,
@@ -191,6 +202,7 @@ export function startContainer(
       '--add-host', 'host.docker.internal:host-gateway',
       '-e', `PASSENGER_SYNC_URL=http://${sync.host}:${sync.port}/sync`,
       '-e', `PASSENGER_SYNC_SECRET=${sync.secret}`,
+      '-e', `PASSENGER_MCP_SECRET=${sync.secret}`,
     );
   }
   for (const m of plan.mounts) args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);

@@ -200,6 +200,21 @@ test('startContainer() wires up the sync-daemon callback when given a SyncDaemon
   assert.ok(args.includes('host.docker.internal:host-gateway'));
   assert.ok(args.includes('PASSENGER_SYNC_URL=http://host.docker.internal:30800/sync'));
   assert.ok(args.includes('PASSENGER_SYNC_SECRET=sekrit'));
+  // ISSUE-685: the same sync secret doubles as the MCP auth secret.
+  assert.ok(args.includes('PASSENGER_MCP_SECRET=sekrit'));
+});
+
+test('startContainer() omits PASSENGER_MCP_SECRET, same as the sync env vars, when there is no sync endpoint (ISSUE-685)', () => {
+  const { exec, calls } = fakeExec();
+  const plan: ContainerPlan = {
+    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800,
+    mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }],
+    mountsHash: 'deadbeef',
+  };
+  startContainer(plan, 'https://app.tablation.com/api', undefined, exec);
+
+  const [, ...args] = calls[0]!;
+  assert.ok(!args.some((a) => a.startsWith('PASSENGER_MCP_SECRET=')));
 });
 
 test('stopContainer() swallows an already-gone container rather than throwing', () => {

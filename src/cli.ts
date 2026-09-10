@@ -467,7 +467,10 @@ async function syncHostPassengers(): Promise<void> {
       try {
         const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
         const plans = planContainers(cfg);
-        syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, {
+        // ISSUE-685: same secret already threaded into the container itself
+        // (above, via `syncEndpoints` -> `startContainer`'s PASSENGER_MCP_SECRET).
+        const mcpSecrets = new Map([...syncEndpoints].map(([workspaceId, e]) => [workspaceId, e.secret]));
+        syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, mcpSecrets, {
           onStatus: (workspaceId, status) => {
             const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
             if (!owningRoute) return;
@@ -2158,7 +2161,12 @@ switch (command) {
       try { process.kill(existing!.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
     const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
-    syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, {
+    // No sync-daemon lookup happens on this manual, one-off path (ISSUE-685)
+    // — the rotated tunnel just omits PASSENGER_MCP_SECRET until the next
+    // regular `passengers` cycle re-syncs it; `validateCredential`'s
+    // real-API-key path still works for anyone with a real credential in
+    // the meantime, same graceful-degradation shape as a missing sync daemon.
+    syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, new Map(), {
       onStatus: (wsId, status) => {
         new Tracker(route, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
           .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));

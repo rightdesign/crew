@@ -327,6 +327,66 @@ test('rejects a valid key that belongs to a different workspace than this contai
   assert.match(body.error.message, /Not a member of this workspace/);
 }, new Map([['other-workspace-token', 'some-other-workspace']])));
 
+test('accepts the container\'s own mcpSecret as a Bearer token, with no Tablation round trip at all (ISSUE-685)', async (t) => {
+  const realFetch = globalThis.fetch;
+  let tablationWasCalled = false;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.startsWith(FAKE_TABLATION_BASE)) tablationWasCalled = true;
+    return realFetch(input, init);
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+
+  const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
+  const authWithSecret: PassengerAuthConfig = { ...AUTH, mcpSecret: 'container-identity-secret' };
+  const server = createPassengerHttpServer({ allowedDirectories: [dir] }, authWithSecret);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+
+  const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer container-identity-secret' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+  assert.equal(res.status, 200, await res.text());
+  assert.equal(tablationWasCalled, false, 'a matching mcpSecret must short-circuit before ever calling Tablation');
+});
+
+test('a wrong Bearer token still falls through to the real Tablation check when mcpSecret is configured', async (t) => withMockedAuthEndpoint(async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
+  const authWithSecret: PassengerAuthConfig = { ...AUTH, mcpSecret: 'container-identity-secret' };
+  const server = createPassengerHttpServer({ allowedDirectories: [dir] }, authWithSecret);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+
+  const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer not-the-secret-or-a-real-key' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+  assert.equal(res.status, 401);
+  const body = await res.json() as { error: { message: string } };
+  assert.match(body.error.message, /Invalid or revoked API key/);
+}));
+
+test('a real API key still works normally when mcpSecret is configured but not what was sent', async (t) => withMockedAuthEndpoint(async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'passenger-mcp-'));
+  const authWithSecret: PassengerAuthConfig = { ...AUTH, mcpSecret: 'container-identity-secret' };
+  const server = createPassengerHttpServer({ allowedDirectories: [dir] }, authWithSecret);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+
+  const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...AUTH_HEADER },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+  assert.equal(res.status, 200, await res.text());
+}));
+
 test('a Tablation lookup failure answers 502, not an uncaught rejection', async (t) => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
