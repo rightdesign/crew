@@ -228,6 +228,49 @@ test('syncPassengerTunnels() respawns when the container behind an alive tunnel 
   assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.mountsHash, 'hash-2');
 });
 
+test('syncPassengerTunnels() respawns when the resolved mcpSecret has drifted from what the live tunnel was started with (ISSUE-696)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const child1 = new FakeChild();
+  const { spawnFn: spawn1 } = fakeSpawn(child1);
+  syncPassengerTunnels(
+    [makePlan('ws-1')], 'h', 2222, '/k', stateDir,
+    new Map([['ws-1', 'secret-old']]),
+    { spawnFn: spawn1 },
+  );
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.mcpSecret, 'secret-old');
+
+  // Same mountsHash, pid still alive — the container was recreated with a
+  // fresh secret (mountsHash unchanged on the tunnel's own plan, but the
+  // sync-daemon/container side rotated the secret independently), so the
+  // old tunnel's -R bind address now names a secret the container no
+  // longer recognizes. Must be caught even though nothing else changed.
+  const child2 = new FakeChild();
+  const { spawnFn: spawn2, calls: calls2 } = fakeSpawn(child2);
+  syncPassengerTunnels(
+    [makePlan('ws-1')], 'h', 2222, '/k', stateDir,
+    new Map([['ws-1', 'secret-new']]),
+    { spawnFn: spawn2, isPidAlive: () => true },
+  );
+
+  assert.equal(calls2.length, 1, 'a drifted mcpSecret should trigger a respawn even with mountsHash unchanged');
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.mcpSecret, 'secret-new');
+});
+
+test('syncPassengerTunnels() leaves an alive tunnel alone when mcpSecret is unchanged, including when both are absent', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const child1 = new FakeChild();
+  const { spawnFn: spawn1 } = fakeSpawn(child1);
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, new Map(), { spawnFn: spawn1 });
+
+  const child2 = new FakeChild();
+  const { spawnFn: spawn2, calls: calls2 } = fakeSpawn(child2);
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, new Map(), {
+    spawnFn: spawn2, isPidAlive: () => true,
+  });
+
+  assert.equal(calls2.length, 0, 'no mcpSecret before or after should not be treated as a drift');
+});
+
 test('syncPassengerTunnels() kills and drops a persisted tunnel whose workspace is no longer planned', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
   const child = new FakeChild();

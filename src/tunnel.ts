@@ -179,6 +179,8 @@ export interface PersistedTunnel {
   mountsHash: string;
   startedAt: string;
   status: TunnelStatus;
+  /** The PASSENGER_MCP_SECRET (ISSUE-685) this tunnel's own `-R` bind address was actually started with, if any (ISSUE-696) — compared each cycle against the freshly-resolved `mcpSecrets` map so a drifted secret gets caught the same way a `mountsHash` change does. */
+  mcpSecret?: string;
 }
 
 function tunnelStatePath(stateDir: string, workspaceId: string): string {
@@ -225,10 +227,16 @@ export interface SyncTunnelsDeps {
  * `syncPassengerContainers` reconciles Docker containers:
  *
  * - no persisted tunnel, or its pid is dead, or its mounts have changed
- *   (the container behind it was recreated) -> (re)spawn, persist the new
- *   pid, report whatever status `startTunnel` settles on immediately.
- * - persisted tunnel, pid alive, mounts unchanged -> nothing to do beyond
- *   promoting a still-`connecting` status to `connected` (an alive `ssh -N
+ *   (the container behind it was recreated), or its own secret has drifted
+ *   from the freshly-resolved `mcpSecrets` entry (ISSUE-696 — the container
+ *   behind it was recreated with a new `PASSENGER_MCP_SECRET` but this
+ *   tunnel's `-R` bind address still carries the old one, so the container
+ *   would 401 every real request despite the tunnel itself looking healthy)
+ *   -> (re)spawn, persist the new pid, report whatever status `startTunnel`
+ *   settles on immediately.
+ * - persisted tunnel, pid alive, mounts AND secret unchanged -> nothing to
+ *   do beyond promoting a still-`connecting` status to `connected` (an
+ *   alive `ssh -N
  *   ... -o ExitOnForwardFailure=yes` process that has survived past the
  *   cycle it was spawned in has, by construction, not had its forward
  *   request rejected — `ExitOnForwardFailure` is exactly what makes
@@ -257,7 +265,9 @@ export function syncPassengerTunnels(
 
   for (const plan of plans) {
     const existing = readPersistedTunnel(stateDir, plan.workspaceId);
-    if (existing && alive(existing.pid) && existing.mountsHash === plan.mountsHash) {
+    const currentSecret = mcpSecrets.get(plan.workspaceId);
+    const secretUnchanged = (existing?.mcpSecret ?? undefined) === (currentSecret ?? undefined);
+    if (existing && alive(existing.pid) && existing.mountsHash === plan.mountsHash && secretUnchanged) {
       if (existing.status === 'connecting') {
         const settled: PersistedTunnel = { ...existing, status: 'connected' };
         writePersistedTunnel(stateDir, settled);
@@ -266,14 +276,15 @@ export function syncPassengerTunnels(
       continue;
     }
     if (existing && alive(existing.pid)) {
-      // Mounts changed under it (the container was recreated) — the old
-      // tunnel forwards to a port that may no longer answer the same repos.
+      // Mounts changed under it (the container was recreated), or its
+      // secret drifted from the container's own (ISSUE-696) — either way
+      // the old tunnel no longer matches what's actually behind it.
       try { process.kill(existing.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
       relayHost, relayPort, workspaceId: plan.workspaceId, localPort: plan.port, privateKeyPath,
-      mcpSecret: mcpSecrets.get(plan.workspaceId),
+      mcpSecret: currentSecret,
       spawnFn: deps.spawnFn, onStatus: (s) => { settledStatus = s; },
     });
     writePersistedTunnel(stateDir, {
@@ -283,6 +294,7 @@ export function syncPassengerTunnels(
       mountsHash: plan.mountsHash,
       startedAt: new Date().toISOString(),
       status: settledStatus,
+      mcpSecret: currentSecret,
     });
     deps.onStatus?.(plan.workspaceId, settledStatus);
   }
