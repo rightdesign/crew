@@ -38,5 +38,7 @@ process.stdin.on('end', () => {
     { type: 'result', subtype: 'success', session_id: 'sess-multi', num_turns: 3, total_cost_usd: 0.01 },
   ];
   for (const l of lines) process.stdout.write(`${JSON.stringify(l)}\n`);
-  process.exit(0);
+  // No process.exit() here — see fake-claude-stream.mjs (ISSUE-706): exiting
+  // immediately after writing to a piped stdout can truncate the output
+  // under load, before the OS-level flush completes.
 });

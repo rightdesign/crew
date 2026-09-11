@@ -14,5 +14,10 @@ process.stdin.on('end', () => {
     { type: 'result', subtype: 'success', session_id: 'sess-1', num_turns: 2, total_cost_usd: 0.0042 },
   ];
   for (const l of lines) process.stdout.write(`${typeof l === 'string' ? l : JSON.stringify(l)}\n`);
-  process.exit(0);
+  // No process.exit() here: when stdout is a pipe, Node's writes are queued
+  // asynchronously, and exit() can kill the process before the OS-level
+  // flush completes — under load this actually loses buffered lines, which
+  // is what made spawnAgent's test read a truncated transcript (ISSUE-706).
+  // Letting the process exit naturally once the event loop drains preserves
+  // the writes.
 });
