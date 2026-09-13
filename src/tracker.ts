@@ -35,6 +35,10 @@ export interface Ticket {
   priority?: string | null;
   assignee_id?: string | null;
   needs_design?: boolean | null;
+  /** Human-only gate: a person still owes scoping before this ticket may be picked up or resumed. Set by a lane, cleared only by the operator. */
+  needs_planning?: boolean | null;
+  /** Human-only gate: a person still owes a review before an in_progress ticket carrying it is anyone's unfinished work to resume. Set by a lane, cleared only by the operator. */
+  needs_review?: boolean | null;
   blocked_by?: string[] | null;
   updated_at: string;
   /**

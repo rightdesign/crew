@@ -73,8 +73,13 @@ test('fixed never wakes a building role — it is QA\'s', () => {
   assert.equal(roleHasWork('qa', i).hasWork, true);
 });
 
+// Status is needs_info, not in_progress, in these two: a self-assigned
+// in_progress ticket is now always resumable (ISSUE-756) regardless of
+// comments, which would swallow the very thing being isolated here — the
+// pure comment-wake logic. needs_info is unaffected by that new path, so
+// it stays a clean way to test newComments alone.
 test('a new comment from someone else wakes a role; our own does not', () => {
-  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', assignee_id: 'dev-1' });
   const at = '2026-06-01T00:00:00Z';
   const mine = input({ tickets: [t], comments: [{ ticket_id: 'a', team_member_id: 'dev-1', created_at: at }] as any });
   assert.equal(roleHasWork('dev', mine).hasWork, false);
@@ -86,7 +91,7 @@ test('a new comment from someone else wakes a role; our own does not', () => {
 });
 
 test('a comment older than the watermark does not wake anyone', () => {
-  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', assignee_id: 'dev-1' });
   const c = [{ ticket_id: 'a', team_member_id: 'qa-1', created_at: '2025-01-01T00:00:00Z' }] as any;
   assert.equal(roleHasWork('dev', input({ tickets: [t], comments: c })).hasWork, false);
 });
@@ -94,6 +99,33 @@ test('a comment older than the watermark does not wake anyone', () => {
 test('an unassigned in_progress ticket is back up for grabs', () => {
   const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: null });
   assert.equal(roleHasWork('dev', input({ tickets: [t] })).hasWork, true);
+});
+
+test('a self-assigned in_progress ticket is resumable with no new comment (ISSUE-756)', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
+  const r = roleHasWork('dev', input({ tickets: [t] }));
+  assert.equal(r.hasWork, true);
+  assert.match(r.reason, /resumable in_progress/);
+});
+
+test('a held self-assigned in_progress ticket is still not resumable — a person is driving it', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'hold-1' });
+  assert.equal(roleHasWork('dev', input({ tickets: [t] })).hasWork, false);
+});
+
+test('needs_planning/needs_review gate a self-assigned in_progress ticket out of auto-resume', () => {
+  const planning = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1', needs_planning: true });
+  assert.equal(roleHasWork('dev', input({ tickets: [planning] })).hasWork, false);
+  const review = T({ id: 'b', issue_id: 'ISSUE-2', status: 'in_progress', assignee_id: 'dev-1', needs_review: true });
+  assert.equal(roleHasWork('dev', input({ tickets: [review] })).hasWork, false);
+
+  // but a new comment from someone else still wakes it, same as any other gate
+  const at = '2026-06-01T00:00:00Z';
+  const withComment = input({
+    tickets: [planning],
+    comments: [{ ticket_id: 'a', team_member_id: 'qa-1', created_at: at }] as any,
+  });
+  assert.equal(roleHasWork('dev', withComment).hasWork, true);
 });
 
 test('a paused role is not selected, whatever its queue', () => {

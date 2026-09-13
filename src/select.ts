@@ -129,11 +129,32 @@ export function buildingRoleHasWork(
     (t) => t.status === 'in_progress' && !t.assignee_id && !i.blocked.has(t.id),
   ).length;
 
-  if (startable.length > 0 || newComments > 0 || unassigned > 0) {
+  // Our own in_progress, self-assigned ticket is our own unfinished work —
+  // worth resuming even with no new external comment (ISSUE-756). A prior
+  // stateless run may have cut a worktree or made an uncommitted edit and
+  // simply stopped there; that state is invisible to the newComments check
+  // above (it's not a tracker write), so without this a ticket could sit
+  // fully assigned to us, mid-build, until unrelated tracker activity
+  // elsewhere happened to trigger a re-selection pass that landed on it
+  // again. Excluded here: a ticket carrying `needs_planning`/`needs_review`
+  // — those are human-only gates meaning a person still owes an answer, so
+  // it is NOT our unfinished work; it stays reachable only through the
+  // newComments path above (a hold's new comment already wakes it).
+  const resumable = mine.filter(
+    (t) =>
+      t.status === 'in_progress' &&
+      t.assignee_id === me &&
+      !t.needs_planning &&
+      !t.needs_review &&
+      !isHeld(t, i.holds),
+  ).length;
+
+  if (startable.length > 0 || newComments > 0 || unassigned > 0 || resumable > 0) {
     const parts: string[] = [];
     if (startable.length) parts.push(`${startable.length} startable`);
     if (newComments) parts.push(`${newComments} new comment(s)`);
     if (unassigned) parts.push(`${unassigned} unassigned in_progress`);
+    if (resumable) parts.push(`${resumable} resumable in_progress`);
     return { hasWork: true, reason: parts.join(', ') };
   }
   return { hasWork: false, reason: 'nothing startable and no new comments' };
