@@ -64,6 +64,7 @@ import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { dockerAvailable, planContainers, syncAllPassengerCheckouts, syncPassengerContainers } from './passenger-containers.ts';
 import { syncPassengerTunnels, readPersistedTunnel, isPidAlive } from './tunnel.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
+import { runDaemonLoop, runOnePass } from './daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -1398,6 +1399,48 @@ switch (command) {
     // Skipped for `--role` ("run exactly this seat") or a companion release
     // unit (`skipInlineRelease` above).
     if (!value('role') && !skipInlineRelease) await releaseTargets();
+    break;
+  }
+
+  case 'daemon': {
+    // The persistent supervisor loop (ISSUE-762), for the `run` route only —
+    // `release`/`passengers` keep their own fixed-timer units untouched, and
+    // this command is not fleet-wide: name a route the same way a
+    // single-route `crew run` would need to on a multi-route ship.
+    //
+    // This is deliberately the thin end of the wedge: no launchd/systemd
+    // unit, no `crew daemon start/stop/status`, no self-update/staleness
+    // detection — those are ISSUE-763/ISSUE-764. This just makes the loop
+    // itself (`daemon.ts`) invocable and testable end-to-end, running in
+    // the foreground until the process is killed.
+    if (dryRun) {
+      process.stderr.write('crew: daemon does not support --dry-run — it only ever performs real cycles.\n');
+      process.exit(2);
+    }
+    if (!(await anyRepoServable(route))) {
+      emit.error(
+        `refusing this route — this ship is ${cfg.ship.platform}, but ${await explainUnservable(route)}`,
+      );
+      process.exit(1);
+    }
+    requireArmed('run the daemon loop');
+
+    await runDaemonLoop({
+      runPass: () => runOnePass({
+        route, ship: cfg.ship, state,
+        maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
+        newEmitter: () => new Emitter({
+          route: route.route,
+          eventFile: eventFileFor(cfg.ship.stateDir),
+          logFile: cfg.ship.logFile,
+          console: (l) => process.stderr.write(`${l}\n`),
+        }),
+      }),
+      onPass: (result) => {
+        if (result.started.length) emit.emit(`daemon pass started: ${result.started.join(', ')}`);
+        for (const s of result.skipped) emit.emit(`daemon pass skipped ${s.role} — ${s.reason}`);
+      },
+    });
     break;
   }
 
