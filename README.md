@@ -165,14 +165,21 @@ was hit for real, and doubles every line.
 chains cycles immediately when there's work and backs off when there isn't
 (launchd `KeepAlive`/systemd `Restart=on-failure` restart it if it crashes).
 Installing it starts it, the same as installing any other service would.
-`bin/crew daemon start|stop|status` control that same service directly —
-useful without a full reinstall — except on the plain-crontab fallback,
-which cannot supervise a persistent process and so keeps the old
+`bin/crew daemon start|stop|status|restart` control that same service
+directly — useful without a full reinstall — except on the plain-crontab
+fallback, which cannot supervise a persistent process and so keeps the old
 one-shot-per-fire `crew run` instead. `release` and `passengers` stay on
 their own fixed timers/crontab lines, one-shot per fire same as always: the
 first run of each happens one interval after `install`, and each fire is a
 few API calls — a full agent session only starts when that cheap check finds
 something worth waking for.
+
+The daemon also updates itself: on an idle pass (never mid-cycle) it checks
+whether its own installed files (`src`/`dist`/`bin`, or the binary itself for
+a compiled install) have changed since it started, and if so exits cleanly —
+the same crash-recovery restart above then relaunches it against whatever is
+now on disk. `crew daemon restart` forces this immediately, for a manual
+`git pull && crew daemon restart` instead of waiting for the next idle tick.
 
 `launchd/com.tablation.crew.plist` is kept only as a reference for what
 `install` generates — hand-editing and loading it directly still works, but
@@ -183,8 +190,9 @@ something worth waking for.
 ```
 crew poll [route]              decide a cycle and report it; writes nothing
 crew run [route] [--role R]    run the winning role's session, then release
-crew daemon [route]            run the persistent supervisor loop in the foreground
-crew daemon start|stop|status  control the installed `run` service directly
+crew daemon [route]                run the persistent supervisor loop in the foreground
+crew daemon start|stop|status      control the installed `run` service directly
+crew daemon restart                stop then start it (force-picks-up an update)
 crew release [route]           merge what QA verified, version it, ship it
 crew merge [route]             merge verified branches and stop
 crew deploy [route]            release now, even with nothing new to merge

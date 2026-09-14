@@ -65,7 +65,7 @@ import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { dockerAvailable, planContainers, syncAllPassengerCheckouts, syncPassengerContainers } from './passenger-containers.ts';
 import { syncPassengerTunnels, readPersistedTunnel, isPidAlive } from './tunnel.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
-import { runDaemonLoop, runOnePass } from './daemon.ts';
+import { runDaemonLoop, runOnePass, makeStaleChecker } from './daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -329,12 +329,12 @@ const FLEET_CAPABLE = new Set(['poll', 'run', 'passengers']);
 // repo" by default (README), so an operator naming no route on a multi-route
 // ship still gets "name one" unless they say `--fleet` explicitly.
 const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && flag('fleet');
-// `crew daemon start/stop/status` (ISSUE-763) take their subcommand at
-// positional[1] the way `crew agents prompt <role>` does, which shifts a
-// route name (if given) out to positional[2] — the bare `crew daemon
-// [route]` form (still the foreground loop) is unaffected, since its route
-// stays at positional[1].
-const DAEMON_SUBCOMMANDS = new Set(['start', 'stop', 'status']);
+// `crew daemon start/stop/status/restart` (ISSUE-763/764) take their
+// subcommand at positional[1] the way `crew agents prompt <role>` does,
+// which shifts a route name (if given) out to positional[2] — the bare
+// `crew daemon [route]` form (still the foreground loop) is unaffected,
+// since its route stays at positional[1].
+const DAEMON_SUBCOMMANDS = new Set(['start', 'stop', 'status', 'restart']);
 const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? '')
   ? positional[2]
   : positional[1];
@@ -1424,8 +1424,16 @@ switch (command) {
     // more obvious `launchctl stop`/`start`. They take no route argument on
     // a single-route ship; `crew daemon start <route>` on a multi-route ship
     // targets that route's own unit, matching the bare-form convention below.
+    //
+    // `restart` (ISSUE-764) is the deterministic manual sibling to the
+    // loop's own self-update check below: `git pull && crew daemon restart`
+    // forces a relaunch right away instead of waiting for the next idle
+    // staleness tick. It is just `stop` then `start` — launchd has no atomic
+    // "restart" verb (see `planDaemonControl`'s doc comment), and reusing
+    // the same two commands for every mechanism keeps this one code path
+    // rather than a systemd-specific `restart` verb plus a launchd fallback.
     const daemonSub = positional[1];
-    if (daemonSub === 'start' || daemonSub === 'stop' || daemonSub === 'status') {
+    if (daemonSub === 'start' || daemonSub === 'stop' || daemonSub === 'status' || daemonSub === 'restart') {
       const host = hostPlatform();
       if (host === 'windows') {
         process.stderr.write('crew daemon: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
@@ -1440,10 +1448,30 @@ switch (command) {
         );
         break;
       }
-      const cmd =
-        daemonSub === 'start' ? control.startCommand! :
-        daemonSub === 'stop' ? control.stopCommand! :
-        control.statusCommand!;
+      if (daemonSub === 'restart') {
+        const commands = [control.stopCommand!, control.startCommand!];
+        if (dryRun) {
+          for (const c of commands) process.stdout.write(`would run: ${c.join(' ')}\n`);
+          break;
+        }
+        let failed = false;
+        for (const cmd of commands) {
+          const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+          if (res.stdout) process.stdout.write(res.stdout);
+          if (res.stderr) process.stderr.write(res.stderr);
+          // The stop half (launchd `unload`) fails harmlessly if the unit
+          // isn't loaded yet — same tolerance `applyInstall`'s
+          // preLoadCommands give it. Only the start half failing actually
+          // means the daemon isn't running afterward.
+          if (cmd === control.startCommand && (res.error || res.status !== 0)) {
+            process.stderr.write(`crew daemon restart: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
+            failed = true;
+          }
+        }
+        process.exitCode = failed ? 1 : 0;
+        break;
+      }
+      const cmd = daemonSub === 'start' ? control.startCommand! : daemonSub === 'stop' ? control.stopCommand! : control.statusCommand!;
       if (dryRun) { process.stdout.write(`would run: ${cmd.join(' ')}\n`); break; }
       const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
       if (res.stdout) process.stdout.write(res.stdout);
@@ -1459,10 +1487,9 @@ switch (command) {
       }
       break;
     }
-    // This is deliberately the thin end of the wedge: no `crew daemon
-    // restart`, no self-update/staleness detection — that is ISSUE-764. This
-    // just makes the loop itself (`daemon.ts`) invocable and testable
-    // end-to-end, running in the foreground until the process is killed.
+    // This just makes the loop itself (`daemon.ts`) invocable and testable
+    // end-to-end, running in the foreground until the process is killed or
+    // (ISSUE-764) it detects the installed tree has changed under it.
     if (dryRun) {
       process.stderr.write('crew: daemon does not support --dry-run — it only ever performs real cycles.\n');
       process.exit(2);
@@ -1475,7 +1502,18 @@ switch (command) {
     }
     requireArmed('run the daemon loop');
 
-    await runDaemonLoop({
+    // Self-update detection (ISSUE-764): watch whichever paths actually
+    // determine this process's own code. `bin/crew` prefers `dist/cli.js`
+    // over `src/cli.ts` when both exist (see that file), so both are
+    // watched — a build landing in `dist` is a real update even though
+    // `src` also changed to produce it. A compiled binary (`isCompiledBinary`)
+    // has no `src`/`dist` next to it at all; there, the binary file itself is
+    // what a redeploy replaces.
+    const watchPaths = isCompiledBinary(import.meta.url)
+      ? [process.execPath]
+      : [join(CREW_HOME, 'src'), join(CREW_HOME, 'dist'), join(CREW_HOME, 'bin')];
+
+    const stopReason = await runDaemonLoop({
       runPass: () => runOnePass({
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
@@ -1486,11 +1524,16 @@ switch (command) {
           console: (l) => process.stderr.write(`${l}\n`),
         }),
       }),
+      checkStale: makeStaleChecker(watchPaths),
       onPass: (result) => {
         if (result.started.length) emit.emit(`daemon pass started: ${result.started.join(', ')}`);
         for (const s of result.skipped) emit.emit(`daemon pass skipped ${s.role} — ${s.reason}`);
       },
     });
+    if (stopReason === 'stale') {
+      emit.emit('crew daemon: installed tree changed on disk — exiting cleanly so the OS-level restart relaunches with the update');
+      process.exit(0);
+    }
     break;
   }
 

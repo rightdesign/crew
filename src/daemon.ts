@@ -31,21 +31,30 @@
  *    winning role (`claim.ts#resolveTopCandidate`, `git.ts#ensureRepoCheckout`,
  *    `agent.ts#planAgentRun`/`spawnAgent`).
  *
- * What this file deliberately does NOT do — owed to a sibling ticket, not
- * forgotten:
- *
- *  - ISSUE-764 (self-update): no mtime/hash staleness detection, no `crew
- *    daemon restart`.
- *  - `release` and `passengers` stay on their existing fixed timers,
- *    untouched — only the `run` route's cadence changes here.
+ * `release` and `passengers` stay on their existing fixed timers, untouched —
+ * only the `run` route's cadence changes here.
  *
  * ISSUE-763 (install/lifecycle) is done: `install.ts#planLaunchd`/
  * `planSystemd` now write a real persistent unit for the `run` job whose
  * `ProgramArguments`/`ExecStart` run `crew daemon` — this file's loop —
  * instead of one-shot `crew run`, and `cli.ts`'s `case 'daemon':` handles
- * `start`/`stop`/`status` via `install.ts#planDaemonControl` before falling
- * through to the bare foreground-loop form (still used to run/test this
- * file end-to-end without going through a real OS service).
+ * `start`/`stop`/`status`/`restart` via `install.ts#planDaemonControl` before
+ * falling through to the bare foreground-loop form (still used to run/test
+ * this file end-to-end without going through a real OS service).
+ *
+ * ISSUE-764 (self-update) is also done: `computeTreeSignature`/
+ * `makeStaleChecker` below give `runDaemonLoop` an optional `checkStale`
+ * hook, consulted only on an idle pass (never while chaining on found
+ * work — a busy daemon is never interrupted mid-cycle). Once the installed
+ * tree's signature moves, the loop returns the `'stale'` stop reason instead
+ * of sleeping again; `cli.ts` turns that into a clean `process.exit(0)` so
+ * the SAME OS-level auto-restart ISSUE-763 already wired (`KeepAlive`/
+ * `Restart=on-failure`) relaunches the daemon against whatever is now on
+ * disk. One mechanism covers both crash recovery and staleness, exactly as
+ * this file originally proposed. `crew daemon restart` (`cli.ts`) is the
+ * explicit, deterministic sibling for a manual `git pull` — it does not go
+ * through this signature check at all, it just re-runs the same
+ * stop-then-start commands `start`/`stop` already use.
  *
  * Known, deliberately flagged simplification: `buildEnvironment` below
  * (used to build the "Your environment" section of a spawned agent's
@@ -60,6 +69,8 @@
  * ISSUE-763).
  */
 
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import type { RoleName, Route, Ship } from './config.ts';
 import { dirForRepo, repoIdForName, repoTargetFor, reposOf, resolveApiKey } from './config.ts';
 import { State } from './state.ts';
@@ -121,7 +132,18 @@ export interface DaemonLoopOptions {
    * loop is about to sleep for (0 when it is about to chain immediately).
    */
   onPass?: (result: PassResult, nextBackoffMs: number) => void;
+  /**
+   * Self-update detection (ISSUE-764). Consulted only on an IDLE pass, right
+   * before the loop would otherwise sleep — never while chaining on found
+   * work, so an actively-busy daemon is never interrupted mid-cycle to pick
+   * up an update. Returning `true` stops the loop with the `'stale'` reason
+   * instead of sleeping again. Typically `makeStaleChecker(...)` below.
+   */
+  checkStale?: () => boolean;
 }
+
+/** Why `runDaemonLoop` returned. `'maxPasses'` only ever fires in a test. */
+export type DaemonStopReason = 'aborted' | 'stale' | 'maxPasses';
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -142,7 +164,7 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
  *   quiet patch must not leave the next burst of real work waiting out a
  *   ceiling-sized backoff it earned while idle.
  */
-export async function runDaemonLoop(o: DaemonLoopOptions): Promise<void> {
+export async function runDaemonLoop(o: DaemonLoopOptions): Promise<DaemonStopReason> {
   const floor = o.floorMs ?? DEFAULT_FLOOR_MS;
   const ceiling = o.ceilingMs ?? DEFAULT_CEILING_MS;
   const sleep = o.sleep ?? defaultSleep;
@@ -150,23 +172,78 @@ export async function runDaemonLoop(o: DaemonLoopOptions): Promise<void> {
   let passes = 0;
 
   for (;;) {
-    if (o.signal?.aborted) return;
+    if (o.signal?.aborted) return 'aborted';
     const result = await o.runPass();
     passes++;
 
     if (result.started.length > 0) {
       backoff = floor;
       o.onPass?.(result, 0);
-      if (o.maxPasses !== undefined && passes >= o.maxPasses) return;
+      if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
       continue;   // zero-idle chaining: no sleep at all
     }
 
     o.onPass?.(result, backoff);
-    if (o.maxPasses !== undefined && passes >= o.maxPasses) return;
-    if (o.signal?.aborted) return;
+    if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
+    if (o.signal?.aborted) return 'aborted';
+    // Checked only here, on an idle pass — never on the chain-immediately
+    // branch above, so real work in flight is never interrupted for this.
+    if (o.checkStale?.()) return 'stale';
     await sleep(backoff);
     backoff = Math.min(backoff * 2, ceiling);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Self-update detection (ISSUE-764). A cheap mtime-based signature over
+// whichever paths the caller names — deliberately not a content hash: every
+// real update (a `git pull`, a redeploy overwriting `dist/`, a new compiled
+// binary replacing the old one) touches mtimes for what it changes, and
+// stat-ing every file in `src`/`dist`/`bin` once per idle tick is negligible
+// next to `INTERVAL_SECONDS`-scale backoff.
+// ---------------------------------------------------------------------------
+
+/**
+ * The latest mtime (ms since epoch) under `path`, recursing into
+ * directories. `0` for a path that doesn't exist (a compiled-binary install
+ * has no `src`, a fresh checkout with no build step has no `dist`) so a
+ * caller can watch several candidate paths without checking existence
+ * itself; a missing path just never moves the combined signature.
+ */
+function latestMtime(path: string): number {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    return 0;
+  }
+  if (stat.isFile()) return stat.mtimeMs;
+  if (!stat.isDirectory()) return 0;
+  let latest = stat.mtimeMs;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    latest = Math.max(latest, latestMtime(join(path, entry.name)));
+  }
+  return latest;
+}
+
+/**
+ * A signature for the given paths, stable as long as nothing under them
+ * changes. `cli.ts` passes the paths that actually matter for how THIS
+ * process was launched (compiled binary vs. `src`/`dist`/`bin` checkout) —
+ * this function itself doesn't know or care which.
+ */
+export function computeTreeSignature(paths: string[]): string {
+  return paths.map((p) => String(latestMtime(p))).join(':');
+}
+
+/**
+ * Captures the current signature over `paths` and returns a closure that
+ * reports whether it has since moved — the `checkStale` hook
+ * `DaemonLoopOptions` expects.
+ */
+export function makeStaleChecker(paths: string[]): () => boolean {
+  const initial = computeTreeSignature(paths);
+  return () => computeTreeSignature(paths) !== initial;
 }
 
 // ---------------------------------------------------------------------------

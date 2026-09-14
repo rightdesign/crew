@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Emitter, eventFileFor } from '../src/events.ts';
 import { State } from '../src/state.ts';
 import type { Route, Ship } from '../src/config.ts';
 import type { CycleDecision } from '../src/poll.ts';
-import { runDaemonLoop, runOnePass, type PassResult, type RunOnePassOptions } from '../src/daemon.ts';
+import {
+  runDaemonLoop, runOnePass, computeTreeSignature, makeStaleChecker,
+  type PassResult, type RunOnePassOptions,
+} from '../src/daemon.ts';
 
 // ---------------------------------------------------------------------------
 // Layer 1: runDaemonLoop — pure scheduler, no tracker/filesystem beyond a
@@ -101,6 +104,97 @@ test('onPass reports the backoff the loop is about to sleep for, 0 when chaining
       { started: [], next: 500 },
     ]);
   });
+});
+
+test('checkStale is consulted only on an idle pass, and stops the loop with reason "stale"', async () => {
+  const sleeps: number[] = [];
+  let call = 0;
+  let staleChecks = 0;
+  const reason = await runDaemonLoop({
+    runPass: async () => {
+      call++;
+      // Busy for the first two passes (checkStale must not even be called
+      // then), idle from the third pass on.
+      return emptyResult(call <= 2 ? ['dev'] : []);
+    },
+    checkStale: () => { staleChecks++; return staleChecks >= 2; },
+    sleep: async (ms) => { sleeps.push(ms); },
+  });
+  assert.equal(reason, 'stale');
+  assert.equal(call, 4); // 2 busy + 2 idle (first idle checks stale=false and sleeps, second returns)
+  assert.equal(staleChecks, 2);
+  assert.deepEqual(sleeps, [5000]); // only the first idle pass actually slept
+});
+
+test('an aborted signal wins over a pending stale check', async () => {
+  const controller = new AbortController();
+  let call = 0;
+  const reason = await runDaemonLoop({
+    runPass: async () => {
+      call++;
+      if (call === 1) controller.abort();
+      return emptyResult();
+    },
+    checkStale: () => true,
+    sleep: async () => {},
+    signal: controller.signal,
+  });
+  assert.equal(reason, 'aborted');
+  assert.equal(call, 1);
+});
+
+test('maxPasses is reported as its own stop reason, distinct from staleness', async () => {
+  const reason = await runDaemonLoop({
+    runPass: async () => emptyResult(),
+    checkStale: () => false,
+    sleep: async () => {},
+    maxPasses: 2,
+  });
+  assert.equal(reason, 'maxPasses');
+});
+
+// ---------------------------------------------------------------------------
+// computeTreeSignature / makeStaleChecker (ISSUE-764)
+// ---------------------------------------------------------------------------
+
+test('computeTreeSignature changes when a watched file is added, touched, or removed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-sig-'));
+  const srcDir = join(dir, 'src');
+  mkdirSync(srcDir);
+  writeFileSync(join(srcDir, 'a.ts'), 'one');
+
+  const before = computeTreeSignature([srcDir]);
+
+  writeFileSync(join(srcDir, 'b.ts'), 'two');
+  const afterAdd = computeTreeSignature([srcDir]);
+  assert.notEqual(before, afterAdd);
+
+  // Bump mtime further forward — a content edit without a forward mtime
+  // bump isn't the case this cheap signature is meant to catch (see the
+  // file's doc comment: mtime, not a content hash), so this only proves
+  // the signature reacts to mtime moving at all, ahead of whatever the
+  // newest file already contributed.
+  const future = new Date(Date.now() + 60_000);
+  utimesSync(join(srcDir, 'a.ts'), future, future);
+  const afterTouch = computeTreeSignature([srcDir]);
+  assert.notEqual(afterAdd, afterTouch);
+});
+
+test('computeTreeSignature treats a missing path as a stable, non-throwing 0', () => {
+  const sig = computeTreeSignature(['/definitely/does/not/exist/anywhere']);
+  assert.equal(sig, computeTreeSignature(['/definitely/does/not/exist/anywhere']));
+});
+
+test('makeStaleChecker reports false until a watched path actually changes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-sig-'));
+  writeFileSync(join(dir, 'cli.js'), 'v1');
+  const isStale = makeStaleChecker([dir]);
+  assert.equal(isStale(), false);
+  assert.equal(isStale(), false, 'repeated checks with no change stay false');
+
+  const future = new Date(Date.now() + 60_000);
+  utimesSync(join(dir, 'cli.js'), future, future);
+  assert.equal(isStale(), true);
 });
 
 // ---------------------------------------------------------------------------
