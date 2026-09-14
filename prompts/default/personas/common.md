@@ -381,7 +381,7 @@ if `report_type` is either of those.
    at the start/end. `body` supports markdown — use it for code snippets,
    lists, etc. when that's clearer than a plain sentence. If a screenshot
    would help explain something (a UI verification result, a rendering
-   bug), attach it via the Comments table's `screenshot` field rather than
+   bug), attach it via the Comments table's `attachments` field rather than
    just describing it in text.
 5. Implement the fix. Read relevant code first; do not guess at
    architecture. **Do not bump the version or edit `CHANGELOG.md` in this

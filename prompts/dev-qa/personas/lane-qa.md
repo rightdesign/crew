@@ -56,7 +56,7 @@ human review, so "probably fine" is not a pass.
    names; if that fails, re-run the **`handoff`** hook, which is what
    provisions it. For UI work, capture light, dark and
    narrow-width screenshots and attach them via the Comments table's
-   `screenshot` field — your evidence is the deliverable, not your opinion.
+   `attachments` field — your evidence is the deliverable, not your opinion.
    **Always stop the servers you started before you finish.**
 6. **Re-run the suites yourself** — this repo's full test suite(s) plus
    its typechecks, whatever that means for its stack, in that worktree, on

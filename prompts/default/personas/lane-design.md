@@ -54,7 +54,7 @@ stopping for this run, do the following instead:
   reaches `fixed` because of it.
 - **3.4b — Show the design on the ticket.** Post a comment with the design
   and the reasoning: what you're proposing, which states it covers, what you
-  deliberately left out. Attach images via the Comments table's `screenshot`
+  deliberately left out. Attach images via the Comments table's `attachments`
   field — a described mockup is not a shown one. Render your mockup to PNG
   with Playwright if it only exists as markup, in whatever way fits this
   repo's own front-end stack. If a canvas Artifact published, include its
