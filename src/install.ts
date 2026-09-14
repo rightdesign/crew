@@ -14,9 +14,12 @@
  *   - A hook still needs its own PATH (a package manager, a language
  *     runtime) — `ship.extraPath` exists for exactly this and was unused
  *     until this file.
- *   - Loading a unit must not also start it: RunAtLoad / OnBootSec=0 turns
- *     "installed" into "running right now", which is not what an operator
- *     asked for.
+ *   - Loading a periodic unit must not also start it: RunAtLoad / OnBootSec=0
+ *     turns "installed" into "running right now", which is not what an
+ *     operator asked for. This still holds for `release`/`passengers`, which
+ *     stay periodic. `run` is the deliberate exception (ISSUE-763): it is a
+ *     genuine persistent service now, not a timer, so "installed" IS meant
+ *     to mean "running" — see `planLaunchd`/`planSystemd`'s own comments.
  *
  * One mechanism per host, chosen from `hostPlatform()` — Windows is not
  * handled yet (see the ticket; Task Scheduler is "eventually"). Linux always
@@ -81,7 +84,7 @@ export type InstallJob = 'run' | 'release' | 'passengers';
  * `realpathSync` collapses symlinks so a checkout reached two different ways
  * still hashes to one label.
  */
-function labelFor(crewHome: string, job: InstallJob): string {
+export function labelFor(crewHome: string, job: InstallJob): string {
   const real = (() => {
     try {
       return realpathSync(crewHome);
@@ -101,11 +104,23 @@ function cronMarkerFor(label: string): string {
   return `# crew:${label} — managed by \`crew install\`, do not edit by hand`;
 }
 
-/** The subcommand a unit actually runs, per job. */
-function subcommandFor(job: InstallJob): string[] {
+/**
+ * The subcommand a unit actually runs, per job and mechanism.
+ *
+ * `release` and `passengers` are unchanged by ISSUE-763: they stay on their
+ * own fixed timers, one-shot per fire. `run` becomes a persistent service
+ * (`crew daemon`, the long-running loop from ISSUE-762) on launchd and
+ * systemd, since both can supervise a real process. Plain cron cannot — a
+ * crontab line only ever fires a fresh invocation and has no concept of "keep
+ * this process alive" — so a `run` job on cron keeps the old one-shot
+ * `crew run --no-release` invocation, deliberately not cut over. See
+ * `planCron`'s own comment for the consequence of that.
+ */
+function subcommandFor(job: InstallJob, mechanism: InstallMechanism): string[] {
   if (job === 'release') return ['release', '--fleet'];
   if (job === 'passengers') return ['passengers'];
-  return ['run', '--no-release'];
+  if (mechanism === 'cron') return ['run', '--no-release'];
+  return ['daemon'];
 }
 
 export type InstallMechanism = 'launchd' | 'systemd' | 'cron';
@@ -188,6 +203,22 @@ function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   const unitPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog, job);
+  // `run` (ISSUE-763) is now a persistent service: KeepAlive restarts it
+  // whenever it exits (crash or otherwise) instead of the timer re-firing a
+  // fresh one-shot invocation, and RunAtLoad starts it the moment `crew
+  // install` loads the plist — the whole point of "installed" for a
+  // persistent service is "running". `release`/`passengers` keep the old
+  // fixed-interval, load-but-don't-run-yet shape untouched.
+  const persistent = job === 'run';
+  const scheduleKeys = persistent
+    ? `  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>`
+    : `  <key>StartInterval</key>
+  <integer>${INTERVAL_SECONDS}</integer>
+  <key>RunAtLoad</key>
+  <false/>`;
   const content = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Written by \`crew install\` — re-run it rather than hand-editing this file. -->
@@ -198,7 +229,7 @@ function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   <key>ProgramArguments</key>
   <array>
     ${crewInvocation(crewHome).map((a) => `<string>${xmlEscape(a)}</string>`).join('\n    ')}
-    ${subcommandFor(job).map((a) => `<string>${xmlEscape(a)}</string>`).join('\n    ')}
+    ${subcommandFor(job, 'launchd').map((a) => `<string>${xmlEscape(a)}</string>`).join('\n    ')}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -207,10 +238,7 @@ function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   </dict>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(crewHome)}</string>
-  <key>StartInterval</key>
-  <integer>${INTERVAL_SECONDS}</integer>
-  <key>RunAtLoad</key>
-  <false/>
+${scheduleKeys}
   <key>StandardOutPath</key>
   <string>${xmlEscape(schedulerLog)}</string>
   <key>StandardErrorPath</key>
@@ -235,21 +263,62 @@ function planSystemd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   const label = labelFor(crewHome, job);
   const unitDir = join(homedir(), '.config', 'systemd', 'user');
   const servicePath = join(unitDir, `${label}.service`);
-  const timerPath = join(unitDir, `${label}.timer`);
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog, job);
   const description =
     job === 'release' ? 'Tablation crew — release' :
     job === 'passengers' ? 'Tablation crew — Host Passengers sync' :
-    'Tablation crew — one poll cycle';
+    'Tablation crew — persistent supervisor loop';
 
+  // `run` (ISSUE-763) is a persistent service now: a plain `.service`, no
+  // companion `.timer` — `Type=simple` (the default; the process is meant to
+  // keep running, not exit) plus `Restart=on-failure` is systemd's own
+  // equivalent of launchd's KeepAlive. `enable --now` both starts it
+  // immediately and re-starts it at every future login, matching "installed"
+  // meaning "running" for a persistent service. `release`/`passengers` keep
+  // the original oneshot service + timer pair, untouched.
+  if (job === 'run') {
+    const service = `# Written by \`crew install\` — re-run it rather than hand-editing this file.
+[Unit]
+Description=${description}
+
+[Service]
+Type=simple
+ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'systemd')].join(' ')}
+WorkingDirectory=${crewHome}
+Environment=PATH=${pathFor(ship)}
+StandardOutput=append:${schedulerLog}
+StandardError=append:${schedulerLog}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`;
+    return {
+      mechanism: 'systemd',
+      unitPaths: [servicePath],
+      unitContent: { [servicePath]: service },
+      crontabLine: null,
+      cronMarker: null,
+      preLoadCommands: [],
+      loadCommands: [
+        ['systemctl', '--user', 'daemon-reload'],
+        ['systemctl', '--user', 'enable', '--now', `${label}.service`],
+      ],
+      crewLog,
+      schedulerLog,
+    };
+  }
+
+  const timerPath = join(unitDir, `${label}.timer`);
   const service = `# Written by \`crew install\` — re-run it rather than hand-editing this file.
 [Unit]
 Description=${description}
 
 [Service]
 Type=oneshot
-ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job)].join(' ')}
+ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'systemd')].join(' ')}
 WorkingDirectory=${crewHome}
 Environment=PATH=${pathFor(ship)}
 StandardOutput=append:${schedulerLog}
@@ -295,7 +364,7 @@ function planCron(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
   const minutes = Math.max(1, Math.round(INTERVAL_SECONDS / 60));
   const line =
     `*/${minutes} * * * * ` +
-    `cd ${crewHome} && PATH=${pathFor(ship)} ${[...crewInvocation(crewHome), ...subcommandFor(job)].join(' ')} >> ${schedulerLog} 2>&1`;
+    `cd ${crewHome} && PATH=${pathFor(ship)} ${[...crewInvocation(crewHome), ...subcommandFor(job, 'cron')].join(' ')} >> ${schedulerLog} 2>&1`;
   return {
     mechanism: 'cron',
     unitPaths: [],
@@ -340,6 +409,17 @@ export function planUninstall(
   }
   if (hostShip === 'linux' && hasSystemd) {
     const unitDir = join(homedir(), '.config', 'systemd', 'user');
+    // `run` (ISSUE-763) is a lone persistent `.service`, disabled/stopped
+    // directly — no `.timer` unit exists for it any more. `release` and
+    // `passengers` keep the original service+timer pair.
+    if (job === 'run') {
+      return {
+        mechanism: 'systemd',
+        unitPaths: [join(unitDir, `${label}.service`)],
+        crontabLine: null,
+        unloadCommands: [['systemctl', '--user', 'disable', '--now', `${label}.service`]],
+      };
+    }
     return {
       mechanism: 'systemd',
       unitPaths: [join(unitDir, `${label}.service`), join(unitDir, `${label}.timer`)],
@@ -356,6 +436,60 @@ export function planUninstall(
     };
   }
   return { mechanism: 'none', unitPaths: [], crontabLine: null, unloadCommands: [] };
+}
+
+export interface DaemonControlPlan {
+  mechanism: InstallMechanism | 'none';
+  /** null when this mechanism has no persistent process to control (cron, none). */
+  startCommand: string[] | null;
+  stopCommand: string[] | null;
+  statusCommand: string[] | null;
+}
+
+/**
+ * `crew daemon start/stop/status` (ISSUE-763) — thin wrappers around
+ * whichever OS service manager `crew install` already handed the `run` job
+ * to, always targeting the SAME label/unit `planInstall(..., 'run')` writes.
+ *
+ * launchd has no clean "stop, but stay startable" verb for a `KeepAlive:
+ * true` job — `launchctl stop` on one just gets relaunched. `unload`/`load`
+ * (the same pair `applyInstall`'s `preLoadCommands`/`loadCommands` already
+ * use) is what actually stops it and, combined with `RunAtLoad: true`,
+ * starts it again — so `stop` unloads and `start` loads, not `launchctl
+ * start`/`stop`.
+ *
+ * systemd's `start`/`stop` verbs don't have that gotcha: `Restart=on-failure`
+ * only fires on a crash, never on a deliberate `systemctl stop`.
+ *
+ * Cron cannot supervise a persistent process at all (see `subcommandFor`'s
+ * doc comment) — there is no service for these commands to control there,
+ * so all three come back null and the caller should say so rather than
+ * running nothing silently.
+ */
+export function planDaemonControl(crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean): DaemonControlPlan {
+  const label = labelFor(crewHome, 'run');
+  if (hostShip === 'macos') {
+    const unitPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    return {
+      mechanism: 'launchd',
+      startCommand: ['launchctl', 'load', unitPath],
+      stopCommand: ['launchctl', 'unload', unitPath],
+      statusCommand: ['launchctl', 'list', label],
+    };
+  }
+  if (hostShip === 'linux' && hasSystemd) {
+    const unit = `${label}.service`;
+    return {
+      mechanism: 'systemd',
+      startCommand: ['systemctl', '--user', 'start', unit],
+      stopCommand: ['systemctl', '--user', 'stop', unit],
+      statusCommand: ['systemctl', '--user', 'status', unit],
+    };
+  }
+  if (hostShip === 'linux') {
+    return { mechanism: 'cron', startCommand: null, stopCommand: null, statusCommand: null };
+  }
+  return { mechanism: 'none', startCommand: null, stopCommand: null, statusCommand: null };
 }
 
 export interface InstallLog {

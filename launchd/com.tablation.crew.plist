@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The crew, polled every 2 minutes. Each fire is a cheap tracker read; a
-     full agent session only runs when the poll finds work. `crew run` takes
-     an exclusive lock, so a fire that lands while a previous run is still
-     going skips rather than starting a second agent on the same checkout.
+<!-- The crew's `run` job, as a persistent service (ISSUE-763): `crew daemon`
+     is a long-running loop that chains cycles immediately when there's work
+     and backs off (up to the old 2-minute poll interval) when there isn't.
+     KeepAlive restarts it if it ever exits; RunAtLoad starts it the moment
+     this plist is loaded — "installed" means "running" for a real service.
 
-     Pause without unloading:  __CREW_HOME__/bin/crew pause
-     Resume:                   __CREW_HOME__/bin/crew resume
-     Watch:                    __CREW_HOME__/bin/crew watch
-     Logs:                     /tmp/tablation-crew.log        (the crew's own)
-                               /tmp/tablation-crew.launchd.log (only what
-                               escapes it: a crash before the emitter exists)
+     Stop it:                  launchctl unload this-plist (or `crew daemon stop`)
+     Start it again:            launchctl load this-plist (or `crew daemon start`)
+     Status:                    `crew daemon status`, or launchctl list <label>
+     Watch:                     __CREW_HOME__/bin/crew watch
+     Logs:                      /tmp/tablation-crew.log        (the crew's own)
+                                /tmp/tablation-crew.launchd.log (only what
+                                escapes it: a crash before the emitter exists)
 
      These MUST be different files. The emitter writes the first; launchd
      redirects stderr into the second. Pointing both at one file logs every
@@ -18,6 +20,9 @@
 
      node is named absolutely because launchd hands a script a minimal PATH
      with no node on it; PATH below is for whatever the project's hooks need.
+
+     `release` and `passengers` are separate units on their own fixed
+     timers, not shown here — see `crew install`, which writes all three.
 -->
 <plist version="1.0">
 <dict>
@@ -27,7 +32,7 @@
   <array>
     <string>__NODE__</string>
     <string>__CREW_HOME__/bin/crew</string>
-    <string>run</string>
+    <string>daemon</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -36,10 +41,10 @@
   </dict>
   <key>WorkingDirectory</key>
   <string>__CREW_HOME__</string>
-  <key>StartInterval</key>
-  <integer>120</integer>
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>/tmp/tablation-crew.launchd.log</string>
   <key>StandardErrorPath</key>

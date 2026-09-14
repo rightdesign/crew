@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planInstall, planUninstall, INTERVAL_SECONDS } from '../src/install.ts';
+import { planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS } from '../src/install.ts';
 import type { Ship } from '../src/config.ts';
 
 const ship = (over: Partial<Ship> = {}): Ship => ({
@@ -52,8 +52,11 @@ test('the unit label is derived from crewHome, so two checkouts never collide', 
   const b = planInstall(ship(), '/opt/crew-b', 'macos', true);
   assert.notEqual(a1.unitPaths[0], b.unitPaths[0]);
 
-  const sdA = planInstall(ship({ platform: 'linux' }), '/opt/crew-a', 'linux', true);
-  const sdB = planInstall(ship({ platform: 'linux' }), '/opt/crew-b', 'linux', true);
+  // 'release' still writes a service+timer pair (unlike 'run', now
+  // persistent — see the systemd 'run' tests below), so it's the one used
+  // here to check both unit paths differ across checkouts.
+  const sdA = planInstall(ship({ platform: 'linux' }), '/opt/crew-a', 'linux', true, 'release');
+  const sdB = planInstall(ship({ platform: 'linux' }), '/opt/crew-b', 'linux', true, 'release');
   assert.notEqual(sdA.unitPaths[0], sdB.unitPaths[0]);
   assert.notEqual(sdA.unitPaths[1], sdB.unitPaths[1]);
 
@@ -69,11 +72,22 @@ test('the plist names an absolute interpreter, never a bare "node"', () => {
   assert.ok(!xml.includes('<string>node</string>'));
 });
 
-test('the plist does not fire at load', () => {
-  const plan = planInstall(ship(), '/opt/crew', 'macos', true);
+test('the run job\'s plist is a persistent service: RunAtLoad + KeepAlive, no StartInterval (ISSUE-763)', () => {
+  const plan = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
   const xml = Object.values(plan.unitContent)[0]!;
-  assert.match(xml, /<key>RunAtLoad<\/key>\s*<false\/>/);
-  assert.match(xml, new RegExp(`<key>StartInterval</key>\\s*<integer>${INTERVAL_SECONDS}</integer>`));
+  assert.match(xml, /<key>RunAtLoad<\/key>\s*<true\/>/);
+  assert.match(xml, /<key>KeepAlive<\/key>\s*<true\/>/);
+  assert.ok(!xml.includes('StartInterval'));
+});
+
+test('the release and passengers plists still do not fire at load — only run became persistent', () => {
+  for (const job of ['release', 'passengers'] as const) {
+    const plan = planInstall(ship(), '/opt/crew', 'macos', true, job);
+    const xml = Object.values(plan.unitContent)[0]!;
+    assert.match(xml, /<key>RunAtLoad<\/key>\s*<false\/>/);
+    assert.match(xml, new RegExp(`<key>StartInterval</key>\\s*<integer>${INTERVAL_SECONDS}</integer>`));
+    assert.ok(!xml.includes('KeepAlive'));
+  }
 });
 
 test('the scheduler log is never the same file as the crew\'s own log', () => {
@@ -89,20 +103,33 @@ test('extraPath is prepended into the unit\'s own PATH, not left for the schedul
   assert.match(xml, /\/opt\/homebrew\/bin/);
 });
 
-test('linux with systemd gets a user service+timer, not cron', () => {
-  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+test('linux with systemd gets a user service+timer for release/passengers, not cron', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'release');
   assert.equal(plan.mechanism, 'systemd');
   assert.equal(plan.unitPaths.length, 2);
   assert.ok(plan.unitPaths.every((p) => p.includes('.config/systemd/user/')));
   assert.equal(plan.crontabLine, null);
 });
 
-test('the systemd timer does not fire at load either', () => {
-  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+test('the release job\'s systemd timer does not fire at load either', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'release');
   const timer = plan.unitContent[plan.unitPaths[1]!]!;
   assert.ok(!timer.includes('OnBootSec'));
   assert.ok(!/Persistent\s*=\s*true/i.test(timer));
   assert.match(timer, new RegExp(`OnActiveSec=${INTERVAL_SECONDS}`));
+});
+
+test('linux with systemd gets a lone persistent .service for run, no .timer (ISSUE-763)', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run');
+  assert.equal(plan.mechanism, 'systemd');
+  assert.equal(plan.unitPaths.length, 1);
+  assert.ok(plan.unitPaths[0]!.endsWith('.service'));
+  const service = plan.unitContent[plan.unitPaths[0]!]!;
+  assert.match(service, /Type=simple/);
+  assert.match(service, /Restart=on-failure/);
+  assert.match(service, /ExecStart=.*\bdaemon\b/);
+  assert.match(service, /WantedBy=default\.target/);
+  assert.deepEqual(plan.loadCommands[1], ['systemctl', '--user', 'enable', '--now', plan.unitPaths[0]!.split('/').pop()!]);
 });
 
 test('linux without systemd falls back to a crontab line, not a unit file', () => {
@@ -132,11 +159,18 @@ test('the release job gets its own unit, distinct from run\'s — same checkout,
   assert.notEqual(runPlan.schedulerLog, releasePlan.schedulerLog);
 });
 
-test('the run unit passes itself --no-release; the release unit runs `release --fleet`', () => {
+test('on launchd/systemd the run unit runs `crew daemon`; the release unit runs `release --fleet`', () => {
   const runXml = Object.values(planInstall(ship(), '/opt/crew', 'macos', true, 'run').unitContent)[0]!;
   const releaseXml = Object.values(planInstall(ship(), '/opt/crew', 'macos', true, 'release').unitContent)[0]!;
-  assert.match(runXml, /<string>run<\/string>\s*<string>--no-release<\/string>/);
+  assert.match(runXml, /<string>daemon<\/string>/);
+  assert.ok(!runXml.includes('--no-release'));
   assert.match(releaseXml, /<string>release<\/string>\s*<string>--fleet<\/string>/);
+});
+
+test('on cron the run job keeps the old one-shot `run --no-release` invocation — cron cannot supervise a persistent process (ISSUE-763)', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false, 'run');
+  assert.match(plan.crontabLine!, /\brun --no-release\b/);
+  assert.ok(!plan.crontabLine!.includes(' daemon'));
 });
 
 test('planInstall defaults to the run job — every pre-release-lane caller is unaffected', () => {
@@ -213,4 +247,39 @@ test('uninstall targets exactly what install would have written, on each mechani
   const cronOut = planUninstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false);
   assert.equal(cronOut.unitPaths.length, 0);
   assert.ok(cronOut.crontabLine);
+});
+
+test('uninstalling the run job on systemd targets only its lone .service, and disables it directly (not a .timer) (ISSUE-763)', () => {
+  const runIn = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run');
+  const runOut = planUninstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run');
+  assert.deepEqual(runOut.unitPaths, runIn.unitPaths);
+  assert.equal(runOut.unitPaths.length, 1);
+  assert.deepEqual(runOut.unloadCommands, [['systemctl', '--user', 'disable', '--now', runIn.unitPaths[0]!.split('/').pop()!]]);
+});
+
+test('planDaemonControl targets the run job\'s own label/unit on every mechanism (ISSUE-763)', () => {
+  const mac = planDaemonControl('/opt/crew', 'macos', true);
+  assert.equal(mac.mechanism, 'launchd');
+  assert.deepEqual(mac.startCommand!.slice(0, 2), ['launchctl', 'load']);
+  assert.deepEqual(mac.stopCommand!.slice(0, 2), ['launchctl', 'unload']);
+  assert.deepEqual(mac.statusCommand!.slice(0, 2), ['launchctl', 'list']);
+  // Same unit path/label planInstall(..., 'run') itself would write.
+  const runPlan = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
+  assert.equal(mac.startCommand![2], runPlan.unitPaths[0]);
+
+  const sd = planDaemonControl('/opt/crew', 'linux', true);
+  assert.equal(sd.mechanism, 'systemd');
+  const unit = sd.startCommand![3]!;
+  assert.ok(unit.endsWith('.service'));
+  assert.deepEqual(sd.startCommand, ['systemctl', '--user', 'start', unit]);
+  assert.deepEqual(sd.stopCommand, ['systemctl', '--user', 'stop', unit]);
+  assert.deepEqual(sd.statusCommand, ['systemctl', '--user', 'status', unit]);
+  const sdRunPlan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run');
+  assert.equal(unit, sdRunPlan.unitPaths[0]!.split('/').pop());
+
+  const cron = planDaemonControl('/opt/crew', 'linux', false);
+  assert.equal(cron.mechanism, 'cron');
+  assert.equal(cron.startCommand, null);
+  assert.equal(cron.stopCommand, null);
+  assert.equal(cron.statusCommand, null);
 });

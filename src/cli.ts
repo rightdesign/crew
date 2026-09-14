@@ -7,9 +7,10 @@
  * until an operator arms it deliberately.
  */
 
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hostname } from 'node:os';
+import { hostname, homedir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
   DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
@@ -26,7 +27,7 @@ import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
-import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd } from './install.ts';
+import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
 import { runRelease, summarizeOutcome, type RepoReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
@@ -56,7 +57,7 @@ import {
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
@@ -328,7 +329,15 @@ const FLEET_CAPABLE = new Set(['poll', 'run', 'passengers']);
 // repo" by default (README), so an operator naming no route on a multi-route
 // ship still gets "name one" unless they say `--fleet` explicitly.
 const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && flag('fleet');
-const named = positional[1];
+// `crew daemon start/stop/status` (ISSUE-763) take their subcommand at
+// positional[1] the way `crew agents prompt <role>` does, which shifts a
+// route name (if given) out to positional[2] — the bare `crew daemon
+// [route]` form (still the foreground loop) is unaffected, since its route
+// stays at positional[1].
+const DAEMON_SUBCOMMANDS = new Set(['start', 'stop', 'status']);
+const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? '')
+  ? positional[2]
+  : positional[1];
 const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || releaseFleetWide ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
@@ -1408,11 +1417,52 @@ switch (command) {
     // this command is not fleet-wide: name a route the same way a
     // single-route `crew run` would need to on a multi-route ship.
     //
-    // This is deliberately the thin end of the wedge: no launchd/systemd
-    // unit, no `crew daemon start/stop/status`, no self-update/staleness
-    // detection — those are ISSUE-763/ISSUE-764. This just makes the loop
-    // itself (`daemon.ts`) invocable and testable end-to-end, running in
-    // the foreground until the process is killed.
+    // `start`/`stop`/`status` (ISSUE-763) are thin wrappers around whatever
+    // OS service manager `crew install` already handed the `run` job to —
+    // see `install.ts#planDaemonControl` for the mechanism-specific commands
+    // and, for launchd, why `stop`/`start` are unload/load rather than the
+    // more obvious `launchctl stop`/`start`. They take no route argument on
+    // a single-route ship; `crew daemon start <route>` on a multi-route ship
+    // targets that route's own unit, matching the bare-form convention below.
+    const daemonSub = positional[1];
+    if (daemonSub === 'start' || daemonSub === 'stop' || daemonSub === 'status') {
+      const host = hostPlatform();
+      if (host === 'windows') {
+        process.stderr.write('crew daemon: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
+        process.exit(2);
+      }
+      const control = planDaemonControl(CREW_HOME, host, detectSystemd());
+      if (!control.startCommand && !control.stopCommand && !control.statusCommand) {
+        process.stdout.write(
+          control.mechanism === 'cron'
+            ? `crew daemon ${daemonSub}: this host has no systemd, so the \`run\` job stays on the old periodic crontab invocation — there is no persistent process to ${daemonSub}.\n`
+            : `crew daemon ${daemonSub}: nothing to control on this platform.\n`,
+        );
+        break;
+      }
+      const cmd =
+        daemonSub === 'start' ? control.startCommand! :
+        daemonSub === 'stop' ? control.stopCommand! :
+        control.statusCommand!;
+      if (dryRun) { process.stdout.write(`would run: ${cmd.join(' ')}\n`); break; }
+      const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+      if (res.stdout) process.stdout.write(res.stdout);
+      if (res.stderr) process.stderr.write(res.stderr);
+      // `status` reports through its own exit code (e.g. launchctl list /
+      // systemctl is-active both exit non-zero for "not running") — that is
+      // the answer, not a failure of this command.
+      if (daemonSub !== 'status' && (res.error || res.status !== 0)) {
+        process.stderr.write(`crew daemon ${daemonSub}: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
+        process.exitCode = 1;
+      } else {
+        process.exitCode = res.status ?? 0;
+      }
+      break;
+    }
+    // This is deliberately the thin end of the wedge: no `crew daemon
+    // restart`, no self-update/staleness detection — that is ISSUE-764. This
+    // just makes the loop itself (`daemon.ts`) invocable and testable
+    // end-to-end, running in the foreground until the process is killed.
     if (dryRun) {
       process.stderr.write('crew: daemon does not support --dry-run — it only ever performs real cycles.\n');
       process.exit(2);
@@ -2325,18 +2375,39 @@ switch (command) {
     }
     // Three units, not one: `run` (poll/select/one agent session), `release`
     // (test/build/deploy) and `passengers` (Host Passengers container/tunnel
-    // sync) now run on independent timers, so a slow release or a long agent
-    // turn no longer holds the others hostage — see the release-lane comment
-    // on `case 'run'` and `syncHostPassengers`'s own doc comment (ISSUE-677).
-    // `run`'s own unit passes itself `--no-release` (baked into
-    // `planInstall`'s `run` job), since the `release` unit owns that now.
+    // sync) now run on independent lifecycles, so a slow release or a long
+    // agent turn no longer holds the others hostage — see the release-lane
+    // comment on `case 'run'` and `syncHostPassengers`'s own doc comment
+    // (ISSUE-677). `release`/`passengers` stay one-shot-per-fire on their own
+    // fixed timers; `run` (ISSUE-763) is now the persistent `crew daemon`
+    // loop on launchd/systemd — see `install.ts`'s `subcommandFor`.
+    const hasSystemd = detectSystemd();
     for (const job of ['run', 'release', 'passengers'] as const) {
-      const plan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
+      const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job);
       process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
       await applyInstall(plan, CREW_HOME, dryRun, {
         emit: (m) => process.stdout.write(`${m}\n`),
         warn: (m) => process.stderr.write(`crew install: ${m}\n`),
       });
+    }
+    // Hard cutover (ISSUE-763), systemd only: a host that had `run` on the
+    // old service+timer pair now has an orphaned `<label>.timer` once install
+    // starts writing only a persistent `.service` for it — same label, same
+    // checkout, no coexistence flag. launchd needs no equivalent step: the
+    // `run` job's plist keeps the same path/label whether it's periodic or
+    // persistent, so a reinstall simply overwrites it in place.
+    if (host === 'linux' && hasSystemd) {
+      const label = labelFor(CREW_HOME, 'run');
+      const staleTimer = join(homedir(), '.config', 'systemd', 'user', `${label}.timer`);
+      if (existsSync(staleTimer)) {
+        process.stdout.write(
+          `removing stale run timer from before the persistent-service cutover: ${staleTimer}${dryRun ? ' (dry run)' : ''}\n`,
+        );
+        if (!dryRun) {
+          spawnSync('systemctl', ['--user', 'disable', '--now', `${label}.timer`], { cwd: CREW_HOME });
+          try { unlinkSync(staleTimer); } catch { /* already gone */ }
+        }
+      }
     }
     break;
   }

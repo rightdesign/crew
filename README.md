@@ -145,23 +145,34 @@ reality: the checkouts, the tools on PATH, the agent binary, the repo's hooks,
 and whether the board answers. Nothing writes, wakes an agent or deploys until
 a route has `enabled: true`.
 
-Then put it on a timer:
+Then install it as a real service:
 
 ```sh
-bin/crew install           # writes and loads this platform's own unit
+bin/crew install           # writes and loads this platform's own units
 bin/crew install --dry-run # see what it would do first
-bin/crew uninstall         # unload and remove it
+bin/crew uninstall         # unload and remove them
 ```
 
-`install` picks the mechanism itself: a launchd user agent on macOS, a
-systemd **user** service+timer on Linux (falling back to a crontab line where
+`install` writes three independent units — `run`, `release` and
+`passengers` — and picks the mechanism itself per host: launchd on macOS, a
+systemd **user** unit on Linux (falling back to a crontab line where
 `systemctl` is not usable), or an error on Windows (not built yet). It always
-uses an absolute interpreter path (`process.execPath`) and points the unit's
+uses an absolute interpreter path (`process.execPath`) and points each unit's
 own log at a *different* file than the crew's own — pointing both at one file
-was hit for real, and doubles every line. It never fires at load: the first
-poll happens one interval after `install` runs, same as every one after it.
-Each fire is a few API calls; a full agent session only starts when that
-cheap check finds something worth waking for.
+was hit for real, and doubles every line.
+
+`run` is a **persistent service**: `crew daemon`, the long-running loop that
+chains cycles immediately when there's work and backs off when there isn't
+(launchd `KeepAlive`/systemd `Restart=on-failure` restart it if it crashes).
+Installing it starts it, the same as installing any other service would.
+`bin/crew daemon start|stop|status` control that same service directly —
+useful without a full reinstall — except on the plain-crontab fallback,
+which cannot supervise a persistent process and so keeps the old
+one-shot-per-fire `crew run` instead. `release` and `passengers` stay on
+their own fixed timers/crontab lines, one-shot per fire same as always: the
+first run of each happens one interval after `install`, and each fire is a
+few API calls — a full agent session only starts when that cheap check finds
+something worth waking for.
 
 `launchd/com.tablation.crew.plist` is kept only as a reference for what
 `install` generates — hand-editing and loading it directly still works, but
@@ -172,6 +183,8 @@ cheap check finds something worth waking for.
 ```
 crew poll [route]              decide a cycle and report it; writes nothing
 crew run [route] [--role R]    run the winning role's session, then release
+crew daemon [route]            run the persistent supervisor loop in the foreground
+crew daemon start|stop|status  control the installed `run` service directly
 crew release [route]           merge what QA verified, version it, ship it
 crew merge [route]             merge verified branches and stop
 crew deploy [route]            release now, even with nothing new to merge

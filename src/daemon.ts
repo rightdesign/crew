@@ -31,18 +31,21 @@
  *    winning role (`claim.ts#resolveTopCandidate`, `git.ts#ensureRepoCheckout`,
  *    `agent.ts#planAgentRun`/`spawnAgent`).
  *
- * What this file deliberately does NOT do — owed to sibling tickets, not
+ * What this file deliberately does NOT do — owed to a sibling ticket, not
  * forgotten:
  *
- *  - ISSUE-763 (install/lifecycle): no launchd/systemd unit, no `crew
- *    daemon start/stop/status`. `cli.ts`'s `case 'daemon':` calls
- *    `runDaemonLoop` directly, in the foreground, only so this loop is
- *    invocable and testable end-to-end — it is not the real service
- *    wrapper.
  *  - ISSUE-764 (self-update): no mtime/hash staleness detection, no `crew
  *    daemon restart`.
  *  - `release` and `passengers` stay on their existing fixed timers,
  *    untouched — only the `run` route's cadence changes here.
+ *
+ * ISSUE-763 (install/lifecycle) is done: `install.ts#planLaunchd`/
+ * `planSystemd` now write a real persistent unit for the `run` job whose
+ * `ProgramArguments`/`ExecStart` run `crew daemon` — this file's loop —
+ * instead of one-shot `crew run`, and `cli.ts`'s `case 'daemon':` handles
+ * `start`/`stop`/`status` via `install.ts#planDaemonControl` before falling
+ * through to the bare foreground-loop form (still used to run/test this
+ * file end-to-end without going through a real OS service).
  *
  * Known, deliberately flagged simplification: `buildEnvironment` below
  * (used to build the "Your environment" section of a spawned agent's
