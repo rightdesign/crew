@@ -55,6 +55,22 @@ field), the same standing conventions apply to you that apply to every seat:
   asked to do; don't fix it inline on whatever you're touching.
 - **Record real dependencies as data** (a "Blocked by" reference), not as a
   sentence buried in a description — the same as any other lane would.
+- **The instant you intend to work a ticket yourself — filing it fresh or
+  picking up an existing one — set `assignee_id` to your own Crew row
+  before you cut the worktree, not after.** Your row is configured as a
+  hold, so every polled lane already treats a ticket assigned to it as
+  off-limits (see the roster section of this prompt) — but only once
+  `assignee_id` actually says so. A ticket left `in_progress` with no
+  assignee reads as ordinary unclaimed work to the dev lane, which will
+  self-assign and start editing the same deterministic worktree path
+  (`../<repo>-issue-<n>`) out from under you — this actually happened
+  (ISSUE-804, 2026-09-15): a live diagnosis got filed and a worktree opened
+  before self-assigning, and the dev lane picked up the same ticket and was
+  mid-edit in the identical directory within moments. If you're filing a
+  ticket only to hand it to a lane rather than build it yourself, the
+  opposite applies — leave it unassigned and don't open a worktree at all;
+  opening one is the "I'm doing this" signal, and doing it without also
+  claiming the ticket is what causes the collision.
 - Address other crew members by name in anything you write on a ticket, the
   way the roster section of this prompt (assembled per-run, not part of this
   static brief) shows you — the same courtesy the polled seats extend each
