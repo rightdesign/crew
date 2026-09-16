@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { StaleWriteError } from '@tablation/client';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planConflictBounce, applyConflictBounce, refreshBranch, worktreeForBranch,
@@ -27,6 +28,22 @@ function writer() {
     postEvent: async (_id, body) => { notes.push(body); },
   };
   return { w, patches, notes };
+}
+
+/**
+ * A writer whose `updateTicket` refuses every write with `StaleWriteError`,
+ * as the real one does when the ticket moved on the board since this run
+ * read it — used to prove a conflict bounce never clobbers a status change
+ * (e.g. this ticket's own release just stamping it `deployed`) that landed
+ * between the board fetch and the bounce write (ISSUE-821).
+ */
+function staleWriter() {
+  const notes: string[] = [];
+  const w: ConflictWriter = {
+    updateTicket: async () => { throw new StaleWriteError({}); },
+    postEvent: async (_id, body) => { notes.push(body); },
+  };
+  return { w, notes };
 }
 
 /**
@@ -118,6 +135,21 @@ test('a branch built on another ship is handed back without touching git', async
   assert.match(notes[0]!, /no worktree/i);
 });
 
+test('a hand-back never clobbers a ticket the board already moved since this run read it', async () => {
+  const { dir, wt, g } = conflictingRepo();
+  moveBase(g, dir);
+  const { w, notes } = staleWriter();
+
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], []);
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+
+  assert.equal(out.kind, 'stale');
+  assert.deepEqual(notes, [], 'no hand-back note either — nothing was actually handed back');
+  // The merge conflict was still real and stays in the worktree either way.
+  const st = execFileSync('git', ['status', '--porcelain'], { cwd: wt, stdio: 'pipe' }).toString();
+  assert.match(st, /^UU /m);
+});
+
 test('conflicting a second time escalates instead of looping through the lanes', async () => {
   const { dir, g } = conflictingRepo();
   moveBase(g, dir);
@@ -133,6 +165,21 @@ test('conflicting a second time escalates instead of looping through the lanes',
   assert.equal(out.kind, 'escalated');
   assert.equal(patches[0]!.patch.status, DEFAULT_CONTRACT.statuses.needsHuman);
   assert.match(notes[0]!, /second time/);
+});
+
+test('an escalation never clobbers a ticket the board already moved since this run read it', async () => {
+  const { dir, g } = conflictingRepo();
+  moveBase(g, dir);
+  const { w, notes } = staleWriter();
+
+  const already: Comment[] = [
+    { id: 'c1', ticket_id: 'row-1', body: `${BOUNCE_MARKER}\nhanded back earlier`, created_at: '2026-01-01T00:00:00Z' } as Comment,
+  ];
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], already);
+
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+  assert.equal(out.kind, 'stale');
+  assert.deepEqual(notes, []);
 });
 
 test('a dirty worktree is handed back rather than merged into', async () => {

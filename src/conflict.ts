@@ -37,6 +37,7 @@
  */
 
 import { git, gitOk, worktrees, GitError } from './git.ts';
+import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
 import type { Ticket, Comment } from './tracker.ts';
 
@@ -63,6 +64,14 @@ export type ConflictOutcome =
   | { kind: 'handed-back' }
   /** Handed back before and conflicting again — a person owes an answer. */
   | { kind: 'escalated' }
+  /**
+   * The ticket moved on the board since this run read it, so the write was
+   * refused rather than applied (ISSUE-821): a stamp landing between this
+   * cycle's board fetch and this bounce — this ticket's own release, or
+   * another cycle's — must never be overwritten back to `building` by a
+   * conflict this run detected against now-stale state.
+   */
+  | { kind: 'stale' }
   | { kind: 'failed'; why: string };
 
 /**
@@ -155,7 +164,7 @@ Either \`${b.base}\` is moving faster than this branch can be rebased onto it, o
 }
 
 export interface ConflictWriter {
-  updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
+  updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown>;
   postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
 }
 
@@ -189,13 +198,17 @@ export async function applyConflictBounce(
       return { kind: 'escalated' };
     }
     try {
-      await writer.updateTicket(b.ticket.id, { status: contract.statuses.needsHuman });
+      await writer.updateTicket(b.ticket.id, { status: contract.statuses.needsHuman }, b.ticket.updated_at);
       await writer.postEvent(b.ticket.id, escalateComment(b), memberId).catch(() => {
         log.warn('escalated, but the note failed to post', t);
       });
       log.warn(`conflicts again after a hand-back — escalated to ${contract.statuses.needsHuman}`, t);
       return { kind: 'escalated' };
     } catch (e) {
+      if (e instanceof StaleWriteError) {
+        log.emit(`${b.ticket.issue_id} changed on the board since this run read it — not escalating over it`, t);
+        return { kind: 'stale' };
+      }
       return { kind: 'failed', why: (e as Error).message };
     }
   }
@@ -229,7 +242,16 @@ export async function applyConflictBounce(
     // Assignee cleared, not set to a seat: `in_progress` with no assignee is
     // what `buildingRoleHasWork` reads as "back up for grabs", and it is the
     // only claim signal every ship in the water can see.
-    await writer.updateTicket(b.ticket.id, { status: contract.statuses.building, assignee_id: null });
+    //
+    // Conditioned on the `updated_at` this run read the ticket at — never on
+    // a bare guess that it's still `verified` (ISSUE-821): a stamp landing on
+    // this ticket between this cycle's board fetch and this write (its own
+    // successful release just moments before, since a squash-merge conflict
+    // can surface from a stale re-attempt of a branch already carried by an
+    // earlier squash) must never be clobbered back to `building`.
+    await writer.updateTicket(
+      b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
+    );
     await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId).catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });
@@ -240,6 +262,10 @@ export async function applyConflictBounce(
     );
     return { kind: 'handed-back' };
   } catch (e) {
+    if (e instanceof StaleWriteError) {
+      log.emit(`${b.ticket.issue_id} changed on the board since this run read it — not handing it back over it`, t);
+      return { kind: 'stale' };
+    }
     return { kind: 'failed', why: (e as Error).message };
   }
 }
