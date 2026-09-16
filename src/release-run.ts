@@ -12,8 +12,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  createReleaseTag, detectClosure, git, gitOk, GitError, headSha,
-  pushBranch, pushTag, refreshBaseBranch, remoteConfigured, tagExists, type ClosureCheck,
+  createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
+  isAncestor, pushBranch, pushTag, refreshBaseBranch, remoteConfigured, tagExists, type ClosureCheck,
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
@@ -143,14 +143,30 @@ export interface ReleaseOutcome {
   /**
    * `release.mode: external` only: whether each verified ticket's branch has
    * landed on the other side of the handoff, per `hooks.merged` (or the
-   * heuristic fallback). The crew does not act on this itself — it does not
-   * merge, stamp or close anything for an external repo, that authority
-   * belongs to whatever released it — but the caller needs `state` and
-   * `mergedAt` to write the same `commit_sha`/`merged_at` fields the
-   * automated-merge path stamps (ISSUE-218), so an external ticket's record
-   * means the same thing regardless of which path closed it.
+   * heuristic fallback), and — when the repo also defines `hooks.released` —
+   * whether that merge has actually shipped. The crew does not act on this
+   * itself — it does not merge, version, tag or deploy an external repo,
+   * that authority belongs to whatever released it — but the caller needs
+   * `state`/`mergedAt` to write the same `commit_sha`/`merged_at` fields the
+   * automated-merge path stamps (ISSUE-218), and `confirmed`/`version` to
+   * additionally close the ticket out to `deployed` once a real release has
+   * carried it (ISSUE-811), so an external ticket's record means the same
+   * thing regardless of which path closed it.
    */
-  externalClosures?: { ticket: Ticket; closure: ClosureCheck }[];
+  externalClosures?: ExternalClosure[];
+}
+
+/**
+ * One verified ticket's external-mode status: whether its branch landed
+ * (`closure`), and — only once `hooks.released` has been polled — whether a
+ * real release has carried that landing (`confirmed`) and, if the repo
+ * versions, what version that was (`version`).
+ */
+export interface ExternalClosure {
+  ticket: Ticket;
+  closure: ClosureCheck;
+  confirmed?: boolean;
+  version?: string;
 }
 
 /**
@@ -280,7 +296,7 @@ const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'b
  */
 async function detectExternalClosures(
   o: ReleaseRunOptions, candidates: MergeCandidate[],
-): Promise<{ ticket: Ticket; closure: ClosureCheck }[]> {
+): Promise<ExternalClosure[]> {
   const script = o.repo.hooks.merged;
   const mergedHook = script
     ? async (env: Record<string, string>) => (await runScript(script, {
@@ -291,7 +307,7 @@ async function detectExternalClosures(
       })).code
     : undefined;
 
-  const out: { ticket: Ticket; closure: ClosureCheck }[] = [];
+  const out: ExternalClosure[] = [];
   for (const c of candidates) {
     if (!c.branch) continue;
     const closure = await detectClosure({
@@ -302,6 +318,74 @@ async function detectExternalClosures(
     out.push({ ticket: c.ticket, closure });
   }
   return out;
+}
+
+/**
+ * `release.mode: external`'s optional second question, only asked when the
+ * repo also defines `hooks.released`: has a real release actually carried
+ * each landed merge? `detectExternalClosures` above only knows the merge
+ * happened — a separate CI pipeline (Buildkite, say) builds and deploys off
+ * it independently, and until now nothing captured whether that pipeline
+ * ever ran, let alone passed.
+ *
+ * Polls `hooks.released` once for a live commit, reusing `release.verify`'s
+ * timeout/interval the same way `confirm()` does for the non-external
+ * modes — then matches every landed closure against that ONE live commit by
+ * ancestry (`isAncestor`, git.ts), not equality: a batched CI build on the
+ * base branch commonly reports a commit later than any individual ticket's
+ * own merge, so exact-prefix equality (right for `ci_auto`/`ci_manual`,
+ * where the crew controls exactly what it pushed) would false-negative on
+ * every ticket but the very last one folded into that build.
+ *
+ * A closure that never reached `state: 'merged'` (still open, or abandoned)
+ * has nothing to confirm and passes through unchanged. `hooks.released`
+ * returning nothing before the deadline is the same "unconfirmed, not
+ * failed" outcome `confirm()` reports — the tracker is left exactly as
+ * `detectExternalClosures` found it, to be asked again next cycle.
+ */
+async function confirmExternalReleased(
+  o: ReleaseRunOptions, closures: ExternalClosure[],
+): Promise<ExternalClosure[]> {
+  if (!o.repo.hooks.released) return closures;
+  const landed = closures.filter((c) => c.closure.state === 'merged' && c.closure.mergedAt);
+  if (!landed.length) return closures;
+
+  if (o.dryRun) {
+    o.emit.emit(`would poll the released hook to confirm ${landed.length} landed ticket(s) actually shipped`);
+    return closures;
+  }
+
+  const { timeoutSeconds, intervalSeconds } = o.repo.release.verify;
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let live = '';
+  for (;;) {
+    const r = await hook(o, 'released');
+    live = r?.output.trim().split('\n').filter(Boolean).pop() ?? '';
+    if (live) break;
+    if (Date.now() >= deadline) {
+      o.emit.warn(`not confirmed within ${timeoutSeconds}s — the released hook reported nothing`);
+      return closures;
+    }
+    await new Promise((res) => setTimeout(res, intervalSeconds * 1000));
+  }
+
+  return closures.map((c) => {
+    if (c.closure.state !== 'merged' || !c.closure.mergedAt) return c;
+    const confirmed = isAncestor(o.cwd, c.closure.mergedAt, live);
+    if (!confirmed) {
+      o.emit.emit(`not yet carried by ${live.slice(0, 12)}`, { ticket: c.ticket.issue_id });
+      return { ...c, confirmed };
+    }
+    const version = o.repo.release.versioning === 'none' || !o.repo.release.versionFiles[0]
+      ? undefined
+      : (() => {
+          const content = fileAtRef(o.cwd, live, o.repo.release.versionFiles[0]!);
+          if (!content) return undefined;
+          try { return (JSON.parse(content) as { version?: string }).version; } catch { return undefined; }
+        })();
+    o.emit.emit(`confirmed shipped in ${live.slice(0, 12)}`, { ticket: c.ticket.issue_id, data: { version } });
+    return { ...c, confirmed, version };
+  });
 }
 
 /**
@@ -587,7 +671,8 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   // whatever does.
   if (o.repo.release.mode === 'external') {
     o.emit.emit('release.mode is external — the crew hands work off and does not release');
-    const externalClosures = await detectExternalClosures(o, decision.merges);
+    const landed = await detectExternalClosures(o, decision.merges);
+    const externalClosures = await confirmExternalReleased(o, landed);
     return { merged: [], deployed: false, stopped: 'external', decision, externalClosures };
   }
 

@@ -238,6 +238,35 @@ export function findKeyInRange(cwd: string, key: string, range: string): string 
   return out.split('\n')[0]?.split(' ')[0] ?? null;
 }
 
+/**
+ * Whether `ancestor` is reachable from `descendant` — i.e. already folded
+ * into its history.
+ *
+ * Used, rather than exact-sha equality, to match a released commit reported
+ * by `hooks.released` against a ticket's own merge commit: a batched CI
+ * build on the base branch usually reports a commit LATER than any single
+ * ticket's own merge, so equality (or the prefix match `confirm()` uses for
+ * `ci_auto`/`ci_manual`, where the crew controls exactly what it pushed)
+ * would false-negative on every ticket but the very last one folded into
+ * that build. Any git error — an unknown sha, most likely one neither side
+ * has fetched yet — reads as "not an ancestor" rather than throwing: this is
+ * a confirmation check, and an unconfirmed answer is the correct response to
+ * not being able to tell.
+ */
+export function isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
+  return gitOk(cwd, ['merge-base', '--is-ancestor', ancestor, descendant]) !== null;
+}
+
+/**
+ * The content of `path` as of `ref`, without checking it out — for reading a
+ * version file at a commit this checkout merely has fetched, not built.
+ * `null` when the ref or the path can't be read locally (not fetched, wrong
+ * path), same "can't tell, so don't" posture as `isAncestor`.
+ */
+export function fileAtRef(cwd: string, ref: string, path: string): string | null {
+  return gitOk(cwd, ['show', `${ref}:${path}`]);
+}
+
 export function findKeyOnBase(
   cwd: string, key: string, remote: string, base: string, since?: string | null,
 ): string | null {

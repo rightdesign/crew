@@ -126,26 +126,43 @@ export async function applyStamp(
  * was rewritten, no key found on the base) is not stamped either — a
  * missing sha next cycle, once the base has more history to search, beats a
  * wrong one now.
+ *
+ * When the repo also defines `hooks.released`, `confirmExternalReleased`
+ * (release-run.ts) has already checked whether a real release carried that
+ * landing — `confirmed: true` closes the ticket the rest of the way, to
+ * `contract.statuses.deployed`, with `released_version`/`released_at` set
+ * the same as `applyStamp` above does for a release the crew ran itself
+ * (ISSUE-811). `confirmed` left `undefined` (no `hooks.released` defined, or
+ * the poll hasn't yet found a live commit to check against) or `false` (a
+ * live commit exists but doesn't yet carry this merge) both mean: stamp what
+ * landed, same as always, but leave status alone — the work merged, not
+ * necessarily shipped.
  */
 export async function applyExternalClosures(
   tracker: Tracker,
-  closures: { ticket: Ticket; closure: ClosureCheck }[] | undefined,
+  closures: { ticket: Ticket; closure: ClosureCheck; confirmed?: boolean; version?: string }[] | undefined,
+  contract: Contract,
   emit: Emitter,
   dryRun: boolean,
 ): Promise<number> {
   if (!closures?.length) return 0;
   let stamped = 0;
   const at = new Date().toISOString();
-  for (const { ticket, closure } of closures) {
+  for (const { ticket, closure, confirmed, version } of closures) {
     if (closure.state !== 'merged' || !closure.mergedAt) continue;
+    const shippedNote = confirmed ? ` and ${contract.statuses.deployed}${version ? ` (${version})` : ''}` : '';
     if (dryRun) {
-      emit.emit(`would stamp commit_sha (${closure.mergedAt.slice(0, 8)})`, { ticket: ticket.issue_id });
+      emit.emit(`would stamp commit_sha (${closure.mergedAt.slice(0, 8)})${shippedNote}`, { ticket: ticket.issue_id });
       stamped++;
       continue;
     }
     try {
-      await tracker.updateTicket(ticket.id, { commit_sha: closure.mergedAt, merged_at: at });
-      emit.emit(`stamped commit_sha (${closure.mergedAt.slice(0, 8)})`, { ticket: ticket.issue_id });
+      await tracker.updateTicket(ticket.id, {
+        commit_sha: closure.mergedAt,
+        merged_at: at,
+        ...(confirmed ? { status: contract.statuses.deployed, released_at: at, ...(version ? { released_version: version } : {}) } : {}),
+      });
+      emit.emit(`stamped commit_sha (${closure.mergedAt.slice(0, 8)})${shippedNote}`, { ticket: ticket.issue_id });
       stamped++;
     } catch (e) {
       // Same reasoning as applyStamp above: the merge already happened on

@@ -287,6 +287,123 @@ release:
   assert.equal(out.externalClosures?.[0]?.closure.mergedAt, squashSha);
 });
 
+test('external mode confirms and closes a ticket once hooks.released reports a commit that carries it', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  merged: exit 0
+release:
+  mode: external
+  tag: false
+  changelog: false
+`, bare);
+
+  g('push', '-q', 'origin', 'issue-7');
+  g('merge', '--squash', 'issue-7'); g('commit', '-qm', 'built it (ISSUE-7) (#3)');
+  const squashSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('push', '-q', 'origin', 'main');
+  g('push', '-q', 'origin', '--delete', 'issue-7');
+
+  // A batched CI build often reports a commit LATER than any single ticket's
+  // own merge — simulated here as another commit on top, bumping the
+  // version, standing in for whatever the external pipeline does on its own.
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.3.0' }, null, 2));
+  g('add', '.'); g('commit', '-qm', 'release 1.3.0');
+  const batchSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('push', '-q', 'origin', 'main');
+
+  const withReleased = resolveRepoConfig(parseRepoConfig(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  merged: exit 0
+  released: echo ${batchSha}
+release:
+  mode: external
+  tag: false
+  changelog: false
+  verify: { timeoutSeconds: 5, intervalSeconds: 1 }
+`, '.crew.yaml'), undefined, dir);
+
+  const out = await runRelease({
+    cwd: dir, repo: withReleased, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.externalClosures?.[0]?.closure.mergedAt, squashSha);
+  assert.equal(out.externalClosures?.[0]?.confirmed, true);
+  assert.equal(out.externalClosures?.[0]?.version, '1.3.0');
+});
+
+test('external mode leaves a landed ticket unconfirmed when the released commit does not carry it', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  merged: exit 0
+release:
+  mode: external
+  versioning: none
+  tag: false
+  changelog: false
+`, bare);
+
+  g('push', '-q', 'origin', 'issue-7');
+  g('merge', '--squash', 'issue-7'); g('commit', '-qm', 'built it (ISSUE-7) (#3)');
+  const squashSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('push', '-q', 'origin', 'main');
+  g('push', '-q', 'origin', '--delete', 'issue-7');
+
+  // A genuinely unrelated history — an orphan branch, so it shares no commit
+  // with main and is not an ancestor of the ticket's merge or vice versa.
+  g('checkout', '-q', '--orphan', 'other');
+  writeFileSync(join(dir, 'other.txt'), 'x'); g('add', '.'); g('commit', '-qm', 'unrelated');
+  const unrelatedSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('checkout', '-q', 'main');
+
+  const withReleased = resolveRepoConfig(parseRepoConfig(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  merged: exit 0
+  released: echo ${unrelatedSha}
+release:
+  mode: external
+  versioning: none
+  tag: false
+  changelog: false
+  verify: { timeoutSeconds: 5, intervalSeconds: 1 }
+`, '.crew.yaml'), undefined, dir);
+
+  const out = await runRelease({
+    cwd: dir, repo: withReleased, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.externalClosures?.[0]?.closure.mergedAt, squashSha);
+  assert.equal(out.externalClosures?.[0]?.confirmed, false);
+  assert.equal(out.externalClosures?.[0]?.version, undefined);
+});
+
+test('external mode with no hooks.released leaves confirmation untouched', async () => {
+  const { dir, repo } = project(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  merged: exit 0
+release:
+  mode: external
+  versioning: none
+  tag: false
+  changelog: false
+`);
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.externalClosures?.[0]?.closure.state, 'merged');
+  assert.equal(out.externalClosures?.[0]?.confirmed, undefined);
+});
+
 test('a dirty tree refuses before anything is attempted', async () => {
   const { dir, repo } = project(LOCAL);
   writeFileSync(join(dir, 'scratch.txt'), 'x');

@@ -185,7 +185,7 @@ release:
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
-| `hooks.released` | for `ci_*` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. |
+| `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
 | `release.mode` | no | `local` | `local` / `integrate` / `ci_manual` / `ci_auto` / `external` |
 | `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none` |
@@ -213,6 +213,60 @@ tickets as deployed on the strength of it. The crew's own repository is the
 first instance; before this mode existed it declared `external`, which meant
 its verified branches were never merged and every ticket had to be closed by
 hand.
+
+### `release.mode: external`
+
+For a repository where **the crew does not release at all** — a `verified`
+branch is merged by a person or another tool (`gh pr merge`, a forge's own
+merge button), outside anything the crew ran. The crew never merges,
+versions, writes a changelog, tags or deploys here; all it does is watch.
+
+`hooks.merged` is how it knows a ticket's branch landed — required for
+`external`, same as every other non-`local`/`integrate` mode, since without a
+definitive signal the crew would have to guess from commit subjects. Once a
+ticket lands, `commit_sha`/`merged_at` are written onto it (the same two
+fields the automated-merge path stamps), but that alone leaves the ticket at
+`verified` forever: landing is not the same as *shipping* — a separate
+pipeline (Buildkite, a forge's own CI) still has to build and deploy off that
+merge, and nothing about a merge landing says whether that pipeline ever ran,
+let alone passed.
+
+**`hooks.released` closes that gap, and is optional here** (unlike
+`ci_manual`/`ci_auto`, where it is required) — a repo that has no way to ask
+its release pipeline what is live can still use `external` for the merge
+tracking alone. When it is defined, the crew polls it (reusing
+`release.verify.timeoutSeconds`/`intervalSeconds`) for a live commit, then
+checks each landed ticket's merge commit for being an **ancestor** of that
+live commit — not equality, and not the prefix match `ci_auto`/`ci_manual`
+use. Those modes control exactly what they pushed, so the tag they are
+waiting for and the commit they get back are the same commit. `external`
+does not: a batched CI build on the base branch commonly reports a commit
+LATER than any single ticket's own merge, folding in everything merged since
+the last build, so only ancestry (`git merge-base --is-ancestor`) correctly
+recognizes an earlier ticket's merge as carried by a later build. Only once
+ancestry confirms this does the ticket close to `deployed` — with
+`released_version` set too, read from `release.versionFiles` at the
+confirmed commit, if `release.versioning` is not `none`. A commit that never
+turns up before the timeout, or one that turns up but does not carry a given
+ticket yet, is not a failure — same "unconfirmed is not failed" posture the
+non-external modes take — it is simply asked again next cycle.
+
+```yaml
+release:
+  mode: external
+hooks:
+  merged: gh pr view "$CREW_BRANCH" --json state,baseRefName --jq \
+    'select(.state == "MERGED" and .baseRefName == "'"$CREW_BASE"'")' | grep -q .
+  released: |
+    curl -sf -H "Authorization: Bearer ${BUILDKITE_API_TOKEN}" \
+      "https://api.buildkite.com/v2/organizations/$ORG/pipelines/$PIPELINE/builds?branch=main&state=passed&per_page=1" \
+      | jq -r '.[0].commit // empty'
+```
+
+The `released` example above filters server-side to passed builds, so a
+running or failed build simply answers with nothing rather than needing
+script-side state logic — the same "print nothing until you actually know"
+contract every other `hooks.released` script follows.
 
 ### Why `isolate` and `handoff` are hooks
 

@@ -4,7 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { detectClosure, detectClosureHeuristically, fetchRemote, remoteBranchExists, findKeyOnBase } from '../src/git.ts';
+import {
+  detectClosure, detectClosureHeuristically, fetchRemote, fileAtRef, isAncestor, remoteBranchExists, findKeyOnBase,
+} from '../src/git.ts';
 
 /** A bare "remote" plus a clone — the real shape, not a mock. */
 function pair() {
@@ -198,4 +200,32 @@ test('with no hook, the answer is explicitly heuristic', async () => {
   const { work } = pair();
   const c = await detectClosure({ cwd: work, key: 'ISSUE-1', pushedBranch: 'issue-1' });
   assert.equal(c.confidence, 'heuristic');
+});
+
+test('isAncestor matches a batched build commit that carries an earlier merge, not just an exact commit', () => {
+  const { work, g } = pair();
+  const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work, encoding: 'utf8' }).trim();
+  writeFileSync(join(work, 'a.txt'), '1'); g('add', '.'); g('commit', '-qm', 'a');
+  const merge = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work, encoding: 'utf8' }).trim();
+  writeFileSync(join(work, 'b.txt'), '1'); g('add', '.'); g('commit', '-qm', 'later batch build');
+  const batch = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work, encoding: 'utf8' }).trim();
+
+  assert.equal(isAncestor(work, merge, batch), true);
+  assert.equal(isAncestor(work, batch, merge), false);
+  assert.equal(isAncestor(work, before, batch), true);
+  // An unknown sha doesn't throw — it reads as "can't confirm", not a fault.
+  assert.equal(isAncestor(work, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', batch), false);
+});
+
+test('fileAtRef reads a version file at a commit without checking it out', () => {
+  const { work, g } = pair();
+  writeFileSync(join(work, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+  g('add', '.'); g('commit', '-qm', 'v1.0.0');
+  const v1 = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work, encoding: 'utf8' }).trim();
+  writeFileSync(join(work, 'package.json'), JSON.stringify({ version: '2.0.0' }));
+  g('add', '.'); g('commit', '-qm', 'v2.0.0');
+
+  assert.equal(JSON.parse(fileAtRef(work, v1, 'package.json')!).version, '1.0.0');
+  assert.equal(JSON.parse(fileAtRef(work, 'HEAD', 'package.json')!).version, '2.0.0');
+  assert.equal(fileAtRef(work, 'HEAD', 'nope.json'), null);
 });

@@ -840,9 +840,11 @@ async function releasePhase(
     // `release.mode: external`: the crew ships nothing itself, but a ticket
     // whose branch has landed on the other side of the hand-off still gets
     // its `commit_sha`/`merged_at` written, same as the block above does for
-    // tickets this release actually stamped `deployed` itself.
+    // tickets this release actually stamped `deployed` itself — and, once a
+    // repo-defined `hooks.released` confirms the landing actually shipped,
+    // the ticket closes out to `deployed` too (ISSUE-811).
     if (outcome.externalClosures?.length) {
-      await applyExternalClosures(tracker, outcome.externalClosures, emit, dryRun);
+      await applyExternalClosures(tracker, outcome.externalClosures, tracker.contract, emit, dryRun);
     }
 
     // Last, and non-fatal: whatever happened has happened, and telling someone

@@ -163,7 +163,7 @@ test('a merged external closure with a sha stamps commit_sha/merged_at', async (
     },
   } as unknown as Parameters<typeof applyExternalClosures>[0];
   const n = await applyExternalClosures(
-    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef') }], emitter(lines), false,
+    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef') }], DEFAULT_CONTRACT, emitter(lines), false,
   );
   assert.equal(n, 1);
   assert.equal(calls.length, 1);
@@ -179,7 +179,7 @@ test('a merged external closure with no resolved sha is not stamped', async () =
     updateTicket: async () => { called = true; return {} as Ticket; },
   } as unknown as Parameters<typeof applyExternalClosures>[0];
   const n = await applyExternalClosures(
-    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', undefined) }], emitter(lines), false,
+    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', undefined) }], DEFAULT_CONTRACT, emitter(lines), false,
   );
   assert.equal(n, 0);
   assert.equal(called, false);
@@ -194,7 +194,7 @@ test('an open or unknown external closure is not stamped', async () => {
   const n = await applyExternalClosures(
     tracker,
     [{ ticket: T('ISSUE-1'), closure: closure('open') }, { ticket: T('ISSUE-2'), closure: closure('unknown') }],
-    emitter(lines), false,
+    DEFAULT_CONTRACT, emitter(lines), false,
   );
   assert.equal(n, 0);
   assert.equal(called, false);
@@ -207,7 +207,7 @@ test('a dry run for external closures stamps nothing but reports what it would',
     updateTicket: async () => { called = true; return {} as Ticket; },
   } as unknown as Parameters<typeof applyExternalClosures>[0];
   const n = await applyExternalClosures(
-    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef') }], emitter(lines), true,
+    tracker, [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef') }], DEFAULT_CONTRACT, emitter(lines), true,
   );
   assert.equal(called, false);
   assert.equal(n, 1);
@@ -231,9 +231,50 @@ test('a tracker failure on one external closure does not abandon the rest', asyn
       { ticket: T('ISSUE-2'), closure: closure('merged', 'bbb') },
       { ticket: T('ISSUE-3'), closure: closure('merged', 'ccc') },
     ],
-    emitter(lines), false,
+    DEFAULT_CONTRACT, emitter(lines), false,
   );
   assert.deepEqual(calls, ['ISSUE-1', 'ISSUE-2', 'ISSUE-3']);
   assert.equal(n, 2);
   assert.ok(lines.some((l) => /ISSUE-2.*could not stamp commit_sha/.test(l)));
+});
+
+test('a confirmed external closure closes the ticket to deployed, with released_version/released_at', async () => {
+  const lines: string[] = [];
+  const calls: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => {
+      calls.push({ id, patch });
+      return {} as Ticket;
+    },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker,
+    [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef'), confirmed: true, version: '1.3.0' }],
+    DEFAULT_CONTRACT, emitter(lines), false,
+  );
+  assert.equal(n, 1);
+  assert.equal(calls[0]!.patch.commit_sha, 'deadbeef');
+  assert.equal(calls[0]!.patch.status, DEFAULT_CONTRACT.statuses.deployed);
+  assert.equal(calls[0]!.patch.released_version, '1.3.0');
+  assert.ok(typeof calls[0]!.patch.released_at === 'string');
+});
+
+test('a landed-but-not-yet-confirmed external closure still stamps commit_sha but leaves status alone', async () => {
+  const lines: string[] = [];
+  const calls: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => {
+      calls.push({ id, patch });
+      return {} as Ticket;
+    },
+  } as unknown as Parameters<typeof applyExternalClosures>[0];
+  const n = await applyExternalClosures(
+    tracker,
+    [{ ticket: T('ISSUE-517'), closure: closure('merged', 'deadbeef'), confirmed: false }],
+    DEFAULT_CONTRACT, emitter(lines), false,
+  );
+  assert.equal(n, 1);
+  assert.equal(calls[0]!.patch.commit_sha, 'deadbeef');
+  assert.equal('status' in calls[0]!.patch, false);
+  assert.equal('released_version' in calls[0]!.patch, false);
 });
