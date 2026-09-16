@@ -74,7 +74,7 @@ export type ConflictOutcome =
  */
 export function worktreeForBranch(cwd: string, branch: string): string | null {
   for (const w of worktrees(cwd)) {
-    if (w.branch === branch) return w.path;
+    if (w.branch === branch && !w.prunable) return w.path;
   }
   return null;
 }

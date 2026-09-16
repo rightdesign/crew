@@ -113,8 +113,21 @@ test('worktrees are enumerated with their branches', () => {
   const wt = join(mkdtempSync(join(tmpdir(), 'crew-wt-')), 'issue-9');
   ship.g('worktree', 'add', '-q', '-b', 'issue-9', wt);
   const list = worktrees(ship.d);
-  assert.ok(list.some((w) => w.branch === 'issue-9'));
-  assert.ok(list.some((w) => w.branch === 'main'));
+  assert.ok(list.some((w) => w.branch === 'issue-9' && !w.prunable));
+  assert.ok(list.some((w) => w.branch === 'main' && !w.prunable));
+});
+
+test('a worktree deleted from disk without `git worktree remove` is flagged prunable, not crashed on', () => {
+  const { ship } = world();
+  const wtRoot = mkdtempSync(join(tmpdir(), 'crew-wt-'));
+  const wt = join(wtRoot, 'issue-820');
+  ship.g('worktree', 'add', '-q', '-b', 'issue-820', wt);
+  execFileSync('rm', ['-rf', wt]); // simulate someone `rm -rf`ing the worktree by hand (ISSUE-820)
+  const list = worktrees(ship.d);
+  const stale = list.find((w) => w.branch === 'issue-820');
+  assert.ok(stale, 'the stale worktree stays registered until `git worktree prune`');
+  assert.equal(stale!.prunable, true);
+  assert.equal(existsSync(stale!.path), false);
 });
 
 /* ── refreshBaseBranch: the PRIMARY checkout's own base branch, not a

@@ -506,7 +506,14 @@ export function pushBranch(cwd: string, remote: string, branch: string): void {
   git(cwd, ['push', remote, branch]);
 }
 
-export interface WorktreeInfo { path: string; branch: string | null }
+/**
+ * `prunable` is true when git itself says so (e.g. the gitdir file points to
+ * a directory that no longer exists) — a worktree someone deleted by hand
+ * rather than through `git worktree remove`, or that this repo's own
+ * worktree-drop step already ran for. Callers must skip these rather than
+ * running git commands against a path that isn't there (ISSUE-820).
+ */
+export interface WorktreeInfo { path: string; branch: string | null; prunable: boolean }
 
 export function worktrees(cwd: string): WorktreeInfo[] {
   const out = gitOk(cwd, ['worktree', 'list', '--porcelain']) ?? '';
@@ -514,15 +521,17 @@ export function worktrees(cwd: string): WorktreeInfo[] {
   let current: Partial<WorktreeInfo> = {};
   for (const line of out.split('\n')) {
     if (line.startsWith('worktree ')) {
-      if (current.path) list.push({ path: current.path, branch: current.branch ?? null });
+      if (current.path) list.push({ path: current.path, branch: current.branch ?? null, prunable: current.prunable ?? false });
       current = { path: line.slice('worktree '.length) };
     } else if (line.startsWith('branch ')) {
       current.branch = line.slice('branch refs/heads/'.length);
     } else if (line === 'detached') {
       current.branch = null;
+    } else if (line.startsWith('prunable ')) {
+      current.prunable = true;
     }
   }
-  if (current.path) list.push({ path: current.path, branch: current.branch ?? null });
+  if (current.path) list.push({ path: current.path, branch: current.branch ?? null, prunable: current.prunable ?? false });
   return list;
 }
 

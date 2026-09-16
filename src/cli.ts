@@ -53,7 +53,7 @@ import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.t
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
-  refreshBaseBranch,
+  refreshBaseBranch, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -2383,7 +2383,19 @@ switch (command) {
       fetchRemote(r.dir);
       for (const w of worktrees(r.dir)) {
         if (!w.branch) continue;
-        const s2 = syncState(w.path, w.branch);
+        // A worktree someone deleted by hand (or a prior sweep already
+        // dropped) rather than through `git worktree remove` stays
+        // registered but has no directory to run git in — skip it rather
+        // than letting one stale entry take the whole multi-route sync
+        // down (ISSUE-820).
+        if (w.prunable) { emit.warn(`${w.branch}: worktree at ${w.path} no longer exists — skipping (run \`git worktree prune\` in ${r.dir} to clear it)`); continue; }
+        let s2: SyncState;
+        try {
+          s2 = syncState(w.path, w.branch);
+        } catch (e) {
+          emit.warn(`${w.branch}: could not check sync state — ${e instanceof Error ? e.message : String(e)}`);
+          continue;
+        }
         if (!s2.upstream) continue;
         tracked++;
         if (s2.canFastForward) {
