@@ -136,3 +136,13 @@ override already said about columns, priority order, or anything else.
 - **The runner holds no workspace's rules as a constant.** Where a default is
   referenced in code it is `DEFAULT_CONTRACT`, and it is a starting point for
   a merge rather than an assumption.
+
+## State kept per route
+
+A few files under `<stateDir>` are scoped to one route (`State.safe(route)`
+in state.ts) rather than shared across the whole ship: `.fairness-<route>-*`
+(ISSUE-382, starvation), `.release-blocked-<route>`/`.deploy-failed-sha-<route>`
+(release bookkeeping), and `.attention-<route>.json` (ISSUE-928) — the
+previous cycle's `{ ticketId: [reason, ...] }` set the poll diffs against to
+emit a one-shot "needs a person" event only on a NEW (ticket, reason)
+transition, never on every cycle a ticket happens to still be waiting.

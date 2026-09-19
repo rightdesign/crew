@@ -228,3 +228,35 @@ test('fairness: an unsafe route name still gets its own state', () => {
   assert.equal(s.fairness('my repo/v2').waiting()?.ticket, 'ISSUE-9');
   assert.equal(s.fairness('other').waiting(), undefined);
 });
+
+test('attention: before the first cycle, previous() reads as empty', () => {
+  assert.deepEqual(fresh().attention('proj').previous(), {});
+});
+
+test('attention: persist then previous() round-trips', () => {
+  const a = fresh().attention('proj');
+  a.persist({ t1: ['needs_info'] });
+  assert.deepEqual(a.previous(), { t1: ['needs_info'] });
+});
+
+test('attention: a corrupt or non-object file reads as empty, not a crash', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-state-'));
+  writeFileSync(join(dir, '.attention-proj.json'), 'not json');
+  assert.deepEqual(new State(dir).attention('proj').previous(), {});
+  writeFileSync(join(dir, '.attention-proj.json'), 'null');
+  assert.deepEqual(new State(dir).attention('proj').previous(), {});
+});
+
+test('attention state is per route, not per ship', () => {
+  const s = fresh();
+  s.attention('alpha').persist({ t1: ['needs_info'] });
+  assert.deepEqual(s.attention('alpha').previous(), { t1: ['needs_info'] });
+  assert.deepEqual(s.attention('beta').previous(), {}, 'beta must not inherit alpha\'s attention set');
+});
+
+test('attention: an unsafe route name still gets its own state', () => {
+  const s = fresh();
+  s.attention('my repo/v2').persist({ t1: ['needs_review'] });
+  assert.deepEqual(s.attention('my repo/v2').previous(), { t1: ['needs_review'] });
+  assert.deepEqual(s.attention('other').previous(), {});
+});

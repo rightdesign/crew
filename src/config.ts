@@ -113,6 +113,14 @@ export interface ResolvedIds {
    * local-only pid lock it always had.
    */
   locksModelId?: string;
+  /**
+   * The record-link-only View bound to Issues (ISSUE-928) — minting the
+   * public `/v/<slug>/r/<token>` link an attention event carries. `crew
+   * connect` resolves this automatically when exactly one such view
+   * exists; absent otherwise (no view, or several — see `discover()`'s own
+   * doc comment), which just means an attention event carries no link.
+   */
+  recordLinkViewId?: string;
   models: { issues: string; comments: string; crew: string };
   seats: Partial<Record<RoleName, string>>;
   operator: string;
@@ -745,6 +753,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     shipsModelId: raw.shipsModelId,
     epicsModelId: raw.epicsModelId,
     locksModelId: raw.locksModelId,
+    recordLinkViewId: raw.recordLinkViewId,
     reposModelId: raw.reposModelId,
     repoNames: raw.repoNames,
     repoRemotes: raw.repoRemotes,

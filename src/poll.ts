@@ -18,6 +18,7 @@ import {
 import {
   selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
 } from './select.ts';
+import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, renderBranchName } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
@@ -46,6 +47,15 @@ export interface CycleDecision {
    * risking that reconstruction drifting from what this cycle actually saw.
    */
   selectionInput: SelectionInput;
+  /**
+   * This cycle's "needs a person" set (ISSUE-928) — `{ ticketId: [reason,
+   * ...] }` for every OPEN ticket currently carrying at least one of
+   * needs_info/needs_planning/needs_review. `decideCycle` itself makes no
+   * writes, so the caller persists this via `state.attention(route).persist(...)`
+   * once the cycle is otherwise committed, beside the existing
+   * `fairness(route).record(...)` call.
+   */
+  attention: Record<string, AttentionReason[]>;
 }
 
 export interface CycleOptions {
@@ -139,6 +149,45 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     );
   }
 
+  // ISSUE-928: which open tickets need a PERSON right now, and which of
+  // those reasons are NEW since last cycle. Diffed at the (ticket, reason)
+  // grain against the persisted set — see attention.ts and the ticket's own
+  // "Decision 2" for why a reason that drops out and later reappears fires
+  // again rather than being treated as already-notified.
+  const attentionCurrent: Record<string, AttentionReason[]> = {};
+  for (const t of tickets) {
+    const reasons = attentionReasons(t, tracker.contract);
+    if (reasons.length) attentionCurrent[t.id] = reasons;
+  }
+  const attentionPrevious = state.attention(route.route).previous() as Record<string, AttentionReason[]>;
+  const transitions = attentionTransitions(attentionPrevious, attentionCurrent);
+  let mintFailed = false;
+  for (const tr of transitions) {
+    const ticket = tickets.find((t) => t.id === tr.ticketId);
+    if (!ticket) continue;
+    // Fetch-or-create, not a plain read: minting the same (view, model,
+    // record) link twice is idempotent (RecordLinksService.mintForRecord
+    // upserts), which is what makes this safe to call from a
+    // decision-making pass that otherwise performs no writes.
+    const url = await tracker.recordLinkUrl(ticket.id);
+    if (!url && route.resolved?.recordLinkViewId) mintFailed = true;
+    emit.emit(
+      `needs a person: ${tr.reasons.join(', ')} — ${ticket.title}`,
+      {
+        step: 'sweep',
+        ticket: ticket.issue_id,
+        data: {
+          attention: tr.reasons,
+          title: ticket.title ?? undefined,
+          ...(url ? { url } : {}),
+        },
+      },
+    );
+  }
+  if (mintFailed) {
+    emit.warn('could not mint a record-link URL for at least one attention event this cycle', { step: 'sweep' });
+  }
+
   emit.enter('select');
   const watermark = state.watermark();
   const selectionInput = {
@@ -152,7 +201,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
     tickets, comments, roster, blocked, info, sweep, stranded, selection, actionable, watermark,
-    selectionInput,
+    selectionInput, attention: attentionCurrent,
   };
 
   // AFTER every role has been evaluated, never during: advancing inside the

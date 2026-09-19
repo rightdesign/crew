@@ -253,6 +253,7 @@ function fakeDecision(pending: CycleDecision['selection']['pending']): CycleDeci
     actionable: { top: undefined } as unknown as CycleDecision['actionable'],
     watermark: '2026-08-01T00:00:00Z',
     selectionInput: {} as CycleDecision['selectionInput'],
+    attention: {},
   };
 }
 

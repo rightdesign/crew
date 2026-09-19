@@ -120,6 +120,7 @@ export class Tracker {
   readonly contract: Contract;
   private readonly client: TablationClient;
   private readonly models: { issues: string; comments: string; crew: string };
+  private readonly userAgent: string;
 
   constructor(route: Route, ship: Pick<Ship, 'userAgent'>) {
     this.route = route;
@@ -130,6 +131,7 @@ export class Tracker {
     }
     this.models = route.resolved.models;
     this.contract = resolveContract(route.contract);
+    this.userAgent = ship.userAgent;
     this.client = new TablationClient({
       baseUrl: `${route.baseUrl}/api`,
       apiKey: resolveApiKey(route),
@@ -427,6 +429,39 @@ export class Tracker {
     await this.client.records.create(this.models.comments, {
       ticket_id: ticketId, body, team_member_id: memberId, kind: 'event',
     });
+  }
+
+  /**
+   * The public `/v/<slug>/r/<token>` link for one ticket (ISSUE-928) —
+   * fetch-or-create via `POST /views/:viewId/record-links`, so a repeated
+   * call for the same (view, model, record) returns the same URL and even
+   * un-retires a retired one — right for a ticket that just went back to
+   * `needs_info` after having been resolved once before.
+   *
+   * `undefined` when this route has no `recordLinkViewId` resolved, or the
+   * mint call fails for any reason (network, 404, an unexpected response
+   * shape) — the caller (poll.ts's attention sweep) still emits its
+   * notification event without a link rather than losing the whole event.
+   */
+  async recordLinkUrl(recordId: string): Promise<string | undefined> {
+    const viewId = this.route.resolved?.recordLinkViewId;
+    if (!viewId) return undefined;
+    try {
+      const res = await fetch(`${this.route.baseUrl}/api/views/${viewId}/record-links`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${resolveApiKey(this.route)}`,
+          'User-Agent': this.userAgent,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ dataModelId: this.models.issues, recordId }),
+      });
+      if (!res.ok) return undefined;
+      const body = (await res.json()) as { url?: unknown };
+      return typeof body.url === 'string' ? body.url : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

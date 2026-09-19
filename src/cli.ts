@@ -988,7 +988,7 @@ switch (command) {
     if (fleetWide) {
       const fleet = await decideFleet({
         routes: cfg.routes, ship: cfg.ship, state, emit,
-        enabledOnly: !dryRun,
+        enabledOnly: !dryRun, dryRun,
       });
 
       // The single-route path below applies its sweep before doing
@@ -1205,6 +1205,9 @@ switch (command) {
       break;
     }
     const decision = await decideCycle({ route, ship: cfg.ship, state, emit });
+    // ISSUE-928: persist this cycle's attention set so next cycle's diff
+    // sees it — never under --dry-run, which performs nothing.
+    if (!dryRun) state.attention(route.route).persist(decision.attention);
 
     if (decision.sweep.length) {
       if (dryRun) {
@@ -1979,6 +1982,7 @@ switch (command) {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
         shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, locksModelId: found.locksModelId,
+        recordLinkViewId: found.recordLinkViewId,
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(operator ? { operator } : {}),

@@ -120,6 +120,8 @@ export interface Discovered {
   shipsModelId?: string;
   epicsModelId?: string;
   locksModelId?: string;
+  /** The record-link-only View bound to Issues (ISSUE-928) — see the field's matching doc comment on `ResolvedIds` in config.ts. */
+  recordLinkViewId?: string;
   seats: Record<string, string>;
   /** The Crew row that is the human running this — auto-matched by email
    * against `meEmail` when possible. Left unset when no hold's email matches
@@ -396,6 +398,38 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // board-visible release lock (ISSUE-394) still works with the local-only
   // pid lock it always had.
   out.locksModelId = find('Locks');
+
+  // The record-link-only View bound to Issues (ISSUE-928) — what
+  // `Tracker.recordLinkUrl` mints against. Best-effort like the field
+  // metadata read above: a key that cannot list views still gets
+  // everything else `discover()` found, just no attention-event link.
+  // Exactly one qualifying view resolves automatically; zero or several are
+  // left unset with a non-fatal `problems` line, the same shape `crew
+  // doctor` already uses for a missing Ships table.
+  try {
+    const views = await get<Array<{
+      id: string;
+      recordLinkOnly?: boolean;
+      published?: boolean;
+      publicSlug?: string | null;
+      pages?: Array<{ components?: Array<{ dataModelId?: string }> }>;
+    }>>(o, `/views?workspaceId=${ws.id}`);
+    const candidates = views.filter((v) => (
+      v.recordLinkOnly === true && v.published === true && !!v.publicSlug &&
+      (v.pages ?? []).some((p) => (p.components ?? []).some((c) => c.dataModelId === out.models.issues))
+    ));
+    if (candidates.length === 1) {
+      out.recordLinkViewId = candidates[0]!.id;
+    } else if (candidates.length === 0) {
+      problems.push('no record-link-only view bound to Issues — attention events will carry no link');
+    } else {
+      problems.push(
+        `${candidates.length} record-link-only views bound to Issues — set resolved.recordLinkViewId by hand`,
+      );
+    }
+  } catch {
+    // Not fatal — see this block's own doc comment above.
+  }
 
   // Optional, like Ships/Epics/Locks: a workspace with only one repo, or one
   // that has not sliced its board by repository at all, has no Repos table.

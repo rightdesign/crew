@@ -265,6 +265,34 @@ export class State {
     };
   }
 
+  /**
+   * The previous cycle's "needs a person" set, scoped to one route
+   * (ISSUE-928) — `{ ticketId: [reason, ...] }`. `poll.ts` reads it once
+   * per cycle to compute transitions and the caller (`cli.ts`'s run path,
+   * `fleet.ts`'s per-route loop) persists the new set afterward, beside the
+   * existing `fairness(route).record(...)` call — never inside `decideCycle`
+   * itself, which does no writes. A corrupt or missing file reads as empty,
+   * which is also deliberately what a fresh install sees: everything
+   * currently needing a person emits once, rather than being silently
+   * skipped as though already notified.
+   */
+  attention(route: string) {
+    const file = `.attention-${State.safe(route)}.json`;
+    return {
+      previous: (): Record<string, string[]> => {
+        try {
+          const parsed = JSON.parse(readFileSync(this.path(file), 'utf8'));
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      },
+      persist: (next: Record<string, string[]>): void => {
+        writeFileSync(this.path(file), JSON.stringify(next));
+      },
+    };
+  }
+
   private readInt(file: string): number {
     try { return Number.parseInt(readFileSync(this.path(file), 'utf8').trim(), 10) || 0; } catch { return 0; }
   }

@@ -75,6 +75,15 @@ export interface FleetOptions {
   enabledOnly?: boolean;
   /** For aging (ISSUE-383) and tests that need a fixed clock. Defaults to Date.now(). */
   now?: number;
+  /**
+   * "Decide everything, perform nothing" (ISSUE-928): skips persisting this
+   * cycle's attention set (`state.attention(route).persist(...)`) below.
+   * Unlike `fairness(...).record(...)` just above it — pre-existing,
+   * unconditional bookkeeping this ticket leaves alone — an attention
+   * notification is a real, user-visible side effect once crew-macos
+   * consumes it, so a dry run must not advance its dedupe state.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -124,6 +133,10 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
     if (e.error || !e.decision) continue;
     const won = best?.route.route === e.route.route;
     o.state.fairness(e.route.route).record(e.decision.actionable.count, e.decision.actionable.top?.issue_id, won);
+    // ISSUE-928: persist for EVERY reachable route, not just the winner —
+    // an attention transition (a ticket going to needs_info) has nothing to
+    // do with which route wins the cycle's agent slot.
+    if (!o.dryRun) o.state.attention(e.route.route).persist(e.decision.attention);
   }
 
   return {
