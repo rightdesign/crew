@@ -574,6 +574,15 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       }
       resolve({ code: code ?? 1, ms });
     });
+    // An agent that exits (or closes stdin) before the prompt is fully written
+    // breaks the pipe under this write. Without a listener that EPIPE is an
+    // unhandled 'error' event and takes the whole `crew run` down with a stack
+    // trace (CREW-983) — instead of the run being reported, as it should be,
+    // by the `close` handler above, which sees the child's real exit code
+    // either way. So the write failing is noted, never fatal.
+    child.stdin.on('error', (err) => {
+      emit.warn(`agent closed stdin before the prompt was delivered: ${err.message}`, { step: 'agent' });
+    });
     child.stdin.end(plan.prompt);
   });
 }

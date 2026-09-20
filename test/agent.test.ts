@@ -503,3 +503,22 @@ test('spawnAgent never dies on a malformed line, and closes cleanly', async () =
   assert.equal(result.code, 0);
   assert.ok(existsSync(plan.streamPath));
 });
+
+test('spawnAgent survives an agent that exits without reading its prompt — EPIPE on stdin is not a crash (CREW-983)', async () => {
+  const { state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c3',
+  });
+  plan.bin = process.execPath;
+  // Closes its end of the pipe and leaves at once, the way an agent binary
+  // that dies during startup does.
+  plan.args = ['-e', 'process.stdin.destroy(); process.exit(3)'];
+  plan.cwd = state;
+  // Far past the OS pipe buffer, so the write is still in flight when the
+  // reader goes away — a small prompt fits in the buffer and never errors.
+  plan.prompt = 'x'.repeat(8 * 1024 * 1024);
+  const emit = new Emitter({ route: 'proj', cycleId: 'c3', console: () => {} });
+  emit.enter('agent', 'dev');
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 3);
+});
