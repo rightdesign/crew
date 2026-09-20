@@ -57,7 +57,7 @@ import {
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
@@ -1951,7 +1951,8 @@ switch (command) {
       let previous:
         | { contract?: { statuses?: { resolved?: string[] } } | null; reviewedStatuses?: string[]; operator?: string }
         | undefined;
-      if (existsSync(resolvedPath)) {
+      const hadPreviousFile = existsSync(resolvedPath);
+      if (hadPreviousFile) {
         try { previous = JSON.parse(readFileSync(resolvedPath, 'utf8')); } catch { /* treated as no previous file below */ }
       }
       // Same "never clobber what a previous run/hand-edit wrote" rule
@@ -1959,6 +1960,24 @@ switch (command) {
       // picker (blank answer, or no TTY to ask at all) must not wipe an
       // operator a prior run or a hand-edit already resolved.
       if (!operator) operator = previous?.operator;
+      // CREW-978: a non-interactive `connect` with no previous file and no
+      // operator resolvable (several holds, none matching this key's email)
+      // used to write a resolved file with no `operator` key at all — which
+      // `loadConfig` then silently drops the whole route for (`operator is
+      // required`), on every cycle after this one, with nothing at connect
+      // time to say why. A re-run that already HAS a previous file is fine
+      // to proceed without one (the loop already accepted this route before;
+      // don't turn a routine reconnect into a hard failure over a field nothing
+      // new was asked to resolve) — this only refuses a *first* write.
+      if (!operator && !hadPreviousFile) {
+        process.stderr.write(
+          `crew connect ${route}: cannot determine the operator — ${found.holds.length} Crew row(s) ` +
+          `could be it, none matching this key's own email, and there's no terminal to ask.\n` +
+          `  Re-run from a real terminal to pick one, or pass --key for a key whose own\n` +
+          `  identity email matches exactly one Crew row.\n`,
+        );
+        process.exit(2);
+      }
       const alreadyReviewed = new Set(previous?.reviewedStatuses ?? []);
       const stillUnrecognized = (found.unrecognizedStatuses ?? []).filter((s) => !alreadyReviewed.has(s.value));
       const canPrompt = stillUnrecognized.length > 0 && process.stdin.isTTY && process.stdout.isTTY;
@@ -2011,7 +2030,19 @@ switch (command) {
         process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
       } else {
         mkdirSync(dirname(resolvedPath), { recursive: true });
-        writeFileSync(resolvedPath, `${JSON.stringify(resolved, null, 2)}\n`);
+        // CREW-978: a `.bak` of whatever this route already had, and an
+        // atomic rename over the real path (write-to-temp + rename, rather
+        // than writing resolvedPath directly) — a bad connect (this run
+        // crashing, or the process getting killed) mid-write used to be able
+        // to leave a truncated/partial resolved file behind; a rename is a
+        // single filesystem operation, so the route ends up either fully the
+        // old file or fully the new one, never a half-written one, and the
+        // `.bak` means a bad WRITE (as opposed to a crash) is still one `mv
+        // route.json.bak route.json` away from undone.
+        if (hadPreviousFile) copyFileSync(resolvedPath, `${resolvedPath}.bak`);
+        const tmpPath = `${resolvedPath}.tmp${process.pid}`;
+        writeFileSync(tmpPath, `${JSON.stringify(resolved, null, 2)}\n`);
+        renameSync(tmpPath, resolvedPath);
         process.stderr.write(`Resolved ids written to ${resolvedPath}\n`);
       }
       // A device-authorization key (ISSUE-609) has nowhere else to live —

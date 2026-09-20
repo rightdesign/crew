@@ -621,6 +621,13 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       const matches = holdRows.filter((r) => eq(r.email, out.meEmail!));
       if (matches.length === 1) out.operator = matches[0]!.id;
     }
+    // No email match (or no email on file) but only one candidate anyway —
+    // same "exactly one, no ambiguity" reasoning as the email match above,
+    // just without needing an email at all (CREW-978: this is the case a
+    // fresh non-interactive `connect` hit with no previous resolved file —
+    // one hold, no email match, nowhere to ask — and wrote a route with no
+    // `operator` at all rather than picking the only row it could mean).
+    if (!out.operator && out.holds.length === 1) out.operator = out.holds[0]!.id;
   }
   return out;
 }

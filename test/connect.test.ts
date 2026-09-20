@@ -250,7 +250,34 @@ test('discover() auto-matches operator to the hold whose email matches this key\
   assert.equal(found.operator, 'hold-brad');
 });
 
-test('discover() leaves operator unset when no hold email matches (or two do)', async (t) => {
+test('discover() leaves operator unset when several holds remain and no email matches', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'nobody@example.test' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' },
+      { id: 'hold-someone-else', name: 'Someone Else', email: 'someone@example.test' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
+  assert.equal(found.operator, undefined);
+  assert.equal(found.holds.length, 2);
+});
+
+// CREW-978: a fresh (no previous resolved file) non-interactive `connect`
+// against a workspace with exactly one non-seat Crew row and no email match
+// used to leave `operator` unset — which then wrote a resolved file with no
+// `operator` key at all, silently dropping the whole route on next load
+// (`loadConfig`'s `operator is required`). One candidate is no more
+// ambiguous than an exact email match, so `discover()` now picks it the
+// same way.
+test('discover() picks the operator when exactly one hold remains, even with no email match', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'nobody@example.test' },
@@ -266,10 +293,10 @@ test('discover() leaves operator unset when no hold email matches (or two do)', 
   t.after(restore);
 
   const found = await discover({ ...BASE, workspace: 'issues', project: 'bar' });
-  assert.equal(found.operator, undefined);
-  // "Pair agent" is claimed as the pair seat, not left as a hold — see the
-  // dedicated pair-matching test below.
+  // "Pair agent" is claimed as the pair seat, not left as a hold — leaving
+  // hold-brad as the only actual hold, and thus the operator.
   assert.equal(found.holds.length, 1);
+  assert.equal(found.operator, 'hold-brad');
 });
 
 test('discover() best-effort-matches a "pair" Crew row into seats.pair, and drops it from holds', async (t) => {

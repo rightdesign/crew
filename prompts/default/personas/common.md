@@ -667,6 +667,17 @@ going on.
   worktree directory for a ticket that isn't yours
   right now may be another concurrent process's or a stalled run someone
   hasn't cleaned up; leave it alone rather than removing or reusing it.
+- **Never run a state-writing `crew` command (`connect`, `agents sync`,
+  `skills sync`, `install`, `release`, `merge`, `deploy`, ...) against this
+  ship's real config.** A "manual sanity check" against the live
+  `~/.config/crew/crew.yaml` and its real `stateDir` can overwrite or delete
+  a route's resolved ids out from under every cycle after it (CREW-978: a QA
+  agent's own `crew connect` wiped the live `issues/issues` route this way,
+  taking down every lane's polling until a person restored it by hand). If
+  exercising the CLI genuinely needs to run, point it at a throwaway config
+  and stateDir first (`CREW_CONFIG=/tmp/... crew ...`, with `ship.stateDir`
+  in that file also pointed at a scratch directory) — never the ship's own.
+  Never delete anything under the ship's real `stateDir`.
 - If auth fails or a response looks unexpected (Cloudflare HTML page
   instead of JSON, etc.), stop and report — do not improvise around it.
 - If you hit a genuine ambiguity mid-implementation (not just at pickup),
