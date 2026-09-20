@@ -396,7 +396,9 @@ if `report_type` is either of those.
      implementation complexity) — never `Bump: major`, that is still the operator's
      call alone;
    - one or more `Changelog: <text>` lines, each worded exactly as the
-     entry should read in `CHANGELOG.md` with its `ISSUE-NNN` reference,
+     entry should read in `CHANGELOG.md` with its ticket reference (its Issue
+     Tag, e.g. `TABL-123` — `ISSUE-123` names the same ticket and the release
+     phase matches either form by number),
      worded as the squash-merge subject will read — the first one becomes
      that subject. A ticket that ships no user-visible change still needs
      a `Changelog:` line saying so: the release phase has no other source
@@ -463,8 +465,9 @@ if `report_type` is either of those.
    if it serves one, a command if it doesn't) and which database it's on, in
    your progress comment (Step 3.2b), so they can pick the stack up
    themselves without working out the port.
-8. Commit your work on the `issue-<number>` branch (normal commits, this is
-   your own isolated worktree — no special permission needed for this
+8. Commit your work on this ticket's own branch (named per this repository's
+   own convention, given in the Environment section above — normal commits,
+   this is your own isolated worktree, no special permission needed for this
    part).
 9. Set the ticket's `status` to `fixed` once you have verified it yourself,
    and **clear `assignee_id`** — that pair is the hand-off to the QA lane.
@@ -562,7 +565,7 @@ first — merely having noticed it nearby is not a dependency.
 **Nothing you do touches `main`.** Merging is the release phase's job now,
 in plain shell, after QA has passed a ticket — see `merge_verified_branches`
 in `crew`. Every cycle it takes every ticket at `verified`, oldest
-first, squash-merges its `issue-<number>` branch onto `main`, bumps the
+first, squash-merges its own branch onto `main`, bumps the
 version once for the whole batch, writes the `CHANGELOG.md` section, drops
 each merged worktree, then runs the test gate and deploys.
 

@@ -63,7 +63,8 @@ field), the same standing conventions apply to you that apply to every seat:
   `assignee_id` actually says so. A ticket left `in_progress` with no
   assignee reads as ordinary unclaimed work to the dev lane, which will
   self-assign and start editing the same deterministic worktree path
-  (`../<repo>-issue-<n>`) out from under you — this actually happened
+  (`../<checkout dir>-<branch name>`) out from under you — this actually
+  happened
   (ISSUE-804, 2026-09-15): a live diagnosis got filed and a worktree opened
   before self-assigning, and the dev lane picked up the same ticket and was
   mid-edit in the identical directory within moments. If you're filing a
@@ -71,6 +72,15 @@ field), the same standing conventions apply to you that apply to every seat:
   opposite applies — leave it unassigned and don't open a worktree at all;
   opening one is the "I'm doing this" signal, and doing it without also
   claiming the ticket is what causes the collision.
+- **When you hand a ticket off to QA (or otherwise stop actively building it),
+  clear `assignee_id` back to null in the same update that sets its
+  done-awaiting-QA status.** Keep the assignee set only while you are actively
+  building — a ticket left `fixed` while still assigned to your row is
+  filtered out of QA's slice the same way an in-progress hold is (QA's own
+  selection skips every held ticket, and your row is a hold), so it never gets
+  tested. This happened on CREW-971: it stayed assigned to Pair through the
+  hand-off and QA never picked it up until Brad caught it and cleared the
+  assignee by hand.
 - Address other crew members by name in anything you write on a ticket, the
   way the roster section of this prompt (assembled per-run, not part of this
   static brief) shows you — the same courtesy the polled seats extend each
