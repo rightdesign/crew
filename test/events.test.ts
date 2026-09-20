@@ -89,6 +89,24 @@ test('an unwritable sink never takes the cycle down with it', () => {
 });
 
 
+test('forRoute labels events with a different route, sharing sinks and cycle', () => {
+  // CREW-979: a fleet-wide run's top-level Emitter is stamped with just
+  // routes[0]; a phase that knows which route it's actually about (release,
+  // per-route poll) needs a view of it that carries the right label without
+  // losing the shared event/log files or the cycle id events are grouped by.
+  const { dir, e } = rig();
+  const scoped = e.forRoute('other-route');
+  const base = e.emit('base event');
+  const other = scoped.emit('scoped event');
+  assert.equal(base.route, 'synthesis');
+  assert.equal(other.route, 'other-route');
+  assert.equal(other.cycle, base.cycle, 'both emitters group into the same cycle');
+  const lines = readFileSync(eventFileFor(dir), 'utf8').trim().split(String.fromCharCode(10)).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].route, 'synthesis');
+  assert.equal(lines[1].route, 'other-route');
+});
+
 test('a dry run writes to the terminal and not to the ship history', () => {
   // A dry run used to append to the shared event file with nothing marking it
   // hypothetical, so `crew watch` showed a dry run's release among the real

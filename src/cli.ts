@@ -760,6 +760,12 @@ async function releasePhase(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<RepoReleaseSummary> {
   const scope = `${c.route}/${target.name}`;
+  // Route-scoped: a fleet-wide release runs this once per (route, repo), but
+  // the top-level `emit` is stamped with just routes[0] for the whole run
+  // (see the `fleetWide` Emitter construction above) — every event this
+  // phase reports needs ITS OWN route, not whichever one happened to be
+  // first (CREW-979).
+  const remit = emit.forRoute(c.route);
   // Per REPOSITORY, not per route. A board's area spans several repos and
   // each releases on its own: they have separate versions, separate tags and
   // separate deploy targets, and a long release of one must not hold up
@@ -767,7 +773,7 @@ async function releasePhase(
   // released — every other repo on the board was silently never shipped.
   const relLock = dryRun ? undefined : state.acquire(`release-${scope}`);
   if (relLock && !relLock.ok) {
-    emit.emit(`a previous release (pid ${relLock.heldBy}) is still running — skipping`, { step: 'release' });
+    remit.emit(`a previous release (pid ${relLock.heldBy}) is still running — skipping`, { step: 'release' });
     return { scope, tests: 'skipped', outcome: 'skipped', detail: 'a previous release is still running' };
   }
   // Board-visible, cross-ship claim (ISSUE-394) — `relLock` above only ever
@@ -786,7 +792,7 @@ async function releasePhase(
       worktrees: { prefix: shipWorktreePrefixFor(c) },
     }, target.dir);
     const problems = validateEffective(repo);
-    for (const p of problems) emit.warn(`${scope}: ${p}`);
+    for (const p of problems) remit.warn(`${scope}: ${p}`);
 
     // What a host must be to build THIS repo is that repo's own fact
     // (`.crew.yaml`), not the route's — a route can span repos with
@@ -794,7 +800,7 @@ async function releasePhase(
     // repos may still be releasable here.
     if (!satisfies(cfg.ship.platform, repo.platform)) {
       const detail = explain(cfg.ship.platform, repo.platform);
-      emit.emit(`${scope}: skipping — ${detail}`, { step: 'release' });
+      remit.emit(`${scope}: skipping — ${detail}`, { step: 'release' });
       return { scope, tests: 'skipped', outcome: 'skipped', detail };
     }
 
@@ -806,7 +812,7 @@ async function releasePhase(
       const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS);
       if (!got.ok) {
         const why = got.reason === 'held' ? `held by ${got.heldBy ?? 'another ship'}` : 'claimed by another ship mid-check';
-        emit.emit(`release for ${scope} is ${why} on the board — skipping`, { step: 'release' });
+        remit.emit(`release for ${scope} is ${why} on the board — skipping`, { step: 'release' });
         return { scope, tests: 'skipped', outcome: 'skipped', detail: `release ${why} on the board` };
       }
       boardLock = got;
@@ -819,10 +825,10 @@ async function releasePhase(
     // near-miss (a branch of the same name in two repos) merge the wrong work.
     const { byRepo, unplaceable } = ticketsByRepo(c, all);
     const tickets = byRepo.get(target.name) ?? [];
-    reportUnplaceable(c, unplaceable, tracker.contract.statuses.verified, emit);
+    reportUnplaceable(c, unplaceable, tracker.contract.statuses.verified, remit);
 
     const outcome = await runRelease({
-      cwd: target.dir, repo, contract: tracker.contract, tickets, emit, scope,
+      cwd: target.dir, repo, contract: tracker.contract, tickets, emit: remit, scope,
       state: state.release(scope),
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',
@@ -839,15 +845,15 @@ async function releasePhase(
     // failed one. Untouched tickets are still `verified` and still named in
     // the released range, so the next cycle picks them up.
     if (outcome.deployed || outcome.confirmed || outcome.alreadyLive || outcome.integrated) {
-      emit.enter('reconcile');
+      remit.enter('reconcile');
       const plan = planStamp(
         target.dir, tickets, tracker.contract,
         outcome.decision.lastReleased, outcome.decision.head,
         new Map(outcome.merged.map((m) => [m.ticket.issue_id, m.sha])),
       );
-      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, emit, dryRun);
+      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun);
     } else if (outcome.stopped) {
-      emit.emit(`nothing stamped — ${outcome.stopped}`);
+      remit.emit(`nothing stamped — ${outcome.stopped}`);
     }
 
     // `release.mode: external`: the crew ships nothing itself, but a ticket
@@ -857,14 +863,14 @@ async function releasePhase(
     // repo-defined `hooks.released` confirms the landing actually shipped,
     // the ticket closes out to `deployed` too (ISSUE-811).
     if (outcome.externalClosures?.length) {
-      await applyExternalClosures(tracker, outcome.externalClosures, tracker.contract, emit, dryRun);
+      await applyExternalClosures(tracker, outcome.externalClosures, tracker.contract, remit, dryRun);
     }
 
     // Last, and non-fatal: whatever happened has happened, and telling someone
     // about it must not be able to change the outcome.
     const news = describeRelease(outcome, scope);
     if (news) {
-      const notified = await notify(c, cfg.ship, news, emit, dryRun);
+      const notified = await notify(c, cfg.ship, news, remit, dryRun);
       // No `hooks.notify` configured on this route — the common case, since
       // the key has existed since the Node port and nobody has wired it
       // (notify.ts's own header). A failure must not go silent just because
@@ -873,8 +879,8 @@ async function releasePhase(
       // has always done for a deploy failure.
       if (!notified && news.level === 'fail') {
         const memberId = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
-        await applyFailureAlert(tracker, news, scope, all, memberId, emit, dryRun).catch((e) => {
-          emit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
+        await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun).catch((e) => {
+          remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
       }
     }
@@ -898,12 +904,12 @@ async function releasePhase(
           const bounce = planConflictBounce(
             target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, comments,
           );
-          const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, emit, dryRun);
+          const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
           if (r.kind === 'failed') {
-            emit.warn(`could not hand back ${f.candidate.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+            remit.warn(`could not hand back ${f.candidate.ticket.issue_id}: ${r.why}`, { step: 'merge' });
           }
         } catch (e) {
-          emit.warn(
+          remit.warn(
             `could not hand back ${f.candidate.ticket.issue_id}: ${(e as Error).message}`,
             { step: 'merge' },
           );
@@ -914,13 +920,13 @@ async function releasePhase(
         try {
           const stranded = planStrandedVerified(cand, repo.branch.base, repo.branch.remote, comments);
           const r = await applyStrandedVerified(
-            tracker, stranded, tracker.contract, c.resolved?.operator, seat, emit, dryRun,
+            tracker, stranded, tracker.contract, c.resolved?.operator, seat, remit, dryRun,
           );
           if (r.kind === 'failed') {
-            emit.warn(`could not flag ${cand.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+            remit.warn(`could not flag ${cand.ticket.issue_id}: ${r.why}`, { step: 'merge' });
           }
         } catch (e) {
-          emit.warn(`could not flag ${cand.ticket.issue_id}: ${(e as Error).message}`, { step: 'merge' });
+          remit.warn(`could not flag ${cand.ticket.issue_id}: ${(e as Error).message}`, { step: 'merge' });
         }
       }
     }
@@ -934,12 +940,12 @@ async function releasePhase(
       const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
       const actions = planWorktreeSweep(target, scoped, tracker.contract);
       if (actions.length) {
-        emit.enter('worktree');
-        const r = await applyWorktreeSweep(target.dir, actions, dryRun, emit);
-        emit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
+        remit.enter('worktree');
+        const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit);
+        remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
       }
     } catch (e) {
-      emit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
+      remit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
     }
 
     return summary;
@@ -952,7 +958,7 @@ async function releasePhase(
     // reach the top of the process as an uncaught exception — crashing a
     // release that may already be live — so it gets the same "warn, don't
     // fail" treatment as everything else in this function.
-    emit.warn(`release phase failed: ${(e as Error).message}`, { step: 'release' });
+    remit.warn(`release phase failed: ${(e as Error).message}`, { step: 'release' });
     return { scope, tests: 'skipped', outcome: 'error', detail: (e as Error).message };
   } finally {
     if (boardLock && boardLock.ok) await boardLock.release();
@@ -1011,9 +1017,14 @@ switch (command) {
       // parks or restores a blocked ticket at all, silently, forever.
       for (const e of fleet.entries) {
         if (e.error || !e.decision || !e.decision.sweep.length) continue;
+        // Route-scoped (CREW-979): this loop covers every reachable route,
+        // not just the winner, so the top-level `emit` (stamped routes[0]
+        // for the whole fleet-wide run) would mislabel every route but the
+        // first.
+        const remit = emit.forRoute(e.route.route);
         if (dryRun) {
           for (const s of e.decision.sweep) {
-            emit.emit(`would ${s.action} -> ${s.to} (blockers: ${s.blockers})`, {
+            remit.emit(`would ${s.action} -> ${s.to} (blockers: ${s.blockers})`, {
               ticket: s.ticket.issue_id, step: 'sweep',
             });
           }
@@ -1021,14 +1032,14 @@ switch (command) {
         }
         const seat = e.route.resolved?.seats.qa ?? e.route.resolved?.seats.dev;
         try {
-          const r = await applySweep(new Tracker(e.route, cfg.ship), e.decision.sweep, seat ?? '', emit);
-          emit.emit(
+          const r = await applySweep(new Tracker(e.route, cfg.ship), e.decision.sweep, seat ?? '', remit);
+          remit.emit(
             `swept ${r.parked} parked, ${r.restored} restored` +
               `${r.failed ? `, ${r.failed} failed` : ''}${r.contended ? `, ${r.contended} contended` : ''} (${e.route.route})`,
             { step: 'sweep', data: r },
           );
         } catch (err) {
-          emit.warn(`could not sweep ${e.route.route}: ${(err as Error).message}`, { step: 'sweep' });
+          remit.warn(`could not sweep ${e.route.route}: ${(err as Error).message}`, { step: 'sweep' });
         }
       }
 
@@ -1050,7 +1061,7 @@ switch (command) {
           try {
             await new Tracker(c, cfg.ship).beatShip(cfg.ship.name);
           } catch (e) {
-            emit.warn(`could not beat ship for ${c.route}: ${(e as Error).message}`, { step: 'poll' });
+            emit.forRoute(c.route).warn(`could not beat ship for ${c.route}: ${(e as Error).message}`, { step: 'poll' });
           }
         }));
       }

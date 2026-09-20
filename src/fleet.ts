@@ -99,7 +99,12 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
   const eligible = o.routes.filter((c) => (o.enabledOnly === false ? true : c.enabled));
   const entries: FleetEntry[] = await Promise.all(eligible.map(async (route) => {
     try {
-      const decision = await decideCycle({ route: route, ship: o.ship, state: o.state, emit: o.emit });
+      // Route-scoped (CREW-979): `o.emit` is stamped with routes[0] for the
+      // whole fleet-wide run (see the `fleetWide` Emitter construction in
+      // cli.ts), but this route is one of several polled concurrently here —
+      // its events must carry ITS OWN route, not whichever route happened to
+      // be first in crew.yaml.
+      const decision = await decideCycle({ route: route, ship: o.ship, state: o.state, emit: o.emit.forRoute(route.route) });
       const sel = decision.selection;
       if (!sel.selected) return { route, decision, rank: NOTHING_ACTIONABLE };
       const rawRank = sel.ranks[sel.selected] ?? NOTHING_ACTIONABLE;
@@ -115,7 +120,7 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
   }));
 
   for (const e of entries) {
-    if (e.error) o.emit.error(`${e.route.route}: ${e.error}`, { step: 'poll' });
+    if (e.error) o.emit.forRoute(e.route.route).error(`${e.route.route}: ${e.error}`, { step: 'poll' });
   }
 
   const contenders = entries.filter((e) => e.role && e.rank < NOTHING_ACTIONABLE);

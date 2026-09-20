@@ -112,6 +112,17 @@ export class Emitter {
   warn(message: string, extra: Partial<CrewEvent> = {}) { return this.emit(message, { ...extra, level: 'warn' }); }
   error(message: string, extra: Partial<CrewEvent> = {}) { return this.emit(message, { ...extra, level: 'error' }); }
 
+  /**
+   * A view of this emitter labelling every event with a different route,
+   * sharing the same sinks and cycle id. For a fleet-wide run, the top-level
+   * Emitter is stamped with just one route (see cli.ts) — a phase that
+   * actually knows which route it's working (release, per-repo poll) uses
+   * this instead, so its events aren't all attributed to `routes[0]`.
+   */
+  forRoute(route: string): Emitter {
+    return new Emitter({ ...this.opts, route, cycleId: this.cycle });
+  }
+
   /** Times a step and emits its outcome, so a view can show duration. */
   async timed<T>(step: Step, message: string, fn: () => Promise<T>, role?: string): Promise<T> {
     this.enter(step, role);
