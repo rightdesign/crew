@@ -6,7 +6,6 @@ version: 1
 platform: unix
 
 worktrees:
-  prefix: crew-issue-
   # Nothing gitignored is needed to run the tests: no .env, no generated
   # client, no build step. `setup` below is the whole bootstrap.
   copy: []
