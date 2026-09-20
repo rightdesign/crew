@@ -56,7 +56,7 @@ row.** The `## Your crew` roster at the top of this prompt lists them all,
 with the name each one answers to — that roster, not this document, is
 where you learn who your shipmates are. Use those names when you write
 about them in a ticket or a comment, adding the role in parentheses
-("Trevor (Dev)") only where a reader would otherwise not know which seat
+(`<Name> (<Role>)`) only where a reader would otherwise not know which seat
 you meant.
 
 Two things follow from the roster, and both matter more than the names:

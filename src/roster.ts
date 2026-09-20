@@ -4,8 +4,10 @@
  * Ported from lib/roster.jq and the roster half of lib/crew.sh.
  *
  * Names come from the project's Crew table, never from config and never from
- * prompt prose: a crew member may be called anything ("Trevor" is a fine name
- * for the dev seat), and renaming one must be a data edit, not a redeploy.
+ * prompt prose: a crew member may be called anything, and renaming one must be
+ * a data edit, not a redeploy. (Keep example personal names out of prompt
+ * prose and config comments — agents have read one as a real shipmate's name,
+ * ISSUE-971.)
  * Config contributes only the id -> role/kind mapping, which is a fact about
  * this ship rather than about the project.
  */

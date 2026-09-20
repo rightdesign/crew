@@ -54,8 +54,8 @@ CREW_API_KEY_VAR="TRIAGE_API_KEY"
 # Names are NOT configured here — they are read from the Crew table's Name
 # field at run time and handed to every agent as a roster, so renaming a
 # member is a data edit and never a config or prompt edit. A member may be
-# named anything: name the dev seat "Trevor" and the agents will call it
-# Trevor, adding the role parenthetically ("Trevor (Dev)") only where a
+# named anything: give the dev seat a personal name and the agents will call
+# it that, adding the role parenthetically ("<Name> (Dev)") only where a
 # ticket or comment needs the role to be unambiguous.
 CREW_MEMBER_MODEL_ID=""       # the Crew data model
 
