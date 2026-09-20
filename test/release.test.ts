@@ -11,6 +11,8 @@ import {
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { branchForIssue } from '../src/git.ts';
 import type { Ticket } from '../src/tracker.ts';
+import { resolveRepoConfig } from '../src/repo-config.ts';
+import { existingBranchForTicket } from '../src/ticket-branch.ts';
 
 /** A real repository — the guards are about git's actual behaviour. */
 function repo() {
@@ -278,4 +280,32 @@ test('only verified tickets are reported — an open one is nobody\'s release pr
     'verified',
   );
   assert.deepEqual(notes, []);
+});
+
+// ISSUE-977. The digest found `tabl-961`, QA verified it, and then the
+// release phase — still looking only for `issue-961` — called it stranded
+// and bounced it to a person. Twelve tickets in one afternoon.
+test('decideRelease finds a tagged ticket on its {prefix}-{number} branch', () => {
+  const { dir, g } = repo();
+  g('checkout', '-qb', 'tabl-961');
+  writeFileSync(join(dir, 'x.txt'), '1'); g('add', '.');
+  g('commit', '-qm', 'work\n\nChangelog: Moved the launcher (TABL-961)');
+  g('checkout', '-q', 'main');
+  const ticket = T('ISSUE-961', { issue_tag: 'TABL-961', project_issue_prefix: 'TABL' });
+  const cfg = resolveRepoConfig(null, undefined, dir);
+
+  const bare = decideRelease(dir, [ticket], DEFAULT_CONTRACT);
+  assert.equal(bare.merges[0]!.branch, null);   // the bug, pinned: the default lookup cannot see it
+
+  const d = decideRelease(dir, [ticket], DEFAULT_CONTRACT, {
+    branchFor: (t) => existingBranchForTicket(dir, cfg, t),
+  });
+  assert.equal(d.merges[0]!.branch, 'tabl-961');
+  assert.deepEqual(d.merges[0]!.entries, ['Moved the launcher (TABL-961)']);
+});
+
+test('existingBranchForTicket: an untagged ticket still resolves to issue-{number}', () => {
+  const { dir, g } = repo();
+  g('branch', 'issue-12');
+  assert.equal(existingBranchForTicket(dir, resolveRepoConfig(null, undefined, dir), T('ISSUE-12')), 'issue-12');
 });

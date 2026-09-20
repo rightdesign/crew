@@ -21,6 +21,7 @@ import {
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { hookLabel } from './repo-config.ts';
+import { existingBranchForTicket } from './ticket-branch.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
@@ -625,6 +626,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
 
   const decision = decideRelease(o.cwd, o.tickets, o.contract, {
     tagPattern, base: o.repo.branch.base,
+    branchFor: (t) => existingBranchForTicket(o.cwd, o.repo, t),
   });
 
   if (!fresh.ok) {

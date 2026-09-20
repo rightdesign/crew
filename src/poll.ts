@@ -20,9 +20,9 @@ import {
 } from './select.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
-import { loadRepoConfig, resolveRepoConfig, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
+import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
-import { branchForIssue } from './git.ts';
+import { branchRenderer, existingBranchForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { State } from './state.ts';
@@ -277,10 +277,7 @@ export function writeDigest(
     // `effectiveBranchTemplate`/`ticketBranchContext`, never cached
     // alongside the repo config itself.
     type BranchTicket = { issue_id: string; title?: string | null; issue_tag?: string | null; project_issue_prefix?: string | null };
-    const render = (t: BranchTicket) => {
-      const { tag, prefix } = ticketBranchContext(t as Ticket);
-      return (template: string) => renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role, tag, prefix });
-    };
+    const render = (t: BranchTicket) => branchRenderer(t, role);
 
     const input = {
       dirFor,
@@ -295,11 +292,7 @@ export function writeDigest(
       existingBranchFor: (t: BranchTicket & { repo_id?: string | null }) => {
         const dir = dirFor(t);
         if (!dir) return null;
-        const cfg = repoFor(dir);
-        const { prefix } = ticketBranchContext(t as Ticket);
-        const name = effectiveBranchTemplate(cfg, prefix);
-        const push = cfg.provenance['branch.push'] === 'default' ? name : cfg.branch.push;
-        return branchForIssue(dir, t.issue_id, { name, push }, render(t));
+        return existingBranchForTicket(dir, repoFor(dir), t, role);
       },
       tickets: role === 'triage'
         ? d.tickets.filter((t) => t.assignee_id === o.route.resolved?.seats.triage)

@@ -291,6 +291,13 @@ export interface ReleaseOptions {
   tagPattern?: string;
   /** The integration branch. Not assumed to be `main`. */
   base?: string;
+  /**
+   * How to find a ticket's branch. `runRelease` passes the repo's own
+   * ticket-aware lookup (`existingBranchForTicket`); the bare default only
+   * knows `issue-{number}`, which misses every `{prefix}-{number}` branch
+   * and reports finished work as never built (ISSUE-977).
+   */
+  branchFor?: (t: Ticket) => string | null;
 }
 
 export function decideRelease(
@@ -304,7 +311,7 @@ export function decideRelease(
   const head = resolve(cwd, 'HEAD') ?? '';
   const merges = block
     ? []
-    : planMerge(cwd, tickets, contract, lastReleased, (t) => branchForIssue(cwd, t.issue_id), base);
+    : planMerge(cwd, tickets, contract, lastReleased, opts.branchFor ?? ((t) => branchForIssue(cwd, t.issue_id)), base);
   const unreleasedCommits = lastReleased ? countCommits(cwd, `${lastReleased}..HEAD`) : 0;
   return {
     block, merges, head, lastTag, lastReleased, unreleasedCommits,
