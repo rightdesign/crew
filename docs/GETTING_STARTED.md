@@ -166,13 +166,25 @@ things speculatively.
 ### 2.4 Resolve the workspace
 
 ```sh
-bin/crew connect my-workspace/my-product
+bin/crew connect my-workspace
 ```
 
-This looks up the workspace and project by slug, resolves their internal ids
-(and the Issues/Comments/Crew/Ships table ids inside them), and writes the
-result to a local state file — nothing here starts polling or touches the
-tracker's data beyond reading it. Re-running it later only asks about
+The workspace is normally the only thing you need to name — `crew connect`
+defaults the project to the `issues`-slugged project (the workspace's
+install of the `crew.issues` Library template, i.e. the tracker itself). If
+that project isn't there yet, it offers to install it from the Library on a
+real terminal (say yes, or decline and set one up in the app first). Only
+pass a project explicitly (`bin/crew connect my-workspace/my-product`, or
+`--project`) when you deliberately want a different, non-default tracker
+project — the old behavior of listing every qualifying project and asking
+you to pick is still there as the fallback when `issues` is absent and you
+decline the install offer.
+
+Either way, this looks up the workspace (and project) by slug, resolves
+their internal ids (and the Issues/Comments/Crew/Ships table ids inside
+them), and writes the result to a local state file — nothing here starts
+polling or touches the tracker's data beyond reading it. Re-running it later
+only asks about
 anything genuinely new; it won't re-ask what it already resolved.
 
 ### 2.5 Sync personas and skills

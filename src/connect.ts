@@ -220,7 +220,17 @@ async function patch<T>(o: AuthOptions, path: string, body: unknown): Promise<T>
 export interface LibraryTemplateOption {
   id: string;
   name: string;
+  /** Stable dotted-lowercase handle (e.g. `crew.issues`) — unlike `name`, never freely edited, so this is what a caller should match on, not the display name. */
+  identifier: string;
 }
+
+/**
+ * `LibraryTemplate.identifier` of the "Issues" tracker template that `crew
+ * connect <workspace>` defaults a bare (no `--project`) connect to —
+ * matched on this stable handle rather than the freely-editable display
+ * name (ISSUE-967).
+ */
+export const ISSUES_TEMPLATE_IDENTIFIER = 'crew.issues';
 
 export async function listLibraryTemplates(o: AuthOptions): Promise<LibraryTemplateOption[]> {
   return get<LibraryTemplateOption[]>(o, '/library-templates');
@@ -320,32 +330,47 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       else problems.push(`no project named or slugged "${o.project}" — have: ${projects.map((p) => p.name).join(', ') || '(none)'}`);
     }
   } else {
-    // No project named: offer every one that has what a route needs,
-    // rather than picking the first and hoping. Refuse to guess between
-    // several qualifying ones — same reasoning as an unnamed route with
-    // more than one candidate.
-    const projects = await get<Array<{ id: string; name: string; slug?: string }>>(o, `/projects?workspaceId=${ws.id}`);
-    const options: ProjectOption[] = await Promise.all(
-      projects.map(async (p) => ({ id: p.id, name: p.name, slug: p.slug, missing: await missingTables(o, p.id) })),
-    );
-    const qualifying = options.filter((p) => p.missing.length === 0);
-    if (qualifying.length === 1) {
-      out.projectId = qualifying[0]!.id; out.projectSlug = qualifying[0]!.slug; out.projectName = qualifying[0]!.name;
-    } else if (qualifying.length > 1) {
-      out.projectOptions = qualifying;
-      problems.push(
-        `${qualifying.length} projects in this workspace all have the tables a route needs — ` +
-          `name one: ${qualifying.map((p) => p.slug ?? p.name).join(', ')}`,
-      );
+    const projects = await get<Array<{
+      id: string; name: string; slug?: string; sourceTemplateId?: string | null;
+    }>>(o, `/projects?workspaceId=${ws.id}`);
+    // No project named: `crew connect <workspace>` defaults to the `issues`
+    // project (ISSUE-967) — matched by source-template identifier first (so
+    // a renamed/reslugged install of `crew.issues` still counts), falling
+    // back to slug `issues` (a hand-built or pre-identifier project). Tried
+    // before the multi-project picker below, not instead of it: a default
+    // candidate that doesn't actually qualify (missing tables) falls
+    // through to the same picker/install-offer as if none was named.
+    const defaultCandidate = projects.find((p) => p.sourceTemplateId === ISSUES_TEMPLATE_IDENTIFIER)
+      ?? projects.find((p) => eq(p.slug ?? '', 'issues'));
+    if (defaultCandidate && (await missingTables(o, defaultCandidate.id)).length === 0) {
+      out.projectId = defaultCandidate.id; out.projectSlug = defaultCandidate.slug; out.projectName = defaultCandidate.name;
     } else {
-      const isAdmin = out.role === 'WORKSPACE_ADMIN' || out.role === 'PLATFORM_ADMIN';
-      out.offerTemplateInstall = isAdmin;
-      problems.push(
-        `no project in this workspace has the tables a route needs (${REQUIRED_TABLES.join(', ')}) — ` +
-          (isAdmin
-            ? 'install an Issues-tracker template for this workspace (Library, in the app), then rerun.'
-            : 'ask a workspace admin to set one up, then rerun.'),
+      // Offer every project that has what a route needs, rather than
+      // picking the first and hoping. Refuse to guess between several
+      // qualifying ones — same reasoning as an unnamed route with more
+      // than one candidate.
+      const options: ProjectOption[] = await Promise.all(
+        projects.map(async (p) => ({ id: p.id, name: p.name, slug: p.slug, missing: await missingTables(o, p.id) })),
       );
+      const qualifying = options.filter((p) => p.missing.length === 0);
+      if (qualifying.length === 1) {
+        out.projectId = qualifying[0]!.id; out.projectSlug = qualifying[0]!.slug; out.projectName = qualifying[0]!.name;
+      } else if (qualifying.length > 1) {
+        out.projectOptions = qualifying;
+        problems.push(
+          `${qualifying.length} projects in this workspace all have the tables a route needs — ` +
+            `name one: ${qualifying.map((p) => p.slug ?? p.name).join(', ')}`,
+        );
+      } else {
+        const isAdmin = out.role === 'WORKSPACE_ADMIN' || out.role === 'PLATFORM_ADMIN';
+        out.offerTemplateInstall = isAdmin;
+        problems.push(
+          `no project in this workspace has the tables a route needs (${REQUIRED_TABLES.join(', ')}) — ` +
+            (isAdmin
+              ? 'install an Issues-tracker template for this workspace (Library, in the app), then rerun.'
+              : 'ask a workspace admin to set one up, then rerun.'),
+        );
+      }
     }
   }
 

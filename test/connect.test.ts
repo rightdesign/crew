@@ -102,6 +102,66 @@ test('no project given, exactly one qualifies: it is picked without asking', asy
   assert.ok(!found.problems.some((p) => p.includes('qualif')), 'no ambiguity/qualification problem expected');
 });
 
+test('no project given: a project installed from crew.issues is picked by source-template identifier, even if renamed/reslugged, with no ambiguity prompt even when another project also qualifies', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_USER' },
+    '/api/projects?workspaceId=ws-1': [
+      { id: 'p-tracker', name: 'Our Tracker', slug: 'our-tracker', sourceTemplateId: 'crew.issues' },
+      { id: 'p-other', name: 'Other Issues-Shaped Project', slug: 'other', sourceTemplateId: null },
+    ],
+    '/api/data-models?projectId=p-tracker': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'm', name: 'Crew' },
+    ],
+    '/api/data-models?projectId=p-other': [{ id: 'i', name: 'Issues' }],
+    '/api/data-models/m/records?limit=200': [],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues' });
+  assert.equal(found.projectId, 'p-tracker');
+  assert.equal(found.projectOptions, undefined);
+});
+
+test('no project given: falls back to slug `issues` when no project carries the source-template identifier', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_USER' },
+    '/api/projects?workspaceId=ws-1': [
+      { id: 'p-issues', name: 'Issues', slug: 'issues' },
+      { id: 'p-other', name: 'Other', slug: 'other' },
+    ],
+    '/api/data-models?projectId=p-issues': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'm', name: 'Crew' },
+    ],
+    '/api/data-models/m/records?limit=200': [],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues' });
+  assert.equal(found.projectId, 'p-issues');
+});
+
+test('no project given: a slug-`issues` project missing required tables falls through to the ordinary qualifying-project search, not a hard failure', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_USER' },
+    '/api/projects?workspaceId=ws-1': [
+      { id: 'p-issues', name: 'Issues', slug: 'issues' },
+      { id: 'p-real', name: 'Real Tracker', slug: 'real-tracker' },
+    ],
+    '/api/data-models?projectId=p-issues': [{ id: 'pages', name: 'Pages' }],
+    '/api/data-models?projectId=p-real': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'm', name: 'Crew' },
+    ],
+    '/api/data-models/m/records?limit=200': [],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues' });
+  assert.equal(found.projectId, 'p-real');
+});
+
 test('no project given, more than one qualifies: refused as an ambiguity, not guessed', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
@@ -605,12 +665,12 @@ test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces
 
 test('listLibraryTemplates() returns the published templates as-is', async (t) => {
   const { restore } = mockFetch({
-    '/api/library-templates': [{ id: 'tpl-1', name: 'Issues' }],
+    '/api/library-templates': [{ id: 'tpl-1', name: 'Issues', identifier: 'crew.issues' }],
   });
   t.after(restore);
 
   const templates = await listLibraryTemplates(BASE);
-  assert.deepEqual(templates, [{ id: 'tpl-1', name: 'Issues' }]);
+  assert.deepEqual(templates, [{ id: 'tpl-1', name: 'Issues', identifier: 'crew.issues' }]);
 });
 
 test('previewTemplateInstall() reads the diff for the given template/workspace pair', async (t) => {

@@ -45,7 +45,7 @@ import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
   discover, listWorkspaces, renderConnection, ConnectHttpError,
-  listLibraryTemplates, previewTemplateInstall, installTemplate,
+  listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIER,
 } from './connect.ts';
 import { authorizeDevice, pollForDeviceToken, DeviceAuthExpired, DeviceAuthDenied } from './device-auth.ts';
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
@@ -184,9 +184,9 @@ async function offerTemplateInstall(
   workspaceId: string,
 ): Promise<string | undefined> {
   const templates = await listLibraryTemplates(authOpts);
-  const template = templates.find((t) => t.name.trim().toLowerCase() === 'issues');
+  const template = templates.find((t) => t.identifier === ISSUES_TEMPLATE_IDENTIFIER);
   if (!template) {
-    process.stderr.write('\n  No "Issues" template is published to the Library yet — nothing to offer to install.\n');
+    process.stderr.write(`\n  No template with identifier "${ISSUES_TEMPLATE_IDENTIFIER}" is published to the Library yet — nothing to offer to install.\n`);
     return undefined;
   }
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -1809,13 +1809,18 @@ switch (command) {
   }
 
   case 'connect': {
-    // `crew connect foo/bar` (workspace slug / project slug) is the normal
-    // form; `crew connect foo` offers every project in that workspace with
-    // the tables a route needs, when there's more than one candidate; bare
-    // `crew connect` (no argument at all) offers every workspace this key's
-    // identity can see. `--workspace-id` (a uuid OR a slug — `discover()`
-    // accepts either) and `--project` remain for scripting and for a project
-    // named rather than slugged.
+    // `crew connect foo` (just the workspace slug) is the normal form
+    // (ISSUE-967): `discover()` defaults the project to whichever one is
+    // installed from the `crew.issues` Library template (falling back to
+    // slug `issues`), offering to install it when it's missing. `crew
+    // connect foo/bar` (workspace/project) names a project explicitly —
+    // only needed for a deliberately non-default tracker project, in which
+    // case `discover()` falls back to offering every project in that
+    // workspace with the tables a route needs, when there's more than one
+    // candidate. Bare `crew connect` (no argument at all) offers every
+    // workspace this key's identity can see. `--workspace-id` (a uuid OR a
+    // slug — `discover()` accepts either) and `--project` remain for
+    // scripting and for a project named rather than slugged.
     const arg = positional[1];
     const [argWorkspace, argProject] = arg?.includes('/') ? arg.split(/\/(.*)/s) : [arg, undefined];
     let workspace = argWorkspace ?? value('workspace-id') ?? value('workspace');
