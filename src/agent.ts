@@ -9,6 +9,7 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, type WriteStream } from 'node:fs';
+import { finished } from 'node:stream/promises';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Route, RoleName, Ship } from './config.ts';
@@ -399,6 +400,21 @@ function openSink(path: string): WriteStream | undefined {
 }
 
 /**
+ * Ends a sink and waits for its buffered writes to actually land on disk.
+ *
+ * `WriteStream#end()` is asynchronous — a caller reading the file right after
+ * `spawnAgent`'s promise resolves (as tests and any post-mortem tooling do)
+ * can otherwise see a short or empty file. Same degrade-quietly contract as
+ * `openSink`: a sink that errors on flush must not fail the run it was only
+ * ever a side-channel for.
+ */
+function endSink(sink: WriteStream | undefined): Promise<void> {
+  if (!sink) return Promise.resolve();
+  sink.end();
+  return finished(sink).catch(() => undefined);
+}
+
+/**
  * Launch it.
  *
  * The prompt goes in on STDIN, never as an argv string. `claude -p` reads it
@@ -524,8 +540,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     child.on('error', (err) => reject(new AgentError(`cannot run ${plan.bin}: ${err.message}`)));
     child.on('close', async (code) => {
       if (buf) handleLine(buf);
-      rawSink?.end();
-      eventsSink?.end();
+      await Promise.all([endSink(rawSink), endSink(eventsSink)]);
       // The ticket the transcript actually spent the most tokens on, falling
       // back to the pre-run poll hint when the visible text never named one
       // (e.g. an administrative run with nothing ticket-specific to say).

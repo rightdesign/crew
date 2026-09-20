@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, utimesSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, utimesSync, readFileSync, existsSync, WriteStream } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,7 @@ import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
 const FAKE_CLAUDE_MULTITICKET = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-multiticket.mjs');
+const FAKE_CLAUDE_LARGE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-large.mjs');
 
 function rig() {
   const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
@@ -329,6 +330,54 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
   // The one shared, low-volume event this run does write carries the result.
   const finish = lines.find((l) => l.includes('agent run finished'));
   assert.ok(finish);
+});
+
+test('spawnAgent waits for both sinks to actually flush before resolving (CREW-985)', async () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'ISSUE-401',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_LARGE];
+  plan.cwd = state;
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+
+  // Wall-clock contention alone doesn't reliably win this race (QA found the
+  // original version of this test passed 11/11 tries, fixed or not — a
+  // single WriteStream's internal buffer usually drains faster than the
+  // child's `close` event fires, even under full-suite load). Force it
+  // instead: delay every underlying `_write` so the sink is *guaranteed*
+  // to still have buffered, unflushed data when `close` fires, whatever the
+  // machine's load looks like. This patches every WriteStream for the
+  // duration of the test (including the Emitter's own sinks above), which
+  // only costs this one test some wall-clock time.
+  const originalWrite = (WriteStream.prototype as any)._write;
+  (WriteStream.prototype as any)._write = function (this: WriteStream, chunk: unknown, encoding: BufferEncoding, callback: (err?: Error | null) => void) {
+    setTimeout(() => originalWrite.call(this, chunk, encoding, callback), 100);
+  };
+
+  let result;
+  try {
+    result = await spawnAgent(plan, emit);
+  } finally {
+    (WriteStream.prototype as any)._write = originalWrite;
+  }
+  assert.equal(result.code, 0);
+
+  // Reading the files the instant the promise resolves must see everything
+  // the fixture wrote — a caller (this test, a post-mortem, crew-macos
+  // tailing) has no other signal that the run is "really" done.
+  const raw = readFileSync(plan.streamPath, 'utf8').trim().split('\n');
+  assert.equal(raw.length, 51);   // 50 big text lines + the closing result line
+  assert.ok(raw[49]?.includes('-49'), 'the last written line must be present, not truncated mid-flush');
+
+  const mapped = readFileSync(plan.eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  // Each text block produces its raw event plus its paired `cycle` event.
+  assert.equal(mapped.length, 100);
+  assert.ok(mapped[mapped.length - 1].data.text.endsWith('-49'));
 });
 
 /** Same mockFetch shape as connect.test.ts / agent-log.test.ts, keyed by method+pathname. */
