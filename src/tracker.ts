@@ -18,6 +18,22 @@ import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './boar
 export interface Ticket {
   id: string;
   issue_id: string;
+  /**
+   * The per-project ticket key (`TABL-123`), where the workspace has one
+   * (ISSUE-969's Issue Tag) — `contract.columns.tag`'s value on this row.
+   * Optional at the type level for the same reason `epicInProgress` is: a
+   * workspace that predates the field, or has not adopted it, simply never
+   * sets it, and every caller already treats "absent" as "no tag".
+   */
+  issue_tag?: string | null;
+  /**
+   * The tag's own prefix, as the workspace cases it (`CREW`, `TABL`) — sits
+   * beside `issue_tag` on the same row rather than being re-derived by
+   * splitting it, since a prefix could in principle contain its own dash.
+   * Every use lowercases it (a branch/worktree name is lowercase by
+   * convention here), so this is left in whatever case the tracker sends.
+   */
+  project_issue_prefix?: string | null;
   /** The `Projects` row — the area of development this ticket belongs to. */
   project_id?: string | null;
   /**
@@ -48,6 +64,47 @@ export interface Ticket {
    */
   epicInProgress?: boolean | null;
   [k: string]: unknown;
+}
+
+/**
+ * A ticket's own `{prefix, tag}` for branch/worktree naming (ISSUE-969) —
+ * `{}` when the ticket carries no tag (an older ticket, or a workspace that
+ * has not adopted the Issue Tag field), which `effectiveBranchTemplate`/
+ * `effectiveWorktreePrefix` already read as "use the plain issue-{number}
+ * convention", so callers need no separate fallback branch of their own.
+ */
+export function ticketBranchContext(t: Ticket): { tag?: string; prefix?: string } {
+  const tag = t.issue_tag ?? undefined;
+  if (!tag) return {};
+  const prefix = t.project_issue_prefix ? t.project_issue_prefix.toLowerCase() : undefined;
+  return { tag, prefix };
+}
+
+/**
+ * What to print for a ticket when a human is reading it (ISSUE-969) — the
+ * per-project `TABL-123`/`CREW-969` tag where the workspace has adopted one,
+ * falling back to the plain `issue_id` (`ISSUE-123`) otherwise. Purely a
+ * display convenience: never use this for a lookup or a match, both of
+ * which stay keyed on `issue_id` (see `ContractColumns.tag`'s own doc for
+ * why `key` and `tag` must not be conflated).
+ */
+export function displayKey(t: Ticket): string {
+  return t.issue_tag ?? t.issue_id;
+}
+
+/**
+ * Every name a commit might legitimately use for this ticket (ISSUE-969) —
+ * its canonical `issue_id` plus its `issue_tag`, when it has one. A commit
+ * or squash-merge subject can end up naming either: crew's own generated
+ * subjects still say `issue_id`, but a human-authored branch/commit now
+ * follows the tag convention, so anything that searches git history for a
+ * ticket reference (`findKeyOnBase`, `detectClosure`, `stamp.ts`'s own
+ * regex, `planMerge`'s never-built/already-merged check) needs to try both
+ * or it will call landed work "never built" just because it shipped under
+ * its tag instead of its key.
+ */
+export function referenceKeys(t: Ticket): string[] {
+  return t.issue_tag && t.issue_tag !== t.issue_id ? [t.issue_id, t.issue_tag] : [t.issue_id];
 }
 
 export interface Comment {

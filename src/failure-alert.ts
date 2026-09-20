@@ -18,7 +18,7 @@
  */
 
 import type { Notification } from './notify.ts';
-import type { Ticket } from './tracker.ts';
+import { displayKey, type Ticket } from './tracker.ts';
 
 /** A marker in the ticket body, so a repeat is recognisable as this path's. */
 export const FAILURE_ALERT_MARKER = '<!-- crew:failure-alert -->';
@@ -68,14 +68,15 @@ export async function applyFailureAlert(
   const existing = findOpenFailureAlert(openTickets, n.headline);
 
   if (existing) {
+    const label = displayKey(existing);
     if (dryRun) {
-      log.emit(`would comment on ${existing.issue_id} — same failure recurring`, { step: 'release' });
-      return { kind: 'commented', issueId: existing.issue_id };
+      log.emit(`would comment on ${label} — same failure recurring`, { step: 'release' });
+      return { kind: 'commented', issueId: label };
     }
     try {
       await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\nStill failing: ${n.detail ?? n.headline}`, memberId);
-      log.warn(`release failure recurring — commented on ${existing.issue_id}`, { step: 'release' });
-      return { kind: 'commented', issueId: existing.issue_id };
+      log.warn(`release failure recurring — commented on ${label}`, { step: 'release' });
+      return { kind: 'commented', issueId: label };
     } catch (e) {
       return { kind: 'failed', why: (e as Error).message };
     }
@@ -93,8 +94,9 @@ export async function applyFailureAlert(
       severity: 's2',
       reporter_name: 'Crew release',
     });
-    log.warn(`release failure — filed ${created.issue_id ?? created.id}`, { step: 'release' });
-    return { kind: 'filed', issueId: created.issue_id };
+    const label = created.issue_id ? displayKey(created) : created.id;
+    log.warn(`release failure — filed ${label}`, { step: 'release' });
+    return { kind: 'filed', issueId: label };
   } catch (e) {
     return { kind: 'failed', why: (e as Error).message };
   }

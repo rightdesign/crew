@@ -29,8 +29,8 @@ import { StaleWriteError } from '@tablation/client';
 import type { Ticket } from './tracker.ts';
 import { RESOLVED_STATUSES } from './tracker.ts';
 
-/** {ticketId: {issue_id, status}} — closed blockers included. */
-export type BlockerInfo = Record<string, { issue_id?: string; status?: string }>;
+/** {ticketId: {issue_id, issue_tag, status}} — closed blockers included. */
+export type BlockerInfo = Record<string, { issue_id?: string; issue_tag?: string | null; status?: string }>;
 
 /** Ids named in `blocked_by` that are not in the open set, and so need fetching. */
 export function missingBlockerIds(tickets: Ticket[]): string[] {
@@ -42,7 +42,9 @@ export function missingBlockerIds(tickets: Ticket[]): string[] {
 
 export function blockerInfoMap(tickets: Ticket[], extra: Ticket[] = []): BlockerInfo {
   const info: BlockerInfo = {};
-  for (const t of [...tickets, ...extra]) info[t.id] = { issue_id: t.issue_id, status: t.status };
+  for (const t of [...tickets, ...extra]) {
+    info[t.id] = { issue_id: t.issue_id, issue_tag: t.issue_tag, status: t.status };
+  }
   return info;
 }
 

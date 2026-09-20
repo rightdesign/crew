@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import {
   parseRepoConfig, loadRepoConfig, findRepoConfig, resolveRepoConfig,
   validateEffective, hookLabel, RepoConfigError, renderBranchName, slugify,
+  effectiveBranchTemplate, effectiveWorktreePrefix,
 } from '../src/repo-config.ts';
 
 const MIN = 'version: 1\nhooks:\n  test: pnpm test\n  build: pnpm build\n  deploy: ./ship.sh\n';
@@ -320,6 +321,42 @@ test('placeholders render, and titles are slugified safely for a git ref', () =>
   assert.equal(slugify('---'), 'work');
   assert.ok(!slugify('A'.repeat(200)).includes(' '));
   assert.ok(slugify('A'.repeat(200)).length <= 40);
+});
+
+test('{prefix} and {tag} render from a ticket\'s own project tag (ISSUE-969)', () => {
+  assert.equal(
+    renderBranchName('{prefix}-{number}', { key: 'ISSUE-969', prefix: 'crew' }),
+    'crew-969',
+  );
+  assert.equal(renderBranchName('{tag}', { key: 'ISSUE-969', tag: 'CREW-969' }), 'CREW-969');
+  // No tag: {tag} falls back to the plain key, {prefix} renders empty rather
+  // than leaving a literal "{prefix}" in the branch name.
+  assert.equal(renderBranchName('{tag}', { key: 'ISSUE-969' }), 'ISSUE-969');
+  assert.equal(renderBranchName('{prefix}-{number}', { key: 'ISSUE-969' }), '-969');
+});
+
+test('effectiveBranchTemplate: a repo/ship template wins outright; otherwise a ticket\'s own prefix decides the default', () => {
+  const explicit = resolveRepoConfig(
+    parseRepoConfig(MIN + 'branch: { name: "feature/{key}" }\n', 'f'), undefined, '/x/some-repo',
+  );
+  // Declared, so a ticket's own tag must not change it.
+  assert.equal(effectiveBranchTemplate(explicit, 'tabl'), 'feature/{key}');
+  assert.equal(effectiveBranchTemplate(explicit, undefined), 'feature/{key}');
+
+  const defaulted = resolveRepoConfig(parseRepoConfig(MIN, 'f'), undefined, '/x/some-repo');
+  assert.equal(effectiveBranchTemplate(defaulted, undefined), 'issue-{number}');
+  assert.equal(effectiveBranchTemplate(defaulted, 'tabl'), '{prefix}-{number}');
+});
+
+test('effectiveWorktreePrefix mirrors effectiveBranchTemplate\'s precedence', () => {
+  const explicit = resolveRepoConfig(
+    parseRepoConfig(MIN + 'worktrees: { prefix: "paradium-" }\n', 'f'), undefined, '/x/some-repo',
+  );
+  assert.equal(effectiveWorktreePrefix(explicit, 'tabl'), 'paradium-');
+
+  const defaulted = resolveRepoConfig(parseRepoConfig(MIN, 'f'), undefined, '/x/some-repo');
+  assert.equal(effectiveWorktreePrefix(defaulted, 'tabl'), 'tabl-');
+  assert.equal(effectiveWorktreePrefix(defaulted, undefined), 'some-repo-issue-');
 });
 
 test('opting out of versioning does not require also disabling the default tag', () => {

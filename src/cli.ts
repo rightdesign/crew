@@ -7,7 +7,7 @@
  * until an operator arms it deliberately.
  */
 
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -28,14 +28,14 @@ import { planStrandedVerified, applyStrandedVerified } from './stranded-verified
 import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor } from './install.ts';
-import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName } from './repo-config.ts';
+import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, type RepoReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
-import { Tracker, type Ticket } from './tracker.ts';
+import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { BoardLockResult } from './board-lock.ts';
 import { validateContract, DEFAULT_CONTRACT } from './contract.ts';
@@ -52,8 +52,8 @@ import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, f
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import {
-  worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, ensureRepoCheckout, GitError,
-  refreshBaseBranch, type SyncState,
+  worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
+  ensureRepoCheckout, GitError, refreshBaseBranch, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -398,6 +398,19 @@ function requireArmed(what: string): void {
       `      Add --dry-run to see what it would do.\n`,
   );
   process.exit(0);
+}
+
+/**
+ * The bare ticket number out of whatever an operator typed at `crew
+ * drop`/`unassign` — `326`, `ISSUE-326`, or a workspace's own Issue Tag
+ * form (`TABL-326`) (ISSUE-969). The number is what's globally unique and
+ * how every lookup here actually works; the prefix, if any, is never
+ * checked against the ticket's real one — an operator typing the wrong
+ * project's tag by mistake still finds the right ticket.
+ */
+function parseTicketNumber(input: string): string | null {
+  const m = /^(?:[A-Za-z]+-)?(\d+)$/.exec(input.trim());
+  return m ? m[1]! : null;
 }
 
 /**
@@ -919,7 +932,7 @@ async function releasePhase(
     try {
       const terminal = await tracker.terminalTickets();
       const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
-      const actions = planWorktreeSweep(target, scoped, tracker.contract, repo.worktrees.prefix);
+      const actions = planWorktreeSweep(target, scoped, tracker.contract);
       if (actions.length) {
         emit.enter('worktree');
         const r = await applyWorktreeSweep(target.dir, actions, dryRun, emit);
@@ -2142,6 +2155,12 @@ switch (command) {
       .filter((r) => r.t)
       .sort((a, b) => a.port - b.port);
     if (!rows.length) { process.stdout.write('nothing of ours is listening\n'); break; }
+    // Deliberately still `ISSUE-{n}` (ISSUE-969): `ticketForPort` derives
+    // {n, role} from port arithmetic alone, with no route/tracker in hand to
+    // look the ticket up in — and this route may not even be the one whose
+    // board owns it. A live lookup per row would turn an offline port scan
+    // into one that can hang or fail on a flaky tracker, for a display-only
+    // improvement. Not worth it; see the ticket's own tag with `crew inbox`.
     for (const r of rows) {
       const live = worktreeExistsIn(where, r.t!.n);
       process.stdout.write(
@@ -2159,6 +2178,9 @@ switch (command) {
     // Every repository, not just the route's first: a worktree alive in
     // the second one used to read as an orphan, and reap kills orphans.
     const orphans = findOrphansIn(await worktreeLocations(route));
+    // Same call as `ports`, same reasoning (ISSUE-969): `o.n` came from a
+    // port scan, not a ticket lookup, so this stays `ISSUE-{n}` rather than
+    // paying for a tracker round trip per orphan just to print its tag.
     for (const o of orphans) {
       anything = true;
       emit.emit(
@@ -2170,15 +2192,14 @@ switch (command) {
 
     // Worktrees whose ticket has since reached a terminal status — the
     // by-hand case for the same sweep the release phase runs on its own
-    // (ISSUE-346). Each repository names its worktrees itself (ISSUE-350), so
-    // the sweep is planned with that repo's prefix, not the ship default.
+    // (ISSUE-346). Matched by ticket number, not by that repo's prefix
+    // (ISSUE-969) — see `planWorktreeSweep`'s own doc comment for why a
+    // fixed prefix can no longer be trusted to find every worktree here.
     const tracker = new Tracker(route, cfg.ship);
     const terminal = await tracker.terminalTickets();
     const { byRepo } = ticketsByRepo(route, terminal);
     for (const r of await resolvedRepos(route)) {
-      const actions = planWorktreeSweep(
-        r, byRepo.get(r.name) ?? [], tracker.contract, r.config.worktrees.prefix,
-      );
+      const actions = planWorktreeSweep(r, byRepo.get(r.name) ?? [], tracker.contract);
       if (!actions.length) continue;
       anything = true;
       const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit);
@@ -2203,23 +2224,31 @@ switch (command) {
 
   case 'drop': {
     emit.enter('worktree');
-    const n = positional[2] ?? positional[1];
-    if (!n || !/^\d+$/.test(n)) { process.stderr.write('drop: need a ticket number\n'); process.exit(2); }
+    const raw = positional[2] ?? positional[1];
+    const n = raw ? parseTicketNumber(raw) : null;
+    if (!n) { process.stderr.write('drop: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
     const num = Number(n);
+    // The messages below stay `ISSUE-{n}` rather than the ticket's own tag
+    // (ISSUE-969): everything here works from the bare number the operator
+    // typed, with no board fetch at all — that's deliberate, since `drop` is
+    // a destructive git operation that should keep working offline/against a
+    // flaky tracker. Paying for a lookup here just to prettify a log line
+    // isn't worth trading that away; unlike `unassign` below, which already
+    // fetches the full ticket for other reasons and uses its tag for free.
     // Which repository's worktree? Each names them after itself (ISSUE-350),
-    // so the number alone does not say — look for it in all of them. Removing
-    // one is destructive, so an ambiguous answer stops rather than picks.
+    // so the number alone does not say — look for it in all of them. Found by
+    // scanning each repo's actual `git worktree list`, not by constructing a
+    // path from a guessed prefix (ISSUE-969) — see `worktreeForNumber`'s own
+    // doc comment. Removing one is destructive, so an ambiguous answer stops
+    // rather than picks.
     const repos = await resolvedRepos(route);
     const candidates = repos
-      .map((r) => ({
-        repo: r,
-        path: `${resolvePath(r.dir, '..')}/${r.config.worktrees.prefix}${n}`,
-      }))
-      .filter((c) => existsSync(`${c.path}/.git`));
+      .map((r) => ({ repo: r, found: worktreeForNumber(r.dir, n) }))
+      .filter((c): c is { repo: typeof repos[number]; found: NonNullable<typeof c.found> } => c.found !== null);
     if (candidates.length === 0) {
       process.stderr.write(
         `drop: no worktree for ISSUE-${n} in any of this route's repositories ` +
-          `(looked in: ${repos.map((r) => `${r.config.worktrees.prefix}${n}`).join(', ')})\n`,
+          `(looked in: ${repos.map((r) => r.dir).join(', ')})\n`,
       );
       process.exit(2);
     }
@@ -2230,10 +2259,12 @@ switch (command) {
       );
       process.exit(2);
     }
-    const { repo: target, path: wt } = candidates[0]!;
-    // The repo's own branch convention, not `issue-<n>`: deleting by a name
-    // this repository never uses silently deletes nothing.
-    const branch = branchForIssue(target.dir, `ISSUE-${n}`, {
+    const { repo: target, found } = candidates[0]!;
+    const wt = found.path;
+    // The branch actually checked out in the worktree we just found — not
+    // re-derived from today's template, which may not be what created it
+    // (ISSUE-969: the default template itself changed under some tickets).
+    const branch = found.branch ?? branchForIssue(target.dir, `ISSUE-${n}`, {
       name: target.config.branch.name, push: target.config.branch.push,
     }, (t) => renderBranchName(t, { key: `ISSUE-${n}` }));
     const pids = pidsInWorktree(wt, num);
@@ -2327,8 +2358,9 @@ switch (command) {
     // protocol a seat's own worktree wrap-up uses), so this is purely
     // clearing `assignee_id`.
     emit.enter('select');   // closest existing step — this changes selection, not a worktree
-    const n = positional[2] ?? positional[1];
-    if (!n || !/^\d+$/.test(n)) { process.stderr.write('unassign: need a ticket number\n'); process.exit(2); }
+    const rawUnassign = positional[2] ?? positional[1];
+    const n = rawUnassign ? parseTicketNumber(rawUnassign) : null;
+    if (!n) { process.stderr.write('unassign: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
     const tracker3 = new Tracker(route, cfg.ship);
     const c = tracker3.contract;
     const key = `ISSUE-${n}`;
@@ -2338,20 +2370,24 @@ switch (command) {
       process.stderr.write(`unassign: no open ticket ${key} on ${route.route} (already resolved, or not this route's)\n`);
       process.exit(2);
     }
+    // Found it — from here on, show its own project tag where it has one
+    // (ISSUE-969) rather than the bare `ISSUE-{n}` used to find it. `key`
+    // stays the lookup value above; `label` is purely for what a human reads.
+    const label = displayKey(ticket);
     if (!ticket[c.columns.assignee]) {
-      process.stdout.write(`${key} already has no assignee\n`);
+      process.stdout.write(`${label} already has no assignee\n`);
       break;
     }
     if (dryRun) {
-      emit.emit(`would clear assignee on ${key} (status stays ${ticket[c.columns.status]})`);
+      emit.emit(`would clear assignee on ${label} (status stays ${ticket[c.columns.status]})`);
       break;
     }
     try {
       await tracker3.updateTicket(ticket.id, { [c.columns.assignee]: null }, ticket.updated_at);
-      emit.emit(`cleared assignee on ${key} — back up for grabs next cycle`);
+      emit.emit(`cleared assignee on ${label} — back up for grabs next cycle`);
     } catch (e) {
       if (e instanceof StaleWriteError) {
-        process.stderr.write(`unassign: ${key} changed on the board since it was read — re-run to retry\n`);
+        process.stderr.write(`unassign: ${label} changed on the board since it was read — re-run to retry\n`);
         process.exit(2);
       }
       throw e;
@@ -2601,6 +2637,15 @@ switch (command) {
             name: r.name,
             dir: r.dir,
             worktreePrefix: r.config.worktrees.prefix,
+            // A repo with no explicit `worktrees.prefix` no longer names its
+            // worktrees `<prefix><number>` (ISSUE-969) — the checkout's own
+            // directory name plus the ticket's branch name, e.g.
+            // `synthesis-tabl-123`. `worktreePrefix` above is kept for
+            // config-provenance display; this is the field that actually
+            // describes where a worktree lands by default.
+            worktreeDirPattern: r.config.provenance['worktrees.prefix'] !== 'default'
+              ? `${r.config.worktrees.prefix}<number>`
+              : `${basename(r.dir.replace(/[/\\]+$/, ''))}-<branch>`,
             worktreeParent: resolvePath(r.dir, '..'),
           })),
           waiting: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : null,
@@ -2674,9 +2719,16 @@ switch (command) {
     // otherwise invisible, and reads as though it were in use.
     for (const r of await resolvedRepos(route)) {
       const { config } = r;
+      // Default worktree naming is now `<checkout dir>-<branch>` (ISSUE-969),
+      // derived per ticket from its own branch name rather than a repo-wide
+      // prefix — an explicit `worktrees.prefix` (repo or ship) still wins and
+      // keeps the older `<prefix><number>` form.
+      const worktreePattern = config.provenance['worktrees.prefix'] !== 'default'
+        ? `${config.worktrees.prefix}<number>`
+        : `${basename(r.dir.replace(/[/\\]+$/, ''))}-${effectiveBranchTemplate(config, undefined)}`;
       process.stdout.write(
         `${`repo ${r.name}:`.padEnd(19)}${r.dir}\n` +
-          `                   worktrees at ../${config.worktrees.prefix}<number> ` +
+          `                   worktrees at ../${worktreePattern} ` +
           `(${config.provenance['worktrees.prefix'] ?? 'default'}), ` +
           `branch ${config.branch.name}\n` +
           `                   requires ${config.platform} — ${satisfies(host, config.platform) ? 'OK' : 'MISMATCH'}\n`,

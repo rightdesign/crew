@@ -19,6 +19,16 @@
 
 export interface ContractColumns {
   key: string;
+  /**
+   * A per-project ticket key (`TABL-123`, `CREW-969`), where the workspace
+   * has adopted one — ISSUE-969's Issue Tag. `key`'s own number is what is
+   * globally unique, so this is purely a display/branch-naming convenience,
+   * never how a ticket is looked up. A ticket whose row has no value in this
+   * column (an older ticket, or a workspace that has not adopted the field)
+   * reads as "no tag" at every call site, which falls back to plain
+   * `issue-{number}` naming — exactly today's behaviour.
+   */
+  tag: string;
   title: string;
   status: string;
   assignee: string;
@@ -140,6 +150,7 @@ export interface Contract {
 export const DEFAULT_CONTRACT: Contract = {
   columns: {
     key: 'issue_id',
+    tag: 'issue_tag',
     title: 'title',
     status: 'status',
     assignee: 'assignee_id',

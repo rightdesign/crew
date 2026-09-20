@@ -42,7 +42,7 @@ test('a deployed ticket: the worktree is removed AND the branch deleted', async 
   const { target, wt } = withWorktree(dir, g, 9);
   const t = ticket({ issue_id: 'ISSUE-9', status: 'closed_deployed' });
 
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
   assert.equal(actions.length, 1);
   assert.equal(actions[0]!.branch, 'issue-9');
   assert.equal(actions[0]!.keepBranch, false);
@@ -58,7 +58,7 @@ test('closed_wont_fix: the worktree goes but the branch is kept — it holds wor
   const { target, wt } = withWorktree(dir, g, 10);
   const t = ticket({ issue_id: 'ISSUE-10', status: 'closed_wont_fix' });
 
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
   assert.equal(actions[0]!.keepBranch, true);
 
   const r = await applyWorktreeSweep(dir, actions, false, silentLog);
@@ -72,7 +72,7 @@ test('closed_duplicate behaves the same as wont_fix: branch kept, worktree remov
   const { target, wt } = withWorktree(dir, g, 11);
   const t = ticket({ issue_id: 'ISSUE-11', status: 'closed_duplicate' });
 
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
   assert.equal(actions[0]!.keepBranch, true);
   await applyWorktreeSweep(dir, actions, false, silentLog);
   assert.ok(!existsSync(wt));
@@ -84,7 +84,7 @@ test('verified is excluded — still pre-release, the release phase needs this w
   const { target, wt } = withWorktree(dir, g, 12);
   const t = ticket({ issue_id: 'ISSUE-12', status: 'verified' });
 
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
   assert.deepEqual(actions, []);
   assert.ok(existsSync(wt));
 });
@@ -94,7 +94,7 @@ test('an open ticket (fixed, awaiting QA) is left alone', async () => {
   const { target, wt } = withWorktree(dir, g, 13);
   const t = ticket({ issue_id: 'ISSUE-13', status: 'fixed' });
 
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
   assert.deepEqual(actions, []);
   assert.ok(existsSync(wt));
 });
@@ -103,7 +103,7 @@ test('a worktree with no matching ticket in the fetched set is left alone', asyn
   const { dir, g } = repo();
   const { target, wt } = withWorktree(dir, g, 14);
 
-  const actions = planWorktreeSweep(target, [], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [], DEFAULT_CONTRACT);
   assert.deepEqual(actions, []);
   assert.ok(existsSync(wt));
 });
@@ -112,7 +112,7 @@ test('dry run reports what it would do and touches nothing', async () => {
   const { dir, g } = repo();
   const { target, wt } = withWorktree(dir, g, 15);
   const t = ticket({ issue_id: 'ISSUE-15', status: 'closed_deployed' });
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
 
   const messages: string[] = [];
   const r = await applyWorktreeSweep(dir, actions, true, { emit: (m) => messages.push(m), warn: () => {} });
@@ -132,7 +132,7 @@ test('the branch template is irrelevant — the sweep uses the branch actually c
   const { target, wt } = withWorktree(dir, g, 16, 'bc/issue-16-old-title');
   const t = ticket({ issue_id: 'ISSUE-16', title: 'A brand new title', status: 'closed_deployed' });
 
-  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT, 'proj-issue-');
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
   assert.equal(actions[0]!.branch, 'bc/issue-16-old-title');
   await applyWorktreeSweep(dir, actions, false, silentLog);
   assert.ok(!existsSync(wt));

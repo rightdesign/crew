@@ -42,10 +42,12 @@ test('several repos each get their own worktree name, branch and hooks', () => {
   assert.match(out, /## The repositories this board covers/);
   assert.match(out, /### synthesis — `\/w\/synthesis`/);
   assert.match(out, /### crew — `\/w\/crew`/);
-  // Each repo's worktrees are named after that repo, not after the route.
-  assert.match(out, /`\.\.\/synthesis-issue-<number>`/);
-  assert.match(out, /`\.\.\/crew-issue-<number>`/);
-  assert.doesNotMatch(out, /`\.\.\/synthesis-issue-<number>`[\s\S]*### crew[\s\S]*`\.\.\/synthesis-issue-<number>`/);
+  // Each repo's worktrees are named after that repo, not after the route —
+  // and, per ISSUE-969's default (checkout dir name + branch name), after
+  // this ticket's own branch too, not a bare number.
+  assert.match(out, /`\.\.\/synthesis-<branch>`.*`\.\.\/synthesis-issue-000`/);
+  assert.match(out, /`\.\.\/crew-<branch>`.*`\.\.\/crew-issue-000`/);
+  assert.doesNotMatch(out, /`\.\.\/synthesis-issue-000`[\s\S]*### crew[\s\S]*`\.\.\/synthesis-issue-000`/);
   // And so are its commands: one hooks table for the board would name one
   // repo's test command as though it ran everywhere.
   assert.match(out, /Hooks for synthesis/);

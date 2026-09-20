@@ -8,7 +8,7 @@
 
 import type { Route, RoleName, Ship } from './config.ts';
 import { configuredMembers, routeSlug } from './config.ts';
-import { Tracker, type Ticket, type Comment } from './tracker.ts';
+import { Tracker, ticketBranchContext, type Ticket, type Comment } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
@@ -20,7 +20,7 @@ import {
 } from './select.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
-import { loadRepoConfig, resolveRepoConfig, renderBranchName } from './repo-config.ts';
+import { loadRepoConfig, resolveRepoConfig, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
 import { branchForIssue } from './git.ts';
 import { writeFileSync } from 'node:fs';
@@ -271,20 +271,34 @@ export function writeDigest(
       return cfg;
     };
     const dirFor = (t: { repo_id?: string | null }) => dirForRepo(o.route, t.repo_id);
-    const render = (t: { issue_id: string; title?: string | null }) => (template: string) =>
-      renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role });
+    // ISSUE-969: which template applies depends on the TICKET (its own
+    // project tag), not only on the repo — a repo hosts tickets from more
+    // than one project, so this is resolved per row via
+    // `effectiveBranchTemplate`/`ticketBranchContext`, never cached
+    // alongside the repo config itself.
+    type BranchTicket = { issue_id: string; title?: string | null; issue_tag?: string | null; project_issue_prefix?: string | null };
+    const render = (t: BranchTicket) => {
+      const { tag, prefix } = ticketBranchContext(t as Ticket);
+      return (template: string) => renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role, tag, prefix });
+    };
 
     const input = {
       dirFor,
-      branchFor: (t: { issue_id: string; title?: string | null; repo_id?: string | null }) =>
-        render(t)(repoFor(dirFor(t) ?? o.route.dir).branch.name),
+      branchFor: (t: BranchTicket & { repo_id?: string | null }) => {
+        const cfg = repoFor(dirFor(t) ?? o.route.dir);
+        const { prefix } = ticketBranchContext(t as Ticket);
+        return render(t)(effectiveBranchTemplate(cfg, prefix));
+      },
       // Looked for in the ticket's own repository. Asking the route's
       // directory whether a second repo's branch exists always answered no,
       // which QA reads as "no worktree to test" (ISSUE-349).
-      existingBranchFor: (t: { issue_id: string; title?: string | null; repo_id?: string | null }) => {
+      existingBranchFor: (t: BranchTicket & { repo_id?: string | null }) => {
         const dir = dirFor(t);
         if (!dir) return null;
-        const { name, push } = repoFor(dir).branch;
+        const cfg = repoFor(dir);
+        const { prefix } = ticketBranchContext(t as Ticket);
+        const name = effectiveBranchTemplate(cfg, prefix);
+        const push = cfg.provenance['branch.push'] === 'default' ? name : cfg.branch.push;
         return branchForIssue(dir, t.issue_id, { name, push }, render(t));
       },
       tickets: role === 'triage'

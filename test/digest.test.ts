@@ -64,6 +64,21 @@ test('every column renders, including holds and blockers', () => {
   assert.match(out, /\| ISSUE-2 \| \*\*NO CHECKOUT\*\* \|/);
 });
 
+test('a ticket carrying an Issue Tag displays it in place of the bare issue_id (ISSUE-969)', () => {
+  const i = input({
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-969', issue_tag: 'CREW-969', status: 'accepted' }),
+      T({ id: 'g', issue_id: 'ISSUE-7', status: 'blocked', blocked_by: ['a'] }),
+    ],
+    blocked: new Set(['g']),
+    blockerInfo: { a: { issue_id: 'ISSUE-969', issue_tag: 'CREW-969', status: 'accepted' } },
+  });
+  const out = buildingDigest(i);
+  assert.match(out, /\| CREW-969 \|/);
+  assert.doesNotMatch(out, /ISSUE-969/);
+  assert.match(out, /CREW-969 \(accepted\)/); // blockers use the tag too
+});
+
 test('the QA digest renders as it always has, branches and built-by included', () => {
   const found: Record<string, string> = { a: 'issue-10', b: 'issue-0011' };
   const i = input({

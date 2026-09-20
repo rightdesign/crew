@@ -11,10 +11,10 @@
  */
 
 import {
-  branchForIssue, commitBodies, countCommits, currentBranch, latestReleaseTag,
+  branchForIssue, commitBodies, countCommits, currentBranch, findKeyInRange, latestReleaseTag,
   resolve, status, tagCommit,
 } from './git.ts';
-import type { Ticket } from './tracker.ts';
+import { referenceKeys, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 
 /**
@@ -173,8 +173,13 @@ export function planMerge(
   return verified.map((ticket) => {
     const branch = branchFor(ticket);
     if (!branch) {
+      // Bounded, and matches either the ticket's issue_id or its issue_tag
+      // (ISSUE-969) — a plain `.includes(ticket.issue_id)` would call a
+      // ticket "never built" the moment work landed under its tag instead
+      // (`CREW-969` rather than `ISSUE-969`), which is now the branch/commit
+      // convention for a ticket that has one.
       const onMain = lastReleased
-        ? commitBodies(cwd, `${lastReleased}..HEAD`).includes(ticket.issue_id)
+        ? findKeyInRange(cwd, referenceKeys(ticket), `${lastReleased}..HEAD`) !== null
         : false;
       return {
         ticket, branch: null, entries: [], usedFallback: false,

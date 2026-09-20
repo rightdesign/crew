@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, openSync, closeSync, writeSync, statSync, unlinkSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, basename } from 'node:path';
 
 export class GitError extends Error {}
 
@@ -112,11 +112,37 @@ export function branchForIssue(
       if (prefix) candidates.push(`${prefix}*`);
     }
   }
+  // ISSUE-969: a repo's default template now depends on whether the TICKET
+  // carries a project tag (`effectiveBranchTemplate`), not only on the repo
+  // — so a ticket cut before the workspace adopted tags, or one with no tag
+  // at all, may still be sitting on the plain `issue-{number}` branch even
+  // though today's default for a *tagged* sibling ticket in the same repo
+  // is `{prefix}-{number}`. Tried last, and only when not already covered
+  // by the templated candidates above.
+  candidates.push(`issue-${num}`);
+  if (num !== unpadded) candidates.push(`issue-${unpadded}`);
   for (const c of [...new Set(candidates)]) {
     const found = branches(cwd, c);
     if (found.length) return found[0]!;
   }
   return null;
+}
+
+/**
+ * The worktree already on disk for a ticket number, found by scanning
+ * `git worktree list` rather than guessing its directory name from a prefix.
+ *
+ * A repo names its worktrees after whichever project a ticket happens to
+ * belong to (ISSUE-969), and the naming scheme itself has changed over
+ * time — `tabl-946`, `synthesis-issue-946`, `crew-issue-336` can all exist
+ * side by side on the same fleet. Ticket numbers are globally unique
+ * (`tracker.ts`), so matching on the trailing `-<number>` finds the
+ * worktree regardless of which scheme created it, with no need to know —
+ * or agree on — the "correct" prefix first.
+ */
+export function worktreeForNumber(cwd: string, num: string): WorktreeInfo | null {
+  const re = new RegExp(`(?:^|-)${num}$`);
+  return worktrees(cwd).find((w) => re.test(basename(w.path))) ?? null;
 }
 
 export const commitBodies = (cwd: string, range: string): string =>
@@ -223,16 +249,25 @@ export function remoteBranchExists(cwd: string, remote: string, branch: string):
  * about on the base, so a long-lived repo is not re-scanned every cycle.
  */
 /**
- * The sha of the first commit in `range` whose subject names `key`.
+ * The sha of the first commit in `range` whose subject names `key` — or, when
+ * given more than one, any of them.
+ *
+ * A ticket has two names once it carries a project tag (ISSUE-969):
+ * `issue_id` (`ISSUE-969`, globally unique, what the crew looks the ticket up
+ * by) and `issue_tag` (`CREW-969`, what a commit or branch is actually likely
+ * to say, since that is the convention branches/commits now follow). A
+ * commit can reference either — the search has to try both, or a ticket
+ * whose work landed under its tag reads as never having landed at all.
  *
  * Bounded on both sides, NOT a substring search: ISSUE-32 would otherwise
  * match ISSUE-320, ISSUE-321 and ISSUE-326, and report a ticket merged
  * because a different one was. The trailing guard excludes a digit only, so
  * "(ISSUE-32)" and "ISSUE-32:" still match.
  */
-export function findKeyInRange(cwd: string, key: string, range: string): string | null {
-  const escaped = key.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&');
-  const pattern = `(^|[^0-9A-Za-z_-])${escaped}([^0-9]|$)`;
+export function findKeyInRange(cwd: string, key: string | string[], range: string): string | null {
+  const keys = Array.isArray(key) ? key : [key];
+  const escaped = keys.map((k) => k.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&'));
+  const pattern = `(^|[^0-9A-Za-z_-])(${escaped.join('|')})([^0-9]|$)`;
   const out = gitOk(cwd, ['log', range, '--format=%H %s', '--extended-regexp', `--grep=${pattern}`]);
   if (!out) return null;
   return out.split('\n')[0]?.split(' ')[0] ?? null;
@@ -268,7 +303,7 @@ export function fileAtRef(cwd: string, ref: string, path: string): string | null
 }
 
 export function findKeyOnBase(
-  cwd: string, key: string, remote: string, base: string, since?: string | null,
+  cwd: string, key: string | string[], remote: string, base: string, since?: string | null,
 ): string | null {
   const range = since ? `${since}..${remote}/${base}` : `${remote}/${base}`;
   return findKeyInRange(cwd, key, range);
@@ -279,12 +314,18 @@ export function findKeyOnBase(
  *
  * Every branch of this is a HEURISTIC and says so. The key search depends on
  * whoever merged leaving the PR title alone, which nothing enforces.
+ *
+ * `aliases` (ISSUE-969) are other names the same commit might carry — a
+ * ticket's `issue_tag` alongside its canonical `issue_id` — searched
+ * alongside `key` but never used in place of it for the messages below,
+ * which stay in terms of the canonical key a person looked this ticket up
+ * by.
  */
 export function detectClosureHeuristically(
   cwd: string, key: string, pushedBranch: string, remote = 'origin', base = 'main',
-  since?: string | null,
+  since?: string | null, aliases: string[] = [],
 ): ClosureCheck {
-  const merged = findKeyOnBase(cwd, key, remote, base, since);
+  const merged = findKeyOnBase(cwd, [key, ...aliases], remote, base, since);
   if (merged) {
     return {
       state: 'merged', confidence: 'heuristic', mergedAt: merged,
@@ -317,6 +358,14 @@ export interface ClosureOptions {
   base?: string;
   since?: string | null;
   /**
+   * Other names a commit might carry for the same ticket (ISSUE-969) —
+   * typically its `issue_tag`, e.g. `CREW-969` beside the canonical
+   * `issue_id` `ISSUE-969`. Only widens the git-history search; `key` alone
+   * is still what is passed to the `merged` hook and what every message here
+   * names.
+   */
+  aliases?: string[];
+  /**
    * The repo's own `merged` hook. When present its answer is authoritative
    * and the heuristics below are not consulted at all.
    */
@@ -332,6 +381,7 @@ export interface ClosureOptions {
 export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
   const remote = o.remote ?? 'origin';
   const base = o.base ?? 'main';
+  const aliases = o.aliases ?? [];
   if (o.mergedHook) {
     const code = await o.mergedHook({
       CREW_TICKET: o.key, CREW_BRANCH: o.pushedBranch, CREW_BASE: base,
@@ -342,7 +392,7 @@ export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
       // commit sha when the base names the key. A squash whose subject was
       // rewritten leaves this undefined; the hook's answer is still definitive
       // either way, just without a sha to stamp.
-      const mergedAt = findKeyOnBase(o.cwd, o.key, remote, base, o.since) ?? undefined;
+      const mergedAt = findKeyOnBase(o.cwd, [o.key, ...aliases], remote, base, o.since) ?? undefined;
       return {
         state: 'merged', confidence: 'definitive', mergedAt,
         detail: `the repo's merged hook says ${o.key} landed`,
@@ -355,7 +405,7 @@ export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
       ? { state: 'open', confidence: 'definitive', detail: `the repo's merged hook says ${o.key} has not landed` }
       : { state: 'abandoned', confidence: 'definitive', detail: `${o.key} has not landed and ${remote}/${o.pushedBranch} is gone` };
   }
-  return detectClosureHeuristically(o.cwd, o.key, o.pushedBranch, remote, base, o.since);
+  return detectClosureHeuristically(o.cwd, o.key, o.pushedBranch, remote, base, o.since, aliases);
 }
 
 // ---------------------------------------------------------------------------

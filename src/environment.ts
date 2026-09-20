@@ -12,10 +12,11 @@
  * describing, which is the property that makes the briefs portable.
  */
 
+import { basename } from 'node:path';
 import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
-import { renderBranchName } from './repo-config.ts';
+import { renderBranchName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
 
 /** The environment variable the crew hands the session its tracker key in. */
 export const API_KEY_VAR = 'CREW_API_KEY';
@@ -108,15 +109,36 @@ function hookTable(repo: EffectiveRepoConfig): string {
 }
 
 /**
+ * This repo's own worktree prefix, minus its trailing dash, when it is one
+ * this repo actually derived (from `.crew.yaml`, the ship, or a project's
+ * Issue Tag) rather than the bare directory-name fallback. `undefined` in
+ * the fallback case, which is exactly what `effectiveBranchTemplate` reads
+ * as "no prefix, plain `issue-{number}`".
+ */
+function repoPrefix(repo: EffectiveRepoConfig): string | undefined {
+  return repo.provenance['worktrees.prefix'] !== 'default'
+    ? repo.worktrees.prefix.replace(/-$/, '')
+    : undefined;
+}
+
+/**
  * A worked example of this repo's branch name, using a real ticket key.
  *
  * The template alone is not enough: `{number}` and `{key}` are easy to
  * transpose, and a brief that says "substitute the placeholders" invites
  * exactly that mistake. Showing the answer for a concrete ticket removes the
  * substitution step.
+ *
+ * Uses `effectiveBranchTemplate`, not `repo.branch.name` directly: the
+ * default template itself depends on whether this repo has a derivable
+ * project prefix (ISSUE-969), which this brief is rendered before any
+ * specific ticket is known, so the closest true example is this repo's own
+ * prefix, when it has one.
  */
 function branchExample(repo: EffectiveRepoConfig, key: string): string {
-  return renderBranchName(repo.branch.name, { key, title: 'Fix the widget', role: 'dev' });
+  const prefix = repoPrefix(repo);
+  const template = effectiveBranchTemplate(repo, prefix);
+  return renderBranchName(template, { key, title: 'Fix the widget', role: 'dev', prefix });
 }
 
 /**
@@ -128,14 +150,20 @@ function branchExample(repo: EffectiveRepoConfig, key: string): string {
  */
 function repoSection(r: EnvironmentRepo, key: string, heading: string): string[] {
   const repo = r.config;
+  const branchTemplate = effectiveBranchTemplate(repo, repoPrefix(repo));
+  const branchName = branchExample(repo, key);
+  const worktreeName = effectiveWorktreeDirName(repo, r.dir, branchName, key.replace(/^\D+/, ''));
+  const worktreePattern = repo.provenance['worktrees.prefix'] !== 'default'
+    ? `${repo.worktrees.prefix}<number>`
+    : `${basename(r.dir.replace(/[/\\]+$/, ''))}-<branch>`;
   const lines: string[] = [
     '',
     heading,
     '',
     `- Cut it from \`${repo.branch.base}\`, beside the checkout, at`,
-    `  \`../${repo.worktrees.prefix}<number>\`.`,
-    `- Name the branch the way this repository names branches: \`${repo.branch.name}\``,
-    `  — for ${key} that is \`${branchExample(repo, key)}\`.`,
+    `  \`../${worktreePattern}\` — for ${key} that is \`../${worktreeName}\`.`,
+    `- Name the branch the way this repository names branches: \`${branchTemplate}\``,
+    `  — for ${key} that is \`${branchName}\`.`,
     '- Never work in the main checkout. It is the operator\'s, and the release phase',
     '  uses it.',
   ];

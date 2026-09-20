@@ -51,7 +51,15 @@ platform: unix
 # pushable at all.
 #
 # Placeholders: {key} (ISSUE-326), {number} (326), {slug} (the title,
-# slugified and safe in a git ref), {role} (dev/design/qa).
+# slugified and safe in a git ref), {role} (dev/design/qa), {prefix} (a
+# ticket's own project prefix, lowercased — "tabl", "crew" — empty when the
+# ticket carries no Issue Tag), {tag} (that same project's tag, as the
+# workspace cases it — "TABL-326"; empty under the same condition as
+# {prefix}). An explicit `branch.name` here always wins outright over the
+# derived per-ticket default (below) — set it only when this repo's
+# convention must not follow a ticket's own tag. `worktrees.prefix` is a
+# separate override, for the worktree DIRECTORY rather than the branch —
+# see its own entry below; most repos should leave it unset now.
 branch:
   base: main                 # what work is cut from and merged back into
   name: "issue-{number}"     # the local working branch
@@ -167,7 +175,7 @@ release:
 | `version` | yes | — | Spec version this file targets. Currently `1`. |
 | `platform` | no | `any` | `any` / `unix` / `macos` / `linux` / `windows` |
 | `branch.base` | no | `main` | The integration branch — `master`, `develop`, a release train. Never assumed. |
-| `branch.name` | no | `issue-{number}` | Local working branch. Must name at least one placeholder. |
+| `branch.name` | no | `issue-{number}`, or `{prefix}-{number}` for a ticket carrying a project tag | Local working branch. Must name at least one placeholder. Set explicitly here only to override the per-ticket default (ISSUE-969) — an explicit value always wins over a ticket's own tag. |
 | `branch.push` | no | `branch.name` | Name on the remote — useful to namespace crew branches in a PR list. |
 | `branch.remote` | no | `origin` | Where a review branch is pushed. |
 | `shell` | no | per platform | Interpreter for the hooks. |
@@ -179,7 +187,7 @@ release:
 | `hooks.isolate` | no | — | Prints `KEY=value` lines pointing this worktree at state of its own — typically its own database. Receives `CREW_TICKET`, `CREW_BRANCH`. Without it, a session that changes a schema has nowhere to run migrations except the operator's own data. |
 | `hooks.handoff` | no | — | Leaves the operator able to open what was built, and prints how. Receives `CREW_TICKET`, `CREW_BRANCH` and whatever `isolate` printed. Its output goes into the session's progress comment. |
 | `worktrees.copy` | no | `[]` | Gitignored paths to copy from the main checkout into a new worktree, before `setup` runs. Repo-relative; absolute paths and `..` are rejected. A ship cannot supply or override this. |
-| `worktrees.prefix` | no | `<checkout>-issue-` | What this repository's worktrees are called: a ticket's worktree is cut beside the checkout at `../<prefix><number>`. Defaults to the checkout's own directory name — `crew` gets `crew-issue-346`. No path separator: a worktree sits beside the checkout, not inside a directory of its own. A route's `worktreePrefix` supplies it for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
+| `worktrees.prefix` | no | unset — see below | Overrides the default worktree naming outright: when set, a ticket's worktree is cut beside the checkout at `../<prefix><number>`, e.g. `../tabl-326`, no matter what its branch is called. **Left unset (the default, and now the common case since ISSUE-969's "Updating worktree naming" commits removed it from every repo but paradium's), a ticket's worktree is instead `<checkout directory name>-<branch name>`** — e.g. checkout `synthesis`, branch `tabl-123` → `../synthesis-tabl-123`; checkout `crew`, branch `crew-971` → `../crew-crew-971` (Brad, Pair session, 2026-09-20). This needs no per-repo or per-ticket configuration: the checkout's own directory name and the ticket's own branch name (`branch.name`'s per-ticket default, above) are the only inputs. No path separator on an explicit `prefix`: a worktree sits beside the checkout, not inside a directory of its own. A route's `worktreePrefix` supplies an explicit prefix for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
 | `docs.triagePolicy` | no | — | The triage seat's contract for this project — what its statuses mean, when a ticket may be accepted. Where it and a brief disagree, it wins. |
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |

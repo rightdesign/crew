@@ -18,6 +18,7 @@ import { crewLabel, isHold, type Roster } from './roster.ts';
 export interface DigestTicket extends Rankable {
   id: string;
   issue_id: string;
+  issue_tag?: string | null;
   status: string;
   assignee_id?: string | null;
   needs_design?: boolean | null;
@@ -76,8 +77,19 @@ export interface DigestInput {
   existingBranchFor?: (t: DigestTicket) => string | null;
   /** Ticket ids the poll computed as dependency-blocked (ISSUE-187). */
   blocked: Set<string>;
-  /** {ticketId: {issue_id, status}} for every blocker named, closed ones included. */
-  blockerInfo: Record<string, { issue_id?: string; status?: string }>;
+  /** {ticketId: {issue_id, issue_tag, status}} for every blocker named, closed ones included. */
+  blockerInfo: Record<string, { issue_id?: string; issue_tag?: string | null; status?: string }>;
+}
+
+/**
+ * What to print for a ticket when a human reads the digest (ISSUE-969) — the
+ * per-project tag (`TABL-123`) where the workspace has adopted one, falling
+ * back to the plain `issue_id` (`ISSUE-123`) otherwise. Display only: every
+ * lookup in this file (the `me`/`assignee_id` comparisons, `blockerInfo`
+ * keys) stays keyed on `id`/`issue_id`, never this.
+ */
+function displayKey(t: { issue_id?: string; issue_tag?: string | null }): string {
+  return t.issue_tag ?? t.issue_id ?? '?';
 }
 
 /**
@@ -131,7 +143,7 @@ function who(t: DigestTicket, i: DigestInput): string {
 function blockers(t: DigestTicket, i: DigestInput): string {
   const list = (t.blocked_by ?? []).map((id) => {
     const info = i.blockerInfo[id];
-    return `${info?.issue_id ?? '?'} (${info?.status ?? 'unknown'})`;
+    return `${info ? displayKey(info) : '?'} (${info?.status ?? 'unknown'})`;
   });
   return list.length === 0 ? '—' : list.join(', ');
 }
@@ -161,10 +173,10 @@ export function buildingDigest(i: DigestInput): string {
     const branch = i.branchFor ? i.branchFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${t.issue_id} | ${repo} | ${branch} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
-    `| ${t.issue_id} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
+    `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
   const blockedTable = (ts: DigestTicket[]) =>
     ts.length === 0
       ? '\n_None._\n'
@@ -220,7 +232,7 @@ export function qaDigest(i: DigestInput): string {
     const n = newFromOthers(i, t.id);
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${t.issue_id} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   return stream([
     '## Current queue — built for you by the poll\n',

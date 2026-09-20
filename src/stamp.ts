@@ -12,7 +12,7 @@
  * at `verified` and still named in commits past the last release.
  */
 
-import type { Tracker, Ticket } from './tracker.ts';
+import { referenceKeys, type Tracker, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 import type { Emitter } from './events.ts';
 import { commitBodies, findKeyInRange, type ClosureCheck } from './git.ts';
@@ -62,12 +62,17 @@ export function planStamp(
       if (merged.has(t.issue_id)) {
         return { ticket: t, reason: 'merged by this release', sha: merged.get(t.issue_id) };
       }
-      if (range && new RegExp(`(^|[^0-9A-Za-z_-])${t.issue_id}([^0-9]|$)`).test(bodies)) {
+      // Matches either the ticket's issue_id or its issue_tag (ISSUE-969) —
+      // a commit naming only `CREW-969` must still be found, or a ticket
+      // whose work shipped under its tag sits at `verified` forever.
+      const keys = referenceKeys(t);
+      const pattern = keys.map((k) => k.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&')).join('|');
+      if (range && new RegExp(`(^|[^0-9A-Za-z_-])(${pattern})([^0-9]|$)`).test(bodies)) {
         // Not merged by this run — a prior cycle's deploy failed and this one
         // carries it, or a forge/person merged it outside the crew. Its sha
         // is resolved from the same range, same reasoning as `findKeyOnBase`
         // (git.ts) uses for the external-closure path.
-        const sha = findKeyInRange(cwd, t.issue_id, range) ?? undefined;
+        const sha = findKeyInRange(cwd, keys, range) ?? undefined;
         return { ticket: t, reason: `named in ${range}`, sha };
       }
       return null;

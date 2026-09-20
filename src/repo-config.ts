@@ -186,7 +186,11 @@ export interface ReleaseVerify {
  * require a prefix to be pushable at all.
  *
  * Placeholders: {key} (ISSUE-326), {number} (326), {slug} (title, slugified),
- * {role} (dev/design/qa).
+ * {role} (dev/design/qa), {prefix} (a ticket's project prefix, lowercased —
+ * `tabl`, from its Issue Tag, ISSUE-969), {tag} (the tag itself — `TABL-326`).
+ * The last two render empty when the ticket carries no tag (see
+ * `effectiveBranchTemplate`, which is what actually decides whether they
+ * appear in the default template at all).
  */
 export interface BranchNaming {
   /**
@@ -302,7 +306,7 @@ const TOP_LEVEL = new Set([
   'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release',
 ]);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
-const PLACEHOLDER = /\{(key|number|slug|role)\}/g;
+const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag)\}/g;
 const RELEASE_KEYS = new Set([
   'mode', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
@@ -618,6 +622,10 @@ export interface BranchContext {
   key: string;
   title?: string;
   role?: string;
+  /** The ticket's own tag (`TABL-326`), when the workspace has one. */
+  tag?: string;
+  /** The tag's prefix, lowercased (`tabl`) — usually derived from `tag`. */
+  prefix?: string;
 }
 
 export function renderBranchName(template: string, ctx: BranchContext): string {
@@ -628,6 +636,8 @@ export function renderBranchName(template: string, ctx: BranchContext): string {
       case 'number': return number;
       case 'slug': return slugify(ctx.title ?? '');
       case 'role': return ctx.role ?? '';
+      case 'tag': return ctx.tag ?? ctx.key;
+      case 'prefix': return ctx.prefix ?? '';
       default: return '';
     }
   });
@@ -663,13 +673,21 @@ export interface ShipRepoSettings {
 }
 
 /**
- * What a repository's worktrees are called when nobody says.
+ * The stored DEFAULT value of `worktrees.prefix` when nobody configures one —
+ * consulted only by `EffectiveRepoConfig.worktrees.prefix` itself and by
+ * `effectiveWorktreePrefix`'s own legacy fallback, NOT by how a worktree
+ * DIRECTORY is actually named today.
  *
- * The checkout's own directory name plus `-issue-`, which is what every repo
- * the crew works had already settled on by hand: `synthesis-issue-341` beside
- * `synthesis`, `crew-issue-346` beside `crew`. Deriving it means a second repo
- * added to an area needs no configuration to get its own worktree names, which
- * is the failure ISSUE-350 was filed for.
+ * That directory naming moved on twice (ISSUE-969): first to a per-ticket
+ * `{prefix}-{number}` (this function's `<checkout>-issue-` was its last
+ * resort, for a ticket with no project tag), then — Brad's final call,
+ * confirmed 2026-09-20 — to `effectiveWorktreeDirName`'s
+ * `<checkout directory name>-<branch name>`, which needs no prefix concept
+ * at all in the default case. This function's `<checkout>-issue-` string
+ * therefore only still matters for a repo/ship that sets an EXPLICIT
+ * `worktrees.prefix` (`effectiveWorktreeDirName`'s non-default branch) or for
+ * legacy worktree/branch lookup elsewhere in this file — never for the
+ * default worktree-naming path any more.
  */
 export function defaultWorktreePrefix(dir: string): string {
   const name = basename(dir.replace(/[/\\]+$/, ''));
@@ -818,6 +836,68 @@ export function resolveRepoConfig(
     provenance,
     shadowed,
   };
+}
+
+/**
+ * Which branch-name template actually applies for ONE ticket's render.
+ *
+ * A repo or ship that named its own template (`provenance['branch.name']`
+ * is not `'default'`) wins outright — that is a real decision, not
+ * something a ticket's own tag should override. Absent that, a ticket
+ * carrying a project prefix (ISSUE-969's Issue Tag) gets `{prefix}-{number}`;
+ * one that doesn't — a workspace with no per-project prefixing, or simply an
+ * older ticket — keeps the plain `issue-{number}` every repo already used.
+ *
+ * Deliberately a function of the CALL, not of `resolveRepoConfig`: the same
+ * repo checkout hosts tickets from more than one project (synthesis has
+ * carried CREW tickets alongside TABL ones), so which template applies can
+ * only be decided once a specific ticket is in hand, never once per repo.
+ */
+export function effectiveBranchTemplate(cfg: EffectiveRepoConfig, prefix: string | undefined): string {
+  if (cfg.provenance['branch.name'] !== 'default') return cfg.branch.name;
+  return prefix ? '{prefix}-{number}' : 'issue-{number}';
+}
+
+/**
+ * A worktree PREFIX (a string a number gets appended to) for an explicit
+ * `worktrees.prefix` override, or for a ticket's project prefix on its own.
+ *
+ * Superseded as the default worktree-naming path by `effectiveWorktreeDirName`
+ * (ISSUE-969, Brad's final call 2026-09-20): the default worktree directory is
+ * now `<checkout directory name>-<branch name>`, not `<prefix><number>`, so
+ * nothing in this codebase calls this function for that any more. Kept for an
+ * explicit `worktrees.prefix` override's own `<prefix><number>` form, which
+ * `effectiveWorktreeDirName` still defers to verbatim.
+ */
+export function effectiveWorktreePrefix(cfg: EffectiveRepoConfig, prefix: string | undefined): string {
+  if (cfg.provenance['worktrees.prefix'] !== 'default') return cfg.worktrees.prefix;
+  return prefix ? `${prefix}-` : cfg.worktrees.prefix;
+}
+
+/**
+ * Where a ticket's worktree goes, beside the checkout — as a directory name,
+ * not merely a prefix.
+ *
+ * Brad's call (Pair session, 2026-09-20, ISSUE-969), superseding the
+ * `{prefix}-{number}` worktree-naming default this same ticket shipped
+ * first: the worktree directory is `<checkout directory name>-<branch name>`,
+ * e.g. checkout `synthesis`, branch `tabl-123` -> `synthesis-tabl-123`; checkout
+ * `crew`, branch `crew-971` -> `crew-crew-971` (confirmed against Brad's own
+ * worked example). It needs no project-prefix concept of its own — the
+ * branch name (`effectiveBranchTemplate`, already prefix-aware) is the only
+ * per-ticket input, and the checkout's own directory name supplies the rest,
+ * so a repo hosting tickets from several projects still gets each one right
+ * with no per-ticket configuration.
+ *
+ * An explicit `worktrees.prefix` (repo or ship) still wins outright, exactly
+ * as it did before this change — paradium's routes rely on it — using the
+ * older `<prefix><number>` form; nothing here is default for those repos.
+ */
+export function effectiveWorktreeDirName(
+  cfg: EffectiveRepoConfig, dir: string, branchName: string, number: string,
+): string {
+  if (cfg.provenance['worktrees.prefix'] !== 'default') return `${cfg.worktrees.prefix}${number}`;
+  return `${basename(dir.replace(/[/\\]+$/, ''))}-${branchName}`;
 }
 
 /**

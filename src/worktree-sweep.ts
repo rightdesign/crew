@@ -46,17 +46,25 @@ export interface SweepAction {
  * What the sweep would remove for one repository, from its ACTUAL worktrees
  * — not every terminal ticket, only the ones that still have a worktree on
  * disk.
+ *
+ * Matched by the ticket number trailing the worktree's directory name
+ * (`(?:^|-)<n>$`), not by a specific prefix — ISSUE-969: a checkout's
+ * worktrees have used more than one naming scheme over time (`tabl-946`,
+ * `synthesis-issue-946`), and a repo hosts tickets from more than one
+ * project, so no single prefix would match every worktree that is
+ * genuinely this repo's. Ticket numbers are globally unique, so the number
+ * alone is enough to find the right one; `byNumber` (built from the
+ * tickets actually fetched for THIS repo) is what keeps this from ever
+ * matching an unrelated directory that merely happens to end in digits.
  */
 export function planWorktreeSweep(
-  target: RepoTarget, tickets: Ticket[], contract: Contract, prefix: string,
+  target: RepoTarget, tickets: Ticket[], contract: Contract,
 ): SweepAction[] {
   const terminal = new Set(contract.statuses.resolved.filter((s) => s !== contract.statuses.verified));
   const byNumber = new Map(tickets.map((t) => [t.issue_id.replace(/^\D+/, ''), t]));
-  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`^${escaped}(\\d+)$`);
   const actions: SweepAction[] = [];
   for (const w of worktrees(target.dir)) {
-    const m = re.exec(basename(w.path));
+    const m = /(?:^|-)(\d+)$/.exec(basename(w.path));
     if (!m) continue;
     const ticket = byNumber.get(m[1]!);
     if (!ticket || !terminal.has(ticket.status)) continue;

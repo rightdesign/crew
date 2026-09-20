@@ -16,7 +16,7 @@
 
 import type { Route, Ship } from './config.ts';
 import { configuredMembers } from './config.ts';
-import { Tracker, type Ticket } from './tracker.ts';
+import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildRoster, crewLabel, type Roster } from './roster.ts';
 import { rankScalar, effectivePriority } from './priority.ts';
 import type { Contract } from './contract.ts';
@@ -170,7 +170,7 @@ export function renderInbox(items: InboxItem[], byConnection = false, subject?: 
       const t = i.ticket;
       const where = byConnection ? t.status : i.route;
       out.push(
-        `  ${t.issue_id.padEnd(10)} p${i.effective} ${(t.severity ?? '--').padEnd(3)} ` +
+        `  ${displayKey(t).padEnd(10)} p${i.effective} ${(t.severity ?? '--').padEnd(3)} ` +
           `${where.padEnd(14)} ${(t.title ?? '').slice(0, 62)}`,
       );
     }

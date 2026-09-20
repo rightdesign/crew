@@ -23,7 +23,7 @@ import type { EffectiveRepoConfig } from './repo-config.ts';
 import { hookLabel } from './repo-config.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
-import type { Ticket } from './tracker.ts';
+import { referenceKeys, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
@@ -311,7 +311,7 @@ async function detectExternalClosures(
   for (const c of candidates) {
     if (!c.branch) continue;
     const closure = await detectClosure({
-      cwd: o.cwd, key: c.ticket.issue_id, pushedBranch: c.branch,
+      cwd: o.cwd, key: c.ticket.issue_id, aliases: referenceKeys(c.ticket).slice(1), pushedBranch: c.branch,
       remote: o.repo.branch.remote, base: o.repo.branch.base, mergedHook,
     });
     o.emit.emit(closure.detail, { ticket: c.ticket.issue_id, data: { confidence: closure.confidence } });
