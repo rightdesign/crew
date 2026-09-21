@@ -12,7 +12,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const built = join(here, '..', 'dist', 'cli.js');
 const source = join(here, '..', 'src', 'cli.ts');
 
-if (existsSync(built)) {
+// CREW_FROM_SOURCE=1 skips the bundle even when one exists. crew's own test
+// suite sets it on every CLI it spawns (test/helpers/crew-bin.ts): dist/ is
+// rebuilt by the release's build hook, which runs AFTER the test gate, so
+// without this the gate exercises the previous release's bundle (CREW-988).
+const fromSource = process.env.CREW_FROM_SOURCE === '1' && existsSync(source);
+
+if (existsSync(built) && !fromSource) {
   await import(pathToFileURL(built).href);
 } else if (existsSync(source)) {
   // Node >=22.18 strips types natively; older needs --experimental-strip-types.

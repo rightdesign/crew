@@ -10,11 +10,11 @@ import { promisify } from 'node:util';
  */
 const run = promisify(execFile);
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FakeTracker, MODELS, SEATS, OPERATOR, crewRows, ticket } from './helpers/fake-tracker.ts';
 
-const CREW = resolve(import.meta.dirname, '..', 'bin', 'crew');
+import { CREW, CREW_ENV } from './helpers/crew-bin.ts';
 
 /** A whole ship: config, state dir, a git checkout, pointed at the fake. */
 function ship(tracker: FakeTracker, over: Record<string, string> = {}) {
@@ -52,7 +52,7 @@ ${over.resolvedExtra ?? ''}`;
     home, repo, cfgPath,
     run: async (...args: string[]) => {
       const { stdout, stderr } = await run(process.execPath, [CREW, ...args], {
-        env: { ...process.env, CREW_CONFIG: cfgPath },
+        env: { ...process.env, ...CREW_ENV, CREW_CONFIG: cfgPath },
         timeout: 30_000,
       });
       return `${stdout}${stderr}`;

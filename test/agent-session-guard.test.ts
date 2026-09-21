@@ -2,10 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve } from 'node:path';
+import { CREW, CREW_ENV } from './helpers/crew-bin.ts';
 
 const run = promisify(execFile);
-const CREW = resolve(import.meta.dirname, '..', 'bin', 'crew');
 
 /**
  * ISSUE-980: a session running with `CREW_LANE_ROLE` set (every
@@ -21,7 +20,7 @@ const CREW = resolve(import.meta.dirname, '..', 'bin', 'crew');
 async function attempt(args: string[], env: Record<string, string | undefined> = {}) {
   try {
     const { stdout, stderr } = await run(process.execPath, [CREW, ...args], {
-      env: { ...process.env, CREW_CONFIG: '/nonexistent/crew.yaml', ...env },
+      env: { ...process.env, ...CREW_ENV, CREW_CONFIG: '/nonexistent/crew.yaml', ...env },
       timeout: 15_000,
     });
     return { code: 0, out: `${stdout}${stderr}` };
