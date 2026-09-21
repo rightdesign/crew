@@ -24,20 +24,24 @@ rather than derived. **MISSING** means the branch is gone and there is
 nothing left to verify — say so on the ticket. A `—` means the branch
 could not be looked for at all, because the repo has no checkout here.
 
+**`worktree` is where that branch should be checked out**, `<repo>/../<worktree>`
+— rendered the same way the dev/design digest computes it, so you land in
+the same directory the building lane used.
+
 
 ### Still in verification — yours, unfinished (take these first)
 
 
-| ticket | repo | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| ISSUE-11 | /w/api | qa | dev | you | — | — | p2 | issue-0011 | 2026-08-23T12:00Z | — | — |
+| ticket | repo | status | built by | assignee | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ISSUE-11 | /w/api | qa | dev | you | — | — | p2 | issue-0011 | api-issue-11 | 2026-08-23T12:00Z | — | — |
 
 
 ### Awaiting verification, in pick order
 
 
-| ticket | repo | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| ISSUE-12 | /w/api | fixed | dev | **Brad C. (Operator) — HOLD** | s1 | — | p0 | **MISSING** | 2026-08-23T12:00Z | — | — |
-| ISSUE-10 | /w/api | fixed | design | unassigned | s2 | — | p1 | issue-10 | 2026-08-23T12:00Z | 2026-08-23T10:00Z Developer agent | **1 new** |
+| ticket | repo | status | built by | assignee | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ISSUE-12 | /w/api | fixed | dev | **Brad C. (Operator) — HOLD** | s1 | — | p0 | **MISSING** | api-issue-12 | 2026-08-23T12:00Z | — | — |
+| ISSUE-10 | /w/api | fixed | design | unassigned | s2 | — | p1 | issue-10 | api-issue-10 | 2026-08-23T12:00Z | 2026-08-23T10:00Z Developer agent | **1 new** |
 

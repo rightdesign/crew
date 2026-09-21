@@ -326,9 +326,15 @@ if `report_type` is either of those.
    reconcile, not something to resolve yourself — carry on and cut the
    worktree from whatever HEAD the primary checkout actually has. Then, from
    the primary checkout, `git worktree add` a sibling worktree for this
-   ticket, on a new branch cut from the base branch's current HEAD — the
-   location, the branch name and the base are all in the Environment section.
-   Cutting from the base branch's HEAD, not from this checkout's working
+   ticket, on a new branch cut from the base branch's current HEAD. The
+   digest's `worktree` and `branch` columns give this ticket's own directory
+   and branch name — use them verbatim. The Environment section names the
+   base branch and describes the general pattern, but its own worked example
+   is illustrative only (rendered before any ticket is chosen, so it cannot
+   know this ticket's real project prefix) — where it and the digest
+   disagree, the digest is right. If no digest is available, fall back to
+   the Environment section's pattern. Cutting from the base branch's HEAD,
+   not from this checkout's working
    state, is deliberate: the primary checkout may have anything going on.
    `cd` into the worktree and do everything else below there.
 2. A worktree is a clean checkout, so it is missing exactly the files git

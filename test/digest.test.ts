@@ -41,6 +41,7 @@ test('every column renders, including holds and blockers', () => {
   const i = input({
     dirFor: (t) => (t.repo_id === 'r-api' ? '/w/api' : null),
     branchFor: (t) => `feature/${t.issue_id}`,
+    worktreeFor: (t) => `api-feature-${t.issue_id}`,
     tickets: [
       T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', severity: 's1', repo_id: 'r-api' }),
       T({ id: 'b', issue_id: 'ISSUE-2', status: 'in_progress', assignee_id: 'dev-1', severity: 's3', priority: 'p0' }),
@@ -54,11 +55,11 @@ test('every column renders, including holds and blockers', () => {
     blockerInfo: { a: { issue_id: 'ISSUE-1', status: 'accepted' } },
   });
   const out = buildingDigest(i);
-  assert.match(out, /\| ISSUE-1 \| \/w\/api \| feature\/ISSUE-1 \|/); // checkout, then branch
+  assert.match(out, /\| ISSUE-1 \| \/w\/api \| feature\/ISSUE-1 \| api-feature-ISSUE-1 \|/); // checkout, branch, worktree
   assert.match(out, /\*\*Brad C\. \(Operator\) — HOLD\*\*/);   // a hold is marked
   assert.match(out, /\*\*1 new\*\*/);                            // comment since the watermark
   assert.match(out, /ISSUE-1 \(accepted\), \? \(unknown\)/);     // blockers, dangling included
-  assert.match(out, /Use the `branch` column verbatim/);
+  assert.match(out, /Use the `branch` and `worktree` columns verbatim/);
   // A ticket whose repo this ship has no clone of must be marked, not left
   // blank: blank reads as "work it here", which would be the wrong checkout.
   assert.match(out, /\| ISSUE-2 \| \*\*NO CHECKOUT\*\* \|/);
@@ -90,6 +91,7 @@ test('the QA digest renders as it always has, branches and built-by included', (
     ],
     dirFor: () => '/w/api',
     existingBranchFor: (t) => found[t.id] ?? null,
+    worktreeFor: (t) => `api-${t.issue_id.toLowerCase()}`,
     comments: [{ ticket_id: 'a', team_member_id: 'dev-1', created_at: '2026-08-23T10:00:00.000Z' }],
   });
   // Golden captured from lib/queue-digest-qa.jq before it was deleted. The QA

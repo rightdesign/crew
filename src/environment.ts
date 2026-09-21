@@ -166,6 +166,12 @@ function repoSection(r: EnvironmentRepo, key: string, heading: string): string[]
     `  — for ${key} that is \`${branchName}\`.`,
     '- Never work in the main checkout. It is the operator\'s, and the release phase',
     '  uses it.',
+    '',
+    `${key} above is a placeholder, not a real ticket: this section is rendered`,
+    'before any ticket is chosen, so it cannot know a specific ticket\'s own',
+    'project prefix. Once you have a ticket, its digest row\'s `branch` and',
+    '`worktree` columns are the real, per-ticket values — use those verbatim',
+    'over this section\'s worked example if the two ever disagree.',
   ];
 
   if (repo.worktrees.copy.length) {

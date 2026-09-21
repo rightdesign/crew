@@ -11,7 +11,9 @@
  * about where a ticket's work is again.
  */
 import { branchForIssue } from './git.ts';
-import { effectiveBranchTemplate, renderBranchName, type EffectiveRepoConfig } from './repo-config.ts';
+import {
+  effectiveBranchTemplate, effectiveWorktreeDirName, renderBranchName, type EffectiveRepoConfig,
+} from './repo-config.ts';
 import { ticketBranchContext, type Ticket } from './tracker.ts';
 
 export type BranchLookupTicket = Pick<Ticket, 'issue_id' | 'issue_tag' | 'project_issue_prefix'> & {
@@ -22,6 +24,20 @@ export type BranchLookupTicket = Pick<Ticket, 'issue_id' | 'issue_tag' | 'projec
 export function branchRenderer(t: BranchLookupTicket, role?: string): (template: string) => string {
   const { tag, prefix } = ticketBranchContext(t as Ticket);
   return (template) => renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role, tag, prefix });
+}
+
+/**
+ * Where THIS ticket's worktree belongs, beside the checkout at `dir`
+ * (ISSUE-1028) — the same `{prefix}` resolution `branchRenderer` uses for
+ * the branch name, fed into `effectiveWorktreeDirName` so the digest's
+ * `branch` and `worktree` columns can never disagree with each other about
+ * which convention applies to this ticket.
+ */
+export function worktreeForTicket(dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string {
+  const { prefix } = ticketBranchContext(t as Ticket);
+  const branchName = branchRenderer(t, role)(effectiveBranchTemplate(cfg, prefix));
+  const number = t.issue_id.replace(/^\D+/, '');
+  return effectiveWorktreeDirName(cfg, dir, branchName, number);
 }
 
 export function existingBranchForTicket(

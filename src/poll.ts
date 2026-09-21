@@ -22,7 +22,7 @@ import { attentionReasons, attentionTransitions, type AttentionReason } from './
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
-import { branchRenderer, existingBranchForTicket } from './ticket-branch.ts';
+import { branchRenderer, existingBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { State } from './state.ts';
@@ -285,6 +285,15 @@ export function writeDigest(
         const cfg = repoFor(dirFor(t) ?? o.route.dir);
         const { prefix } = ticketBranchContext(t as Ticket);
         return render(t)(effectiveBranchTemplate(cfg, prefix));
+      },
+      // ISSUE-1028: the agent previously had to derive this itself from the
+      // Environment section's own worked example, which is rendered before
+      // any ticket is picked and so cannot carry this ticket's real project
+      // prefix. Rendered here, per ticket, the same way `branchFor` already
+      // is.
+      worktreeFor: (t: BranchTicket & { repo_id?: string | null }) => {
+        const dir = dirFor(t) ?? o.route.dir;
+        return worktreeForTicket(dir, repoFor(dir), t, role);
       },
       // Looked for in the ticket's own repository. Asking the route's
       // directory whether a second repo's branch exists always answered no,

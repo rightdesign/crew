@@ -50,6 +50,19 @@ export interface DigestInput {
    */
   branchFor?: (t: DigestTicket) => string;
   /**
+   * Where this ticket's worktree belongs, rendered by the crew the same way
+   * `branchFor` renders the branch name (ISSUE-1028).
+   *
+   * Without this the agent had only `branchFor` and had to derive the
+   * worktree directory itself from the Environment section's own worked
+   * example — which is rendered before any ticket is picked, so it cannot
+   * carry this ticket's real project prefix and can quietly disagree with
+   * the branch name actually handed to the agent. Rendering the name here,
+   * per ticket, removes the derivation step the same way `branchFor` already
+   * does for the branch itself.
+   */
+  worktreeFor?: (t: DigestTicket) => string;
+  /**
    * Where this ticket's work happens on this machine.
    *
    * An area spans several repos, so the checkout is a property of the TICKET,
@@ -166,14 +179,15 @@ function table(ts: DigestTicket[], i: DigestInput, header: string, row: (t: Dige
 /** The digest for a building role — dev or design. */
 export function buildingDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | branch | status | assignee | sev | pri | eff | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | branch | worktree | status | assignee | sev | pri | eff | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|';
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
     const branch = i.branchFor ? i.branchFor(t) : '';
+    const worktree = i.worktreeFor ? i.worktreeFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${branch} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -196,7 +210,7 @@ export function buildingDigest(i: DigestInput): string {
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
-    '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` column verbatim.** It is that repository\'s own naming\nconvention, rendered for you — do not derive a branch name yourself.\n',
+    '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` and `worktree` columns verbatim.** They are that\nrepository\'s own naming convention, rendered for THIS ticket — cut the\nworktree at `<repo>/../<worktree>`, on branch `<branch>`. Do not derive\neither yourself, and prefer these over the Environment section\'s own worked\nexample if the two ever disagree — that example is illustrative only,\nrendered before any ticket is picked.\n',
     '\n### Step 1 — open tickets that may be yours to act on\n',
     '\n`fixed` tickets are deliberately absent: they belong to the QA lane.\n',
     table(step1, i, header, row),
@@ -212,8 +226,8 @@ export function buildingDigest(i: DigestInput): string {
 /** The digest for the QA role. */
 export function qaDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | status | built by | assignee | sev | pri | eff | branch | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | status | built by | assignee | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   /**
    * The branch to verify, or a mark that there is none.
    *
@@ -227,18 +241,29 @@ export function qaDigest(i: DigestInput): string {
     if (!i.existingBranchFor) return '';
     return i.existingBranchFor(t) ?? '**MISSING**';
   };
+  /**
+   * Where that branch's worktree should be, rendered the same way as the
+   * dev/design digest (ISSUE-1028) — not existence-checked the way
+   * `branchCell` is, since crew finds a worktree by scanning for its branch
+   * rather than by this constructed name; this is a sanity check for the
+   * agent, not the lookup itself.
+   */
+  const worktreeCell = (t: DigestTicket) => {
+    if (i.dirFor && i.dirFor(t) === null) return '—';
+    return i.worktreeFor ? i.worktreeFor(t) : '';
+  };
   const builtBy = (t: DigestTicket) => (t.needs_design === true ? 'design' : 'dev');
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   return stream([
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane: every ticket at `qa` ("Verification" —\nyours, unfinished) or `fixed` (nobody has checked it yet), from both\nbuilding lanes. Ticket bodies are deliberately omitted: fetch the full\nrecord and the comments of the one ticket you actually pick up. **Do not\nre-fetch the whole tracker.** This digest comes from the same API call the\npoll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
-    '\n**`repo` is the checkout the ticket\'s work happens in** — an area spans\nseveral repositories, so the worktree you verify in sits beside THAT\ndirectory, not beside whichever one this session started in. A ticket\nmarked **NO CHECKOUT** is not yours: this ship has no clone of its\nrepository, and another ship may serve it.\n\n**`branch` is that repository\'s own branch for the ticket**, found there\nrather than derived. **MISSING** means the branch is gone and there is\nnothing left to verify — say so on the ticket. A `—` means the branch\ncould not be looked for at all, because the repo has no checkout here.\n',
+    '\n**`repo` is the checkout the ticket\'s work happens in** — an area spans\nseveral repositories, so the worktree you verify in sits beside THAT\ndirectory, not beside whichever one this session started in. A ticket\nmarked **NO CHECKOUT** is not yours: this ship has no clone of its\nrepository, and another ship may serve it.\n\n**`branch` is that repository\'s own branch for the ticket**, found there\nrather than derived. **MISSING** means the branch is gone and there is\nnothing left to verify — say so on the ticket. A `—` means the branch\ncould not be looked for at all, because the repo has no checkout here.\n\n**`worktree` is where that branch should be checked out**, `<repo>/../<worktree>`\n— rendered the same way the dev/design digest computes it, so you land in\nthe same directory the building lane used.\n',
     '\n### Still in verification — yours, unfinished (take these first)\n',
     table(i.tickets.filter((t) => t.status === 'qa'), i, header, row),
     '\n### Awaiting verification, in pick order\n',
