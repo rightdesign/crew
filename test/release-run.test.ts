@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runRelease, summarizeOutcome, type ReleaseOutcome } from '../src/release-run.ts';
+import { runRelease, summarizeOutcome, emitReleaseSummary, type ReleaseOutcome } from '../src/release-run.ts';
 import { git } from '../src/git.ts';
 import { parseRepoConfig, resolveRepoConfig } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
@@ -1184,4 +1184,50 @@ test('summarizeOutcome: a CI push with no local deploy hook reports merged, with
   assert.equal(s.outcome, 'merged');
   assert.match(s.detail, /1 merged/);
   assert.match(s.detail, /v1\.0\.1/);
+});
+
+// ---------------------------------------------------------------------------
+// emitReleaseSummary — the roll-up itself, and which route it is labelled with
+// ---------------------------------------------------------------------------
+
+test('emitReleaseSummary: rows are labelled with their own route, not the top-level emitter\'s (CREW-994)', () => {
+  // A fleet-wide run stamps the top-level Emitter with routes[0]. The roll-up
+  // was the one release call site CREW-979 left on that emitter, so a summary
+  // entirely about `issues/issues` was labelled `paradium/issues`.
+  const events: { route: string; message: string; level: string }[] = [];
+  const top = new Emitter({ route: 'paradium/issues', console: () => {}, cycleId: 'C' });
+  const seen = (e: Emitter) => {
+    const emit = e.emit.bind(e);
+    e.emit = (m, x) => { const ev = emit(m, x); events.push(ev); return ev; };
+    return e;
+  };
+  const forRoute = top.forRoute.bind(top);
+  top.forRoute = (r) => seen(forRoute(r));
+  seen(top);
+
+  const row = (route: string, name: string, over: Partial<ReturnType<typeof summarizeOutcome>> = {}) => ({
+    ...summarizeOutcome(outcome({ stopped: 'nothing to release' }), `${route}/${name}`, false), route, ...over,
+  });
+  emitReleaseSummary(top, [
+    row('issues/issues', 'synthesis'),
+    row('issues/issues', 'crew', { tests: 'fail' }),
+    row('other/board', 'site'),
+  ]);
+
+  assert.ok(events.length > 0);
+  assert.ok(events.every((e) => e.route !== 'paradium/issues'), 'nothing is attributed to routes[0]');
+  for (const e of events.filter((e) => e.message.startsWith('  '))) {
+    assert.ok(e.message.trimStart().startsWith(`${e.route}/`), `${e.message} is labelled ${e.route}`);
+  }
+  assert.deepEqual(
+    events.filter((e) => /^release summary/.test(e.message)).map((e) => [e.route, e.message]),
+    [['issues/issues', 'release summary — 2 repo(s):'], ['other/board', 'release summary — 1 repo(s):']],
+  );
+  assert.equal(events.find((e) => /issues\/crew/.test(e.message))?.level, 'warn');
+});
+
+test('emitReleaseSummary: a single-repo release prints no roll-up', () => {
+  const e = emitter();
+  emitReleaseSummary(e, [{ ...summarizeOutcome(outcome({ deployed: true, version: '1.0.0' }), 'r/x', true), route: 'r' }]);
+  assert.deepEqual(lines, []);
 });

@@ -191,6 +191,41 @@ export interface RepoReleaseSummary {
   detail: string;
 }
 
+/** A summary row plus the route it belongs to — what the roll-up labels its events by. */
+export type RoutedReleaseSummary = RepoReleaseSummary & { route: string };
+
+/**
+ * One line per repo, emitted once every repo a fan-out touched has run.
+ *
+ * Only when there is more than one: a single-repo release already has its
+ * own outcome in the log immediately above with nothing to disambiguate it
+ * from. The ambiguity this exists to remove — a mixed pass/fail run reading
+ * as "tests didn't block the deploy" — only arises once a route or `--fleet`
+ * run spans more than one repo (ISSUE-583).
+ *
+ * One block per route, each through `emit.forRoute(...)` (CREW-994): a
+ * fleet-wide run's top-level Emitter is stamped with just `routes[0]`, so
+ * emitting the roll-up through it labelled every row with whichever route
+ * came first in crew.yaml, even when none of the rows were about it — the
+ * one release call site CREW-979 missed.
+ */
+export function emitReleaseSummary(emit: Emitter, summaries: RoutedReleaseSummary[]): void {
+  if (summaries.length <= 1) return;
+  const routes = [...new Set(summaries.map((s) => s.route))];
+  for (const route of routes) {
+    const rows = summaries.filter((s) => s.route === route);
+    const remit = emit.forRoute(route);
+    remit.enter('release');
+    remit.emit(`release summary — ${rows.length} repo(s):`);
+    for (const s of rows) {
+      const testLabel = s.tests === 'pass' ? 'tests passed' : s.tests === 'fail' ? 'tests FAILED' : 'tests skipped';
+      remit.emit(`  ${s.scope}: ${testLabel}, ${s.outcome} — ${s.detail}`, {
+        level: s.outcome === 'error' || s.tests === 'fail' ? 'warn' : 'info',
+      });
+    }
+  }
+}
+
 /**
  * Turns a completed `runRelease` outcome into one summary row.
  *

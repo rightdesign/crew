@@ -29,7 +29,7 @@ import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './ag
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
-import { runRelease, summarizeOutcome, type RepoReleaseSummary } from './release-run.ts';
+import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { renderEnvironment } from './environment.ts';
@@ -573,38 +573,17 @@ async function syncHostPassengers(): Promise<void> {
  * deploy, and two of those at once on one machine is how a release starts
  * failing for reasons unrelated to the code.
  */
-/**
- * One line per repo, printed once every repo a fan-out touched has run.
- *
- * Only when there is more than one: a single-repo release already has its
- * own outcome in the log immediately above with nothing to disambiguate it
- * from. The ambiguity this exists to remove — a mixed pass/fail run reading
- * as "tests didn't block the deploy" — only arises once a route or `--fleet`
- * run spans more than one repo (ISSUE-583).
- */
-function printReleaseSummary(summaries: RepoReleaseSummary[]): void {
-  if (summaries.length <= 1) return;
-  emit.enter('release');
-  emit.emit(`release summary — ${summaries.length} repo(s):`);
-  for (const s of summaries) {
-    const testLabel = s.tests === 'pass' ? 'tests passed' : s.tests === 'fail' ? 'tests FAILED' : 'tests skipped';
-    emit.emit(`  ${s.scope}: ${testLabel}, ${s.outcome} — ${s.detail}`, {
-      level: s.outcome === 'error' || s.tests === 'fail' ? 'warn' : 'info',
-    });
-  }
-}
-
 async function releaseFleet(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
-  const summaries: RepoReleaseSummary[] = [];
+  const summaries: RoutedReleaseSummary[] = [];
   for (const c of cfg.routes) {
     if (!dryRun && !c.enabled) continue;
     // No route-wide platform gate: releasePhase checks each repo's own
     // requirement, and a route can span repos with different needs.
-    for (const r of reposOf(c)) summaries.push(await releasePhase(c, r, opts));
+    for (const r of reposOf(c)) summaries.push({ ...(await releasePhase(c, r, opts)), route: c.route });
   }
-  printReleaseSummary(summaries);
+  emitReleaseSummary(emit, summaries);
 }
 
 /**
@@ -627,9 +606,9 @@ async function releaseTargets(
     );
     process.exit(2);
   }
-  const summaries: RepoReleaseSummary[] = [];
-  for (const t of chosen) summaries.push(await releasePhase(route, t, opts));
-  printReleaseSummary(summaries);
+  const summaries: RoutedReleaseSummary[] = [];
+  for (const t of chosen) summaries.push({ ...(await releasePhase(route, t, opts)), route: route.route });
+  emitReleaseSummary(emit, summaries);
 
   // Ship-wide, not per-repo — one sweep per release cycle, alongside the
   // worktree sweep each repo just ran above (ISSUE-401).
@@ -1122,15 +1101,19 @@ switch (command) {
       }
 
       const w = fleet.winner;
+      // Route-scoped (CREW-994): everything from here to the end of the fleet
+      // branch is about the WINNING route, not whichever route the top-level
+      // `emit` was stamped with (routes[0]) — same rule as releasePhase.
+      const wemit = emit.forRoute(w.route.route);
       if (!(await anyRepoServable(w.route))) {
-        emit.error(
+        wemit.error(
           `refusing ${w.route.route} — this ship is ${cfg.ship.platform}, but ` +
             `${await explainUnservable(w.route)}`,
         );
         break;
       }
       if (!dryRun && !w.route.enabled) {
-        emit.emit(`route "${w.route.route}" is not enabled — not running`);
+        wemit.emit(`route "${w.route.route}" is not enabled — not running`);
         break;
       }
       if (dryRun) {
@@ -1139,7 +1122,7 @@ switch (command) {
           stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
           environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
           apiKey: resolveApiKey(w.route),
-          cycle: emit.cycle, ticket: w.decision.actionable.top?.issue_id,
+          cycle: wemit.cycle, ticket: w.decision.actionable.top?.issue_id,
           divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -1153,7 +1136,7 @@ switch (command) {
       // poll above is read-only and must run every cycle regardless.
       const fleetLock = state.acquireRun(w.role, cfg.ship.maxConcurrentAgents);
       if (!fleetLock.ok) {
-        emit.emit(`${w.role} skipped this cycle — ${fleetLock.reason}`);
+        wemit.emit(`${w.role} skipped this cycle — ${fleetLock.reason}`);
         if (!skipInlineRelease) await releaseFleet();
         break;
       }
@@ -1179,25 +1162,25 @@ switch (command) {
             (t) => dirForRepo(w.route, t.repo_id) !== null,
           );
           if (result.contended.length) {
-            emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+            wemit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: w.role,
             });
           }
           if (result.unservable.length) {
-            emit.emit(
+            wemit.emit(
               `skipped ${result.unservable.join(', ')} — no local checkout for their repo`,
               { step: 'select', role: w.role },
             );
           }
           if (!result.ticket) {
-            emit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
+            wemit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
             if (!skipInlineRelease) await releaseFleet();
             break;
           }
           if (result.claimed) {
             const idx = w.decision.tickets.findIndex((t) => t.id === result.ticket!.id);
             if (idx >= 0) w.decision.tickets[idx] = result.ticket;
-            writeDigest({ route: w.route, ship: cfg.ship, state, emit }, w.decision, w.role, cfg.ship.stateDir);
+            writeDigest({ route: w.route, ship: cfg.ship, state, emit: wemit }, w.decision, w.role, cfg.ship.stateDir);
           }
           fleetTicketHint = result.ticket.issue_id;
           fleetWorkingId = result.ticket.id;
@@ -1208,10 +1191,10 @@ switch (command) {
           const target = repoTargetFor(w.route, result.ticket.repo_id);
           try {
             if (target && ensureRepoCheckout(target.dir, target.remote)) {
-              emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
+              wemit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
             }
           } catch (e) {
-            emit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
+            wemit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
             if (!skipInlineRelease) await releaseFleet();
             break;
           }
@@ -1223,41 +1206,41 @@ switch (command) {
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
         environment: await environmentFor(w.route, fleetTicketHint),
         apiKey: resolveApiKey(w.route),
-        cycle: emit.cycle, ticket: fleetTicketHint,
+        cycle: wemit.cycle, ticket: fleetTicketHint,
         divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
       });
-      emit.enter('agent', w.role);
-      emit.emit(`starting agent run for ${w.route.route}`);
+      wemit.enter('agent', w.role);
+      wemit.emit(`starting agent run for ${w.route.route}`);
       const fleetMemberId = w.route.resolved?.seats[w.role];
       if (fleetMemberId) {
         try {
           await fleetTracker.setCrewStatus(fleetMemberId, 'working', fleetWorkingId);
         } catch (e) {
-          emit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
+          wemit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
         }
       }
       try {
         await fleetTracker.beatEngaged(cfg.ship.name, w.route.route, fleetWorkingId);
       } catch (e) {
-        emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
+        wemit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
       }
       try {
-        await spawnAgent(fleetPlan, emit);
+        await spawnAgent(fleetPlan, wemit);
       } finally {
         dropLock();
         if (fleetMemberId) {
           try {
             await fleetTracker.setCrewStatus(fleetMemberId, 'idle');
           } catch (e) {
-            emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
+            wemit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
           }
         }
         try {
           await fleetTracker.beatIdle(cfg.ship.name);
         } catch (e) {
-          emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
+          wemit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
         }
       }
       if (!skipInlineRelease) await releaseFleet();
