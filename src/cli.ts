@@ -25,7 +25,7 @@ import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
-import { planAgentRun, describePlan, spawnAgent } from './agent.ts';
+import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
@@ -277,6 +277,55 @@ const value = (name: string) => {
 const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'));
 const command = positional[0];
 if (!command) usage();
+
+/**
+ * Defence-in-depth for CREW-978's incident: a QA agent ran `crew connect`
+ * "as a manual sanity check" against this ship's real `~/.config/crew/
+ * crew.yaml` and live `stateDir`, corrupting the `issues/issues` route's
+ * resolved-ids file and taking down polling for every lane until a person
+ * restored it by hand. CREW-978 fixed the two concrete write-safety bugs
+ * that let that corrupt a file at all, and added a "never run a
+ * state-writing crew command against the live config" warning to the
+ * shared lane policy (`common.md`) — but that warning is still just
+ * instructions a session can ignore or forget. This is the structural half
+ * (ISSUE-980): refuse outright, before touching the config the session
+ * might otherwise clobber.
+ *
+ * `CREW_LANE_ROLE_VAR` is already set on every headless session `agent.ts`
+ * launches (`planAgentRun`'s `setEnv`) for an unrelated reason (telling the
+ * operator's `pair-context-hook.sh` apart from a real lane run) — reused
+ * here as "this process is a crew-launched agent session", since an
+ * operator's own terminal never has it set.
+ *
+ * Deliberately narrow: only the commands `common.md` already warns never to
+ * run against the live config (`connect`, `agents sync`, `skills sync`,
+ * `install`, `uninstall`, `release`, `merge`, `deploy`) are refused. `sync`
+ * is NOT here — Step 3.1 of every lane's own policy has every session run
+ * `crew sync` at the start of each ticket, and that's a fetch/fast-forward
+ * of git refs, not a write to `crew.yaml`/`stateDir`, so blocking it would
+ * break the one legitimate `crew` call a session is actually supposed to
+ * make.
+ */
+const STATE_WRITING_COMMANDS = new Set(['connect', 'install', 'uninstall', 'release', 'merge', 'deploy']);
+const STATE_WRITING_SUBCOMMANDS: Partial<Record<string, Set<string>>> = {
+  agents: new Set(['sync']),
+  skills: new Set(['sync']),
+};
+const sessionRole = process.env[CREW_LANE_ROLE_VAR];
+if (sessionRole && (
+  STATE_WRITING_COMMANDS.has(command) ||
+  STATE_WRITING_SUBCOMMANDS[command]?.has(positional[1] ?? '')
+)) {
+  const full = positional[1] && STATE_WRITING_SUBCOMMANDS[command] ? `${command} ${positional[1]}` : command;
+  process.stderr.write(
+    `crew: refusing to run "${full}" — this process is a crew-launched agent session ` +
+      `(${CREW_LANE_ROLE_VAR}=${sessionRole}), and "${full}" writes to this ship's real ` +
+      `crew.yaml/stateDir. A session must never touch the live config (CREW-978 — this took ` +
+      `down polling for every lane, once). If exercising the CLI genuinely needs to run, point ` +
+      `it at a throwaway config first: CREW_CONFIG=/tmp/... crew ${full} ...\n`,
+  );
+  process.exit(2);
+}
 
 // `passenger-sync-daemon` (ISSUE-554) is not an operator-facing command —
 // it's what `syncPassengerSyncDaemons` (passenger-sync-daemon.ts) spawns

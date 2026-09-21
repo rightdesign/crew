@@ -100,6 +100,15 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   return out;
 }
 
+/**
+ * Set in every headless agent session's environment (below), to whichever
+ * role planned the run. Two independent things key off it: the operator's
+ * `pair-context-hook.sh` (see the comment on `setEnv.CREW_LANE_ROLE` below),
+ * and `cli.ts`'s own refusal of state-writing subcommands run from inside a
+ * session (ISSUE-980) — the same value, read for a second, unrelated reason.
+ */
+export const CREW_LANE_ROLE_VAR = 'CREW_LANE_ROLE';
+
 export interface PromptParts {
   roster: string;
   /**
@@ -349,7 +358,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
       // ticket attached, which silently no-ops and strands the ticket
       // in_progress (ISSUE-490, ISSUE-591). Setting this is what lets that
       // hook tell the two apart; it has nothing to do with the run itself.
-      CREW_LANE_ROLE: o.role,
+      [CREW_LANE_ROLE_VAR]: o.role,
     },
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,
