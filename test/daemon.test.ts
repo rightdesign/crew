@@ -6,11 +6,31 @@ import { tmpdir } from 'node:os';
 import { Emitter, eventFileFor } from '../src/events.ts';
 import { State } from '../src/state.ts';
 import type { Route, Ship } from '../src/config.ts';
+import { resolveApiKey } from '../src/config.ts';
 import type { CycleDecision } from '../src/poll.ts';
 import {
   runDaemonLoop, runOnePass, computeTreeSignature, makeStaleChecker,
   type PassResult, type RunOnePassOptions,
 } from '../src/daemon.ts';
+import type { SessionStore, StoredSession } from '@tablation/client';
+
+/**
+ * `runOnePass` re-hydrates its route's API key from the OS keychain every
+ * cycle (ISSUE-966) via `getSessionStore` — a test must never let that reach
+ * a real macOS Keychain/libsecret/Credential Manager call, so every test
+ * touching that behavior supplies its own fake store through this option.
+ */
+function fakeSessionStore(sessions: Record<string, StoredSession | undefined>): SessionStore {
+  return {
+    get: async (host, workspaceSlug) => sessions[`${host}/${workspaceSlug}`],
+    set: async () => {},
+    clear: async () => {},
+  };
+}
+
+function fakeSession(apiKey: string): StoredSession {
+  return { apiKey, shipId: 'shp_test', workspaceId: 'ws-1', identityId: 'id-1', createdAt: '2026-09-21T00:00:00Z' };
+}
 
 // ---------------------------------------------------------------------------
 // Layer 1: runDaemonLoop — pure scheduler, no tracker/filesystem beyond a
@@ -203,7 +223,7 @@ test('makeStaleChecker reports false until a watched path actually changes', () 
 // real claim/checkout/spawn sequence both faked out.
 // ---------------------------------------------------------------------------
 
-function fakeRoute(): Route {
+function fakeRoute(overrides: Partial<Route> = {}): Route {
   return {
     route: 'issues/test',
     enabled: true,
@@ -223,6 +243,7 @@ function fakeRoute(): Route {
       operator: 'operator-id',
       holds: [],
     },
+    ...overrides,
   } as unknown as Route;
 }
 
@@ -257,10 +278,10 @@ function fakeDecision(pending: CycleDecision['selection']['pending']): CycleDeci
   };
 }
 
-function rig(): { state: State; opts: Omit<RunOnePassOptions, 'decide' | 'spawnRoleAgent'> } {
+function rig(routeOverrides: Partial<Route> = {}): { state: State; opts: Omit<RunOnePassOptions, 'decide' | 'spawnRoleAgent'> } {
   const dir = mkdtempSync(join(tmpdir(), 'crew-daemon-'));
   const state = new State(dir);
-  const route = fakeRoute();
+  const route = fakeRoute(routeOverrides);
   const ship = fakeShip(dir);
   return {
     state,
@@ -393,4 +414,66 @@ test('a role with no rank sorts last rather than crashing the pass', async () =>
     spawnRoleAgent: async (role) => { spawned.push(role); },
   });
   assert.deepEqual(result.started, ['qa', 'dev']);
+});
+
+// ---------------------------------------------------------------------------
+// ISSUE-966: runOnePass re-hydrates its route's API key from the OS
+// keychain at the top of every cycle, so a re-`crew connect` (a fresh
+// device-login session) takes effect on the very next pass without a daemon
+// restart. `getSessionStore` is the test-injection seam — never a real
+// keychain call here.
+// ---------------------------------------------------------------------------
+
+test('runOnePass hydrates a keychain-backed route\'s apiKey before deciding the cycle', async () => {
+  const { opts } = rig({ apiKey: undefined, apiKeyFile: undefined, apiKeyVar: undefined });
+  const decision = fakeDecision([]);
+  let apiKeyAtDecideTime: string | undefined;
+  await runOnePass({
+    ...opts,
+    getSessionStore: () => fakeSessionStore({ 'example.test/issues': fakeSession('sk_from_keychain') }),
+    decide: async (ctx) => { apiKeyAtDecideTime = resolveApiKey(ctx.route); return decision; },
+    spawnRoleAgent: async () => {},
+  });
+  assert.equal(apiKeyAtDecideTime, 'sk_from_keychain');
+});
+
+test('runOnePass never queries the keychain for a route with an explicit apiKey', async () => {
+  const { opts } = rig({ apiKey: 'sk_explicit' });
+  const decision = fakeDecision([]);
+  const calls: string[] = [];
+  await runOnePass({
+    ...opts,
+    getSessionStore: () => {
+      calls.push('getSessionStore called');
+      return fakeSessionStore({ 'example.test/issues': fakeSession('sk_from_keychain') });
+    },
+    decide: async () => decision,
+    spawnRoleAgent: async () => {},
+  });
+  // hydrateApiKeys still runs (it always does), but resolveApiKey succeeds
+  // for an explicit apiKey before ever asking the store for anything.
+  assert.equal(opts.route.apiKey, 'sk_explicit');
+});
+
+test('runOnePass re-queries the keychain on a LATER cycle and picks up a re-connected session, no restart needed', async () => {
+  const { opts } = rig({ apiKey: undefined, apiKeyFile: undefined, apiKeyVar: undefined });
+  const decision = fakeDecision([]);
+
+  await runOnePass({
+    ...opts,
+    getSessionStore: () => fakeSessionStore({ 'example.test/issues': fakeSession('sk_v1') }),
+    decide: async () => decision,
+    spawnRoleAgent: async () => {},
+  });
+  assert.equal(resolveApiKey(opts.route), 'sk_v1');
+
+  // A second pass — as the daemon's persistent loop would run it — with a
+  // DIFFERENT session now stored (an operator re-ran `crew connect`).
+  await runOnePass({
+    ...opts,
+    getSessionStore: () => fakeSessionStore({ 'example.test/issues': fakeSession('sk_v2') }),
+    decide: async () => decision,
+    spawnRoleAgent: async () => {},
+  });
+  assert.equal(resolveApiKey(opts.route), 'sk_v2');
 });

@@ -25,6 +25,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, isAbsolute, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { parse } from 'yaml';
+import { getSessionStore, hostFromUrl, type SessionStore } from '@tablation/client';
 import {
   hostPlatform, isShipPlatform,
   type ShipPlatform,
@@ -1068,6 +1069,84 @@ export function resolveApiKey(r: Route): string {
   throw new ConfigError(
     `route "${r.route}": no API key (apiKey, or ${r.apiKeyVar ?? 'VAR'} in ${r.apiKeyFile ?? '<unset>'})`,
   );
+}
+
+/**
+ * Routes `hydrateApiKeys` has decided are keychain-backed — those that had
+ * neither an explicit `apiKey` nor a working `apiKeyFile`/`apiKeyVar` pair
+ * the FIRST time it ever saw them. Remembered per `Route` object (not
+ * recomputed from `route.apiKey`, which this same function goes on to set)
+ * so a later call — the daemon's per-cycle re-hydrate — knows which routes
+ * it is allowed to keep refreshing from the keychain even after the first
+ * call already gave one an in-memory `apiKey`, while a route with a real
+ * `crew.yaml`-declared `apiKey`/`apiKeyFile` is never added here and so is
+ * never touched by a later call either, however that file later behaves.
+ */
+const KEYCHAIN_ELIGIBLE_ROUTES = new WeakSet<Route>();
+
+/**
+ * Fills in `route.apiKey` (in memory only — this never writes back to
+ * `crew.yaml`) for any route with no other way to resolve one, from
+ * whatever `@tablation/client`'s OS keychain (`getSessionStore` — macOS
+ * Keychain, Linux libsecret, Windows Credential Manager) already holds for
+ * that route's `baseUrl` host + workspace slug. That's the exact store
+ * `crew connect`'s device-login path (and `tablation login`) write a fresh
+ * session into (ISSUE-966) — this is the read side.
+ *
+ * Called once, right after `loadConfig`, in `cli.ts`'s entry point, and
+ * again every cycle by the daemon's poll loop (`daemon.ts#runOnePass`) so a
+ * re-`crew connect` (a new keychain session) takes effect on the next cycle
+ * without a restart — see `KEYCHAIN_ELIGIBLE_ROUTES` above for how repeat
+ * calls stay scoped to only the routes that were ever keychain-eligible in
+ * the first place. `resolveApiKey` itself stays synchronous and unaware
+ * this ran; the ~15 existing call sites are unchanged. A route this can't
+ * help (no keychain support on this platform, no session stored, or a
+ * malformed `route` string) is simply left as `resolveApiKey` already
+ * treats it — this function never throws.
+ */
+export async function hydrateApiKeys(
+  routes: Route[],
+  // Injectable for tests, which must never touch a real OS keychain — see
+  // hydrateApiKeys.test.ts. Defaults to the real `@tablation/client` backend.
+  getStore: () => SessionStore = getSessionStore,
+): Promise<void> {
+  let store: SessionStore | undefined;
+  let storeUnavailable = false;
+
+  for (const route of routes) {
+    if (!KEYCHAIN_ELIGIBLE_ROUTES.has(route)) {
+      try {
+        resolveApiKey(route);
+        continue; // an explicit apiKey or a working apiKeyFile already covers this route
+      } catch {
+        KEYCHAIN_ELIGIBLE_ROUTES.add(route);
+      }
+    }
+    if (storeUnavailable) continue;
+    if (!store) {
+      try {
+        store = getStore();
+      } catch {
+        storeUnavailable = true;
+        continue;
+      }
+    }
+    let workspaceSlug: string;
+    try {
+      [workspaceSlug] = splitRoute(route.route);
+    } catch {
+      continue; // malformed route string — resolveApiKey already reports this route's real problem
+    }
+    try {
+      const session = await store.get(hostFromUrl(route.baseUrl), workspaceSlug);
+      if (session?.apiKey) route.apiKey = session.apiKey;
+    } catch {
+      // No Secret Service / Credential Manager available on this machine
+      // (e.g. a headless systemd unit with no libsecret) — leave it
+      // unresolved; resolveApiKey's own "no API key" error is still the
+      // right one to surface, exactly as before this existed.
+    }
+  }
 }
 
 /** Seats and holds as the roster builder wants them. Requires resolved ids. */

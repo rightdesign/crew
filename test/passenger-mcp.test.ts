@@ -12,7 +12,7 @@ const WRITE_SHAPED_TOOL_NAMES = ['write_file', 'edit_file', 'move_file', 'create
 
 // Bare host, NO /api suffix (ISSUE-694) — matching the real convention
 // every other crew call site follows (agent-log.ts, agent.ts, agents.ts,
-// connect.ts, device-auth.ts, logbook.ts, skills.ts, tracker.ts all
+// connect.ts, logbook.ts, skills.ts, tracker.ts all
 // append /api themselves). Keeping this bare is what makes these tests
 // actually exercise validateCredential's own /api-appending, rather than
 // papering over it the way the pre-ISSUE-694 fixture did.

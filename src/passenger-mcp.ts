@@ -178,7 +178,7 @@ async function validateCredential(
   }
   // ISSUE-694 (security): every OTHER call site in this repo appends /api
   // to baseUrl (agent-log.ts, agent.ts, agents.ts, connect.ts,
-  // device-auth.ts, logbook.ts, skills.ts, tracker.ts) — this was the one
+  // logbook.ts, skills.ts, tracker.ts) — this was the one
   // place that didn't. Without it, this request hits Tablation's own
   // frontend SPA's client-side-routing catch-all, which answers ANY path
   // with its index.html at 200 OK regardless of the Authorization header's

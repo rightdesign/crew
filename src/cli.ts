@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
-  loadConfig, findRoute, routeForDir, resolveApiKey, reposOf, repoIdForName, shipWorktreePrefixFor, ticketsByRepo,
+  loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
+  ticketsByRepo,
   DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
@@ -47,7 +48,10 @@ import {
   discover, listWorkspaces, renderConnection, ConnectHttpError,
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIER,
 } from './connect.ts';
-import { authorizeDevice, pollForDeviceToken, DeviceAuthExpired, DeviceAuthDenied } from './device-auth.ts';
+import {
+  getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
+  type SessionStore,
+} from '@tablation/client';
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -359,6 +363,12 @@ try {
   }
   throw e;
 }
+// One-time async hydrate (ISSUE-966): fills in `route.apiKey` in memory for
+// any route with no explicit `apiKey`/working `apiKeyFile`, from whatever
+// the OS keychain already holds for it — `resolveApiKey`'s ~15 call sites
+// below all stay synchronous and unaware this ran. See `hydrateApiKeys`'s
+// own doc comment in config.ts.
+await hydrateApiKeys(cfg.routes);
 // A route that failed to parse is dropped, not fatal (config.ts) — surface
 // it loudly so a broken route doesn't sit silently unnoticed, but every
 // OTHER route still runs.
@@ -1874,12 +1884,54 @@ switch (command) {
     // already-configured route's (already-merged) key is the next best
     // guess, and exactly what a ship-level key resolves to in practice.
     let apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? cfg.routes.find((c) => c.apiKey)?.apiKey;
-    // Set only when THIS run minted the key via device-authorization
-    // (ISSUE-609) — `runConnect` below uses this to write the key to
-    // apiKeyPathFor and print real apiKeyFile/apiKeyVar values in the
-    // rendered route block, since a `--key`-supplied key was already
-    // sitting in a file somewhere before this ever ran, but a freshly
-    // minted one has nowhere else to live.
+    // The OS keychain store `@tablation/client` reads/writes sessions
+    // through (ISSUE-966) — the same one `hydrateApiKeys` reads on every
+    // `crew` invocation, and `tablation login` already writes into.
+    // `undefined` when this platform has no backend implemented at all
+    // (`getSessionStore` throws synchronously in that case); every other
+    // failure (no Secret Service, no Credential Manager reachable) is
+    // reported lazily, per call, since it can't be told apart from "not
+    // logged in yet" until the call is actually made.
+    let store: SessionStore | undefined;
+    try {
+      store = getSessionStore();
+    } catch {
+      store = undefined;
+    }
+    // Set once this route's key is known to live in (or was just written
+    // to) the OS keychain — `runConnect` below uses this to skip the
+    // apiKeyFile fallback entirely and tell `renderConnection` to omit
+    // apiKeyFile/apiKeyVar from the pasted route block, since
+    // `hydrateApiKeys` (config.ts) resolves this route's key from the
+    // keychain on every future `crew` run regardless of how it got there.
+    let keychainBacked = false;
+    // Reuse an already-stored session for this exact host+workspace instead
+    // of starting a second browser round-trip — only possible when the
+    // workspace is already known (an explicit `crew connect ws[/proj]` or
+    // `--workspace`); a bare `crew connect` doesn't know which workspace to
+    // look up until AFTER a login (device or otherwise) says so.
+    if (!apiKey && workspace && store) {
+      try {
+        const existing = await store.get(hostFromUrl(baseUrl), workspace);
+        if (existing?.apiKey) {
+          apiKey = existing.apiKey;
+          keychainBacked = true;
+          process.stderr.write(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.\n`);
+        }
+      } catch {
+        // No Secret Service / Credential Manager reachable right now — fall
+        // through to the device-login flow below exactly as if nothing had
+        // ever been stored.
+      }
+    }
+    // Set only when THIS run minted the key via device-login and could NOT
+    // store it in the OS keychain — `runConnect` below uses this to fall
+    // back to writing the key to apiKeyPathFor and print real
+    // apiKeyFile/apiKeyVar values in the rendered route block, the same way
+    // every device-authorization key had to before the keychain existed.
+    // A key that DID make it into the keychain needs neither: `crew.yaml`
+    // names no `apiKey`/`apiKeyFile` at all for that route, and
+    // `hydrateApiKeys` resolves it from the keychain on every future run.
     let mintedFromDevice = false;
     if (!apiKey) {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -1894,19 +1946,24 @@ switch (command) {
       // device-authorization handshake (ISSUE-609) rather than just
       // refusing: Synthesis already exposes this for exactly this case
       // (a CLI with no key yet, run by someone who already has workspace
-      // access — typically via SSO).
-      const auth = await authorizeDevice(baseUrl, cfg.ship.userAgent, `crew on ${hostname()}`);
-      process.stderr.write(
-        'No API key given — approve this device from a browser you\'re already signed into Tablation with:\n\n' +
-        `  ${auth.verificationUriComplete}\n\n` +
-        `  (user code, if not already filled in: ${auth.userCode})\n\nWaiting for approval`,
-      );
+      // access — typically via SSO). Goes through `@tablation/client`'s own
+      // `loginWithDeviceCode` (ISSUE-966) — the same flow `tablation login`
+      // uses — rather than crew's own now-deleted copy of it.
       let result;
       try {
-        result = await pollForDeviceToken(baseUrl, cfg.ship.userAgent, auth, () => process.stderr.write('.'));
+        result = await loginWithDeviceCode(baseUrl, {
+          deviceName: `crew on ${hostname()}`,
+          onCode: (info) => {
+            process.stderr.write(
+              'No API key given — approve this device from a browser you\'re already signed into Tablation with:\n\n' +
+              `  ${info.verificationUriComplete}\n\n` +
+              `  (user code, if not already filled in: ${info.userCode})\n\nWaiting for approval`,
+            );
+          },
+        });
       } catch (e) {
         process.stderr.write('\n');
-        if (e instanceof DeviceAuthExpired || e instanceof DeviceAuthDenied) {
+        if (e instanceof DeviceLoginError) {
           process.stderr.write(`crew connect: ${e.message}\n`);
         } else {
           process.stderr.write(`crew connect: device authorization failed — ${(e as Error).message}\n`);
@@ -1923,6 +1980,28 @@ switch (command) {
       // no ambiguity in, the same reasoning as the single-workspace
       // shortcut below.
       if (!workspace) workspace = result.workspace.slug;
+      if (store) {
+        try {
+          await store.set(hostFromUrl(baseUrl), result.workspace.slug, {
+            apiKey: result.apiKey.key,
+            shipId: getOrCreateShipId(),
+            workspaceId: result.workspace.id,
+            identityId: result.identity.id,
+            createdAt: result.apiKey.createdAt,
+          });
+          keychainBacked = true;
+          process.stderr.write(
+            `API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${result.workspace.slug}.\n`,
+          );
+        } catch (e) {
+          process.stderr.write(
+            `(could not store the key in the OS keychain — ${(e as Error).message} — ` +
+            'falling back to a key file)\n',
+          );
+        }
+      } else {
+        process.stderr.write('(no OS keychain support on this platform — falling back to a key file)\n');
+      }
     }
     const authOpts = { baseUrl, apiKey, userAgent: cfg.ship.userAgent };
 
@@ -2088,7 +2167,12 @@ switch (command) {
         renameSync(tmpPath, resolvedPath);
         process.stderr.write(`Resolved ids written to ${resolvedPath}\n`);
       }
-      // A device-authorization key (ISSUE-609) has nowhere else to live —
+      // A device-authorization key that made it into the OS keychain
+      // (ISSUE-966) needs no file at all — `hydrateApiKeys` resolves it from
+      // there on every future `crew` run, keyed by this route's own
+      // baseUrl host + workspace slug. Only a key that COULDN'T be stored
+      // there (no keychain support on this platform, or the store's `set`
+      // itself failed) falls back to the old plaintext-file convention:
       // persist it the same shape apiKeyFile/apiKeyVar already expect
       // (a `VAR=value` line), rather than printing it to a terminal for
       // the operator to paste somewhere themselves the way a `--key`
@@ -2096,7 +2180,7 @@ switch (command) {
       // this ran. 0600: this file holds a live credential.
       let apiKeyFile: string | undefined;
       const apiKeyVar = 'CREW_API_KEY';
-      if (mintedFromDevice) {
+      if (mintedFromDevice && !keychainBacked) {
         apiKeyFile = apiKeyPathFor(cfg.ship.stateDir, route);
         if (dryRun) {
           process.stderr.write(`(dry run) would write the minted API key to ${apiKeyFile}\n`);
@@ -2109,7 +2193,7 @@ switch (command) {
       process.stdout.write(renderConnection(
         found, route,
         value('dir') ?? 'REPLACE — the local checkout this route works',
-        { area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined },
+        { area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked },
       ));
       if (found.provisioning.length) {
         process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);

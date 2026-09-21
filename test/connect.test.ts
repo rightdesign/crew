@@ -746,3 +746,46 @@ test('renderConnection() no longer prints a resolved: block — those ids go to 
   assert.ok(!block.includes('resolved:'));
   assert.ok(block.includes('route: issues/issues'));
 });
+
+test('renderConnection() prints real apiKeyFile/apiKeyVar when a device-login key had to fall back to a file (ISSUE-966)', () => {
+  const d: Discovered = {
+    workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
+    projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+  };
+  const block = renderConnection(d, 'issues/issues', '/tmp/synthesis', {
+    apiKeyFile: '/tmp/state/keys/issues/issues.env', apiKeyVar: 'CREW_API_KEY',
+  });
+  assert.ok(block.includes('apiKeyFile: "/tmp/state/keys/issues/issues.env"'));
+  assert.ok(block.includes('apiKeyVar: CREW_API_KEY'));
+  // Only the apiKey placeholders are resolved by a device-login run — the
+  // route's baseUrl placeholder is unrelated (ISSUE-966 doesn't thread
+  // baseUrl through renderConnection) and stays a REPLACE for the operator
+  // to fill in, same as every other connect flavor.
+  assert.ok(!block.includes('REPLACE — a file holding'));
+  assert.ok(!block.includes('REPLACE_KEY_VAR'));
+});
+
+test('renderConnection() omits apiKeyFile/apiKeyVar entirely for a keychain-backed key (ISSUE-966) — hydrateApiKeys resolves it at runtime', () => {
+  const d: Discovered = {
+    workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
+    projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+  };
+  const block = renderConnection(d, 'issues/issues', '/tmp/synthesis', { keychainBacked: true });
+  assert.ok(!block.includes('apiKeyFile:'));
+  assert.ok(!block.includes('apiKeyVar:'));
+  assert.ok(!block.includes('REPLACE — a file holding'));
+  assert.match(block, /# apiKey: resolved automatically from the OS keychain/);
+});
+
+test('renderConnection() still shows the paste-your-own-key placeholder for a plain --key connect (no device login, no keychain)', () => {
+  const d: Discovered = {
+    workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
+    projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+  };
+  const block = renderConnection(d, 'issues/issues', '/tmp/synthesis');
+  assert.ok(block.includes('REPLACE — a file holding'));
+  assert.ok(block.includes('REPLACE_KEY_VAR'));
+});

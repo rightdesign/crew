@@ -643,18 +643,28 @@ export function renderConnection(
   d: Discovered,
   route: string,
   dir: string,
-  opts: { area?: string; apiKeyFile?: string; apiKeyVar?: string } = {},
+  opts: { area?: string; apiKeyFile?: string; apiKeyVar?: string; keychainBacked?: boolean } = {},
 ): string {
-  // A device-authorization run (ISSUE-609) already has a real file/var —
-  // print it verbatim instead of the usual paste-your-own-key placeholder,
-  // since a person supplying `--key` by hand never gets one written for
-  // them and still has to say where their key lives.
-  const apiKeyFileLine = opts.apiKeyFile
-    ? `    apiKeyFile: "${opts.apiKeyFile}"`
-    : `    apiKeyFile: "REPLACE — a file holding this workspace's key"`;
-  const apiKeyVarLine = opts.apiKeyVar
-    ? `    apiKeyVar: ${opts.apiKeyVar}`
-    : `    apiKeyVar: REPLACE_KEY_VAR`;
+  // ISSUE-966: a device-login run whose key made it into the OS keychain
+  // (freshly minted or reused from an earlier `crew connect`/`tablation
+  // login`) needs neither field at all — `hydrateApiKeys` (config.ts)
+  // resolves it from there on every future `crew` run, keyed by this
+  // route's own baseUrl host + workspace slug. Only when that key had
+  // nowhere else to live (no keychain support on this platform, or the
+  // store's `set` itself failed) does `apiKeyFile`/`apiKeyVar` get a real
+  // value — printed verbatim instead of the usual paste-your-own-key
+  // placeholder, since a person supplying `--key` by hand never gets one
+  // written for them and still has to say where their key lives.
+  const apiKeyFileLine = opts.keychainBacked
+    ? `    # apiKey: resolved automatically from the OS keychain (crew connect) — no apiKeyFile needed`
+    : opts.apiKeyFile
+      ? `    apiKeyFile: "${opts.apiKeyFile}"`
+      : `    apiKeyFile: "REPLACE — a file holding this workspace's key"`;
+  const apiKeyVarLine = opts.keychainBacked
+    ? ''
+    : opts.apiKeyVar
+      ? `\n    apiKeyVar: ${opts.apiKeyVar}`
+      : `\n    apiKeyVar: REPLACE_KEY_VAR`;
   return `  - route: ${route}
     enabled: false          # arm it deliberately, once doctor is green
 ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
@@ -665,7 +675,6 @@ ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
     # What a host must be to build this — unix, macos, linux, or windows —
     # belongs in each repo's own .crew.yaml, not here (see docs/REPO_SPEC.md).
     baseUrl: "REPLACE — the same baseUrl as your other routes"
-${apiKeyFileLine}
-${apiKeyVarLine}
+${apiKeyFileLine}${apiKeyVarLine}
 `;
 }

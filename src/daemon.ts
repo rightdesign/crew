@@ -72,7 +72,7 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName, Route, Ship } from './config.ts';
-import { dirForRepo, repoIdForName, repoTargetFor, reposOf, resolveApiKey } from './config.ts';
+import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, resolveApiKey } from './config.ts';
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
@@ -289,6 +289,13 @@ export interface RunOnePassOptions {
   decide?: Decide;
   /** Injected for testing. Defaults to the real claim+checkout+spawn (`runRoleAgent`). */
   spawnRoleAgent?: SpawnRoleAgent;
+  /**
+   * Injected for testing (ISSUE-966) — forwarded to `hydrateApiKeys`'s own
+   * `getStore` parameter so a test never touches a real OS keychain.
+   * Defaults to `hydrateApiKeys`'s own default (the real
+   * `@tablation/client` backend) when left undefined.
+   */
+  getSessionStore?: () => import('@tablation/client').SessionStore;
 }
 
 /**
@@ -310,6 +317,12 @@ export interface RunOnePassOptions {
  * immediately (zero-idle chaining) while those agents are still running.
  */
 export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
+  // Re-check the OS keychain for this route on every cycle (ISSUE-966) —
+  // cheap for a route that isn't keychain-backed at all (see
+  // `hydrateApiKeys`'s own doc comment), and what lets a re-`crew connect`
+  // (a new device-login session) take effect on the very next pass instead
+  // of requiring a daemon restart.
+  await hydrateApiKeys([o.route], o.getSessionStore);
   const emit = o.newEmitter();
   const decide = o.decide ?? decideCycle;
   const spawn = o.spawnRoleAgent ?? runRoleAgent;
