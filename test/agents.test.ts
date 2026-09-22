@@ -207,7 +207,7 @@ test('a differing row with no cached baseline is reported diverged and never ove
 test('a row matching crew\'s own last-synced updated_at is pushed forward when the local default has changed since', async (t) => {
   const promptsDir = makePromptsDir({ dev: 'NEW DEV BRIEF\n' });
   let patchedBody: unknown;
-  const { restore } = mockFetch({
+  const { restore, calls } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
     'GET /api/data-models/agents-model-1/records?limit=200': () => ({
       status: 200,
@@ -219,19 +219,39 @@ test('a row matching crew\'s own last-synced updated_at is pushed forward when t
         { id: 'row-Pair', name: 'Pair', prompt: personaDefaultPrompt(promptsDir, 'pair'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
+    // Content check (CREW-1055): the current prompt must match crew's
+    // last-synced history entry before it pushes an update.
+    'GET /api/data-models/agents-model-1/records/row-Developer/history?limit=50': () => ({
+      status: 200,
+      body: [{ history_id: 'hist-1', changed_at: '2026-01-01T00:00:00Z', prompt: 'COMMON\nOLD DEV BRIEF\n' }],
+    }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': (body) => {
       patchedBody = body;
       return { status: 200, body: { id: 'row-Developer', name: 'Developer', prompt: (body as any).prompt, updated_at: '2026-01-02T00:00:00Z' } };
     },
+    'GET /api/data-models/agents-model-1/records/row-Developer/history?limit=1': () => ({
+      status: 200,
+      body: [{ history_id: 'hist-2', changed_at: '2026-01-02T00:00:00Z', prompt: 'COMMON\nNEW DEV BRIEF\n' }],
+    }),
   });
   t.after(restore);
 
-  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any, {}, promptsDir);
+  const route = makeRoute(
+    { dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z', historyId: 'hist-1' } } as any,
+    {},
+    promptsDir,
+  );
   const result = await syncPersonas(route, {});
   const dev = result.outcomes.find((o) => o.role === 'dev')!;
   assert.equal(dev.action, 'updated');
   assert.deepEqual(patchedBody, { prompt: 'COMMON\nNEW DEV BRIEF\n' });
+  // The CAS target is the row's live `updated_at`, not the stale cached
+  // baseline — an unrelated column change since the last sync must not
+  // trip a false StaleWriteError.
+  const patchCall = calls.find((c) => c.key.startsWith('PATCH'))!;
+  assert.equal(patchCall.headers.get('X-Expected-Updated-At'), '2026-01-01T00:00:00Z');
   assert.equal(result.agentPersonas.dev?.lastSyncedUpdatedAt, '2026-01-02T00:00:00Z');
+  assert.equal(result.agentPersonas.dev?.historyId, 'hist-2');
 });
 
 test('a stale-write 409 (someone edited between the list and the patch) is reported diverged, not thrown', async (t) => {
@@ -248,11 +268,19 @@ test('a stale-write 409 (someone edited between the list and the patch) is repor
         { id: 'row-Pair', name: 'Pair', prompt: personaDefaultPrompt(promptsDir, 'pair'), updated_at: '2026-01-01T00:00:00Z' },
       ],
     }),
+    'GET /api/data-models/agents-model-1/records/row-Developer/history?limit=50': () => ({
+      status: 200,
+      body: [{ history_id: 'hist-1', changed_at: '2026-01-01T00:00:00Z', prompt: 'COMMON\nOLD DEV BRIEF\n' }],
+    }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': () => ({ status: 409, body: { message: 'stale' } }),
   });
   t.after(restore);
 
-  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } } as any, {}, promptsDir);
+  const route = makeRoute(
+    { dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z', historyId: 'hist-1' } } as any,
+    {},
+    promptsDir,
+  );
   const result = await syncPersonas(route, {});
   const dev = result.outcomes.find((o) => o.role === 'dev')!;
   assert.equal(dev.action, 'diverged');

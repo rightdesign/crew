@@ -301,12 +301,14 @@ interface FieldTypeSummary {
   isMultiple?: boolean;
 }
 
-export type PersonaSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged';
+export type PersonaSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'forced';
 
 export interface PersonaSyncOutcome {
   role: RoleName;
   action: PersonaSyncAction;
   agentId: string;
+  /** Only set for `forced` — the prompt `--force` overwrote, so the operator can see what was clobbered. */
+  previousPrompt?: string;
 }
 
 /** Whether this role's Crew row (`route.resolved.seats[role]`) got pointed at its Agents row this pass. */
@@ -344,7 +346,7 @@ export interface SyncPersonasResult {
  */
 export async function syncPersonas(
   route: Route,
-  opts: { userAgent?: string; dryRun?: boolean },
+  opts: { userAgent?: string; dryRun?: boolean; force?: boolean },
 ): Promise<SyncPersonasResult> {
   if (!route.resolved) {
     throw new AgentsSyncError(`route "${route.route}" has no resolved ids — run \`crew connect\` first`);
@@ -398,13 +400,52 @@ export async function syncPersonas(
       continue;
     }
 
-    const knownBaseline = cache[role]?.agentId === row.id ? cache[role]?.lastSyncedUpdatedAt : undefined;
-    if (!knownBaseline) {
-      // No cache entry for this row — crew has never synced it (or the
-      // state dir was wiped) and cannot prove the current content is its
-      // own last write, so this is diverged by definition: an unwritten
-      // `expectedUpdatedAt` below would skip the compare-and-swap
-      // entirely and silently clobber whatever is actually there.
+    if (opts.force) {
+      // `--force` (CREW-1055) skips the divergence check entirely — the
+      // operator has already decided any local edit here is meant to be
+      // discarded and re-anchored to crew's own default. Still a real
+      // (non-CAS'd) write: this is the one path meant to clobber, so an
+      // unlucky race with a concurrent edit is an acceptable risk here,
+      // unlike every other path in this loop.
+      if (opts.dryRun) { outcomes.push({ role, action: 'forced', agentId: row.id, previousPrompt: row.prompt }); continue; }
+      const updated = await client.records.update<AgentRow>(agentsModel.id, row.id, { prompt: defaultPrompt });
+      const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
+      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: updated.updated_at, ...(historyId ? { historyId } : {}) };
+      outcomes.push({ role, action: 'forced', agentId: row.id, previousPrompt: row.prompt });
+      continue;
+    }
+
+    const cached = cache[role]?.agentId === row.id ? cache[role] : undefined;
+    if (!cached?.historyId) {
+      // No cache entry for this row (or none with a historyId) — crew has
+      // never synced it (or the state dir was wiped) and cannot prove the
+      // current content is its own last write, so this is diverged by
+      // definition: there's no baseline to check the prompt against.
+      outcomes.push({ role, action: 'diverged', agentId: row.id });
+      continue;
+    }
+
+    // CREW-1055: whether this counts as diverged is a question about the
+    // `prompt` column specifically, not the row as a whole — a person (or
+    // another `crew` command) moving this row between projects, or any
+    // other column edit, bumps `updated_at` exactly the same as a real
+    // prompt edit would, but isn't one. Compare the row's CURRENT prompt to
+    // whatever crew's own last-synced history entry recorded for it: equal
+    // means nothing touched the prompt since crew wrote it, so the diff
+    // against `defaultPrompt` is just crew's own local template having
+    // moved on, safe to push. Different means a person genuinely edited the
+    // prompt in the app, which stays untouched either way.
+    let lastSyncedPrompt: string | undefined;
+    try {
+      const entries = await fetchHistoryEntries(route, agentsModel.id, row.id, opts.userAgent);
+      lastSyncedPrompt = entries.find((e) => e.history_id === cached.historyId)?.prompt;
+    } catch {
+      lastSyncedPrompt = undefined;
+    }
+    if (lastSyncedPrompt === undefined || lastSyncedPrompt !== row.prompt) {
+      // Either the lookup failed, crew's last-synced version has since
+      // rolled out of the history window, or the prompt itself really did
+      // change since crew wrote it — none of those are safe to overwrite.
       outcomes.push({ role, action: 'diverged', agentId: row.id });
       continue;
     }
@@ -415,18 +456,23 @@ export async function syncPersonas(
     }
 
     try {
+      // `row.updated_at` (not the stale cached baseline) is the correct CAS
+      // target here — the content check above is what proved this write is
+      // safe, and a non-prompt column change since the last sync must not
+      // itself trip the compare-and-swap.
       const updated = await client.records.update<AgentRow>(
-        agentsModel.id, row.id, { prompt: defaultPrompt }, knownBaseline,
+        agentsModel.id, row.id, { prompt: defaultPrompt }, row.updated_at,
       );
       const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
       agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: updated.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'updated', agentId: row.id });
     } catch (e) {
       if (e instanceof StaleWriteError) {
-        // A workspace admin (or anything else) changed this row since crew
-        // last wrote it — never overwrite, per WORKSPACE_AGENTS_PLAN.md's
-        // resolved "Diverged-persona UX" decision. Leave the cache exactly
-        // as it was; the caller surfaces this as a warning.
+        // A genuine race: something changed the row between the `list`
+        // fetch above and this write. Never overwrite, per
+        // WORKSPACE_AGENTS_PLAN.md's resolved "Diverged-persona UX"
+        // decision. Leave the cache exactly as it was; the caller surfaces
+        // this as a warning.
         outcomes.push({ role, action: 'diverged', agentId: row.id });
         continue;
       }
@@ -545,6 +591,7 @@ export function describeSyncOutcome(o: PersonaSyncOutcome): string {
     case 'updated': return `${label}: prompt updated from crew's local default`;
     case 'unchanged': return `${label}: already in sync`;
     case 'diverged': return `${label}: HAS LOCAL EDITS — crew's default is newer but was NOT applied; review ${o.agentId} in the app before syncing again`;
+    case 'forced': return `${label}: --force overwrote local edits (previous prompt was: ${JSON.stringify(o.previousPrompt ?? '')})`;
   }
 }
 

@@ -242,7 +242,7 @@ function usage(): never {
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
-  crew agents sync [route]      push crew's personas AND skill files into the workspace Agents/Agent Skills tables
+  crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
@@ -408,6 +408,10 @@ try {
 }
 const state = new State(cfg.ship.stateDir);
 const dryRun = flag('dry-run');
+// CREW-1055: `crew agents sync --force` only — overwrites a persona's
+// prompt with crew's own local default even when it looks diverged,
+// for the case where a local edit really is meant to be discarded.
+const force = flag('force');
 
 /**
  * Commands that must not overlap themselves. `poll`, `watch`, `status` and
@@ -1681,7 +1685,7 @@ switch (command) {
       break;
     }
     if (sub !== 'sync') {
-      process.stderr.write('crew agents sync [route]              push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables\n');
+      process.stderr.write('crew agents sync [route] [--force]    push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)\n');
       process.stderr.write(`crew agents prompt <role> [route]     print a persona's current prompt (roles: ${ROLE_NAMES.join(', ')})\n`);
       process.exit(2);
     }
@@ -1698,7 +1702,7 @@ switch (command) {
     }
     let personaResult: Awaited<ReturnType<typeof syncPersonas>>;
     try {
-      personaResult = await syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun });
+      personaResult = await syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun, force });
     } catch (e) {
       if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;
@@ -2071,7 +2075,13 @@ switch (command) {
       // status value this route was already asked about last time, whichever
       // way it was answered (`reviewedStatuses`, ISSUE-467).
       let previous:
-        | { contract?: { statuses?: { resolved?: string[] } } | null; reviewedStatuses?: string[]; operator?: string }
+        | {
+            contract?: { statuses?: { resolved?: string[] } } | null;
+            reviewedStatuses?: string[];
+            operator?: string;
+            agentPersonas?: unknown;
+            agentSkills?: unknown;
+          }
         | undefined;
       const hadPreviousFile = existsSync(resolvedPath);
       if (hadPreviousFile) {
@@ -2147,6 +2157,15 @@ switch (command) {
         ...(operator ? { operator } : {}),
         ...(contract ? { contract } : {}),
         ...(reviewedStatuses.length > 0 ? { reviewedStatuses } : {}),
+        // CREW-1055: connect only ever discovers ids — it never syncs
+        // personas/skills itself — so carry forward whatever `crew agents
+        // sync`/`crew skills sync` last wrote here rather than dropping it.
+        // A reconnect that clobbers these strands every role's divergence
+        // baseline (`agents.ts`'s `knownBaseline`), which then reads every
+        // role as "diverged by definition" on the next sync even though
+        // nothing about its prompt actually changed.
+        ...(previous?.agentPersonas ? { agentPersonas: previous.agentPersonas } : {}),
+        ...(previous?.agentSkills ? { agentSkills: previous.agentSkills } : {}),
       };
       if (dryRun) {
         process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
