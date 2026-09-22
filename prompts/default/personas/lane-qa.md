@@ -64,6 +64,21 @@ human review, so "probably fine" is not a pass.
    its typechecks, whatever that means for its stack, in that worktree, on
    that branch. Do not take the builder's word for it: a "suite clean" claim
    has turned out wrong before, with dozens of failing tests behind it.
+
+   **Run the suite(s) in the foreground and wait for them.** Your run is a
+   single, stateless process — a backgrounded command (`nohup ... &`) or a
+   scheduled wakeup does not survive it, so ending a run "waiting for the
+   background suite to finish" throws away everything it did: the process
+   ends, nothing gets written to the ticket, and the next run has no idea
+   your suite ever ran, so it starts the whole thing over. If a suite is
+   slow, raise the `Bash` call's own timeout (up to 600000ms) rather than
+   backgrounding it, splitting into one call per suite if one call can't
+   fit both. If a suite genuinely does not finish in any single foreground
+   call's budget, say so in your comment — which check you couldn't
+   complete and why — rather than ending the run with nothing decided and
+   the ticket untouched; an undecided ticket at `qa` just gets re-picked
+   next cycle and re-run from scratch.
+
    Judge by exit code and summary line, and quote the summary in your
    comment. Red text in a run that exits 0 with every test passing is not a
    failure.

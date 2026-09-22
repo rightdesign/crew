@@ -414,6 +414,21 @@ if `report_type` is either of those.
    missing database, a runtime you couldn't provision), say which check you
    skipped and why, rather than implying a clean run.
 
+   **This run is a single, stateless process: a backgrounded command
+   (`nohup ... &`, `&` alone) or a scheduled wakeup does not survive it.**
+   If a suite takes longer than a foreground `Bash` call's own timeout (up
+   to 600000ms — raise it explicitly rather than accepting a short
+   default), run it in the foreground and wait, splitting a combined
+   suite into one call per piece if that's what it takes to fit. Do not
+   background a suite and end the run "waiting for the notification" —
+   there is no later run that resumes this one; the process ends, the
+   background job dies with it, and the next invocation starts the whole
+   suite over from nothing with no memory of the first attempt. If a
+   suite genuinely does not fit in any single foreground call's budget,
+   say so on the ticket (which check you could not finish and why) rather
+   than backgrounding it — that is a real constraint to surface, not
+   something to work around by returning early.
+
    Match whatever runtime version this repo pins for itself (`.nvmrc`,
    `.python-version`, `go.mod`, a lockfile's engines field — whatever this
    repo actually uses) rather than whatever happens to be active in your
