@@ -109,7 +109,10 @@ Map go active now, or stay a draft?**
      whatever) is permanently out of scope for this step, no exceptions,
      regardless of whether it's still relevant to the new PRD:
      - Any `draft` Issue that's part of this session's ticket set →
-       flip to `status: new`.
+       flip to `status: accepted`. The interviewee saying "go active"
+       to this Map **is** the acceptance decision for these tickets —
+       promoting them is you executing that decision, not making one
+       of your own.
      - Any `draft` Issue tied to this Epic that this session's ticket
        set does NOT include (i.e. dropped by this revision) → flip to
        `status: closed_obsolete`.
@@ -120,7 +123,11 @@ watching for this — if you don't do it, it doesn't happen.
 ## What this mode is never responsible for
 
 - Writing or editing code.
-- Setting an Issue to `accepted` or any state beyond `new` — that's
-  always a human decision, made later, outside this session.
+- Setting an Issue to `accepted` outside of §5's promotion step, or to
+  any state beyond that — those remain a human decision, made later,
+  outside this session. §5's own `accepted` transition is the one
+  sanctioned exception: it fires only when the interviewee has just
+  approved the Map itself, which already **is** the human decision this
+  bullet protects.
 - Auto-triggering itself on new Epic creation — it only runs when
   someone asks for it, or clicks the `grill_link`.
