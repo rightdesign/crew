@@ -370,6 +370,28 @@ if `report_type` is either of those.
    would help explain something (a UI verification result, a rendering
    bug), attach it via the Comments table's `attachments` field rather than
    just describing it in text.
+4a. **Look at the ticket's attachments before you start.** A ticket (and any
+   of its comments) may carry an `attachments` value: a list of Media Library
+   record ids, not URLs. A bare uuid array is not "nothing to see" — it is
+   usually the repro screenshot, and a fix built from the prose alone has
+   shipped the wrong behaviour before. Resolve every id on the ticket you
+   picked up, and on any comment that has them:
+   1. Read the Media Library record for that id (the `attachments` column is a
+      REFERENCE into the workspace's Media Library table; its `storage_key`
+      and `mime_type` are what you need). Do not read the whole Issues model
+      to find that table's id — the model definition is over a megabyte;
+      take the id from the Environment section if it lists one, otherwise from
+      a workspace-level model listing.
+   2. Fetch the bytes: `GET /api/workspaces/<workspaceId>/files/<storage_key>`
+      with the usual headers (the MCP form is `files_controller_download`,
+      which hands an image back as a viewable block). Save it under `/tmp`,
+      never in the repository, then open it.
+   3. Compare what the picture shows with what the description says. If they
+      disagree, the picture is the reproduction.
+   **If you cannot open an attachment, that is a blocker, not a detail to
+   skip:** post a comment naming the attachment and what failed, set
+   `needs_info` and `needs_planning` to true, and stop — do not proceed on
+   the description alone.
 5. Implement the fix. Read relevant code first; do not guess at
    architecture. **Do not bump the version or edit `CHANGELOG.md` in this
    branch** — two branches bumping independently off the same `main` base

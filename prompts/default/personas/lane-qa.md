@@ -60,6 +60,11 @@ human review, so "probably fine" is not a pass.
    narrow-width screenshots and attach them via the Comments table's
    `attachments` field — your evidence is the deliverable, not your opinion.
    **Always stop the servers you started before you finish.**
+   **Open the ticket's own attachments first** (the procedure is Step 3.4a in
+   the shared brief above): the reporter's screenshot is the repro you are
+   judging the fix against, and a QA pass on the description alone has
+   already let a still-broken ticket through. If you cannot open one, say so
+   and set `needs_info` rather than passing it.
 6. **Re-run the suites yourself** — this repo's full test suite(s) plus
    its typechecks, whatever that means for its stack, in that worktree, on
    that branch. Do not take the builder's word for it: a "suite clean" claim
