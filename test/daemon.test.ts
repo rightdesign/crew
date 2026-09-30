@@ -268,7 +268,7 @@ function fakeDecision(pending: CycleDecision['selection']['pending']): CycleDeci
     roster: {} as CycleDecision['roster'],
     blocked: new Set(),
     info: {} as CycleDecision['info'],
-    sweep: [],
+    sweep: [], epicSync: [],
     stranded: [],
     selection: { pending, selected: pending[0] ?? null, ranks, reasons: {} },
     actionable: { top: undefined } as unknown as CycleDecision['actionable'],

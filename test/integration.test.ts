@@ -296,3 +296,45 @@ test('ISSUE-395: a ticket already claimed elsewhere is skipped for the next-rank
     assert.equal(claim?.body.status, 'in_progress');
   } finally { await t.stop(); }
 });
+
+test('CREW-1255: a real cycle marks an epic done, reopens one, and counts tickets outside this route\'s area', async () => {
+  const EPICS = 'm-epics';
+  const stamp = '2026-09-30T00:00:00.000Z';
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows())
+    .table(MODELS.comments, [])
+    .table(EPICS, [
+      { id: 'e1', epic_id: 'EPIC-001', status: 'in_progress', updated_at: stamp },
+      { id: 'e2', epic_id: 'EPIC-002', status: 'done', updated_at: stamp },
+      { id: 'e3', epic_id: 'EPIC-003', status: 'in_progress', updated_at: stamp },
+      { id: 'e4', epic_id: 'EPIC-004', status: 'cancelled', updated_at: stamp },
+    ])
+    .table(MODELS.issues, [
+      ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'closed_deployed', epic_id: 'e1' }),
+      ticket({ id: 'i2', issue_id: 'ISSUE-2', status: 'closed_wont_fix', epic_id: 'e1' }),
+      ticket({ id: 'i3', issue_id: 'ISSUE-3', status: 'closed_deployed', epic_id: 'e2' }),
+      ticket({ id: 'i4', issue_id: 'ISSUE-4', status: 'in_progress', epic_id: 'e2' }),
+      // e3's only open ticket lives in ANOTHER area: invisible to this
+      // route's own poll, and still what keeps the epic from being done.
+      ticket({ id: 'i5', issue_id: 'ISSUE-5', status: 'closed_deployed', epic_id: 'e3' }),
+      ticket({ id: 'i6', issue_id: 'ISSUE-6', status: 'accepted', epic_id: 'e3', project_id: 'another-area' }),
+      ticket({ id: 'i7', issue_id: 'ISSUE-7', status: 'closed_deployed', epic_id: 'e4' }),
+    ])
+    .start();
+  try {
+    const s = ship(t, { resolvedExtra: `      epicsModelId: ${EPICS}\n` });
+    await s.run('poll', 'test/proj', '--dry-run');
+    assert.equal(t.writes.length, 0, 'a dry run must not write');
+
+    await s.run('poll', 'test/proj');
+    assert.equal(t.row(EPICS, 'e1')?.status, 'done');
+    assert.equal(t.row(EPICS, 'e2')?.status, 'in_progress');
+    assert.equal(t.row(EPICS, 'e3')?.status, 'in_progress');
+    assert.equal(t.row(EPICS, 'e4')?.status, 'cancelled');
+    assert.equal(t.writes.filter((w) => w.model === EPICS).length, 2);
+
+    // Converged: a second cycle has nothing left to correct.
+    await s.run('poll', 'test/proj');
+    assert.equal(t.writes.filter((w) => w.model === EPICS).length, 2);
+  } finally { await t.stop(); }
+});

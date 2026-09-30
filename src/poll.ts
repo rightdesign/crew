@@ -18,6 +18,7 @@ import {
 import {
   selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
 } from './select.ts';
+import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } from './epics.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
@@ -35,6 +36,11 @@ export interface CycleDecision {
   blocked: Set<string>;
   info: BlockerInfo;
   sweep: SweepStep[];
+  /**
+   * Epics whose status no longer matches their tickets (CREW-1255). Planned
+   * here, applied by the caller beside `sweep` — see epics.ts.
+   */
+  epicSync: EpicStep[];
   stranded: Ticket[];
   selection: Selection;
   /** Everything actionable this cycle, pooled across every pending role (ISSUE-382). */
@@ -94,8 +100,26 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // in place means every downstream consumer (select.ts, digest.ts, fleet.ts)
   // sees it too, since they all read from this same array or slices of it.
   const epicColumn = tracker.contract.columns.epic;
-  const epicBuilding = tracker.contract.statuses.building;
-  const epicStatusById = new Map(epicRows.map((e) => [e.id, e.status ?? null]));
+  const epicBuilding = tracker.contract.epics.statuses.building;
+  const epicStatusColumn = tracker.contract.epics.statusColumn;
+  const epicStatusById = new Map(epicRows.map((e) => [e.id, (e[epicStatusColumn] as string | null) ?? null]));
+
+  // CREW-1255: what each epic SHOULD say, given its tickets. Never fatal —
+  // an epic left stale for a cycle costs nothing, a poll that dies here
+  // costs the whole cycle. Folded into the map above so this cycle already
+  // ranks by the corrected status rather than the one about to be replaced.
+  let epicSync: EpicStep[] = [];
+  try {
+    const candidates = trackedEpics(epicRows, tracker.contract);
+    const outstanding = await tracker.epicTickets(candidates.map((e) => e.id), { closed: false });
+    const closed = await tracker.epicTickets(
+      epicsNeedingClosedCheck(candidates, outstanding, tracker.contract), { closed: true },
+    );
+    epicSync = planEpicSync(candidates, outstanding, closed, tracker.contract);
+    for (const s of epicSync) epicStatusById.set(s.epic.id, s.to);
+  } catch (e) {
+    emit.warn(`could not take stock of epics this cycle: ${(e as Error).message}`);
+  }
   for (const t of tickets) {
     const epicId = t[epicColumn];
     t.epicInProgress = typeof epicId === 'string' && epicStatusById.get(epicId) === epicBuilding;
@@ -200,7 +224,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const selection = selectRole(selectionInput);
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, blocked, info, sweep, stranded, selection, actionable, watermark,
+    tickets, comments, roster, blocked, info, sweep, epicSync, stranded, selection, actionable, watermark,
     selectionInput, attention: attentionCurrent,
   };
 

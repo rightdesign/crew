@@ -272,6 +272,10 @@ export function renderEnvironment(i: EnvironmentInput): string {
           'fits an existing epic; proposing a new one is a taxonomy decision — leave it',
           'to a person rather than inventing one yourself.',
           '',
+          'An epic\'s own status is kept by the crew runner, from its tickets: done once',
+          'every one of them is closed, in progress while any is being worked. Do not',
+          'set it yourself.',
+          '',
         ]
       : []),
     'Statuses that matter to you:',

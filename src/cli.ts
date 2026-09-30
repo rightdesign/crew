@@ -24,6 +24,7 @@ import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { rankedCandidates } from './select.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
+import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
@@ -1057,6 +1058,20 @@ switch (command) {
       // reachable route, not just the winner — otherwise a route that
       // never wins (lower weight, or consistently out-ranked) never
       // parks or restores a blocked ticket at all, silently, forever.
+      // CREW-1255: the same reasoning holds for the epic sync, so it is
+      // applied per route too. Two routes of one workspace plan the same
+      // correction; the conditional write lets the second one lose quietly.
+      for (const e of fleet.entries) {
+        if (e.error || !e.decision || !e.decision.epicSync.length) continue;
+        const remit = emit.forRoute(e.route.route);
+        if (dryRun) {
+          for (const s of e.decision.epicSync) remit.emit(`would move ${describeEpicStep(s)}`, { step: 'sweep' });
+          continue;
+        }
+        const tracker = new Tracker(e.route, cfg.ship);
+        await applyEpicSync(tracker, e.decision.epicSync, tracker.contract, remit);
+      }
+
       for (const e of fleet.entries) {
         if (e.error || !e.decision || !e.decision.sweep.length) continue;
         // Route-scoped (CREW-979): this loop covers every reachable route,
@@ -1294,6 +1309,15 @@ switch (command) {
             `${r.failed ? `, ${r.failed} failed` : ''}${r.contended ? `, ${r.contended} contended` : ''}`,
           { step: 'sweep', data: r },
         );
+      }
+    }
+
+    if (decision.epicSync.length) {
+      if (dryRun) {
+        for (const s of decision.epicSync) emit.emit(`would move ${describeEpicStep(s)}`, { step: 'sweep' });
+      } else {
+        const tracker = new Tracker(route, cfg.ship);
+        await applyEpicSync(tracker, decision.epicSync, tracker.contract, emit);
       }
     }
 

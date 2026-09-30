@@ -12,7 +12,8 @@ import { hostname } from 'node:os';
 import { TablationClient } from '@tablation/client';
 import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
-import { DEFAULT_CONTRACT, resolveContract, type Contract } from './contract.ts';
+import { DEFAULT_CONTRACT, closedStatuses, resolveContract, type Contract } from './contract.ts';
+import type { EpicRow } from './epics.ts';
 import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './board-lock.ts';
 
 export interface Ticket {
@@ -238,7 +239,7 @@ export class Tracker {
    */
   async terminalTickets(): Promise<Ticket[]> {
     const c = this.contract;
-    const statuses = c.statuses.resolved.filter((s) => s !== c.statuses.verified);
+    const statuses = closedStatuses(c);
     if (!statuses.length) return [];
     const filters: Filter[] = [
       { columnName: c.columns.status, operator: 'IN', value: statuses },
@@ -424,14 +425,54 @@ export class Tracker {
    * not adopted epics still works, and the crew must not require a table it
    * did not create.
    */
-  async epicRows(): Promise<Array<{ id: string; status?: string | null }>> {
+  async epicRows(): Promise<EpicRow[]> {
     const model = this.route.resolved?.epicsModelId;
     if (!model) return [];
     try {
-      return await this.client.records.list(model, { limit: 500 });
+      return await this.client.records.list<EpicRow>(model, { limit: 500 });
     } catch {
       return [];   // the table may be absent or unreadable; neither is fatal
     }
+  }
+
+  /**
+   * The tickets of these epics that are closed (`closed: true`) or not
+   * (`closed: false`), for the epic sync (CREW-1255).
+   *
+   * **Not area-filtered, unlike `openTickets()`**: an epic spans areas, so
+   * whether it is finished can only be judged across all of them. Also not
+   * limited to `statuses.open` — a status this contract has never heard of
+   * (a pre-triage `draft`, say) is still a ticket that is not closed.
+   *
+   * Paged, because an epic's history is unbounded and a truncated page
+   * would silently read as "nothing else outstanding".
+   */
+  async epicTickets(epicIds: string[], o: { closed: boolean }): Promise<Ticket[]> {
+    if (epicIds.length === 0) return [];
+    const c = this.contract;
+    const statuses = closedStatuses(c);
+    if (!statuses.length) return [];
+    const filters = encodeFilters([
+      { columnName: c.columns.epic, operator: 'IN', value: epicIds },
+      { columnName: c.columns.status, operator: o.closed ? 'IN' : 'NOT_IN', value: statuses },
+    ]);
+    const pageSize = 500;
+    const out: Ticket[] = [];
+    for (let page = 0; page < 20; page++) {
+      const rows = await this.client.records.list<Ticket>(this.models.issues, {
+        filters, limit: pageSize, offset: page * pageSize,
+      });
+      out.push(...rows);
+      if (rows.length < pageSize) break;
+    }
+    return out;
+  }
+
+  /** Conditional on `expectedUpdatedAt`, exactly as `updateTicket` is. */
+  async updateEpic(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown> {
+    const model = this.route.resolved?.epicsModelId;
+    if (!model) throw new ConfigError(`route "${this.route.route}" has no Epics table`);
+    return this.client.records.update(model, id, patch, expectedUpdatedAt);
   }
 
   /**

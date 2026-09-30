@@ -68,6 +68,7 @@ export class FakeTracker {
             out = out.filter((r) => {
               const v = r[f.columnName];
               if (f.operator === 'IN') return (f.value as unknown[]).includes(v);
+              if (f.operator === 'NOT_IN') return !(f.value as unknown[]).includes(v);
               if (f.operator === 'EQ') return v === f.value;
               return true;
             });

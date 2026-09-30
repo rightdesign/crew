@@ -78,6 +78,35 @@ conveys that; it has to be stated.
 `approved` matters for the opposite reason: the runner must know which status
 it may **never** set, because that is the one where a person authorises work.
 
+### What each epic status means
+
+Only on a workspace with an `Epics` table. An epic's status is its own CHOICE
+field on its own table, so it is named separately from a ticket's.
+
+| role | value | |
+| --- | --- | --- |
+| planned | `planned` | |
+| building | `in_progress` | also what the epic-in-progress ranking tiebreaker reads (ISSUE-385) |
+| done | `done` | |
+| cancelled | `cancelled` | a person's call — the runner never moves an epic into or out of it |
+
+The status lives in the epic's `status` column, and `epic_id` is what it is
+called in the log; both are overridable as `epics.statusColumn` /
+`epics.keyColumn`, the values as `epics.statuses`.
+
+**The runner keeps an epic's status in step with its tickets (CREW-1255)**,
+every poll, across the whole epic rather than one route's area:
+
+- every ticket closed (`resolved` minus `verified` — verified work has not
+  shipped) → `done`;
+- any ticket being worked (`building`, `handoff`, `verifying`, `verified`,
+  `reviewing`) → `building`, whether the epic said `planned` or had already
+  been marked `done`.
+
+An epic with no tickets, a `cancelled` one, one at a status not named here,
+and one whose remaining tickets are open but untouched are all left as they
+are. See `src/epics.ts`.
+
 ## Overriding it
 
 An org that renames its statuses, adds one, or orders priority differently

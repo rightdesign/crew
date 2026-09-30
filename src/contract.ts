@@ -111,10 +111,33 @@ export interface ContractStatuses {
   wontFix: string;
 }
 
+/**
+ * An epic's own status, on a workspace that has an Epics table (CREW-1255).
+ *
+ * Separate from `ContractStatuses` because it is a separate CHOICE field on
+ * a separate table: an epic is planned/in progress/done/cancelled, which
+ * only coincidentally shares a value with a ticket's `building`. Ignored
+ * entirely on a workspace with no Epics table.
+ */
+export interface ContractEpics {
+  statusColumn: string;
+  /** What a person calls the epic (`EPIC-024`) — for the log, never a lookup. */
+  keyColumn: string;
+  statuses: {
+    planned: string;
+    /** Work on it is under way. Also what the ISSUE-385 tiebreaker reads. */
+    building: string;
+    done: string;
+    /** Called off by a person. The runner never moves an epic into or out of this. */
+    cancelled: string;
+  };
+}
+
 export interface Contract {
   columns: ContractColumns;
   comments: ContractComments;
   statuses: ContractStatuses;
+  epics: ContractEpics;
   /** Most urgent first. Cannot be inferred from the values themselves. */
   priorityOrder: string[];
   severityOrder: string[];
@@ -194,6 +217,11 @@ export const DEFAULT_CONTRACT: Contract = {
     reviewing: null,
     wontFix: 'closed_wont_fix',
   },
+  epics: {
+    statusColumn: 'status',
+    keyColumn: 'epic_id',
+    statuses: { planned: 'planned', building: 'in_progress', done: 'done', cancelled: 'cancelled' },
+  },
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
@@ -203,6 +231,16 @@ export const DEFAULT_CONTRACT: Contract = {
 
 export class ContractError extends Error {}
 
+/**
+ * The statuses at which a ticket is closed for good: `resolved` minus
+ * `verified`. `verified` counts as resolved for a BLOCKER's purposes, but
+ * the ticket itself is still pre-release — its branch is unmerged and its
+ * worktree is what the release phase is about to ship.
+ */
+export function closedStatuses(c: Contract): string[] {
+  return c.statuses.resolved.filter((s) => s !== c.statuses.verified);
+}
+
 /** Deep-merge an override onto the default. Absent keys keep the default. */
 export function resolveContract(override?: Partial<Contract> | null): Contract {
   if (!override) return DEFAULT_CONTRACT;
@@ -210,6 +248,11 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
     columns: { ...DEFAULT_CONTRACT.columns, ...override.columns },
     comments: { ...DEFAULT_CONTRACT.comments, ...override.comments },
     statuses: { ...DEFAULT_CONTRACT.statuses, ...override.statuses },
+    epics: {
+      ...DEFAULT_CONTRACT.epics,
+      ...override.epics,
+      statuses: { ...DEFAULT_CONTRACT.epics.statuses, ...override.epics?.statuses },
+    },
     priorityOrder: override.priorityOrder ?? DEFAULT_CONTRACT.priorityOrder,
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
@@ -270,6 +313,10 @@ export function validateContract(c: Contract): string[] {
   }
   if (c.statuses.parked === c.statuses.approved) {
     problems.push('statuses.parked and statuses.approved are the same value — parking would be a no-op');
+  }
+  const epicValues = Object.values(c.epics.statuses);
+  if (new Set(epicValues).size !== epicValues.length) {
+    problems.push('epics.statuses names the same value twice — the epic sync could not tell those states apart');
   }
   if (c.priorityOrder.length === 0) problems.push('priorityOrder is empty');
   if (c.severityOrder.length === 0) problems.push('severityOrder is empty');
