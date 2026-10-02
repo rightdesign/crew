@@ -61,6 +61,7 @@ import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, f
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { planRepoAdd, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   ensureRepoCheckout, GitError, refreshBaseBranch, type SyncState,
@@ -254,7 +255,7 @@ function usage(): never {
   crew deploy [route]            release now, even with nothing new to merge
   crew watch [route]             live view of what the crew is doing
   crew status [route] [--json]   paused/running state; --json for a machine reader
-  crew doctor [route]            read-only preflight
+  crew doctor [route] [--fix]    preflight; --fix enables clean routes and offers crew install
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
@@ -732,6 +733,134 @@ async function areaWorktreePrefix(c: typeof route, repoId: string | undefined): 
   const raw = (await projectPromise)?.issue_prefix;
   const trimmed = typeof raw === 'string' ? raw.trim() : '';
   return trimmed ? `${trimmed.toLowerCase()}-` : undefined;
+}
+
+/**
+ * Write and load the scheduler units. Shared by `crew install` and
+ * `crew doctor --fix` (CREW-1288), which offers it once a route is enabled.
+ */
+async function installScheduler(): Promise<void> {
+  const host = hostPlatform();
+  if (host === 'windows') {
+    process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
+    process.exit(2);
+  }
+  // Three units, not one: `run` (poll/select/one agent session), `release`
+  // (test/build/deploy) and `passengers` (Host Passengers container/tunnel
+  // sync) now run on independent lifecycles, so a slow release or a long
+  // agent turn no longer holds the others hostage — see the release-lane
+  // comment on `case 'run'` and `syncHostPassengers`'s own doc comment
+  // (ISSUE-677). `release`/`passengers` stay one-shot-per-fire on their own
+  // fixed timers; `run` (ISSUE-763) is now the persistent `crew daemon`
+  // loop on launchd/systemd — see `install.ts`'s `subcommandFor`.
+  const hasSystemd = detectSystemd();
+  for (const job of ['run', 'release', 'passengers'] as const) {
+    const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job);
+    process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
+    await applyInstall(plan, CREW_HOME, dryRun, {
+      emit: (m) => process.stdout.write(`${m}\n`),
+      warn: (m) => process.stderr.write(`crew install: ${m}\n`),
+    });
+  }
+  // Hard cutover (ISSUE-763), systemd only: a host that had `run` on the
+  // old service+timer pair now has an orphaned `<label>.timer` once install
+  // starts writing only a persistent `.service` for it — same label, same
+  // checkout, no coexistence flag. launchd needs no equivalent step: the
+  // `run` job's plist keeps the same path/label whether it's periodic or
+  // persistent, so a reinstall simply overwrites it in place.
+  if (host === 'linux' && hasSystemd) {
+    const label = labelFor(CREW_HOME, 'run');
+    const staleTimer = join(homedir(), '.config', 'systemd', 'user', `${label}.timer`);
+    if (existsSync(staleTimer)) {
+      process.stdout.write(
+        `removing stale run timer from before the persistent-service cutover: ${staleTimer}${dryRun ? ' (dry run)' : ''}\n`,
+      );
+      if (!dryRun) {
+        spawnSync('systemctl', ['--user', 'disable', '--now', `${label}.timer`], { cwd: CREW_HOME });
+        try { unlinkSync(staleTimer); } catch { /* already gone */ }
+      }
+    }
+  }
+}
+
+/**
+ * Every check `crew doctor` prints for one route, as lines, for `--fix` to
+ * decide whether the route is clean. Mirrors the `doctor` report above; a
+ * check that cannot even run (a tracker call that throws) counts as failed.
+ */
+async function routeProblems(c: Route): Promise<string[]> {
+  const host = hostPlatform();
+  const problems: string[] = [];
+  // Host Passengers preflight, as `doctor` prints it: a route that needs Docker
+  // or ssh-keygen must not be enabled while they are missing.
+  if (c.hostPassengers) {
+    if (!dockerAvailable()) problems.push('host passengers: docker is not available');
+    if (!sshKeygenAvailable()) problems.push('host passengers: ssh-keygen is not available');
+  }
+  const tracker = new Tracker(c, cfg.ship);
+  problems.push(...validateContract(tracker.contract).map((p) => `contract: ${p}`));
+  for (const r of await resolvedRepos(c)) {
+    if (!existsSync(r.dir)) problems.push(`repo ${r.name}: ${r.dir} is missing on disk`);
+    if (!satisfies(host, r.config.platform)) problems.push(`repo ${r.name}: requires ${r.config.platform}, this host is ${host}`);
+    problems.push(...validateEffective(r.config).map((p) => `repo ${r.name}: ${p}`));
+  }
+  try {
+    const ships = await tracker.shipRows();
+    // No Ships table is fine; a table with no (or an ambiguous) row for this ship is not.
+    if (ships.length > 0) {
+      const mine = ships.filter((s2) => (s2.name ?? '').trim() === cfg.ship.name.trim());
+      if (mine.length !== 1) problems.push(`ship record: ${mine.length} rows named "${cfg.ship.name}"`);
+      else if (mine[0]!.platform && mine[0]!.platform !== host) problems.push(`ship record: declares ${mine[0]!.platform}, this host is ${host}`);
+    }
+  } catch (e) {
+    problems.push(`tracker unreachable: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return problems;
+}
+
+/**
+ * `crew doctor --fix` / the end-of-run offer (CREW-1288). Plans from doctor's
+ * own checks (`planFix`), asks one yes/no per action when `prompt` is set,
+ * writes only the `enabled` key for an accepted route, and prints everything it
+ * changed so no edit is silent.
+ */
+async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatform> }): Promise<void> {
+  const routes = await Promise.all(routesInScope(cfg.routes, named).map((c) =>
+    gatherHealth({ route: c.route, enabled: c.enabled, hasRepos: reposOf(c).length > 0 }, () => routeProblems(c))));
+  const unitExists = (p: string) => existsSync(p);
+  const crontab = o.host === 'linux' ? (spawnSync('crontab', ['-l'], { encoding: 'utf8' }).stdout ?? '') : '';
+  const schedulerAbsent = o.host !== 'windows'
+    ? !schedulerInstalled(planInstall(cfg.ship, CREW_HOME, o.host, detectSystemd(), 'run'), unitExists, crontab)
+    : true;
+  const plan = planFix({ routes, schedulerAbsent, host: o.host });
+  for (const n of plan.notes) process.stdout.write(`fix: ${n}\n`);
+  if (plan.actions.length === 0) {
+    process.stdout.write('fix: nothing to change\n');
+    return;
+  }
+  const prompter = o.prompt ? terminalPrompter() : undefined;
+  const changed: string[] = [];
+  const enabledSound = new Set(routes.filter((r) => r.enabled && r.hasRepos && r.problems.length === 0).map((r) => r.route));
+  try {
+    for (const a of plan.actions) {
+      if (a.kind === 'enable') {
+        if (prompter && !(await prompter.confirm(`Route ${a.route} passes every check — set enabled: true in ${cfg.configFile}?`, false))) continue;
+        writeFileSync(cfg.configFile, planEnable(readFileSync(cfg.configFile, 'utf8'), a.route));
+        enabledSound.add(a.route);
+        changed.push(`enabled route ${a.route} in ${cfg.configFile}`);
+      } else {
+        // Offered only once something is enabled: installing a scheduler for a
+        // ship whose every route is still off would just poll nothing.
+        if (enabledSound.size === 0) continue;
+        if (prompter && !(await prompter.confirm('No scheduler is installed for this ship — run `crew install` now?', false))) continue;
+        await installScheduler();
+        changed.push('ran `crew install` (scheduler units written and loaded)');
+      }
+    }
+  } finally {
+    prompter?.close();
+  }
+  process.stdout.write(changed.length ? `fix: changed\n${changed.map((c) => `  - ${c}\n`).join('')}` : 'fix: nothing changed\n');
 }
 
 /**
@@ -2799,47 +2928,7 @@ switch (command) {
   }
 
   case 'install': {
-    const host = hostPlatform();
-    if (host === 'windows') {
-      process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
-      process.exit(2);
-    }
-    // Three units, not one: `run` (poll/select/one agent session), `release`
-    // (test/build/deploy) and `passengers` (Host Passengers container/tunnel
-    // sync) now run on independent lifecycles, so a slow release or a long
-    // agent turn no longer holds the others hostage — see the release-lane
-    // comment on `case 'run'` and `syncHostPassengers`'s own doc comment
-    // (ISSUE-677). `release`/`passengers` stay one-shot-per-fire on their own
-    // fixed timers; `run` (ISSUE-763) is now the persistent `crew daemon`
-    // loop on launchd/systemd — see `install.ts`'s `subcommandFor`.
-    const hasSystemd = detectSystemd();
-    for (const job of ['run', 'release', 'passengers'] as const) {
-      const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job);
-      process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
-      await applyInstall(plan, CREW_HOME, dryRun, {
-        emit: (m) => process.stdout.write(`${m}\n`),
-        warn: (m) => process.stderr.write(`crew install: ${m}\n`),
-      });
-    }
-    // Hard cutover (ISSUE-763), systemd only: a host that had `run` on the
-    // old service+timer pair now has an orphaned `<label>.timer` once install
-    // starts writing only a persistent `.service` for it — same label, same
-    // checkout, no coexistence flag. launchd needs no equivalent step: the
-    // `run` job's plist keeps the same path/label whether it's periodic or
-    // persistent, so a reinstall simply overwrites it in place.
-    if (host === 'linux' && hasSystemd) {
-      const label = labelFor(CREW_HOME, 'run');
-      const staleTimer = join(homedir(), '.config', 'systemd', 'user', `${label}.timer`);
-      if (existsSync(staleTimer)) {
-        process.stdout.write(
-          `removing stale run timer from before the persistent-service cutover: ${staleTimer}${dryRun ? ' (dry run)' : ''}\n`,
-        );
-        if (!dryRun) {
-          spawnSync('systemctl', ['--user', 'disable', '--now', `${label}.timer`], { cwd: CREW_HOME });
-          try { unlinkSync(staleTimer); } catch { /* already gone */ }
-        }
-      }
-    }
+    await installScheduler();
     break;
   }
 
@@ -3140,6 +3229,14 @@ switch (command) {
           `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
       }
+    }
+    // CREW-1288: the opt-in action phase. `--fix` is itself the consent (so it
+    // also works unattended); a plain run only ever offers, and only on a real
+    // terminal. A script or non-TTY run without `--fix` never prompts and
+    // never changes anything.
+    const interactive = !!(process.stdin.isTTY && process.stdout.isTTY);
+    if (flag('fix') || interactive) {
+      await doctorFix({ prompt: !flag('fix') || interactive, host });
     }
     break;
   }

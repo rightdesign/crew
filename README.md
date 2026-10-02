@@ -198,7 +198,7 @@ crew merge [route]             merge verified branches and stop
 crew deploy [route]            release now, even with nothing new to merge
 crew watch [route]             live view of what the crew is doing
 crew status [route]            paused/running state
-crew doctor [route]            read-only preflight
+crew doctor [route] [--fix]    preflight; --fix enables clean routes, offers crew install
 crew ports [route]             which checkout owns which ports, and what is up
 crew reap [route]              kill servers left behind by removed worktrees
 crew drop [route] NNN          remove a merged ticket's worktree and branch

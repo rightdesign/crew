@@ -87,7 +87,7 @@ function expandDir(p: string, base: string): string {
   return resolve(base, home);
 }
 
-function routeMapOf(doc: Document.Parsed, route: string): YAMLMap {
+export function routeMapOf(doc: Document.Parsed, route: string): YAMLMap {
   const routes = doc.get('routes', true);
   if (isSeq(routes)) {
     for (const item of routes.items) {
