@@ -434,6 +434,11 @@ if `report_type` is either of those.
      subject and ships undocumented.
    See `CHANGELOG.md`'s own "How this file is maintained" header for the
    full mechanics of how the release phase turns these into the entry.
+   **User-facing documentation.** If the repository's own instructions (its
+   CLAUDE.md or equivalent) name a user-facing documentation location, a
+   change to a user-facing surface updates the relevant documentation there
+   **in the same commit as the change**. If the repository names no such
+   location, this rule is a no-op — never invent a docs location of your own.
 6. Run this repo's full test suite and build (`hooks.test`, `hooks.build` —
    whatever those mean for this repo's own stack and toolchain) and its
    typechecks, if it has them; all must be clean before proceeding.

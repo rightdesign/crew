@@ -87,7 +87,14 @@ human review, so "probably fine" is not a pass.
    Judge by exit code and summary line, and quote the summary in your
    comment. Red text in a run that exits 0 with every test passing is not a
    failure.
-7. **Ask whether the fix is covered.** A behaviour change with no test that
+7. **Check the documentation, when the repository names a place for it.** If
+   the repository's own instructions (its CLAUDE.md or equivalent) name a
+   user-facing documentation location, a ticket that changes a user-facing
+   surface must come with a matching update there, in the same branch.
+   Missing or stale docs are a reason to bounce the ticket back to the dev
+   seat, with a comment naming the page that needs the change. If the
+   repository names no such location, skip this check.
+7a. **Ask whether the fix is covered.** A behaviour change with no test that
    would catch its regression is worth naming in your comment; whether it
    is worth bouncing the ticket over is your judgement, and depends on how
    testable the thing is.
