@@ -856,8 +856,10 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   });
 
   // Every declared route failed — there is nothing this ship could run, so
-  // this IS fatal, same as declaring no routes at all.
-  if (Array.isArray(routesRaw) && routesRaw.length > 0 && routes.length === 0) {
+  // this IS fatal, same as declaring no routes at all — unless the caller
+  // opted into `allowNoRoutes` (`crew repos add`, which exists to fix a route
+  // that is dropped only because it names no `dir`/`repos` yet).
+  if (!opts.allowNoRoutes && Array.isArray(routesRaw) && routesRaw.length > 0 && routes.length === 0) {
     throw new ConfigError(routeWarnings.join('\n'));
   }
 

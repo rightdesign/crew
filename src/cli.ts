@@ -60,6 +60,7 @@ import {
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
+import { planRepoAdd, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   ensureRepoCheckout, GitError, refreshBaseBranch, type SyncState,
@@ -267,6 +268,8 @@ function usage(): never {
   crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
+  crew repos add ROUTE PATH     attach a local checkout to a route in crew.yaml (--dry-run previews)
+  crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew passengers [route]       sync Host Passengers containers/tunnels once; what the passengers unit invokes
@@ -400,7 +403,9 @@ try {
     firstRun = { answers, configPath };
     cfg = loadConfig(CREW_HOME, configPath, { text: renderShipBlock(answers), allowNoRoutes: true });
   } else {
-    cfg = loadConfig(CREW_HOME);
+    // `repos` edits a route that may be dropped for lacking a checkout, so it
+    // must load even when every route is (CREW-1287).
+    cfg = loadConfig(CREW_HOME, undefined, command === 'repos' ? { allowNoRoutes: true } : {});
   }
 } catch (e) {
   if (e instanceof ConfigError) {
@@ -443,7 +448,7 @@ const DAEMON_SUBCOMMANDS = new Set(['start', 'stop', 'status', 'restart']);
 const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? '')
   ? positional[2]
   : positional[1];
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || releaseFleetWide ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -489,8 +494,10 @@ const EXCLUSIVE: Record<string, string> = { passengers: 'passengers' };
 // hypothetical — so `crew watch` showed a dry run's "released 1.2.3" among the
 // real ones, and the ship's own history recorded things that never happened.
 // An inspection belongs to whoever ran it, not to the record.
+// `route` is undefined for fleet-wide commands on a config with no loadable
+// route (`crew repos add` on a route that has no checkout yet).
 const emit = new Emitter({
-  route: route.route,
+  route: route?.route ?? '',
   eventFile: dryRun ? undefined : eventFileFor(cfg.ship.stateDir),
   logFile: dryRun ? undefined : cfg.ship.logFile,
   console: (l) => process.stderr.write(`${l}\n`),
@@ -1863,6 +1870,60 @@ switch (command) {
     break;
   }
 
+  case 'repos': {
+    // `crew repos add <route> <path>` / `crew repos list <route>` (CREW-1287).
+    // Works on crew.yaml's raw text rather than `cfg.routes`: a route that
+    // names no `dir`/`repos` yet fails config validation and is dropped from
+    // `cfg.routes`, and that is exactly the route `add` is for.
+    const sub = positional[1];
+    const routeName = positional[2];
+    const usage = () => {
+      process.stderr.write('crew repos add <workspace/project> <path> [--dry-run]\ncrew repos list <workspace/project>\n');
+      process.exit(2);
+    };
+    if ((sub !== 'add' && sub !== 'list') || !routeName || (sub === 'add' && !positional[3])) usage();
+    const resolvedFile = resolvedPathFor(cfg.ship.stateDir, routeName!);
+    let resolvedRemotes: RepoRemotes | undefined;
+    if (existsSync(resolvedFile)) {
+      try { resolvedRemotes = JSON.parse(readFileSync(resolvedFile, 'utf8')) as RepoRemotes; } catch { /* unreadable: treated as not connected */ }
+    }
+    const originOf = (dir: string) => gitOk(dir, ['remote', 'get-url', 'origin']) ?? undefined;
+    const text = readFileSync(cfg.configFile, 'utf8');
+    const base = dirname(cfg.configFile);
+    try {
+      if (sub === 'list') {
+        const repos = configuredRepos(text, routeName!, base);
+        if (repos.length === 0) process.stdout.write(`route ${routeName} has no checkout configured — \`crew repos add ${routeName} <path>\`\n`);
+        for (const r of repos) {
+          const origin = originOf(r.dir);
+          const row = matchRepoName(origin, resolvedRemotes);
+          const note = !existsSync(r.dir) ? 'missing on disk'
+            : row ? `Repos row: ${row}`
+            : `no Repos row matches ${normalizeRemote(origin) ?? 'this checkout (no origin remote)'}`;
+          process.stdout.write(`${r.name}\t${r.dir}\t${note}\n`);
+        }
+        break;
+      }
+      const target = resolvePath(positional[3]!.replace(/^~(?=\/|$)/, homedir()));
+      const top = existsSync(target) ? gitOk(target, ['rev-parse', '--show-toplevel']) : null;
+      if (!top) throw new ReposError(`${target} is not a git checkout`);
+      const plan = planRepoAdd({
+        text, base, route: routeName!, path: top, origin: originOf(top), resolved: resolvedRemotes,
+        nameForExisting: (d) => matchRepoName(originOf(d), resolvedRemotes),
+      });
+      if (plan.warning) process.stderr.write(`crew repos: warning — ${plan.warning}\n`);
+      if (dryRun) {
+        process.stdout.write(`${plan.block}\n`);
+        break;
+      }
+      writeFileSync(cfg.configFile, plan.text);
+      process.stdout.write(`added ${top} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}\n`);
+    } catch (e) {
+      if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    break;
+  }
   case 'logbook': {
     // Same shape as `case 'agents'` above: `logbook` occupies positional[1]
     // as the subcommand name, so this resolves its own target route rather

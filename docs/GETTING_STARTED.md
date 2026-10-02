@@ -33,6 +33,7 @@ There are two halves to this:
   - [3.2 Clone and build](#32-clone-and-build)
   - [3.3 How it finds your setup](#33-how-it-finds-your-setup)
   - [3.4 Check it's seeing the right thing](#34-check-its-seeing-the-right-thing)
+- [Attaching a checkout to a route](#attaching-a-checkout-to-a-route)
 - [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crewyaml)
 - [If something's stuck](#if-somethings-stuck)
 
@@ -400,6 +401,24 @@ tail -f ~/Library/Logs/Crew.log
 ```
 
 ---
+
+## Attaching a checkout to a route
+
+`crew repos add <workspace/project> <path>` points a route at a local checkout
+without editing `crew.yaml` by hand. It checks that `<path>` is a git checkout,
+reads its `origin`, and matches that against the route's Repos table (the ids
+`crew connect` resolved). A match records the checkout under the Repos row's
+name; no match warns that the tracker has no Repos row for that remote, and
+adds it anyway, in case you are about to create the row.
+
+- A route's first checkout is written as `dir:`. Adding a second turns `dir:`
+  into a `repos:` map holding both. Comments and other routes are left alone.
+- Adding a path the route already has is refused. `--dry-run` prints the
+  resulting route block instead of writing.
+- `crew repos list <workspace/project>` prints what is configured, with the
+  Repos row each checkout matches, so you can confirm the add.
+
+Neither command adds hooks: a repo's own `.crew.yaml` still supplies those.
 
 ## Connecting a repo that has no `.crew.yaml`
 
