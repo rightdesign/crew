@@ -789,3 +789,74 @@ test('renderConnection() still shows the paste-your-own-key placeholder for a pl
   assert.ok(block.includes('REPLACE — a file holding'));
   assert.ok(block.includes('REPLACE_KEY_VAR'));
 });
+
+/** A Ships-provisioning fixture for the owner_id tests (CREW-1286); `shipsRows` and `shipsModel` vary per test. */
+function ownerFixture(me: Record<string, unknown>, shipsRows: unknown[], shipsModel?: unknown) {
+  return {
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': me,
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': shipsRows,
+    '/api/data-models/ships-model/records': { id: 'ship-1' },
+    ...(shipsModel ? { '/api/data-models/ships-model': shipsModel } : {}),
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+    ],
+  };
+}
+const SHIP = { name: 'Box', platform: 'macos' as const };
+
+test('discover() writes the caller\'s identity id as owner_id on a new Ships row (CREW-1286)', async (t) => {
+  const { restore, calls } = mockFetchCalls(ownerFixture(
+    { role: 'WORKSPACE_ADMIN', id: 'ident-1' }, [], { fields: [{ columnName: 'name' }, { columnName: 'owner_id' }] },
+  ));
+  t.after(restore);
+  await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const create = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
+  assert.deepEqual(create?.body, { name: 'Box', platform: 'macos', host_passengers: false, owner_id: 'ident-1' });
+});
+
+test('discover() PATCHes owner_id onto an existing Ships row that lacks it, and leaves a matching one alone (CREW-1286)', async (t) => {
+  const model = { fields: [{ columnName: 'owner_id' }] };
+  const first = mockFetchCalls(ownerFixture(
+    { id: 'ident-1' }, [{ id: 'ship-1', name: 'Box', host_passengers: false }], model,
+  ));
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  first.restore();
+  const patched = first.calls.find((c) => c.method === 'PATCH');
+  assert.deepEqual(patched?.body, { owner_id: 'ident-1' });
+  assert.ok(found.provisioning.some((p) => p.includes('recorded owner')));
+
+  const second = mockFetchCalls(ownerFixture(
+    { id: 'ident-1' }, [{ id: 'ship-1', name: 'Box', host_passengers: false, owner_id: 'ident-1' }], model,
+  ));
+  t.after(second.restore);
+  await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(second.calls.filter((c) => c.method === 'PATCH').length, 0);
+});
+
+test('discover() skips owner_id when the Ships table has no such column, and says so in provisioning (CREW-1286)', async (t) => {
+  const { restore, calls } = mockFetchCalls(ownerFixture(
+    { id: 'ident-1' }, [], { fields: [{ columnName: 'name' }] },
+  ));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const create = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
+  assert.ok(create && !('owner_id' in (create.body as object)));
+  assert.ok(found.provisioning.some((p) => p.includes('could not record the ship owner')));
+});
+
+test('discover() treats unreadable Ships field metadata as "no owner_id column" rather than failing (CREW-1286)', async (t) => {
+  const { restore } = mockFetchCalls(ownerFixture({ id: 'ident-1' }, []));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.ok(found.provisioning.some((p) => p.includes('could not record the ship owner')));
+});

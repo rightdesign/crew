@@ -89,6 +89,8 @@ export interface Discovered {
    * to auto-match `operator` against a Crew row's email; not otherwise
    * rendered or written anywhere. */
   meEmail?: string;
+  /** This key's own identity id, from the same `/auth/me` call — written onto the Ships row as `owner_id` (CREW-1286). */
+  meId?: string;
   projectId?: string;
   /** The canonical slug, when the resolved project has one — building the
    * `route:` string (`workspaceSlug/projectSlug`) needs this, not the
@@ -308,9 +310,10 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // API key as for a session, and is the only "am I an admin here" a plain
   // member's own key can ask without a 403 (no admin-only membership list).
   try {
-    const me = await get<{ role?: string; email?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
+    const me = await get<{ role?: string; email?: string; id?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
     out.role = me.role;
     out.meEmail = me.email;
+    out.meId = me.id;
   } catch { /* not fatal — the no-qualifying-project message just stays generic */ }
 
   if (o.project) {
@@ -491,6 +494,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   if (out.shipsModelId && o.ship && !o.dryRun) {
     const shipRows = await get<Array<{
       id: string; name?: string | null; host_passengers?: boolean | null; ssh_public_key?: string | null;
+      owner_id?: string | null;
     }>>(
       o, `/data-models/${out.shipsModelId}/records?limit=200`,
     );
@@ -513,6 +517,21 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // unavailable) means "leave whatever is on the row alone" rather than
     // clobbering a working key with nothing.
     const sshPublicKey = o.ship.sshPublicKey;
+    // The caller's own identity as the ship's owner (CREW-1286). The column
+    // arrives with a template update, so an install that has not taken it yet
+    // has no `owner_id` field on Ships: that is skipped (and said so in
+    // `provisioning`), never an error. Not attempted at all when `/auth/me`
+    // gave no id — nothing to record.
+    let ownerId: string | undefined;
+    if (out.meId) {
+      let hasOwnerColumn = false;
+      try {
+        const shipsModel = await get<{ fields?: Array<{ columnName: string }> }>(o, `/data-models/${out.shipsModelId}`);
+        hasOwnerColumn = (shipsModel.fields ?? []).some((f) => f.columnName === 'owner_id');
+      } catch { /* unreadable field metadata reads as "column absent" */ }
+      if (hasOwnerColumn) ownerId = out.meId;
+      else provisioning.push('could not record the ship owner — the Ships table has no owner_id column yet (update the Issues template)');
+    }
     if (mine.length === 1) {
       shipRowId = mine[0]!.id;
       const patchBody: Record<string, unknown> = {};
@@ -520,10 +539,12 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
         patchBody.ssh_public_key = sshPublicKey;
       }
+      if (ownerId !== undefined && (mine[0]!.owner_id ?? '') !== ownerId) patchBody.owner_id = ownerId;
       if (Object.keys(patchBody).length > 0) {
         await patch(o, `/data-models/${out.shipsModelId}/records/${shipRowId}`, patchBody);
         if ('host_passengers' in patchBody) provisioning.push(`synced host_passengers=${hostPassengers} onto Ships row "${o.ship.name}"`);
         if ('ssh_public_key' in patchBody) provisioning.push(`synced ssh_public_key onto Ships row "${o.ship.name}"`);
+        if ('owner_id' in patchBody) provisioning.push(`recorded owner on Ships row "${o.ship.name}"`);
       }
     } else if (mine.length === 0) {
       const created = await post<{ id: string }>(o, `/data-models/${out.shipsModelId}/records`, {
@@ -531,6 +552,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         ...(o.ship.platform ? { platform: o.ship.platform } : {}),
         host_passengers: hostPassengers,
         ...(sshPublicKey !== undefined ? { ssh_public_key: sshPublicKey } : {}),
+        ...(ownerId !== undefined ? { owner_id: ownerId } : {}),
       });
       shipRowId = created.id;
       provisioning.push(`created Ships row "${o.ship.name}"`);
@@ -643,7 +665,11 @@ export function renderConnection(
   d: Discovered,
   route: string,
   dir: string,
-  opts: { area?: string; apiKeyFile?: string; apiKeyVar?: string; keychainBacked?: boolean } = {},
+  opts: {
+    area?: string; apiKeyFile?: string; apiKeyVar?: string; keychainBacked?: boolean;
+    /** Real values for the first-run wizard's written file (CREW-1286), where nothing is left for a person to paste over. */
+    baseUrl?: string; hostPassengers?: boolean;
+  } = {},
 ): string {
   // ISSUE-966: a device-login run whose key made it into the OS keychain
   // (freshly minted or reused from an earlier `crew connect`/`tablation
@@ -674,7 +700,7 @@ ${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
     # more than one repo.
     # What a host must be to build this — unix, macos, linux, or windows —
     # belongs in each repo's own .crew.yaml, not here (see docs/REPO_SPEC.md).
-    baseUrl: "REPLACE — the same baseUrl as your other routes"
-${apiKeyFileLine}${apiKeyVarLine}
+    baseUrl: ${opts.baseUrl ? `"${opts.baseUrl}"` : '"REPLACE — the same baseUrl as your other routes"'}
+${opts.hostPassengers ? '    hostPassengers: true\n' : ''}${apiKeyFileLine}${apiKeyVarLine}
 `;
 }

@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo,
-  DEFAULT_BASE_URL, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
+  DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
 } from './config.ts';
@@ -29,6 +29,10 @@ import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
+import {
+  runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
+  type Prompter, type WizardAnswers,
+} from './connect-wizard.ts';
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
@@ -119,6 +123,23 @@ function renderShipLine(
     return `${name.padEnd(20)} online, engaged${what ? ` — ${what}` : ''}${sinceText}`;
   }
   return `${name.padEnd(20)} online, idle (seen ${since(s.last_seen)} ago)`;
+}
+
+/** The wizard's prompts on a real terminal; questions go to stderr like every other prompt here. */
+function terminalPrompter(): Prompter & { close(): void } {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return {
+    close: () => { rl.close(); },
+    say: (line) => { process.stderr.write(`${line}\n`); },
+    ask: async (q, fallback) => {
+      const a = (await rl.question(fallback ? `${q} [${fallback}]: ` : `${q}: `)).trim();
+      return a || fallback || '';
+    },
+    confirm: async (q, fallback) => {
+      const a = (await rl.question(`${q} [${fallback ? 'Y/n' : 'y/N'}] `)).trim();
+      return a ? /^y/i.test(a) : fallback;
+    },
+  };
 }
 
 /**
@@ -355,8 +376,32 @@ if (command === 'passenger-sync-daemon') {
  * their YAML.
  */
 let cfg: ReturnType<typeof loadConfig>;
+// CREW-1286: a first-run `crew connect` (a terminal, and no crew.yaml anywhere
+// crew would look) asks the `ship:` questions itself and loads that answer
+// in-memory — the file is written only once the connection resolves.
+let firstRun: { answers: WizardAnswers; configPath: string } | undefined;
 try {
-  cfg = loadConfig(CREW_HOME);
+  if (command === 'connect' && !flag('dry-run') && shouldRunWizard({
+    isTTY: !!(process.stdin.isTTY && process.stdout.isTTY), crewHome: CREW_HOME,
+  })) {
+    // Closed in a finally: an open readline on stdin keeps the event loop (and
+    // so the process) alive, and later prompts open their own interface.
+    const prompter = terminalPrompter();
+    let answers: WizardAnswers;
+    try {
+      answers = await runWizard(prompter, {
+        hostname: hostname(), platform: hostPlatform(), pathEnv: process.env.PATH ?? '',
+        nodePath: process.execPath, dockerAvailable: dockerAvailable(),
+      });
+    } finally {
+      prompter.close();
+    }
+    const configPath = firstRunConfigPath();
+    firstRun = { answers, configPath };
+    cfg = loadConfig(CREW_HOME, configPath, { text: renderShipBlock(answers), allowNoRoutes: true });
+  } else {
+    cfg = loadConfig(CREW_HOME);
+  }
 } catch (e) {
   if (e instanceof ConfigError) {
     process.stderr.write(`crew: ${e.message}\n`);
@@ -2063,7 +2108,7 @@ switch (command) {
     }
     const ship = {
       name: cfg.ship.name, platform: cfg.ship.platform,
-      hostPassengers: existingRoute?.hostPassengers === true,
+      hostPassengers: firstRun?.answers.hostPassengers ?? existingRoute?.hostPassengers === true,
       sshPublicKey,
     };
 
@@ -2233,11 +2278,28 @@ switch (command) {
           process.stderr.write(`API key written to ${apiKeyFile}\n`);
         }
       }
-      process.stdout.write(renderConnection(
+      // CREW-1286: the first-run wizard writes crew.yaml itself instead of
+      // printing a block to paste — but only when the route's key has somewhere
+      // to live (keychain or a key file). A `--key` connect with neither has no
+      // key a written file could name, so it keeps today's print-and-paste.
+      const keyPersisted = keychainBacked || apiKeyFile !== undefined;
+      const wizard = firstRun;
+      const writeFirstRun = wizard !== undefined && !dryRun && keyPersisted;
+      const routeDir = value('dir') ?? (writeFirstRun ? join(DEFAULT_REPOS_BASE_PATH, found.workspaceSlug) : undefined);
+      const routeBlock = renderConnection(
         found, route,
-        value('dir') ?? 'REPLACE — the local checkout this route works',
-        { area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked },
-      ));
+        routeDir ?? 'REPLACE — the local checkout this route works',
+        {
+          area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked,
+          ...(writeFirstRun ? { baseUrl, hostPassengers: wizard.answers.hostPassengers } : {}),
+        },
+      );
+      let wroteConfig = false;
+      if (writeFirstRun) {
+        wroteConfig = writeNewConfig(wizard.configPath, renderFullConfig(wizard.answers, routeBlock));
+        if (!wroteConfig) process.stderr.write(`(${wizard.configPath} appeared while connecting — leaving it alone)\n`);
+      }
+      if (!wroteConfig) process.stdout.write(routeBlock);
       if (found.provisioning.length) {
         process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);
         for (const p of found.provisioning) process.stderr.write(`    - ${p}\n`);
@@ -2258,7 +2320,12 @@ switch (command) {
           `re-run from a terminal to classify them, or edit ${resolvedPath} by hand.\n`,
         );
       }
-      if (operator) {
+      if (wroteConfig) {
+        process.stderr.write(nextSteps({
+          route, configPath: wizard!.configPath, platform: cfg.ship.platform, needsRepos: !value('dir'),
+        }));
+        if (!operator) process.stderr.write(`  Also set operator in ${resolvedPath} before arming it.\n`);
+      } else if (operator) {
         process.stderr.write(
           `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there already), then: ` +
             `crew doctor ${route}\n`,

@@ -180,6 +180,23 @@ project — the old behavior of listing every qualifying project and asking
 you to pick is still there as the fallback when `issues` is absent and you
 decline the install offer.
 
+**On a first run** — a real terminal and no `crew.yaml` anywhere `crew` looks —
+`crew connect` skips the hand-written config of 2.3. It asks for the ship name
+(default: the hostname), confirms the `claude` it found on your `PATH` (or asks
+for one), works out `ship.extraPath` from where `node` and `pnpm` live, and asks
+whether this machine should host Passengers. After signing in and resolving the
+workspace it writes `~/.config/crew/crew.yaml` (mode 0600) with the `ship:`
+block and the route, `enabled: false`, then prints what to do next: point the
+route at your repo checkouts, run `crew doctor`, set `enabled: true` and run
+`crew install`. An existing `crew.yaml` is never rewritten — `connect` prints the
+route block for you to paste, as before — and neither is a non-terminal run. If
+the key could not be stored in the keychain or a key file (a plain `--key`
+connect), it prints the block instead of writing a file with no key in it.
+
+`connect` also records you, by identity, as the owner of this ship's row in the
+Ships table, when that table has an `owner_id` column (a workspace that has not
+taken the latest Issues template update just skips it and says so).
+
 Either way, this looks up the workspace (and project) by slug, resolves
 their internal ids (and the Issues/Comments/Crew/Ships table ids inside
 them), and writes the result to a local state file — nothing here starts

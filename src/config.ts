@@ -772,9 +772,21 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
   };
 }
 
-export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
+export interface LoadConfigOptions {
+  /**
+   * Config text to parse as though it were the contents of `configFile`, which
+   * need not exist. `crew connect`'s first-run wizard (CREW-1286) answers the
+   * `ship:` questions before any file is written, and writes the file only once
+   * the connection has actually resolved.
+   */
+  text?: string;
+  /** Accept a config declaring no routes — the same first-run case. */
+  allowNoRoutes?: boolean;
+}
+
+export function loadConfig(crewHome: string, configFile?: string, opts: LoadConfigOptions = {}): CrewConfig {
   const file = configFile ?? findConfigFile(crewHome);
-  if (!existsSync(file)) {
+  if (opts.text === undefined && !existsSync(file)) {
     throw new ConfigError(
       `no config found. Looked in:\n` +
         configSearchPath(crewHome).map((c) => `  - ${c}`).join('\n') +
@@ -784,7 +796,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   }
   let raw: Record<string, any> | null;
   try {
-    raw = parse(readFileSync(file, 'utf8')) as Record<string, any> | null;
+    raw = parse(opts.text ?? readFileSync(file, 'utf8')) as Record<string, any> | null;
   } catch (e) {
     // The YAML library throws with a stack trace naming its own internals,
     // which tells an operator nothing about their file.
@@ -822,7 +834,7 @@ export function loadConfig(crewHome: string, configFile?: string): CrewConfig {
   const stateDir = expand(shipRaw.stateDir ?? 'state', base);
 
   const routesRaw = raw.routes;
-  if (!Array.isArray(routesRaw) || routesRaw.length === 0) {
+  if (!opts.allowNoRoutes && (!Array.isArray(routesRaw) || routesRaw.length === 0)) {
     missing.add('routes (at least one)');
   }
 
