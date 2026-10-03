@@ -1,0 +1,54 @@
+# Publishes @tablation/crew to npm when a v* tag is pushed (which is what
+# crew's own release phase does after a release).
+#
+# Auth is npm Trusted Publishing (OIDC): no NPM_TOKEN secret anywhere. The
+# package's npmjs.com Settings page must list this repo + this workflow
+# filename (publish.yml) + the `npm` environment as its trusted publisher.
+# The runner needs npm >= 11.5.1 for OIDC, hence the `npm install -g npm`
+# step — pnpm publish shells out to npm, so that is the version that matters.
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest && npm --version
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Check package version matches the tag
+        if: github.ref_type == 'tag'
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(node -p "require('./package.json').version")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::package.json is at $actual but the tag is v$expected"
+            exit 1
+          fi
+
+      - name: Publish
+        run: pnpm publish --access public --provenance --no-git-checks
