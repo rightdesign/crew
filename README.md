@@ -4,6 +4,10 @@ A standing team of headless agents that picks work off a
 [Tablation](https://tablation.com) board, does it on a machine you control,
 and reports back on the board.
 
+**Documentation: <https://crew.tablation.dev>** — start with
+[Getting started](https://crew.tablation.dev/getting-started). The source is in
+`docs/`.
+
 Each **seat** is a row in the board's Crew table that happens to be a robot,
 with a brief (`prompts/<promptSet>/`, see "Prompt sets" below) and a slice
 of the queue. A seat is named in that table and answers to that name, in the

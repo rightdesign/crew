@@ -6,36 +6,27 @@ exists on your machine or your Tablation account.
 
 There are two halves to this:
 
-1. **Get into Tablation** — an account, workspace access, and an API key.
+1. **Get into Tablation** — an account and workspace access.
 2. **Install and connect crew** — the CLI that turns that access into a
-   running, polling seat.
+   running, polling seat. Four commands do the core of it:
+   `npm install -g @tablation/crew`, `crew connect`, `crew repos add`,
+   `crew doctor --fix`.
 
 ## Contents
 
-- [Part 1 — Get into Tablation](#part-1--get-into-tablation)
-  - [1.1 Get invited](#11-get-invited)
-  - [1.2 Confirm you're a workspace admin](#12-confirm-youre-a-workspace-admin)
-  - [1.3 Create an API key](#13-create-an-api-key)
-  - [1.4 Make sure your machine has a Ships row](#14-make-sure-your-machine-has-a-ships-row)
-- [Part 2 — Install and connect crew](#part-2--install-and-connect-crew)
-  - [2.1 Prerequisites](#21-prerequisites)
-  - [2.2 Clone and build](#22-clone-and-build)
-  - [2.3 Write your machine config](#23-write-your-machine-config)
-  - [2.4 Resolve the workspace](#24-resolve-the-workspace)
-  - [2.5 Sync personas and skills](#25-sync-personas-and-skills)
-  - [2.6 Register the Tablation MCP server](#26-register-the-tablation-mcp-server)
-  - [2.7 Run the preflight](#27-run-the-preflight)
-  - [2.8 Turn the route on](#28-turn-the-route-on)
-  - [2.9 Try it by hand first](#29-try-it-by-hand-first)
-  - [2.10 Put it on a timer](#210-put-it-on-a-timer)
-- [Part 3 — crew-macos (optional menu bar front end)](#part-3--crew-macos-optional-menu-bar-front-end)
-  - [3.1 Requirements](#31-requirements)
-  - [3.2 Clone and build](#32-clone-and-build)
-  - [3.3 How it finds your setup](#33-how-it-finds-your-setup)
-  - [3.4 Check it's seeing the right thing](#34-check-its-seeing-the-right-thing)
+- [Part 1 — Get into Tablation](#part-1-get-into-tablation)
+  - [1.1 Get invited](#_1-1-get-invited)
+  - [1.2 Confirm you're a workspace admin](#_1-2-confirm-you-re-a-workspace-admin)
+  - [1.3 Your machine's Ships row](#_1-3-your-machine-s-ships-row)
+- [Part 2 — Install and connect crew](#part-2-install-and-connect-crew)
+- [Part 3 — crew-macos (optional menu bar front end)](#part-3-crew-macos-optional-menu-bar-front-end)
 - [Attaching a checkout to a route](#attaching-a-checkout-to-a-route)
-- [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crewyaml)
-- [If something's stuck](#if-somethings-stuck)
+- [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crew-yaml)
+- [Advanced: an existing `crew.yaml`](#advanced-an-existing-crew-yaml)
+- [If something's stuck](#if-something-s-stuck)
+
+Hosting other people's agent sessions on your machine is a separate, optional
+capability: see [Host Passengers](/host-passengers).
 
 ---
 
@@ -58,26 +49,15 @@ self-serve signup.
 
 ### 1.2 Confirm you're a workspace admin
 
-Everything below — creating an API key, adding your machine to the Ships
+Connecting a machine — signing in from `crew connect`, adding it to the Ships
 table, seeing the Crew/Issues tables — requires **workspace admin** on the
 workspace you're connecting to, not just membership. If Settings shows no
-"API Keys" or "Users" tab, you're a plain member: ask the workspace admin to
-promote you (or have them do the steps in 1.3–1.4 and hand you the values).
+"Users" tab, you're a plain member: ask the workspace admin to promote you.
 
-### 1.3 Create an API key
+### 1.3 Your machine's Ships row
 
-In the app: **Settings → API Keys** (only visible to workspace admins) →
-give it a name → **Create**. The raw key (`sk_...`) is shown exactly once —
-copy it somewhere safe immediately. If you lose it, revoke it and make a new
-one; it can't be recovered.
-
-This key is bound to both the workspace and your user — crew acts as you
-when it uses it.
-
-### 1.4 Your machine's Ships row
-
-crew identifies "this machine" by a name (`ship.name` in `crew.yaml`, §2.3).
-`crew connect` (§2.4) provisions this for you the first time it runs — it
+crew identifies "this machine" by a name (`ship.name` in `crew.yaml`).
+`crew connect` (§2.3) provisions this for you the first time it runs — it
 finds-or-creates a row on the workspace's **Ships** table under that name,
 and one **Crew** row per lane (dev/design/qa/triage), scoped to it, the
 first time it needs one. Nothing to do here by hand: this section used to
@@ -96,78 +76,25 @@ team usually already has a naming convention for this (e.g.
 
 ### 2.1 Prerequisites
 
-- **Node 24.19.0** (crew's `.nvmrc`). If you use nvm, `nvm use` in the crew
-  checkout picks it up; nvm itself may live at `~/.local/share/nvm` rather
-  than `~/.nvm` — check both if `nvm` isn't found.
-- **pnpm** (crew is a pnpm workspace).
-- `crew`'s `package.json` depends on `@tablation/client` via a local
-  `link:../tablation-js/packages/client` — you need a sibling checkout of
-  **tablation-js** one directory up from `crew`, or `pnpm install` will fail
-  to resolve it.
+- **Node 22 or newer** (`node -v`). The `claude` agent binary is separate; crew
+  asks where it is during `crew connect`.
+- **git**, and a checkout of each repo you want this machine to work.
+- Docker, only if you will [host Passengers](/host-passengers).
 
-### 2.2 Clone and build
+No other checkout is needed: crew installs from npm, and its tracker client
+(`@tablation/client`) comes with it.
 
-```sh
-# both checkouts live side by side
-git clone <tablation-js remote> tablation-js
-git clone <crew remote> crew
-
-cd crew
-pnpm install
-```
-
-`bin/crew` runs straight off `src/cli.ts` (Node's native type-stripping) if
-there's no `dist/`, so you don't strictly need a build step to try it. For a
-long-lived install, build it once:
+### 2.2 Install
 
 ```sh
-pnpm run build
+npm install -g @tablation/crew
+crew --help
 ```
 
-### 2.3 Write your machine config
-
-The config describing **this machine** lives outside the checkout, so
-reinstalling or moving the checkout never loses it:
+### 2.3 Connect to a workspace
 
 ```sh
-mkdir -p ~/.config/crew
-cp crew.example.yaml ~/.config/crew/crew.yaml
-chmod 600 ~/.config/crew/crew.yaml     # it holds an API key in plaintext
-$EDITOR ~/.config/crew/crew.yaml
-```
-
-(`crew` looks in `$CREW_CONFIG`, then `$XDG_CONFIG_HOME/crew`, then
-`~/.config/crew/crew.yaml`, and only then beside the checkout — the file
-above is the normal path.)
-
-Fill in at minimum:
-
-```yaml
-ship:
-  name: "Brad's MacBook"             # MUST match a row in the Ships table (1.4)
-  agent:
-    bin: "/usr/local/bin/claude"     # absolute path — a timer runs with a minimal PATH
-    model: "claude-sonnet-5"
-  extraPath: "/opt/homebrew/bin"     # wherever pnpm/node/etc. actually live for hooks
-  useNvm: true
-
-routes:
-  - route: my-workspace/my-product   # the workspace/project slug pair you were invited to
-    enabled: false                   # leave false until `doctor` is clean (see 2.7)
-    area: "My Product"
-    apiKey: "sk_..."                 # the key from 1.3 (or set ship.apiKey once, covering every route)
-```
-
-Everything else in `crew.example.yaml` is commented with what it does and
-when you'd need it — repo checkout paths, a custom `promptSet`, per-route
-`baseUrl` for a self-hosted tracker, etc. Leave what you don't need
-commented out; unknown keys are a hard error, not a warning, so don't add
-things speculatively.
-
-### 2.4 Resolve the workspace
-
-```sh
-bin/crew connect my-workspace
+crew connect my-workspace
 ```
 
 The workspace is normally the only thing you need to name — `crew connect`
@@ -175,40 +102,49 @@ defaults the project to the `issues`-slugged project (the workspace's
 install of the `crew.issues` Library template, i.e. the tracker itself). If
 that project isn't there yet, it offers to install it from the Library on a
 real terminal (say yes, or decline and set one up in the app first). Only
-pass a project explicitly (`bin/crew connect my-workspace/my-product`, or
+pass a project explicitly (`crew connect my-workspace/my-product`, or
 `--project`) when you deliberately want a different, non-default tracker
-project — the old behavior of listing every qualifying project and asking
-you to pick is still there as the fallback when `issues` is absent and you
-decline the install offer.
+project.
+
+`connect` signs you in with device authorization: it prints a code and a link,
+you approve it in the browser, and the resulting credential is stored in your
+OS keychain. You never copy an API key by hand.
 
 **On a first run** — a real terminal and no `crew.yaml` anywhere `crew` looks —
-`crew connect` skips the hand-written config of 2.3. It asks for the ship name
-(default: the hostname), confirms the `claude` it found on your `PATH` (or asks
-for one), works out `ship.extraPath` from where `node` and `pnpm` live, and asks
-whether this machine should host Passengers. After signing in and resolving the
-workspace it writes `~/.config/crew/crew.yaml` (mode 0600) with the `ship:`
-block and the route, `enabled: false`, then prints what to do next: point the
-route at your repo checkouts, run `crew doctor`, set `enabled: true` and run
-`crew install`. An existing `crew.yaml` is never rewritten — `connect` prints the
-route block for you to paste, as before — and neither is a non-terminal run. If
-the key could not be stored in the keychain or a key file (a plain `--key`
+`crew connect` is a wizard. It asks for the ship name (default: the hostname),
+confirms the `claude` it found on your `PATH` (or asks for one), works out
+`ship.extraPath` from where `node` and `pnpm` live, and asks whether this
+machine should [host Passengers](/host-passengers). After signing in and
+resolving the workspace it writes `~/.config/crew/crew.yaml` (mode 0600) with
+the `ship:` block and the route, `enabled: false`, then prints what to do
+next. An existing `crew.yaml` is never rewritten — `connect` prints the route
+block for you to paste instead — and neither is a non-terminal run. If the
+credential could not be stored in the keychain or a key file (a plain `--key`
 connect), it prints the block instead of writing a file with no key in it.
 
 `connect` also records you, by identity, as the owner of this ship's row in the
 Ships table, when that table has an `owner_id` column (a workspace that has not
 taken the latest Issues template update just skips it and says so).
 
-Either way, this looks up the workspace (and project) by slug, resolves
-their internal ids (and the Issues/Comments/Crew/Ships table ids inside
-them), and writes the result to a local state file — nothing here starts
-polling or touches the tracker's data beyond reading it. Re-running it later
-only asks about
-anything genuinely new; it won't re-ask what it already resolved.
+Either way, it looks up the workspace (and project) by slug, resolves their
+internal ids (and the Issues/Comments/Crew/Ships table ids inside them), and
+writes the result to a local state file — nothing here starts polling or
+touches the tracker's data beyond reading it. Re-running it later only asks
+about anything genuinely new.
+
+### 2.4 Attach your repo checkouts
+
+```sh
+crew repos add my-workspace/issues ~/src/my-product
+```
+
+See [Attaching a checkout to a route](#attaching-a-checkout-to-a-route) for what
+it matches and writes. Repeat for each repo this machine should work.
 
 ### 2.5 Sync personas and skills
 
 ```sh
-bin/crew agents sync my-workspace/my-product
+crew agents sync my-workspace/my-product
 ```
 
 This pushes crew's built-in personas (Developer, Design, QA, Triage, Pair)
@@ -218,7 +154,7 @@ under `prompts/<promptSet>/skills/`) into the `Agent Skills` table — both
 every agent-shaped resource crew owns, not just the Agents table. It's safe
 to re-run any time you edit a persona or skill file locally: unchanged rows
 are left alone, and a row a workspace admin edited by hand is reported
-`diverged` rather than overwritten. `bin/crew skills sync my-workspace/
+`diverged` rather than overwritten. `crew skills sync my-workspace/
 my-product` does the skills half alone, if you only touched `skills/`.
 
 ### 2.6 Register the Tablation MCP server
@@ -246,12 +182,11 @@ Notes:
 
 - **Hostname**: Modify `app.tablation.com` to match the hostname for any dev
   instance you're using.
-- **The key**: crew's own route key (`crew.yaml`'s `apiKey`/`apiKeyFile`) is
-  the same kind of key and works here too — reusing it is the path of
-  least resistance. Mint a separate key from the workspace's API-key
-  settings instead if you want MCP usage to have its own audit trail; there
-  is no scope-narrowing mechanism today, so either key can reach everything
-  its holder can reach over the REST API.
+- **The key**: MCP needs a workspace `sk_...` API key. `crew connect` keeps its
+  own credential in the keychain rather than showing you one, so mint a key
+  for this from **Settings → API Keys** (workspace admins). There is no
+  scope-narrowing mechanism today, so the key can reach everything its holder
+  can reach over the REST API.
 - **`--scope local`** stores this in your own `~/.claude.json`, not shared
   with anyone else or checked into a repo — right for a key. `--scope
   project` writes a shared `.mcp.json`, which is fine for the *server URL*
@@ -267,7 +202,7 @@ Notes:
 ### 2.7 Run the preflight
 
 ```sh
-bin/crew doctor my-workspace/my-product
+crew doctor my-workspace/my-product
 ```
 
 This is entirely read-only. It checks: the config parses, your machine's
@@ -302,16 +237,16 @@ during all of the above.
 Before putting it on a timer, run one cycle manually and watch what it does:
 
 ```sh
-bin/crew poll my-workspace/my-product     # decides what it WOULD do; writes nothing
-bin/crew run my-workspace/my-product      # actually runs the winning role's session
-bin/crew watch my-workspace/my-product    # live view while it's running
+crew poll my-workspace/my-product     # decides what it WOULD do; writes nothing
+crew run my-workspace/my-product      # actually runs the winning role's session
+crew watch my-workspace/my-product    # live view while it's running
 ```
 
 ### 2.10 Put it on a timer
 
 ```sh
-bin/crew install             # writes and loads this platform's own scheduler unit
-bin/crew install --dry-run   # see what it would do first
+crew install             # writes and loads this platform's own scheduler unit
+crew install --dry-run   # see what it would do first
 ```
 
 This picks the right mechanism itself — a launchd user agent on macOS, a
@@ -321,10 +256,10 @@ immediately; the first poll happens one interval after `install` runs.
 Useful day-to-day commands once it's running:
 
 ```sh
-bin/crew status my-workspace/my-product   # paused/running state
-bin/crew log my-workspace/my-product      # tail the log
-bin/crew inbox                            # your own tickets, across every workspace
-bin/crew pause my-workspace/my-product    # stop it without uninstalling
+crew status my-workspace/my-product   # paused/running state
+crew log my-workspace/my-product      # tail the log
+crew inbox                            # your own tickets, across every workspace
+crew pause my-workspace/my-product    # stop it without uninstalling
 ```
 
 ---
@@ -335,10 +270,10 @@ bin/crew pause my-workspace/my-product    # stop it without uninstalling
 2 — it shows which seat is working, on what ticket, in which repo, and how
 far through the cycle it is, plus a live log window and two switches
 (pause the crew; stop the timer). It writes nothing itself: every action it
-offers goes through your existing `bin/crew`, so it can't drift from what
+offers goes through your existing `crew`, so it can't drift from what
 the CLI would do.
 
-It only makes sense **after** Part 2 — specifically after `bin/crew install`
+It only makes sense **after** Part 2 — specifically after `crew install`
 (2.10) — because it locates your checkout by reading the installed
 launchd job, not by asking you for a path.
 
@@ -378,9 +313,9 @@ in Part 2:
 
 - **Config**: the same search order as the CLI (`$CREW_CONFIG`, then
   `$XDG_CONFIG_HOME/crew`, then `~/.config/crew/crew.yaml`), so the app and
-  `bin/crew` can never disagree about which file is in force.
-- **Checkout**: read out of the launchd plist that `bin/crew install`
-  wrote — the interpreter path and `bin/crew`'s absolute path, exactly as
+  `crew` can never disagree about which file is in force.
+- **Checkout**: read out of the launchd plist that `crew install`
+  wrote — the interpreter path and `crew`'s absolute path, exactly as
   the timer invokes them. This is why 2.10 has to happen first; without an
   installed timer there's no plist for it to read.
 
@@ -394,7 +329,7 @@ somewhere nonstandard.
 ```
 
 This prints, as plain text, exactly what the menu is built from: which
-config file it found, which `bin/crew`/interpreter it's invoking, whether
+config file it found, which `crew`/interpreter it's invoking, whether
 `crew status --json` answered, the current pause/lock state, and the
 worktrees it sees on disk with the repo each one belongs to. Run this first
 if the menu shows nothing, or shows something stale — it's a menu bar app,
@@ -430,7 +365,7 @@ Neither command adds hooks: a repo's own `.crew.yaml` still supplies those.
 ## Connecting a repo that has no `.crew.yaml`
 
 A repo tells crew how to test/build/deploy/version it via a `.crew.yaml` at
-its root (see `docs/REPO_SPEC.md` for the full field reference). If a repo
+its root (see [the repo spec](/repo-spec) for the full field reference). If a repo
 you need to work hasn't adopted that file yet, you are **not** blocked —
 declare the same things in your machine's `crew.yaml` instead, under that
 route:
@@ -459,7 +394,7 @@ A few things worth knowing before you do this:
 - **The merged result still has to be valid.** Even sourced entirely from
   `crew.yaml`, a route with `release.mode: local` still needs a `deploy`
   hook, `ci_manual`/`ci_auto` still need `hooks.released`, and so on — see
-  `docs/REPO_SPEC.md`'s "Rules" section for the full list of checks.
+  [the repo spec](/repo-spec)'s "Rules" section for the full list of checks.
 - **Prefer adding the real `.crew.yaml` to the repo when you can.** It's the
   durable fix: the hooks live under review, next to what they build, instead
   of on one person's machine. The route-level escape hatch exists for repos
@@ -467,16 +402,32 @@ A few things worth knowing before you do this:
 
 ---
 
+## Advanced: an existing `crew.yaml`
+
+The wizard only runs when no `crew.yaml` exists. If you already have one (a
+second workspace, a config copied from another machine, or a hand-written
+file), `crew connect <workspace>` resolves the ids and prints the route block
+for you to paste under `routes:`, with `enabled: false`. Everything the file
+may contain is commented in `crew.example.yaml`; unknown keys are a hard error,
+not a warning.
+
+crew looks for the file in `$CREW_CONFIG`, then `$XDG_CONFIG_HOME/crew`, then
+`~/.config/crew/crew.yaml`, and only then beside the checkout. Keep it mode
+`0600`: if a route carries an `apiKey` instead of the keychain credential, it
+is stored in plaintext there.
+
+---
+
 ## If something's stuck
 
-- `bin/crew doctor <route>` first, always — it's read-only and points at the
+- `crew doctor <route>` first, always — it's read-only and points at the
   specific thing that's wrong (bad key, missing Ships row, missing hook,
   unreachable tracker).
 - Config file rejected outright with an "unknown key" error → you likely
   mistyped a field name; check the exact key names in `crew.example.yaml`
-  or `docs/REPO_SPEC.md`.
+  or [the repo spec](/repo-spec).
 - `doctor` says your `ship.name` doesn't match anything → check the Ships
-  table in the workspace (1.4) rather than guessing at the name.
+  table in the workspace (1.3) rather than guessing at the name.
 - Tracker calls fail with something that looks like a bot-blocking page
   rather than JSON → check `userAgent` in `crew.yaml`; the default already
   works around Cloudflare blocking bare tool user agents, so this usually

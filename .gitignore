@@ -14,3 +14,11 @@ crew.yaml
 
 .DS_Store
 *.bun-build
+
+# VitePress
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# VitePress
+docs/.vitepress/dist/
+docs/.vitepress/cache/
