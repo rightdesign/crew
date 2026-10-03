@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Emitter, render, eventFileFor } from '../src/events.ts';
@@ -77,10 +77,17 @@ test('a failing step is emitted as an error and still throws', async () => {
 });
 
 test('an unwritable sink never takes the cycle down with it', () => {
+  // The unwritable path is a regular file used as if it were a directory, so
+  // both the mkdir and the append fail with ENOTDIR on every platform. It used
+  // to be a path under /proc, which on Linux makes a recursive mkdirSync hang
+  // forever rather than throw — the whole CI suite stalled on this one test.
+  const dir = mkdtempSync(join(tmpdir(), 'crew-ev-'));
+  const blocker = join(dir, 'not-a-directory');
+  writeFileSync(blocker, '');
   const lines: string[] = [];
   const e = new Emitter({
     route: 'x',
-    eventFile: '/proc/nonexistent/definitely/not/writable/events.jsonl',
+    eventFile: join(blocker, 'definitely', 'not', 'writable', 'events.jsonl'),
     console: (l) => lines.push(l),
     cycleId: 'C1',
   });
