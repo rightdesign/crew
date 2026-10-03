@@ -4,6 +4,14 @@
   "description": "A standing team of headless agents that picks work off a Tablation board, does it on a machine you control, and reports back.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rightdesign/crew.git"
+  },
+  "homepage": "https://github.com/rightdesign/crew#readme",
+  "bugs": {
+    "url": "https://github.com/rightdesign/crew/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -16,9 +24,11 @@
   "packageManager": "pnpm@11.22.0",
   "files": [
     "dist",
+    "bin",
     "prompts",
     "crew.example.yaml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsup src/cli.ts --format esm --clean",

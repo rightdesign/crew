@@ -15,8 +15,8 @@ importers:
         specifier: ^2026.8.31
         version: 2026.8.31(zod@3.25.76)
       '@tablation/client':
-        specifier: link:../tablation-js/packages/client
-        version: link:../tablation-js/packages/client
+        specifier: ^0.1.0
+        version: 0.1.0
       yaml:
         specifier: ^2.6.1
         version: 2.9.0
@@ -528,6 +528,9 @@ packages:
     resolution: {integrity: sha512-/gDJaRs4gl0NPIwqCz+6PkpmhhjRAD2j6P4rSNHBzUkO3naEx2mIU0pRle1vUNRQ7mE/+8OOeXLTv/J56FKiQg==}
     cpu: [x64]
     os: [win32]
+
+  '@tablation/client@0.1.0':
+    resolution: {integrity: sha512-V1t1XR0DjvCKVxj6nAyKwsL6ePYunHk8+KFAYONx4Ch+6VwcdH6KHV3ZygXgId5aE98lIGA6CnvDXsqj73oEXQ==}
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -1409,6 +1412,8 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.62.5':
     optional: true
+
+  '@tablation/client@0.1.0': {}
 
   '@types/estree@1.0.9': {}
 

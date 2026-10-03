@@ -1,4 +1,6 @@
 allowBuilds:
   esbuild: set this to true or false
+minimumReleaseAgeExclude:
+  - '@tablation/client@0.1.0'
 onlyBuiltDependencies:
   - esbuild
