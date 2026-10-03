@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRoster, crewLabel, isHold, holdIds, rosterMarkdown } from '../src/roster.ts';
+import { buildRoster, crewLabel, isHold, holdIds, memberByIdentity, rosterMarkdown } from '../src/roster.ts';
 
 const CONFIGURED = [
   { id: 'dev-1', role: 'Dev', kind: 'seat' as const },
@@ -61,4 +61,18 @@ test('the roster block names the running seat and marks it', () => {
   assert.match(md, /You are \*\*Robin \(Dev\)\*\*/);
   assert.match(md, /\| dev \| Robin \(Dev\)  ← you \| `dev-1` \|/);
   assert.match(md, /Not crew — these are holds/);
+});
+
+test('a Crew row linked to an account resolves from that identity id (CREW-1304)', () => {
+  const r = buildRoster(CONFIGURED, [
+    { id: 'dev-1', name: 'Robin' },
+    { id: 'op-1', name: 'Brad C.', user_id: 'ident-brad' },
+    { id: 'sam-1', name: 'Sam', user_id: null },
+  ]);
+  assert.equal(r.get('op-1')?.userId, 'ident-brad');
+  assert.equal(r.get('dev-1')?.userId, null);
+  assert.equal(memberByIdentity(r, 'ident-brad')?.id, 'op-1');
+  assert.equal(memberByIdentity(r, 'ident-nobody'), undefined);
+  assert.equal(memberByIdentity(r, null), undefined);
+  assert.equal(memberByIdentity(r, undefined), undefined);
 });

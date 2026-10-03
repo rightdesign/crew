@@ -13,7 +13,7 @@
  */
 
 import { compareRank, effectivePriority, type Rankable } from './priority.ts';
-import { crewLabel, isHold, type Roster } from './roster.ts';
+import { crewLabel, isHold, memberByIdentity, type Roster } from './roster.ts';
 
 export interface DigestTicket extends Rankable {
   id: string;
@@ -30,6 +30,8 @@ export interface DigestTicket extends Rankable {
 export interface DigestComment {
   ticket_id: string;
   team_member_id?: string | null;
+  /** Server-stamped author identity; the only authorship a UI-posted comment has (CREW-1304). */
+  created_by_id?: string | null;
   reporter_name?: string | null;
   kind?: string | null;
   created_at: string;
@@ -114,6 +116,13 @@ function displayKey(t: { issue_id?: string; issue_tag?: string | null }): string
 function author(c: DigestComment, me: string, roster: Roster): string {
   if (c.team_member_id === me) return 'you';
   if (c.team_member_id === null || c.team_member_id === undefined) {
+    // CREW-1304: a comment posted from the app's UI never sets
+    // team_member_id — only crew seats do — but the server stamps who
+    // posted it. Trace that identity to a Crew row's user_id, so the
+    // operator's own answer on a ticket is not printed as anonymous (it
+    // was, on TABL-1289, and the dev seat rightly refused to act on it).
+    const byIdentity = memberByIdentity(roster, c.created_by_id);
+    if (byIdentity) return byIdentity.id === me ? 'you' : (crewLabel(byIdentity) ?? byIdentity.name);
     return `${c.reporter_name ?? 'anon'} (no identity)`;
   }
   return crewLabel(roster.get(c.team_member_id)) ?? 'someone off this ship';

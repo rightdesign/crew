@@ -113,6 +113,13 @@ export interface Comment {
   ticket_id: string;
   body?: string | null;
   team_member_id?: string | null;
+  /**
+   * The identity the server stamped on the row (CREW-1304). A comment posted
+   * from the app's own UI carries this and NOT `team_member_id` — only crew
+   * seats set that column — so this is the one authorship signal a person's
+   * reply reliably has. Joined to a Crew row through `Crew.user_id`.
+   */
+  created_by_id?: string | null;
   reporter_name?: string | null;
   kind?: string | null;
   created_at: string;
@@ -126,6 +133,14 @@ export interface CrewRow {
   ship_id?: string | null;
   /** The linked Agents-table row (ISSUE-416's `agents.ts` `linkCrewSeats`), if synced. */
   agent_id?: string | null;
+  /**
+   * The workspace Users row this member signs in as (CREW-1304). Users row
+   * ids are identity ids — the same value every record's `created_by_id`
+   * carries — so this is how a UI-posted comment is traced back to a crew
+   * member. Null for an agent seat (it posts with `team_member_id` set) and
+   * for a person whose row was never linked.
+   */
+  user_id?: string | null;
 }
 
 /**

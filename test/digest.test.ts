@@ -148,3 +148,28 @@ test('the watermark decides what counts as new', () => {
   assert.doesNotMatch(buildingDigest(after), /\*\*1 new\*\*/);
 });
 
+
+test('a UI-posted comment (no team_member_id) is attributed through Crew.user_id (CREW-1304)', () => {
+  const linked = buildRoster(MEMBERS, [
+    ...ROWS.filter((r) => r.id !== 'op-1'),
+    { id: 'op-1', name: 'Brad C.', user_id: 'ident-brad' },
+  ]);
+  const i = input({
+    roster: linked,
+    tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', assignee_id: 'dev-1' })],
+    comments: [
+      // What the app writes when a person replies in the UI: the server stamps
+      // created_by_id, team_member_id stays null, reporter_name is the ticket's.
+      { ticket_id: 'a', team_member_id: null, created_by_id: 'ident-brad', reporter_name: 'Pair agent',
+        created_at: '2026-08-23T11:00:00.000Z' },
+    ],
+  });
+  const out = buildingDigest(i);
+  assert.match(out, /Brad C\. \(Operator\)/);
+  assert.doesNotMatch(out, /no identity/);
+  assert.match(out, /\*\*1 new\*\*/);
+
+  // Same comment on a roster whose Operator row was never linked: still anonymous.
+  const unlinked = buildingDigest({ ...i, roster });
+  assert.match(unlinked, /Pair agent \(no identity\)/);
+});

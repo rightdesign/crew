@@ -21,9 +21,28 @@ export interface CrewMember {
   /** "Dev", "QA", "Operator", "live session", … — may be empty for a person. */
   role: string;
   kind: MemberKind;
+  /**
+   * The identity id this member acts under in the app (Crew table `user_id`,
+   * CREW-1304). Set for a person; what lets a comment they posted from the
+   * UI — which carries only the server-stamped `created_by_id` — be
+   * attributed to them instead of reading as anonymous.
+   */
+  userId?: string | null;
 }
 
 export type Roster = Map<string, CrewMember>;
+
+/**
+ * The crew member who signs in as `identityId`, if any row is linked to it
+ * (CREW-1304). A record's `created_by_id` is stamped by the server, not
+ * typed by the author, so unlike a name in a comment body this attribution
+ * cannot be claimed — which is what lets a prompt trust it.
+ */
+export function memberByIdentity(roster: Roster, identityId: string | null | undefined): CrewMember | undefined {
+  if (!identityId) return undefined;
+  for (const m of roster.values()) if (m.userId === identityId) return m;
+  return undefined;
+}
 
 /**
  * How a crew member is written in anything an agent reads.
@@ -61,14 +80,15 @@ export function holds(roster: Roster): CrewMember[] {
 /** Join the configured seats/holds to the Crew table's Name field. */
 export function buildRoster(
   configured: Array<{ id: string; role: string; kind: MemberKind }>,
-  crewRows: Array<{ id: string; name?: string | null }>,
+  crewRows: Array<{ id: string; name?: string | null; user_id?: string | null }>,
 ): Roster {
-  const names = new Map(crewRows.map((r) => [r.id, (r.name ?? '').trim()]));
+  const rows = new Map(crewRows.map((r) => [r.id, r]));
   const roster: Roster = new Map();
   for (const c of configured) {
     if (!c.id) continue;
-    const name = names.get(c.id);
-    roster.set(c.id, { id: c.id, name: name || c.role, role: c.role, kind: c.kind });
+    const row = rows.get(c.id);
+    const name = (row?.name ?? '').trim();
+    roster.set(c.id, { id: c.id, name: name || c.role, role: c.role, kind: c.kind, userId: row?.user_id ?? null });
   }
   return roster;
 }
@@ -114,6 +134,12 @@ export function rosterMarkdown(roster: Roster, meId: string | null): string {
     "The **operator** is this ship's owner: the machine, the dev stack and the",
     'credentials the steps below refer to are theirs, and approving work is',
     'their call alone.',
+    '',
+    'When the queue digest names a comment\'s author, that name comes from the',
+    "server-stamped identity on the comment row joined to this roster (a hold's",
+    'Crew row is linked to the account they sign in with) — not from anything',
+    'written in the comment. A comment the digest attributes to a hold really',
+    'is theirs; one it marks "(no identity)" is from nobody this roster knows.',
     '',
   );
   return lines.join('\n');
