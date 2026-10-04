@@ -164,7 +164,6 @@ export interface ShipRow {
   host_passengers?: boolean | null;
   ssh_public_key?: string | null;
   tunnel_status?: string | null;
-  mcp_url?: string | null;
 }
 
 /**
@@ -417,7 +416,7 @@ export class Tracker {
 
   /**
    * Writes this ship's own tunnel state for Host Passengers (ISSUE-553):
-   * `tunnel_status` (disconnected/connecting/connected) and `mcp_url`, as
+   * `tunnel_status` (disconnected/connecting/connected), as
    * the tunnel client (`tunnel.ts`) brings a workspace's container's tunnel
    * up or down. A no-op, like every other `myShipRow`-backed write here, on
    * a workspace with no Ships table or no row for this ship's name — the
@@ -425,7 +424,7 @@ export class Tracker {
    * nowhere on the board to report the state.
    */
   async updateTunnelState(
-    shipName: string, patch: { tunnel_status: string; mcp_url?: string | null },
+    shipName: string, patch: { tunnel_status: string },
   ): Promise<void> {
     const row = await this.myShipRow(shipName);
     if (!row) return;

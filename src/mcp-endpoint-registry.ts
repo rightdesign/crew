@@ -1,7 +1,7 @@
 /**
  * Self-registration of a Host Passengers tunnel as a workspace MCP endpoint
- * (CREW-1320, TABL-1315 design). The relay no longer writes `mcp_url` onto
- * the Ships row through a synthesis-internal API; the ship itself publishes
+ * (CREW-1320, TABL-1315 design). The relay no longer writes the tunnel URL
+ * onto the Ships row through a synthesis-internal API; the ship itself publishes
  * its tunnel's public URL through the ordinary
  * `/workspaces/<ws>/mcp-endpoints` API, with the route's own key.
  *

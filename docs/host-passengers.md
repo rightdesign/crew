@@ -81,9 +81,13 @@ container planned.
 ## Seeing the ship's status
 
 The ship's row in the Ships table carries the tunnel's `tunnel_status`
-(disconnected, connecting or connected) and its current `mcp_url`. The
-settings View in the Issues app shows both, so a Passenger can tell whether a
-ship is hosting before they try to board.
+(disconnected, connecting or connected). The settings View in the Issues app
+shows it, so a Passenger can tell whether a ship is hosting before they try to
+board.
+
+The ship's URL is not on the Ships row. The ship registers its tunnel as a
+workspace MCP endpoint under its own slug, so workspace admins find it in the
+workspace's MCP endpoints list.
 
 ## Related
 

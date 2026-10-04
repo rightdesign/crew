@@ -179,7 +179,7 @@ test('beatIdle() clears engagement back to idle', async (t) => {
   assert.equal(bodies[0]!.engaged_ticket_id, null);
 });
 
-test('updateTunnelState() PATCHes tunnel_status (and mcp_url, when given) onto this ship\'s own Ships row (ISSUE-553)', async (t) => {
+test('updateTunnelState() PATCHes tunnel_status onto this ship\'s own Ships row (ISSUE-553)', async (t) => {
   const bodies: Array<Record<string, unknown>> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -191,11 +191,10 @@ test('updateTunnelState() PATCHes tunnel_status (and mcp_url, when given) onto t
   t.after(() => { globalThis.fetch = originalFetch; });
 
   const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
-  await tracker.updateTunnelState("Brad's Mac", { tunnel_status: 'connected', mcp_url: 'https://relay.test/ws-1' });
+  await tracker.updateTunnelState("Brad's Mac", { tunnel_status: 'connected' });
 
   assert.equal(bodies.length, 1);
   assert.equal(bodies[0]!.tunnel_status, 'connected');
-  assert.equal(bodies[0]!.mcp_url, 'https://relay.test/ws-1');
 });
 
 test('updateTunnelState() is a no-op when the workspace has no Ships row for this ship name', async (t) => {

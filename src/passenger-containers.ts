@@ -196,8 +196,8 @@ export interface SyncDaemonEndpoint {
  * (`tunnel.ts`'s `sshArgsFor`) so a caller with no Tablation credential of
  * their own (a cookie-authenticated chat session — see ISSUE-684 in the
  * synthesis repo) can still be let in by the passenger server, once the
- * relay has written this same secret onto the Ships row alongside
- * `mcp_url`. Omitted, same as the sync env vars, whenever `sync` itself is
+ * ship has registered this same secret as its workspace MCP endpoint's
+ * Authorization header (`mcp-endpoint-registry.ts`). Omitted, same as the sync env vars, whenever `sync` itself is
  * unavailable — `validateCredential`'s real-API-key path is the fallback.
  */
 export function startContainer(
