@@ -211,6 +211,17 @@ test('a failed deploy leaves no tag — the next cycle must not think it shipped
   assert.doesNotMatch(execFileSync('git', ['tag', '--list'], { cwd: dir, encoding: 'utf8' }), /v1\.3\.0/);
 });
 
+test('a failed build drops the Release commit so retries do not stack version bumps (CREW-1326)', async () => {
+  const { dir, repo } = project(LOCAL.replace('build: exit 0', 'build: exit 1'));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'build failed');
+  const log = execFileSync('git', ['log', '--format=%s'], { cwd: dir, encoding: 'utf8' });
+  assert.doesNotMatch(log, /^Release /m);
+  assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }), '');
+});
+
 test('a transient-resolve-failure-shaped build failure is retried once, and a clean retry proceeds (ISSUE-703)', async () => {
   const { dir, repo } = project(LOCAL.replace('build: exit 0', `build: |
     if [ -f .build-ran-once ]; then exit 0; else touch .build-ran-once; echo 'Error: [vite]: Rolldown failed to resolve import "react-router-dom" from "src/main.tsx".'; exit 1; fi`));

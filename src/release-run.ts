@@ -851,6 +851,9 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   if (majorRequested) {
     o.emit.warn('a branch asked for a MAJOR bump — honoured as minor; major is the operator\'s call');
   }
+  // Where `base` stood before the Release commit, so a failed build can
+  // take that commit back (CREW-1326).
+  const preBump = headSha(o.cwd);
   const version = (await bump(o, size)) ?? undefined;
   if (!version && o.dryRun && o.repo.hooks.bump) {
     o.emit.emit('would then commit the version bump and changelog');
@@ -874,6 +877,14 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       }
       if (r && r.code !== 0) {
         o.emit.error('build failed — not deploying');
+        // The Release commit must not outlive the release it describes: left
+        // in place, every failed cycle stacked another bump on the base
+        // branch and the eventual real release skipped version numbers. The
+        // merge commits stay (they are verified work); only the bump goes.
+        if (version && !o.dryRun && headSha(o.cwd) !== preBump) {
+          git(o.cwd, ['reset', '--hard', preBump]);
+          o.emit.warn(`dropped the unreleased version commit for ${version} (reset ${o.repo.branch.base} to ${preBump.slice(0, 8)}) so a retry starts clean`);
+        }
         return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision };
       }
     }
