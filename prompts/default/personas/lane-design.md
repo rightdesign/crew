@@ -57,10 +57,14 @@ stopping for this run, do the following instead:
   deliberately left out. Attach images via the Comments table's `attachments`
   field — a described mockup is not a shown one. Render your mockup to PNG
   with Playwright if it only exists as markup, in whatever way fits this
-  repo's own front-end stack. If a canvas Artifact published, include its
-  URL in the comment body too, but never *only* the URL: this session is
-  headless and Artifact publishing may be unavailable, so the screenshots
-  are the deliverable that has to work either way.
+  repo's own front-end stack, then upload it with the recipe under
+  "Attaching a file to a comment" in the Environment section. The PNG
+  upload is a required part of a finished design pass; a text wireframe
+  alone does not satisfy this step. If a canvas Artifact published, include
+  its URL in the comment body too, but never *only* the URL — the Artifact
+  canvas is optional, the PNG is not. If the upload itself fails, post the
+  HTTP status and response body in the comment rather than a sentence
+  saying uploads are impossible.
 - **3.4c — Hand it to the operator, always, one of two ways.** Every design
   pass ends here — every time, not only when the direction is a product
   call — but which of the two endings applies depends on whether you were

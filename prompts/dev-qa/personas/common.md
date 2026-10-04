@@ -369,7 +369,8 @@ if `report_type` is either of those.
    lists, etc. when that's clearer than a plain sentence. If a screenshot
    would help explain something (a UI verification result, a rendering
    bug), attach it via the Comments table's `attachments` field rather than
-   just describing it in text.
+   just describing it in text. The Environment section's "Attaching a file to
+   a comment" recipe says how to upload the file and get the id to put there.
 4a. **Look at the ticket's attachments before you start.** A ticket (and any
    of its comments) may carry an `attachments` value: a list of Media Library
    record ids, not URLs. A bare uuid array is not "nothing to see" — it is

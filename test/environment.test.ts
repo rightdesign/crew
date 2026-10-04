@@ -83,3 +83,24 @@ test('a workspace with an Epics table lists it by id and names the column', () =
   assert.match(out, /\| epic \| `epic_id` \|/);
   assert.match(out, /An epic is a body of work a ticket belongs to/);
 });
+
+// CREW-1322. The Environment section carries the workspace id and the
+// Media Library upload recipe, so a session never has to reverse-engineer it.
+test('names the workspace id and the attachment upload recipe', () => {
+  const r = {
+    ...route,
+    resolved: {
+      models: { issues: 'i', comments: 'c', crew: 'w' },
+      workspaceId: 'ws-123', seats: {}, operator: 'op', holds: [],
+    },
+  } as unknown as Route;
+  const out = renderEnvironment({
+    route: r, userAgent: 'crew/1',
+    repos: [repo('synthesis', '/w/synthesis', SYN)], contract: DEFAULT_CONTRACT,
+  });
+  assert.match(out, /- Workspace id: `ws-123`/);
+  assert.match(out, /## Attaching a file to a comment/);
+  assert.match(out, /\/api\/workspaces\/ws-123\/files/);
+  assert.match(out, /targetMediaLibrary=true/);
+  assert.match(out, /\$CREW_API_KEY/);
+});

@@ -246,6 +246,32 @@ export function renderEnvironment(i: EnvironmentInput): string {
     );
   }
 
+  const workspaceId = route.resolved?.workspaceId;
+  if (workspaceId) {
+    const base = route.baseUrl.replace(/\/+$/, '');
+    lines.push(
+      '',
+      `- Workspace id: \`${workspaceId}\``,
+      '',
+      '## Attaching a file to a comment',
+      '',
+      'A screenshot or mockup goes on a comment\'s `attachments` field, which holds',
+      'Media Library record ids, not URLs. Upload the file first, then put the',
+      'returned `id` in the comment\'s `attachments` array:',
+      '',
+      '```sh',
+      `curl -s -H "Authorization: Bearer $${API_KEY_VAR}" -H "User-Agent: ${i.userAgent}" \\`,
+      `  -X POST "${base}/api/workspaces/${workspaceId}/files" \\`,
+      '  -F "file=@shot.png;type=image/png" -F targetMediaLibrary=true',
+      '```',
+      '',
+      'The response is JSON with `id` and `storageKey`. `targetMediaLibrary=true`',
+      'means no field type id has to be looked up. If the upload fails, post the HTTP',
+      'status and response body in your comment — do not write that uploads are',
+      'impossible.',
+    );
+  }
+
   lines.push(
     '',
     '## What the columns are called here',
