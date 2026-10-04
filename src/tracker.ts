@@ -323,6 +323,20 @@ export class Tracker {
     }
   }
 
+  /** Every `Projects` (area) row — what `crew repos add` offers when a new Repos row needs one. */
+  async projectRows(): Promise<Array<{ id: string; name?: string }>> {
+    const model = this.route.resolved?.areaModelId;
+    if (!model) return [];
+    return this.client.records.list<{ id: string; name?: string }>(model, { limit: 200 });
+  }
+
+  /** Create a `Repos` row. Throws when the workspace has no Repos table. */
+  async createRepoRow(fields: Record<string, unknown>): Promise<{ id: string }> {
+    const model = this.route.resolved?.reposModelId;
+    if (!model) throw new Error('this workspace has no Repos table');
+    return this.client.records.create<{ id: string }>(model, fields);
+  }
+
   /**
    * The Ships rows of this workspace, if it has a Ships table.
    *

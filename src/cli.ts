@@ -60,7 +60,7 @@ import {
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { planRepoAdd, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -2007,7 +2007,7 @@ switch (command) {
     const sub = positional[1];
     const routeName = positional[2];
     const usage = () => {
-      process.stderr.write('crew repos add <workspace/project> <path> [--dry-run]\ncrew repos list <workspace/project>\n');
+      process.stderr.write('crew repos add <workspace/project> <path> [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos list <workspace/project>\n');
       process.exit(2);
     };
     if ((sub !== 'add' && sub !== 'list') || !routeName || (sub === 'add' && !positional[3])) usage();
@@ -2036,14 +2036,54 @@ switch (command) {
       const target = resolvePath(positional[3]!.replace(/^~(?=\/|$)/, homedir()));
       const top = existsSync(target) ? gitOk(target, ['rev-parse', '--show-toplevel']) : null;
       if (!top) throw new ReposError(`${target} is not a git checkout`);
+      const origin = originOf(top);
       const plan = planRepoAdd({
-        text, base, route: routeName!, path: top, origin: originOf(top), resolved: resolvedRemotes,
+        text, base, route: routeName!, path: top, origin, resolved: resolvedRemotes, name: value('name'),
         nameForExisting: (d) => matchRepoName(originOf(d), resolvedRemotes),
       });
-      if (plan.warning) process.stderr.write(`crew repos: warning — ${plan.warning}\n`);
+      // No Repos row for this checkout: create one (CREW-1310) unless told not to.
+      // Everything that can fail on the tracker is done before crew.yaml is
+      // written, so a refused create leaves the config alone and the command
+      // can simply be re-run.
+      let rowTracker: Tracker | undefined;
+      let rowPayload: Record<string, unknown> | undefined;
+      if (plan.unmatched && origin && !flag('no-create')) {
+        // The route may be one `loadConfig` drops for lacking a checkout, so
+        // load it from the planned text rather than the file on disk.
+        const planned = loadConfig(CREW_HOME, cfg.configFile, { text: plan.text, allowNoRoutes: true });
+        const planRoute = planned.routes.find((r) => r.route === routeName);
+        if (!planRoute) throw new ReposError(`route ${routeName} did not load from the planned config; use --no-create`);
+        try {
+          rowTracker = new Tracker(planRoute, cfg.ship);
+        } catch (e) {
+          if (e instanceof ConfigError) throw new ReposError(`${e.message}; or pass --no-create`);
+          throw e;
+        }
+        const projectId = resolveRepoProject(await rowTracker.projectRows(), value('project'), planRoute.resolved?.areaId);
+        let spec: Parameters<typeof planRepoRow>[0]['spec'];
+        try {
+          const rc = loadRepoConfig(top);
+          if (rc) spec = { platform: rc.platform, releaseMode: rc.release.mode, ciProvider: rc.release.ci.provider };
+        } catch { /* a malformed .crew.yaml is `crew doctor`'s to report; fall to defaults */ }
+        rowPayload = planRepoRow({ name: plan.name, origin, spec, projectId });
+      } else if (plan.warning) {
+        process.stderr.write(`crew repos: warning — ${plan.warning}\n`);
+      }
       if (dryRun) {
         process.stdout.write(`${plan.block}\n`);
+        if (rowPayload) process.stdout.write(`would create Repos row: ${JSON.stringify(rowPayload)}\n`);
         break;
+      }
+      if (rowTracker && rowPayload) {
+        const created = await rowTracker.createRepoRow(rowPayload);
+        process.stdout.write(`created Repos row ${String(rowPayload.name)} (${String(rowPayload.remote)}) ${created.id}\n`);
+        // Mirror it into the resolved file so `crew repos list` matches at once.
+        if (existsSync(resolvedFile)) {
+          const raw = JSON.parse(readFileSync(resolvedFile, 'utf8')) as RepoRemotes & Record<string, unknown>;
+          raw.repoNames = { ...raw.repoNames, [created.id]: String(rowPayload.name) };
+          raw.repoRemotes = { ...raw.repoRemotes, [created.id]: String(rowPayload.remote) };
+          writeFileSync(resolvedFile, `${JSON.stringify(raw, null, 2)}\n`);
+        }
       }
       writeFileSync(cfg.configFile, plan.text);
       process.stdout.write(`added ${top} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}\n`);

@@ -9,7 +9,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | Command | What it does |
 | --- | --- |
 | `crew connect [workspace[/project]]` | Resolve a workspace's ids into `crew.yaml`; on a first run, a setup wizard. |
-| `crew repos add ROUTE PATH` | Attach a local checkout to a route in `crew.yaml` (`--dry-run` previews). |
+| `crew repos add ROUTE PATH` | Attach a local checkout to a route in `crew.yaml` Creates the Repos row when the tracker has none (`--name`, `--project`, `--no-create`; `--dry-run` previews). |
 | `crew repos list ROUTE` | The checkouts a route has, with the Repos row each matches. |
 | `crew doctor [route] [--fix]` | Read-only preflight; `--fix` enables clean routes and offers `crew install`. |
 | `crew install` / `crew uninstall` | Write and load, or unload and remove, this platform's scheduler unit. |

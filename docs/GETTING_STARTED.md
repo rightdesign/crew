@@ -350,13 +350,19 @@ tail -f ~/Library/Logs/Crew.log
 without editing `crew.yaml` by hand. It checks that `<path>` is a git checkout,
 reads its `origin`, and matches that against the route's Repos table (the ids
 `crew connect` resolved). A match records the checkout under the Repos row's
-name; no match warns that the tracker has no Repos row for that remote, and
-adds it anyway, in case you are about to create the row.
+name. With no match, it creates the Repos row for you: `name` is the checkout's
+folder name (or `--name`), `remote` the normalised `owner/repo`, and
+`platform` / `release_mode` / `ci_provider` come from the checkout's own
+`.crew.yaml` when it has one (else `unix` / `local` / `none`). The row's project
+is `--project <name>` if given, else the route's area, else the tracker's only
+project; with several projects and none chosen the command stops and asks for
+`--project`, leaving `crew.yaml` untouched. Pass `--no-create` to keep the old
+warn-only behaviour, for a Repos table you manage by hand.
 
 - A route's first checkout is written as `dir:`. Adding a second turns `dir:`
   into a `repos:` map holding both. Comments and other routes are left alone.
 - Adding a path the route already has is refused. `--dry-run` prints the
-  resulting route block instead of writing.
+  resulting route block, and the Repos row it would create, instead of writing.
 - `crew repos list <workspace/project>` prints what is configured, with the
   Repos row each checkout matches, so you can confirm the add.
 

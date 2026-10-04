@@ -66,6 +66,8 @@ export interface AddPlan {
   block: string;
   /** Set when the tracker has no Repos row for this checkout's origin. */
   warning?: string;
+  /** True when no Repos row matches (or the checkout has no origin to match on). */
+  unmatched: boolean;
 }
 
 export interface AddInput {
@@ -78,6 +80,8 @@ export interface AddInput {
   /** The checkout's `origin` URL, if it has one. */
   origin?: string;
   resolved?: RepoRemotes;
+  /** `--name`: the repo's name when no Repos row names it already. */
+  name?: string;
   /** The name for a checkout already on the route (its `dir:`), given its path. */
   nameForExisting?: (dir: string) => string | undefined;
 }
@@ -135,7 +139,7 @@ export function planRepoAdd(i: AddInput): AddPlan {
   }
 
   const matched = matchRepoName(i.origin, i.resolved);
-  const name = matched ?? basename(target);
+  const name = matched ?? i.name ?? basename(target);
   let warning: string | undefined;
   if (!matched) {
     const known = Object.values(i.resolved?.repoNames ?? {});
@@ -166,9 +170,73 @@ export function planRepoAdd(i: AddInput): AddPlan {
     mode = 'dir';
   }
 
-  return { text: String(doc), mode, name, block: renderBlock(m), warning };
+  return { text: String(doc), mode, name, block: renderBlock(m), warning, unmatched: !matched };
 }
 
 function renderBlock(m: YAMLMap): string {
   return stringify([m.toJSON()]).trimEnd();
+}
+
+/** What a checkout's own `.crew.yaml` says that the Repos row caches (`platform`, `release_mode`, `ci_provider`). */
+export interface CheckoutSpec {
+  platform?: string;
+  releaseMode?: string;
+  ciProvider?: string;
+}
+
+/** A Repos-table `Projects` row, as much of it as picking a project needs. */
+export interface ProjectChoice { id: string; name?: string }
+
+export interface RepoRowInput {
+  /** The row's `name`; the checkout's basename unless `--name` overrides it. */
+  name: string;
+  /** The checkout's `origin` URL. */
+  origin: string;
+  spec?: CheckoutSpec;
+  projectId: string;
+}
+
+/** `release.mode` values the Repos table has no choice for: crew itself does the merge/release locally. */
+const LOCAL_RELEASE_MODES = new Set(['integrate', 'external']);
+
+/**
+ * The Repos row to create for a checkout the tracker has no row for. Values the
+ * checkout's `.crew.yaml` declares win; anything it leaves out falls to the
+ * table's documented defaults (`unix` / `local` / `none`), which the API does
+ * not apply on its own.
+ */
+export function planRepoRow(i: RepoRowInput): Record<string, unknown> {
+  const remote = normalizeRemote(i.origin);
+  if (!remote) throw new ReposError(`cannot derive an owner/repo from origin "${i.origin}"`);
+  const mode = i.spec?.releaseMode;
+  return {
+    name: i.name,
+    remote,
+    platform: i.spec?.platform ?? 'unix',
+    release_mode: mode ? (LOCAL_RELEASE_MODES.has(mode) ? 'local' : mode) : 'local',
+    ci_provider: i.spec?.ciProvider ?? 'none',
+    enabled: true,
+    project_id: i.projectId,
+  };
+}
+
+/**
+ * The Projects row a new Repos row belongs to. `--project` (id or name) wins,
+ * then the route's own area; a tracker with exactly one project needs neither.
+ * Anything else is an error — a repo with no project is the thing `crew doctor`
+ * flags, so it is never created by default.
+ */
+export function resolveRepoProject(projects: ProjectChoice[], opt: string | undefined, routeAreaId?: string): string {
+  if (opt) {
+    const want = opt.toLowerCase();
+    const hit = projects.find((p) => p.id === opt || p.name?.toLowerCase() === want);
+    if (!hit) throw new ReposError(`no Projects row "${opt}" (have: ${projects.map((p) => p.name ?? p.id).join(', ') || 'none'})`);
+    return hit.id;
+  }
+  if (routeAreaId) return routeAreaId;
+  if (projects.length === 1) return projects[0]!.id;
+  throw new ReposError(
+    `cannot tell which project the new Repos row belongs to — pass --project <name>` +
+      ` (have: ${projects.map((p) => p.name ?? p.id).join(', ') || 'none'}), or --no-create to skip creating it`,
+  );
 }

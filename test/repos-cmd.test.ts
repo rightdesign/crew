@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, ReposError } from '../src/repos-cmd.ts';
+import { configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
 import { parse } from 'yaml';
 
 const BASE = '/cfg';
@@ -84,4 +84,35 @@ test('remote matching: with a Repos row uses its name, without one warns but sti
 
 test('an unknown route is an error', () => {
   assert.throws(() => planRepoAdd({ text: empty, base: BASE, route: 'nope/none', path: '/x' }), /no route "nope\/none"/);
+});
+
+test('an unmatched checkout is flagged for a Repos row; a matched one is not; --name feeds the name', () => {
+  const miss = planRepoAdd({ text: empty, base: BASE, route: 'acme/product', path: '/src/new', origin: 'git@github.com:acme/new.git', resolved, name: 'fresh' });
+  assert.equal(miss.unmatched, true);
+  assert.equal(miss.name, 'fresh');
+  const hit = planRepoAdd({ text: empty, base: BASE, route: 'acme/product', path: '/src/x', origin: 'acme/crew', resolved, name: 'ignored' });
+  assert.equal(hit.unmatched, false);
+  assert.equal(hit.name, 'crew');
+});
+
+test('planRepoRow defaults, and prefers the checkout .crew.yaml values', () => {
+  assert.deepEqual(planRepoRow({ name: 'n', origin: 'git@github.com:Acme/N.git', projectId: 'p1' }), {
+    name: 'n', remote: 'acme/n', platform: 'unix', release_mode: 'local', ci_provider: 'none', enabled: true, project_id: 'p1',
+  });
+  const row = planRepoRow({ name: 'n', origin: 'acme/n', projectId: 'p1', spec: { platform: 'macos', releaseMode: 'ci_auto', ciProvider: 'github' } });
+  assert.equal(row.platform, 'macos');
+  assert.equal(row.release_mode, 'ci_auto');
+  assert.equal(row.ci_provider, 'github');
+  assert.equal(planRepoRow({ name: 'n', origin: 'acme/n', projectId: 'p1', spec: { releaseMode: 'integrate' } }).release_mode, 'local');
+  assert.throws(() => planRepoRow({ name: 'n', origin: 'nonsense', projectId: 'p1' }), ReposError);
+});
+
+test('resolveRepoProject: --project, route area, a lone project, else an error', () => {
+  const two = [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }];
+  assert.equal(resolveRepoProject(two, 'beta'), 'b');
+  assert.equal(resolveRepoProject(two, 'a'), 'a');
+  assert.throws(() => resolveRepoProject(two, 'gamma'), /no Projects row "gamma"/);
+  assert.equal(resolveRepoProject(two, undefined, 'route-area'), 'route-area');
+  assert.equal(resolveRepoProject([{ id: 'only' }], undefined), 'only');
+  assert.throws(() => resolveRepoProject(two, undefined), /--project/);
 });
