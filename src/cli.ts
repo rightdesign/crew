@@ -74,7 +74,13 @@ import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { dockerAvailable, planContainers, syncAllPassengerCheckouts, syncPassengerContainers } from './passenger-containers.ts';
-import { syncPassengerTunnels, readPersistedTunnel, isPidAlive } from './tunnel.ts';
+import {
+  syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, rotatePersistedSlug,
+} from './tunnel.ts';
+import {
+  reconcileEndpoint, unregisterEndpoint, probeEndpointAccess, REGISTER_MCP_ENDPOINTS_HINT,
+  type EndpointApi, type ReconcileDeps,
+} from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
 import { runDaemonLoop, runOnePass, makeStaleChecker } from './daemon.ts';
 
@@ -610,14 +616,26 @@ async function syncHostPassengers(): Promise<void> {
         // ISSUE-685: same secret already threaded into the container itself
         // (above, via `syncEndpoints` -> `startContainer`'s PASSENGER_MCP_SECRET).
         const mcpSecrets = new Map([...syncEndpoints].map(([workspaceId, e]) => [workspaceId, e.secret]));
-        syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, mcpSecrets, {
-          onStatus: (workspaceId, status) => {
+        const relayHost = cfg.ship.relayHost;
+        const reconcile = endpointReconcileDeps(passengerRoutes, relayHost);
+        const pending: Array<Promise<void>> = [];
+        syncPassengerTunnels(plans, relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, mcpSecrets, {
+          apiKeys: passengerApiKeys(passengerRoutes),
+          onStatus: (workspaceId, status, info) => {
             const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
             if (!owningRoute) return;
-            new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
-              .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
+            pending.push(
+              new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
+                .catch((e) => { emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }); }),
+            );
+            if (status === 'disconnected') pending.push(unregisterEndpoint(workspaceId, info, reconcile));
           },
         });
+        // Every cycle, not just on the connected transition: a 403 or a
+        // network error registering the endpoint is retried next cycle
+        // without ever touching the tunnel.
+        for (const plan of plans) pending.push(reconcileEndpoint(plan.workspaceId, reconcile));
+        await Promise.all(pending);
       } catch (e) {
         emit.warn(`passenger tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
       }
@@ -625,6 +643,39 @@ async function syncHostPassengers(): Promise<void> {
   } catch (e) {
     emit.warn(`passenger container sync failed: ${(e as Error).message}`, { step: 'passengers' });
   }
+}
+
+/** workspaceId -> the owning route's own API key, for the relay's `/auth/me` entitlement check (CREW-1320). */
+function passengerApiKeys(routes: Route[]): Map<string, string> {
+  const keys = new Map<string, string>();
+  for (const r of routes) {
+    const ws = r.resolved?.workspaceId;
+    if (!ws) continue;
+    try { keys.set(ws, resolveApiKey(r)); } catch { /* no key: the tunnel step reports this workspace disconnected */ }
+  }
+  return keys;
+}
+
+function endpointApiFor(routes: Route[]): (workspaceId: string) => EndpointApi | undefined {
+  return (workspaceId) => {
+    const r = routes.find((x) => x.resolved?.workspaceId === workspaceId);
+    if (!r) return undefined;
+    try {
+      return { baseUrl: r.baseUrl || DEFAULT_BASE_URL, apiKey: resolveApiKey(r), userAgent: cfg.ship.userAgent };
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+function endpointReconcileDeps(routes: Route[], relayHost: string): ReconcileDeps {
+  return {
+    stateDir: cfg.ship.stateDir,
+    shipName: cfg.ship.name,
+    apiFor: endpointApiFor(routes),
+    urlFor: (slug) => publicUrlFor(slug, relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain),
+    warn: (m) => emit.warn(m, { step: 'passengers' }),
+  };
 }
 
 /**
@@ -2787,12 +2838,10 @@ switch (command) {
   }
 
   case 'rotate-passenger-url': {
-    // ISSUE-555's narrowed scope (see the ticket's own comment trail):
-    // the relay already mints a fresh `tunnelSlug` on every reconnect
-    // (RELAY.md), so "rotation" doesn't need a stable-slug protocol built
-    // first — it's just forcing a reconnect. This is the escape hatch for
-    // a leaked passenger URL: the ship's SSH keypair is never touched,
-    // only the tunnel (and therefore the public label) is replaced.
+    // The escape hatch for a leaked passenger URL (CREW-1320): the slug is
+    // this ship's own, so rotation is replacing it, respawning the tunnel
+    // under the new one, and updating the registered endpoint. The ship's
+    // SSH keypair is never touched.
     emit.enter('passengers');
     if (!route.hostPassengers) {
       process.stderr.write(
@@ -2826,13 +2875,11 @@ switch (command) {
       );
       break;
     }
-    // Kill the old tunnel before dialing a new one — the same
-    // kill-then-respawn shape `syncPassengerTunnels` already uses when a
-    // container's mounts change out from under a running tunnel. Not
-    // strictly required for the URL to change (the relay evicts the old
-    // mapping the instant the new connection lands, per CREW_PRD.md
-    // §9.9), but leaving a superseded tunnel running for no reason isn't
-    // the point of a rotation.
+    // The new slug is persisted first (`syncPassengerTunnels` respawns any
+    // tunnel whose live slug differs), then the old tunnel is killed — the
+    // same kill-then-respawn shape it uses when a container's mounts change
+    // under a running tunnel.
+    rotatePersistedSlug(cfg.ship.stateDir, workspaceId);
     if (hasLiveTunnel) {
       try { process.kill(existing!.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
@@ -2842,13 +2889,22 @@ switch (command) {
     // regular `passengers` cycle re-syncs it; `validateCredential`'s
     // real-API-key path still works for anyone with a real credential in
     // the meantime, same graceful-degradation shape as a missing sync daemon.
+    const rotateReconcile = endpointReconcileDeps([route], cfg.ship.relayHost);
+    const rotatePending: Array<Promise<void>> = [];
     syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, new Map(), {
-      onStatus: (wsId, status) => {
-        new Tracker(route, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
-          .catch((e) => emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }));
+      apiKeys: passengerApiKeys([route]),
+      onStatus: (wsId, status, info) => {
+        rotatePending.push(
+          new Tracker(route, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
+            .catch((e) => { emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }); }),
+        );
+        if (status === 'disconnected') rotatePending.push(unregisterEndpoint(wsId, info, rotateReconcile));
       },
     });
-    emit.emit(`rotated the passenger tunnel for ${route.route} — a fresh public URL will be minted on reconnect`);
+    // The new tunnel is still `connecting` here, so the endpoint is updated
+    // by the next regular `passengers` cycle once it has settled `connected`.
+    await Promise.all(rotatePending);
+    emit.emit(`rotated the passenger tunnel for ${route.route} — it reconnects under a fresh slug and the registered endpoint follows on the next passengers cycle`);
     break;
   }
 
@@ -3262,6 +3318,26 @@ switch (command) {
           '                   `ssh-keygen` is required to mint this ship\'s tunnel identity — install OpenSSH, ' +
             'then re-run `crew connect` to sync a key onto this workspace\'s Ships row.\n',
         );
+      }
+      if (cfg.ship.relayHost) {
+        // The URL a tunnel would register, for a slug that is already persisted.
+        for (const r of passengerRoutes) {
+          const ws = r.resolved?.workspaceId;
+          const slug = ws ? readPersistedTunnel(cfg.ship.stateDir, ws)?.slug : undefined;
+          if (!ws) continue;
+          process.stdout.write(
+            `                   ${r.route} url: ${slug ? publicUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain) : 'not minted yet (first tunnel cycle creates it)'}\n`,
+          );
+          const api = endpointApiFor([r])(ws);
+          if (!api) continue;
+          const probe = await probeEndpointAccess(api, ws);
+          process.stdout.write(
+            `                   ${r.route} mcp endpoints: ` +
+              (probe === 'ok' ? 'OK (key may register its endpoint)'
+                : probe === 'forbidden' ? `403 — ${REGISTER_MCP_ENDPOINTS_HINT}`
+                : `could not check (${probe.error})`) + '\n',
+          );
+        }
       }
       for (const r of passengerRoutes) {
         const included = passengerRepoTargets(r);

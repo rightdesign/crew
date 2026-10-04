@@ -503,13 +503,15 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // `hostPassengers:`), never on the Ships row itself (ISSUE-644) — the
     // row is a read-only reflection, synced here on every connect so a
     // change to crew.yaml takes effect the next time this route reconnects.
-    // `tunnel_status`/`mcp_url` are deliberately left untouched: nothing in
-    // this repo runs an actual tunnel yet to report a live state for
-    // (ISSUE-553/554), and stamping a default here could clobber a real
-    // value a future tunnel client is maintaining.
+    // `tunnel_status`/`mcp_url` are deliberately left untouched: the tunnel
+    // client (`tunnel.ts`) owns `tunnel_status`, and stamping a default here
+    // could clobber a live value.
     const hostPassengers = o.ship.hostPassengers ?? false;
     // Same reasoning as `hostPassengers`, for the ship's own SSH public key
-    // (ISSUE-553): the keypair itself is generated and persisted on this
+    // (ISSUE-553). INFORMATIONAL ONLY since CREW-1320: the relay no longer
+    // reads this column (it checks the ship's API key through `/auth/me` and
+    // binds slugs to the key fingerprint itself), so it is kept for humans
+    // looking at the Ships row, not for tunnel auth. The keypair itself is generated and persisted on this
     // machine (`ssh-keys.ts`), never on the Ships row — the row only ever
     // reflects whatever public key this machine currently holds, synced on
     // every connect so a regenerated key takes effect the next time this

@@ -374,8 +374,8 @@ export interface Ship {
   streamRetentionDays: number;
   /**
    * The Host Passengers relay this ship dials out to (`ssh -R
-   * workspace-<id>:0:127.0.0.1:<port> <relayHost>`) — docs/RELAY.md in the
-   * synthesis repo, e.g. `crewd@ships.tablation.dev`. Ship-level, not
+   * <bindAddr>:0:127.0.0.1:<port> <relayHost>`) — README.md in the
+   * crew-relay repo, e.g. `crewd@ships.tablation.dev`. Ship-level, not
    * per-route: one ship dials one relay deployment regardless of how many
    * workspaces' containers it's tunneling. `undefined` means Host
    * Passengers containers still run locally (any route with
@@ -386,7 +386,7 @@ export interface Ship {
   relayHost?: string;
   /**
    * The port `relayHost` listens for `ssh -R` on (ISSUE-681) — the relay's
-   * own `RELAY_SSH_PORT` (docs/RELAY.md), deliberately NOT 22 so it never
+   * own `RELAY_SSH_PORT` (crew-relay README), deliberately NOT 22 so it never
    * collides with a box's own admin SSH daemon. Default 2222 matches the
    * relay's own default. This has to be a separate field, not folded into
    * `relayHost` itself: `relayHost` is handed to `ssh` as a plain
@@ -397,6 +397,17 @@ export interface Ship {
    * firewalled port with zero visible error.
    */
   relayPort: number;
+  /**
+   * The port the relay's public HTTPS side answers on (CREW-1320) — part of
+   * the passenger URL this ship registers (`https://<slug>.<domain>[:port]/mcp`).
+   * Default 443, omitted from the URL when it is.
+   */
+  relayHttpPort: number;
+  /**
+   * The domain the relay serves `<slug>.<domain>` under. Defaults to the host
+   * part of `relayHost`; set it when the SSH host and the public domain differ.
+   */
+  relayPublicDomain?: string;
 }
 
 export interface CrewConfig {
@@ -420,7 +431,7 @@ export class ConfigError extends Error {}
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
-  'reposBasePath', 'relayHost', 'relayPort',
+  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -888,8 +899,10 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       maxConcurrentAgents,
       streamRetentionDays,
       relayHost: shipRaw.relayHost ? String(shipRaw.relayHost) : undefined,
-      // 2222 matches the relay's own RELAY_SSH_PORT default (docs/RELAY.md).
+      // 2222 matches the relay's own RELAY_SSH_PORT default (crew-relay README).
       relayPort: shipRaw.relayPort !== undefined ? Number(shipRaw.relayPort) : 2222,
+      relayHttpPort: shipRaw.relayHttpPort !== undefined ? Number(shipRaw.relayHttpPort) : 443,
+      relayPublicDomain: shipRaw.relayPublicDomain ? String(shipRaw.relayPublicDomain) : undefined,
     },
     routes,
     crewHome,

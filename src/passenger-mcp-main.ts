@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Standalone entrypoint for `passenger-mcp.ts`, env-var configured like the
- * synthesis repo's relay (`apps/relay/src/config.ts` + `index.ts`) — this is
+ * crew-relay's own entrypoint — this is
  * what a Ship's per-workspace container will eventually run, once that
  * container exists (not built by ISSUE-551; the ticket's own note says the
  * tool surface "can be developed and tested standalone... before the

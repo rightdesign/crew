@@ -33,7 +33,7 @@
  *
  * Real authentication (ISSUE-552) happens in `createPassengerHttpServer`,
  * before a request ever reaches the tool surface below. Per the relay's own
- * design (docs/RELAY.md in the synthesis repo, ISSUE-550), the relay's
+ * design (README.md in the crew-relay repo, ISSUE-550), the relay's
  * `Authorization` gate is presence-only and explicitly defers real
  * credential validation to "the ship's own MCP server" — this is that
  * validation. It resolves the caller's Bearer token the same way ordinary
@@ -50,12 +50,13 @@
  * That workspace id is never taken from the caller or the request — it's
  * this container's own trusted config (`PASSENGER_MCP_WORKSPACE_ID`, set at
  * container launch, the same way `PASSENGER_MCP_ROOT` already is). This is
- * a different question from the relay's own still-open ship→workspace
- * *entitlement* gap (ISSUE-625: can a ship legitimately claim tunnel
- * bind-address `-R workspace-<id>:...`?) — that's about an untrusted,
- * self-asserted claim from a connecting ship, whereas this container's own
- * workspace id is supplied by whatever trusted process launches it, not by
- * anything a caller sends. ISSUE-625 landing doesn't change this file.
+ * a different question from the relay's own ship→workspace *entitlement*
+ * check (can a ship legitimately claim tunnel bind-address
+ * `-R workspace-<id>-...`? — the relay answers it with the ship's own key via
+ * `/auth/me`, CREW-1319) — that's about an untrusted, self-asserted claim
+ * from a connecting ship, whereas this container's own workspace id is
+ * supplied by whatever trusted process launches it, not by anything a caller
+ * sends.
  */
 
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -138,8 +139,9 @@ export interface PassengerAuthConfig {
    * Bearer token skips the `/auth/me` round trip entirely — this is the
    * path a cookie-authenticated in-app chat session uses (synthesis
    * ISSUE-684): it has no Tablation API key of its own to forward, but the
-   * relay already wrote this same secret onto the Ships row alongside
-   * `mcp_url`, so the backend can read it back and present it here.
+   * ship registers this same secret as the Authorization header of its
+   * workspace MCP endpoint (`mcp-endpoint-registry.ts`, CREW-1320), so the
+   * backend can read it back and present it here.
    * Undefined disables this path entirely (e.g. the sync daemon never
    * started for this container) — every caller then needs a real API key.
    */
@@ -156,9 +158,8 @@ type CredentialCheck =
  * (ISSUE-685) — no network round trip, and the only path available to a
  * caller with no real Tablation credential of its own. Failing that, falls
  * back to the original check: the header resolved against Tablation's own
- * `GET /auth/me` — the same loopback-to-Tablation shape the relay's
- * `TablationShipRegistry` already uses for its own Ships-row lookup
- * (apps/relay/src/shipRegistry.ts), just against a different route. Passes
+ * `GET /auth/me` — the same call the relay itself makes to check a
+ * ship's key (crew-relay, CREW-1319). Passes
  * the header straight through rather than re-deriving a bearer token, so a
  * malformed header reads the same way `/auth/me` itself would report it.
  * Never throws — a network failure against Tablation is a 502 verdict, not

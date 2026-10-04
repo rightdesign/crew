@@ -1,40 +1,44 @@
 /**
- * The Host Passengers tunnel client (ISSUE-553, CREW_PRD.md §9.9,
- * docs/RELAY.md in the synthesis repo). Shells out to the REAL `ssh`
- * binary rather than a library like `ssh2` — the PRD's own spike note
- * (§9.9) is that the real binary needed a real interop fix distinct from
- * what worked `ssh2`-to-`ssh2`, so this client's own fidelity comes from
- * running literally the same command a person would type by hand:
+ * The Host Passengers tunnel client (ISSUE-553, CREW_PRD.md §9.9, README.md in
+ * the crew-relay repo). Shells out to the REAL `ssh` binary rather than a
+ * library like `ssh2` — the PRD's own spike note (§9.9) is that the real
+ * binary needed a real interop fix distinct from what worked `ssh2`-to-`ssh2`,
+ * so this client's own fidelity comes from running literally the same command
+ * a person would type by hand:
  *
- *   ssh -N -p <relayPort> -R workspace-<workspaceId>-secret-<mcpSecret>:0:127.0.0.1:<localPort> <relayHost>
+ *   ssh -N -p <relayPort> -R <bindAddr>:0:127.0.0.1:<localPort> <relayHost>
  *
  * `-N`: no remote command, this connection exists purely to hold the
- * forward open. The bind address's `workspace-<id>` prefix and `:0` dynamic
- * port are the relay's own addressing convention (RELAY.md) — not something
- * this client interprets, just what it's told to ask for. The bind address
- * is advisory to the SSH protocol (RFC 4254 §7.1 doesn't require it name a
- * real interface), which is exactly what already let `workspace-<id>` ride
- * over to the relay as routing metadata — the optional `-secret-<hex>`
- * suffix (ISSUE-685) reuses that same free-form-string property to also
- * carry this container's own identity secret, so the relay can write it
- * onto the Ships row alongside `mcp_url` (synthesis ISSUE-684) without a
- * second side channel.
+ * forward open. The bind address is advisory to the SSH protocol (RFC 4254
+ * §7.1 doesn't require it name a real interface), which is what lets it ride
+ * to the relay as routing metadata. It is the v2 format (CREW-1320, the other
+ * half of crew-relay's CREW-1319 parser — keep the two in lockstep):
  *
- * There is no live relay to test this against (ISSUE-652 blocks real
- * ship->workspace entitlement on the relay side, filed separately, not
- * this ticket's to fix) — every test here injects a fake `spawn`, asserting
- * this module builds the right argv and reacts correctly to a fake child
- * process's stdout/exit, not that a real tunnel actually comes up.
+ *   workspace-<uuid>-slug-<12 [a-z0-9]>-key-<routeApiKey>[-secret-<mcpSecret>]
  *
- * `mcp_url` publishing itself is no longer a gap (synthesis ISSUE-664) —
- * the relay writes both `tunnel_status` and `mcp_url` onto the Ships row
- * once it accepts this tunnel's `tcpip-forward` request; this module still
- * only ever writes `tunnel_status` itself, promoting a still-`connecting`
- * persisted tunnel once it survives a cycle (see `syncPassengerTunnels`).
+ * The slug is OWNED BY THIS SHIP: generated once per workspace and persisted
+ * in `<stateDir>/passengers/<workspaceId>.json`, so the public URL is stable
+ * across reconnects; `crew rotate-passenger-url` replaces it. The key is the
+ * route's own API key, which the relay validates through `/auth/me`; it
+ * travels only inside the encrypted SSH session, and nothing in this repo
+ * may log an ssh argv (the `-R` argument carries it). `-secret-` is the
+ * container's own identity secret (ISSUE-685), optional, hex — the relay
+ * finds it by the LAST `-secret-` marker, since API keys may contain `-`.
+ * No colons anywhere: ssh splits `-R` on them.
+ *
+ * Publishing the URL is not done here: once a tunnel settles `connected`,
+ * `mcp-endpoint-registry.ts` registers it as a workspace MCP endpoint with
+ * the route's own key.
+ *
+ * There is no live relay to test this against — every test here injects a
+ * fake `spawn`, asserting this module builds the right argv and reacts
+ * correctly to a fake child process's stdout/exit, not that a real tunnel
+ * actually comes up.
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { randomInt } from 'node:crypto';
 import { join } from 'node:path';
 import type { ContainerPlan } from './passenger-containers.ts';
 
@@ -65,6 +69,10 @@ export interface TunnelOptions {
   /** The port `relayHost` listens for `ssh -R` on — `Ship.relayPort` (ISSUE-681). */
   relayPort: number;
   workspaceId: string;
+  /** This ship's stable public label for the workspace (see header); 12 chars `[a-z0-9]`. */
+  slug: string;
+  /** The route's own API key — the relay's entitlement check. Never logged. */
+  apiKey: string;
   /** The Host Passengers container's published port on this host. */
   localPort: number;
   privateKeyPath: string;
@@ -90,23 +98,41 @@ export interface Tunnel {
   stop(): void;
 }
 
-/**
- * `-secret-<hex>` is a literal marker, not a generic delimiter — a
- * workspace id (a UUID) already contains hyphens of its own, so splitting
- * on any bare `-` would be ambiguous. The secret itself is always hex
- * (`generateSyncSecret()`, `passenger-sync-daemon.ts`), so it never
- * contains a hyphen either; only the literal string `-secret-` marks the
- * boundary. The relay's own parser (synthesis `sshServer.ts`) must use the
- * exact same marker.
- */
-const SECRET_MARKER = '-secret-';
+const SLUG_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+const SLUG_LENGTH = 12;
 
-export function bindAddrFor(o: Pick<TunnelOptions, 'workspaceId' | 'mcpSecret'>): string {
-  return o.mcpSecret ? `workspace-${o.workspaceId}${SECRET_MARKER}${o.mcpSecret}` : `workspace-${o.workspaceId}`;
+export function generateTunnelSlug(): string {
+  let out = '';
+  for (let i = 0; i < SLUG_LENGTH; i++) out += SLUG_ALPHABET[randomInt(SLUG_ALPHABET.length)];
+  return out;
+}
+
+/**
+ * `-slug-`, `-key-` and `-secret-` are literal markers, not generic
+ * delimiters — a workspace id (a UUID) already contains hyphens of its own,
+ * so splitting on any bare `-` would be ambiguous. The relay's parser
+ * (crew-relay `parseBindAddr`) parses positionally: uuid is 36 chars, slug is
+ * 12, the key runs to the LAST `-secret-`.
+ */
+export function bindAddrFor(o: Pick<TunnelOptions, 'workspaceId' | 'slug' | 'apiKey' | 'mcpSecret'>): string {
+  const base = `workspace-${o.workspaceId}-slug-${o.slug}-key-${o.apiKey}`;
+  return o.mcpSecret ? `${base}-secret-${o.mcpSecret}` : base;
+}
+
+/**
+ * The public MCP URL for a slug: `https://<slug>.<domain>[:<httpPort>]/mcp`.
+ * The domain is `ship.relayPublicDomain` when set, else the host part of
+ * `relayHost` (`crewd@ships.example.com` -> `ships.example.com`).
+ */
+export function publicUrlFor(
+  slug: string, relayHost: string, relayHttpPort: number, relayPublicDomain?: string,
+): string {
+  const domain = relayPublicDomain ?? relayHost.replace(/^.*@/, '');
+  return `https://${slug}.${domain}${relayHttpPort === 443 ? '' : `:${relayHttpPort}`}/mcp`;
 }
 
 export function sshArgsFor(
-  o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'localPort' | 'privateKeyPath' | 'mcpSecret'>,
+  o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'slug' | 'apiKey' | 'localPort' | 'privateKeyPath' | 'mcpSecret'>,
 ): string[] {
   return [
     '-N',
@@ -181,6 +207,14 @@ export interface PersistedTunnel {
   status: TunnelStatus;
   /** The PASSENGER_MCP_SECRET (ISSUE-685) this tunnel's own `-R` bind address was actually started with, if any (ISSUE-696) — compared each cycle against the freshly-resolved `mcpSecrets` map so a drifted secret gets caught the same way a `mountsHash` change does. */
   mcpSecret?: string;
+  /** This ship's stable slug for the workspace (CREW-1320); outlives respawns, replaced only by a rotation. */
+  slug?: string;
+  /** The slug the live `ssh` was actually started with — differs from `slug` after a rotation, which is what forces the respawn. */
+  liveSlug?: string;
+  /** The workspace MCP endpoint row registered for this tunnel, if any. */
+  endpointId?: string;
+  /** Hash of the URL + header the endpoint was last registered with, so an unchanged cycle makes no call. */
+  registeredKey?: string;
 }
 
 function tunnelStatePath(stateDir: string, workspaceId: string): string {
@@ -203,6 +237,17 @@ function writePersistedTunnel(stateDir: string, state: PersistedTunnel): void {
   writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
+/** Merges `patch` into an existing persisted tunnel; a no-op if there is none. */
+export function updatePersistedTunnel(stateDir: string, workspaceId: string, patch: Partial<PersistedTunnel>): void {
+  const existing = readPersistedTunnel(stateDir, workspaceId);
+  if (existing) writePersistedTunnel(stateDir, { ...existing, ...patch });
+}
+
+/** Gives the workspace a fresh slug (`crew rotate-passenger-url`); the next sync respawns the tunnel under it. */
+export function rotatePersistedSlug(stateDir: string, workspaceId: string): void {
+  updatePersistedTunnel(stateDir, workspaceId, { slug: generateTunnelSlug() });
+}
+
 function removePersistedTunnel(stateDir: string, workspaceId: string): void {
   const path = tunnelStatePath(stateDir, workspaceId);
   try { unlinkSync(path); } catch { /* already gone */ }
@@ -216,8 +261,14 @@ export function isPidAlive(pid: number): boolean {
 export interface SyncTunnelsDeps {
   spawnFn?: SpawnFn;
   isPidAlive?: (pid: number) => boolean;
-  /** Reports each workspace's settled status this cycle, for the caller to write onto the Ships row. */
-  onStatus?: (workspaceId: string, status: TunnelStatus) => void;
+  /**
+   * Reports each workspace's settled status this cycle, for the caller to write onto the Ships row.
+   * `info` is the persisted state as of the report (for a torn-down tunnel, the state just removed),
+   * so a caller can still find the `endpointId` it has to delete.
+   */
+  onStatus?: (workspaceId: string, status: TunnelStatus, info: PersistedTunnel | undefined) => void;
+  /** workspaceId -> the route's API key. A workspace without one gets no tunnel (reported `disconnected`). */
+  apiKeys?: Map<string, string>;
 }
 
 /**
@@ -267,27 +318,36 @@ export function syncPassengerTunnels(
     const existing = readPersistedTunnel(stateDir, plan.workspaceId);
     const currentSecret = mcpSecrets.get(plan.workspaceId);
     const secretUnchanged = (existing?.mcpSecret ?? undefined) === (currentSecret ?? undefined);
-    if (existing && alive(existing.pid) && existing.mountsHash === plan.mountsHash && secretUnchanged) {
+    const slug = existing?.slug ?? generateTunnelSlug();
+    const slugUnchanged = existing?.liveSlug === slug;
+    if (existing && alive(existing.pid) && existing.mountsHash === plan.mountsHash && secretUnchanged && slugUnchanged) {
       if (existing.status === 'connecting') {
         const settled: PersistedTunnel = { ...existing, status: 'connected' };
         writePersistedTunnel(stateDir, settled);
-        deps.onStatus?.(plan.workspaceId, 'connected');
+        deps.onStatus?.(plan.workspaceId, 'connected', settled);
       }
       continue;
     }
     if (existing && alive(existing.pid)) {
-      // Mounts changed under it (the container was recreated), or its
-      // secret drifted from the container's own (ISSUE-696) — either way
-      // the old tunnel no longer matches what's actually behind it.
+      // Mounts changed under it (the container was recreated), its
+      // secret drifted from the container's own (ISSUE-696), or its slug was
+      // rotated — either way the old tunnel no longer matches.
       try { process.kill(existing.pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
+    const apiKey = deps.apiKeys?.get(plan.workspaceId);
+    if (!apiKey) {
+      // The relay's entitlement check needs the route's key; without one a
+      // tunnel could only be rejected. Leave no state behind for it.
+      deps.onStatus?.(plan.workspaceId, 'disconnected', existing);
+      continue;
     }
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
-      relayHost, relayPort, workspaceId: plan.workspaceId, localPort: plan.port, privateKeyPath,
+      relayHost, relayPort, workspaceId: plan.workspaceId, slug, apiKey, localPort: plan.port, privateKeyPath,
       mcpSecret: currentSecret,
       spawnFn: deps.spawnFn, onStatus: (s) => { settledStatus = s; },
     });
-    writePersistedTunnel(stateDir, {
+    const started: PersistedTunnel = {
       pid: tunnel.pid ?? -1,
       containerName: plan.containerName,
       workspaceId: plan.workspaceId,
@@ -295,8 +355,13 @@ export function syncPassengerTunnels(
       startedAt: new Date().toISOString(),
       status: settledStatus,
       mcpSecret: currentSecret,
-    });
-    deps.onStatus?.(plan.workspaceId, settledStatus);
+      slug,
+      liveSlug: slug,
+      endpointId: existing?.endpointId,
+      registeredKey: existing?.registeredKey,
+    };
+    writePersistedTunnel(stateDir, started);
+    deps.onStatus?.(plan.workspaceId, settledStatus, started);
   }
 
   for (const workspaceId of readAllPersistedWorkspaceIds(stateDir)) {
@@ -306,7 +371,7 @@ export function syncPassengerTunnels(
       try { process.kill(existing.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
     removePersistedTunnel(stateDir, workspaceId);
-    deps.onStatus?.(workspaceId, 'disconnected');
+    deps.onStatus?.(workspaceId, 'disconnected', existing);
   }
 }
 
