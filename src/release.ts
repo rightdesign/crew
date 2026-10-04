@@ -11,7 +11,7 @@
  */
 
 import {
-  branchForIssue, commitBodies, countCommits, currentBranch, findKeyInRange, latestReleaseTag,
+  branchForIssue, commitBodies, countCommits, currentBranch, findKeyInRange, findSquashOfBranch, latestReleaseTag,
   resolve, status, tagCommit,
 } from './git.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
@@ -132,6 +132,8 @@ export interface MergeCandidate {
   majorRequested: boolean;
   /** Why it is not mergeable, when branch is null. */
   skipReason?: 'already-merged' | 'never-built';
+  /** For `already-merged` with a branch still present: the base commit that carries its work. */
+  mergedSha?: string;
   /**
    * The squash-merge commit this run wrote for it, when it wrote one.
    *
@@ -185,6 +187,23 @@ export function planMerge(
         ticket, branch: null, entries: [], usedFallback: false,
         bump: 'patch', majorRequested: false,
         skipReason: onMain ? 'already-merged' : 'never-built',
+      };
+    }
+    // The branch outlives its own squash-merge until the stamp, so a ticket
+    // whose release failed after merging (gate, deploy) comes round again with
+    // its branch intact. Recognise that here, before `mergeOne` replays the
+    // squash: once any later commit touches the same files the replay
+    // conflicts, bouncing a ticket whose work is already live on the base.
+    const squash = findSquashOfBranch(
+      cwd, referenceKeys(ticket), branch, base, lastReleased ? `${lastReleased}..${base}` : base,
+    );
+    if (squash) {
+      // The branch stays on the candidate: external mode asks its closure
+      // hook by branch name. The merge loop skips on `mergedSha`.
+      return {
+        ticket, branch, entries: [], usedFallback: false,
+        bump: 'patch', majorRequested: false,
+        skipReason: 'already-merged', mergedSha: squash,
       };
     }
     // Read the Changelog:/Bump: lines while the branch history is still

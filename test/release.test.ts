@@ -309,3 +309,35 @@ test('existingBranchForTicket: an untagged ticket still resolves to issue-{numbe
   g('branch', 'issue-12');
   assert.equal(existingBranchForTicket(dir, resolveRepoConfig(null, undefined, dir), T('ISSUE-12')), 'issue-12');
 });
+
+// CREW-1327. A branch survives its own squash-merge until the stamp; once a
+// later commit deleted a file it added, replaying the squash conflicted and
+// bounced a ticket whose work was live.
+test('a branch already squash-merged stays already-merged after later commits touch its files', () => {
+  const { dir, g } = repo();
+  const last = g('rev-parse', 'HEAD').toString().trim();
+  g('checkout', '-qb', 'issue-20');
+  writeFileSync(join(dir, 'bind.txt'), 'v1\n'); g('add', '.');
+  g('commit', '-qm', 'work\n\nChangelog: Bind');
+  g('checkout', '-q', 'main');
+  g('merge', '--squash', 'issue-20');
+  g('commit', '-qm', 'Bind (ISSUE-20)\n\nCloses ISSUE-20.');
+  g('rm', '-q', 'bind.txt');
+  g('commit', '-qm', 'unrelated: delete the file');
+  const [c] = planMerge(dir, [T('ISSUE-20')], DEFAULT_CONTRACT, last);
+  assert.equal(c!.skipReason, 'already-merged');
+  assert.ok(c!.mergedSha);
+});
+
+test('an unmerged branch whose ticket is named by an unrelated commit is still merged', () => {
+  const { dir, g } = repo();
+  const last = g('rev-parse', 'HEAD').toString().trim();
+  g('checkout', '-qb', 'issue-21');
+  writeFileSync(join(dir, 'k.txt'), '1'); g('add', '.');
+  g('commit', '-qm', 'work\n\nChangelog: K');
+  g('checkout', '-q', 'main');
+  writeFileSync(join(dir, 'other.txt'), '1'); g('add', '.');
+  g('commit', '-qm', 'mentions ISSUE-21 in passing');
+  const [c] = planMerge(dir, [T('ISSUE-21')], DEFAULT_CONTRACT, last);
+  assert.equal(c!.branch, 'issue-21');
+});

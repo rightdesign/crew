@@ -265,12 +265,57 @@ export function remoteBranchExists(cwd: string, remote: string, branch: string):
  * "(ISSUE-32)" and "ISSUE-32:" still match.
  */
 export function findKeyInRange(cwd: string, key: string | string[], range: string): string | null {
+  return keyCommitsInRange(cwd, key, range)[0] ?? null;
+}
+
+/** Every commit in `range` naming `key`, newest first. Same matching as `findKeyInRange`. */
+export function keyCommitsInRange(cwd: string, key: string | string[], range: string): string[] {
   const keys = Array.isArray(key) ? key : [key];
   const escaped = keys.map((k) => k.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&'));
   const pattern = `(^|[^0-9A-Za-z_-])(${escaped.join('|')})([^0-9]|$)`;
   const out = gitOk(cwd, ['log', range, '--format=%H %s', '--extended-regexp', `--grep=${pattern}`]);
-  if (!out) return null;
-  return out.split('\n')[0]?.split(' ')[0] ?? null;
+  if (!out) return [];
+  return out.split('\n').map((l) => l.split(' ')[0]!).filter(Boolean);
+}
+
+/** The stable patch-id of a diff between two refs, or null when it is empty or unreadable. */
+function patchIdOf(cwd: string, from: string, to: string): string | null {
+  try {
+    const diff = execFileSync('git', ['diff', from, to], { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    if (!diff) return null;
+    const out = execFileSync('git', ['patch-id', '--stable'], { cwd, encoding: 'utf8', input: diff });
+    return out.split(' ')[0]?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The commit in `range` that already carries `branch`'s work, or null.
+ *
+ * A squash-merge leaves the branch alive until the release stamps the ticket,
+ * and re-squashing it later is only a no-op while nothing else has touched
+ * the same files — once a later commit does, the replay reports a conflict
+ * for work that is live on the base. So ask the question directly instead of
+ * inferring it from an empty squash: among commits naming the ticket, is
+ * there one whose tree IS the branch's, or whose own change (vs its parent)
+ * is the branch's change (vs where it forked from `base`)? The second test
+ * is what survives unrelated commits landing in between, because the
+ * patch-id ignores the surrounding context.
+ */
+export function findSquashOfBranch(
+  cwd: string, key: string | string[], branch: string, base: string, range: string,
+): string | null {
+  const candidates = keyCommitsInRange(cwd, key, range);
+  if (candidates.length === 0) return null;
+  const mb = gitOk(cwd, ['merge-base', base, branch]);
+  const branchPatch = mb ? patchIdOf(cwd, mb, branch) : null;
+  for (const sha of candidates) {
+    if (gitOk(cwd, ['diff', '--quiet', branch, sha]) !== null) return sha;
+    if (branchPatch && gitOk(cwd, ['rev-parse', '--verify', '-q', `${sha}^`]) !== null
+      && patchIdOf(cwd, `${sha}^`, sha) === branchPatch) return sha;
+  }
+  return null;
 }
 
 /**

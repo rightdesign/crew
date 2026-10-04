@@ -725,9 +725,12 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   const unbuildable: MergeCandidate[] = [];
   let applied = 0;
   for (const c of decision.merges) {
-    if (!c.branch) {
+    if (!c.branch || c.mergedSha) {
       if (c.skipReason === 'already-merged') {
-        o.emit.emit('verified and already merged, waiting on a successful release', { ticket: c.ticket.issue_id });
+        o.emit.emit(
+          `verified and already merged${c.mergedSha ? ` (on the base as ${c.mergedSha.slice(0, 7)})` : ''}, waiting on a successful release`,
+          { ticket: c.ticket.issue_id },
+        );
       } else {
         o.emit.emit('verified but has no branch and nothing on the base names it — nothing to merge', { ticket: c.ticket.issue_id });
         unbuildable.push(c);
