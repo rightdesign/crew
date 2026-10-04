@@ -109,6 +109,13 @@ export function describeRelease(o: {
       detail: 'the target stays on the previous release',
     };
   }
+  if (o.stopped === 'setup failed') {
+    return {
+      level: 'fail',
+      headline: `${route}: release blocked — setup failed`,
+      detail: 'dependencies could not be installed in the release checkout; the target stays on the previous release',
+    };
+  }
   if (o.stopped === 'deploy failed') {
     return { level: 'fail', headline: `${route}: deploy FAILED`, detail: 'nothing new is live' };
   }

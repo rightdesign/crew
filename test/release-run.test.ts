@@ -112,6 +112,31 @@ test('a dry run reports no sha — nothing was actually committed', async () => 
   assert.equal(out.merged[0]!.sha, undefined);
 });
 
+test('hooks.setup runs before the test gate, so a fresh checkout has its dependencies (CREW-1323)', async () => {
+  // test passes only if setup has already created the marker file
+  const yaml = LOCAL.replace('test: exit 0', 'test: test -f .installed')
+    .replace('hooks:\n', 'hooks:\n  setup: touch .installed\n');
+  const { dir, repo } = project(yaml);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.notEqual(out.stopped, 'tests failed');
+  assert.equal(out.stopped, undefined);
+  assert.ok(existsSync(join(dir, '.installed')));
+});
+
+test('a failing hooks.setup stops as "setup failed", not as a test failure (CREW-1323)', async () => {
+  const yaml = LOCAL.replace('hooks:\n', 'hooks:\n  setup: exit 3\n');
+  const { dir, repo } = project(yaml);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'setup failed');
+  assert.equal(out.version, undefined);
+  assert.ok(lines.some((l) => /setup FAILED/.test(l)));
+  assert.equal(summarizeOutcome(out, 'r/x', false).outcome, 'nothing');
+});
+
 test('a red test gate stops everything before the version moves', async () => {
   const { dir, repo } = project(LOCAL.replace('test: exit 0', 'test: exit 1'));
   const out = await runRelease({

@@ -247,6 +247,8 @@ export function summarizeOutcome(o: ReleaseOutcome, scope: string, hadTestHook: 
       // Tests never ran on any of these paths — they return before the test
       // gate because there is genuinely nothing to test yet.
       return { scope, tests: 'skipped', outcome: 'nothing', detail: o.stopped };
+    case 'setup failed':
+      return { scope, tests: 'skipped', outcome: 'nothing', detail: 'setup failed — not tested or deployed' };
     case 'build failed':
       return { scope, tests, outcome: 'build-failed', detail: 'build failed — not deployed' };
     case 'deploy failed':
@@ -305,7 +307,7 @@ function looksLikeTransientResolveFailure(output: string): boolean {
   return resolveFailure.test(output) && !realBuildError.test(output);
 }
 
-const hook = async (o: ReleaseRunOptions, name: 'test' | 'build' | 'deploy' | 'bump' | 'released',
+const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'deploy' | 'bump' | 'released',
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
   if (!script) return null;
@@ -804,7 +806,29 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       `${hookLabel(o.repo, 'test')} skipped — release.mode is integrate with no deploy hook, ` +
         `so this "crew deploy" run has nothing to ship`,
     );
-  } else if (!o.skipTests && o.repo.hooks.test) {
+  }
+
+  // The release checkout is the operator's primary checkout, which nobody
+  // installed dependencies into unless they happened to do it by hand — a
+  // freshly added repo has no node_modules, so every test-gate file died with
+  // ERR_MODULE_NOT_FOUND and the release looked like a test failure forever
+  // (CREW-1323). Run the repo's own setup hook (same command a ticket worktree
+  // gets) before anything that needs the toolchain. A failure here stops the
+  // release as `setup failed` rather than masquerading as a failed test gate.
+  const gatesNeedSetup = (!o.skipTests && o.repo.hooks.test && !(o.isDeployCommand && nothingToDeploy)) ||
+    o.repo.hooks.build;
+  if (o.repo.hooks.setup && gatesNeedSetup) {
+    if (o.dryRun) o.emit.emit(`would run setup: ${hookLabel(o.repo, 'setup')}`);
+    else {
+      const r = await hook(o, 'setup');
+      if (r && r.code !== 0) {
+        o.emit.error(`setup FAILED (exit ${r.code}) — not testing or deploying; the target stays on the previous release`);
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'setup failed', decision };
+      }
+    }
+  }
+
+  if (!(o.isDeployCommand && nothingToDeploy) && !o.skipTests && o.repo.hooks.test) {
     if (o.dryRun) o.emit.emit(`would run the test gate: ${hookLabel(o.repo, 'test')}`);
     else {
       let r = await hook(o, 'test');
