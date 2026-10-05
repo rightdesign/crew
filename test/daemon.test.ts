@@ -9,9 +9,10 @@ import type { Route, Ship } from '../src/config.ts';
 import { resolveApiKey } from '../src/config.ts';
 import type { CycleDecision } from '../src/poll.ts';
 import {
-  runDaemonLoop, runOnePass, computeTreeSignature, makeStaleChecker,
+  runDaemonLoop, runOnePass, computeTreeSignature, makeStaleChecker, SpawnBreaker,
   type PassResult, type RunOnePassOptions,
 } from '../src/daemon.ts';
+import { AgentSpawnError } from '../src/agent.ts';
 import type { SessionStore, StoredSession } from '@tablation/client';
 
 /**
@@ -476,4 +477,107 @@ test('runOnePass re-queries the keychain on a LATER cycle and picks up a re-conn
     spawnRoleAgent: async () => {},
   });
   assert.equal(resolveApiKey(opts.route), 'sk_v2');
+});
+
+test('SpawnBreaker: a failed start waits floor*2^(n-1), then parks the role for the ceiling', () => {
+  let t = 0;
+  const b = new SpawnBreaker({ now: () => t, floorMs: 1000, ceilingMs: 8000 });
+  assert.equal(b.allows('dev'), true);
+
+  const first = b.recordFailure('dev', 'ENOENT');
+  assert.equal(first.parked, false);
+  assert.equal(first.retryInMs, 1000);
+  assert.equal(b.allows('dev'), false);
+  t = 1000;
+  assert.equal(b.allows('dev'), true);
+
+  const second = b.recordFailure('dev', 'ENOENT');
+  assert.equal(second.parked, false);
+  assert.equal(second.firstOfMessage, false, 'the same message is not worth a fresh log line');
+  assert.equal(second.retryInMs, 2000);
+
+  t = 3000;
+  const third = b.recordFailure('dev', 'ENOENT');
+  assert.equal(third.parked, true);
+  assert.equal(third.retryInMs, 8000);
+  t = 10999;
+  assert.equal(b.allows('dev'), false);
+  t = 11000;
+  assert.equal(b.allows('dev'), true);
+
+  // A run that spawns clears the history: the next failure starts over at the floor.
+  b.recordSuccess('dev');
+  assert.equal(b.recordFailure('dev', 'ENOENT').failures, 1);
+});
+
+test('SpawnBreaker: a different failure message is reported as a fresh log line', () => {
+  const b = new SpawnBreaker({ now: () => 0 });
+  b.recordFailure('dev', 'ENOENT');
+  assert.equal(b.recordFailure('dev', 'EACCES').firstOfMessage, true);
+});
+
+test('runOnePass: a role whose agent cannot start is not restarted each pass, and is parked after repeated failures', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev']);
+  let t = 0;
+  const breaker = new SpawnBreaker({ now: () => t, floorMs: 1000, ceilingMs: 8000 });
+  let spawns = 0;
+  const pass = () => runOnePass({
+    ...opts,
+    spawnBreaker: breaker,
+    decide: async () => decision,
+    spawnRoleAgent: async () => {
+      spawns++;
+      throw new AgentSpawnError('cannot run claude: spawn ENOENT');
+    },
+  });
+  // The spawn rejection is handled on a later tick; let it land before the next pass.
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  assert.deepEqual((await pass()).started, ['dev']);
+  await settle();
+  assert.equal(spawns, 1);
+
+  // Still inside the first retry window: skipped, not started, so the loop idles.
+  const waiting = await pass();
+  assert.deepEqual(waiting.started, []);
+  assert.equal(waiting.skipped[0]?.role, 'dev');
+  assert.equal(spawns, 1);
+
+  t = 1000;
+  assert.deepEqual((await pass()).started, ['dev']);
+  await settle();
+  assert.equal(spawns, 2);
+
+  t = 2000;
+  assert.deepEqual((await pass()).started, [], 'second failure waits 2s, not 1s');
+
+  t = 3000;
+  assert.deepEqual((await pass()).started, ['dev']);
+  await settle();
+  assert.equal(spawns, 3);
+
+  // Third consecutive failure: parked for the ceiling, not just one more short backoff.
+  t = 10999;
+  assert.deepEqual((await pass()).started, []);
+  t = 11000;
+  assert.deepEqual((await pass()).started, ['dev']);
+  await settle();
+  assert.equal(spawns, 4);
+});
+
+test('runOnePass: a spawn failure that is not a failed start (plain Error) does not park the role', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev']);
+  const breaker = new SpawnBreaker({ now: () => 0 });
+  for (let i = 0; i < 4; i++) {
+    const result = await runOnePass({
+      ...opts,
+      spawnBreaker: breaker,
+      decide: async () => decision,
+      spawnRoleAgent: async () => { throw new Error('boom'); },
+    });
+    assert.deepEqual(result.started, ['dev'], `pass ${i + 1} must still start the role`);
+    await new Promise((r) => setTimeout(r, 0));
+  }
 });

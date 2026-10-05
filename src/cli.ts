@@ -34,7 +34,7 @@ import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
 } from './connect-wizard.ts';
-import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor } from './install.ts';
+import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
@@ -84,7 +84,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
-import { runDaemonLoop, runOnePass, makeStaleChecker } from './daemon.ts';
+import { runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker } from './daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -1885,10 +1885,14 @@ switch (command) {
       ? [process.execPath]
       : [join(CREW_HOME, 'src'), join(CREW_HOME, 'dist'), join(CREW_HOME, 'bin')];
 
+    // One breaker for the whole daemon process, so a role's failed starts are
+    // remembered across passes (ISSUE-1365).
+    const spawnBreaker = new SpawnBreaker();
     const stopReason = await runDaemonLoop({
       runPass: () => runOnePass({
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
+        spawnBreaker,
         newEmitter: () => new Emitter({
           route: route.route,
           eventFile: eventFileFor(cfg.ship.stateDir),
@@ -3364,6 +3368,23 @@ switch (command) {
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
       }
+    }
+
+    // The daemon runs under launchd/systemd with `pathFor(ship)`, not this
+    // shell's PATH, so the agent binary and git are checked against that PATH.
+    // A miss here is the CREW-1365 failure mode: every spawn ENOENTs.
+    const schedulerPath = pathFor(cfg.ship);
+    const agentBinPath = findOnPath(cfg.ship.agent.bin, schedulerPath);
+    const gitPath = findOnPath('git', schedulerPath);
+    process.stdout.write(
+      `agent binary:      ${cfg.ship.agent.bin} — ${agentBinPath ? `OK (${agentBinPath})` : 'NOT FOUND on the scheduler PATH'}\n` +
+        `git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`,
+    );
+    if (!agentBinPath || !gitPath) {
+      process.stdout.write(
+        `                   scheduler PATH is ${schedulerPath} — ` +
+          'add the directory holding the missing binary to ship.extraPath in crew.yaml, then re-run `crew doctor`.\n',
+      );
     }
 
     // Host Passengers preflight (ISSUE-553): a route can declare

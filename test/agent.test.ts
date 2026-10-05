@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import {
   allowedTools, DISALLOWED_TOOLS, scrubbedEnv, BILLING_VARS_TO_UNSET, assemblePrompt,
-  planAgentRun, describePlan, spawnAgent, AgentError, DIGEST_MAX_AGE_SECONDS,
+  planAgentRun, describePlan, spawnAgent, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
 import { API_KEY_VAR } from '../src/environment.ts';
@@ -570,4 +570,25 @@ test('spawnAgent survives an agent that exits without reading its prompt — EPI
   emit.enter('agent', 'dev');
   const result = await spawnAgent(plan, emit);
   assert.equal(result.code, 3);
+});
+
+test('spawnAgent on a binary that is not installed rejects as a spawn failure and reports no run', async () => {
+  const { state, route } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'claude', model: 'claude-sonnet-5' } } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+  });
+  plan.bin = join(state, 'no-such-agent-binary');
+  plan.args = [];
+  plan.cwd = state;
+
+  const lines: string[] = [];
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: (l) => lines.push(l) });
+  emit.enter('agent', 'dev');
+
+  await assert.rejects(spawnAgent(plan, emit), (e: unknown) => e instanceof AgentSpawnError);
+  // Give the `close` event Node emits after `error` a chance to run: it must
+  // not report a run that never happened.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!lines.some((l) => l.includes('agent run finished')), lines.join('\n'));
 });

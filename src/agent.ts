@@ -243,6 +243,14 @@ export interface PlanOptions {
 
 export class AgentError extends Error {}
 
+/**
+ * The agent binary could not be started at all: `spawn` emitted `error`,
+ * typically ENOENT because `ship.agent.bin` is not on this machine's PATH.
+ * Nothing ran, so there is no run to log, and the daemon treats it as a
+ * failed start rather than a started role (ISSUE-1365).
+ */
+export class AgentSpawnError extends AgentError {}
+
 /** Everything the run WOULD do, decided without doing any of it. */
 export function planAgentRun(o: PlanOptions): AgentPlan {
   const briefPath = join(o.route.promptsDir, 'personas', `lane-${o.role}.md`);
@@ -546,10 +554,18 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       for (const line of lines) handleLine(line);
     });
 
-    child.on('error', (err) => reject(new AgentError(`cannot run ${plan.bin}: ${err.message}`)));
+    // Set when `spawn` itself failed. Node still emits `close` after `error`
+    // in that case, and the close handler below must not then report a run
+    // that never happened: no "agent run finished" event, no Agent Log row.
+    let spawnFailed = false;
+    child.on('error', (err) => {
+      spawnFailed = true;
+      reject(new AgentSpawnError(`cannot run ${plan.bin}: ${err.message}`));
+    });
     child.on('close', async (code) => {
       if (buf) handleLine(buf);
       await Promise.all([endSink(rawSink), endSink(eventsSink)]);
+      if (spawnFailed) return;
       // The ticket the transcript actually spent the most tokens on, falling
       // back to the pre-run poll hint when the visible text never named one
       // (e.g. an administrative run with nothing ticket-specific to say).

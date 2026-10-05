@@ -35,7 +35,7 @@
 
 import { dirname, join, extname } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { Ship } from './config.ts';
@@ -185,13 +185,37 @@ function schedulerLogFor(crewLog: string, job: InstallJob): string {
   return `${stem}.${suffix}${ext || '.log'}`;
 }
 
-/** `PATH` a launched unit needs to find both node and whatever hooks use. */
-function pathFor(ship: Ship): string {
+/**
+ * `PATH` a launched unit needs to find both node and whatever hooks use.
+ * Exported so `crew doctor` checks the agent binary and git against the same
+ * PATH the daemon actually gets, not the operator's interactive shell.
+ */
+export function pathFor(ship: Ship): string {
   const nodeBinDir = dirname(process.execPath);
   const parts = [nodeBinDir];
   if (ship.extraPath) parts.push(ship.extraPath);
   parts.push('/usr/bin', '/bin', '/usr/sbin', '/sbin');
   return parts.join(':');
+}
+
+/**
+ * Where `bin` resolves to on `searchPath`, or undefined. A name with a slash
+ * is checked as a path, as the OS does; a bare name is looked up in each
+ * PATH directory in order. Only an existing, executable regular file counts.
+ */
+export function findOnPath(bin: string, searchPath: string): string | undefined {
+  const candidates = bin.includes('/')
+    ? [bin]
+    : searchPath.split(':').filter(Boolean).map((dir) => join(dir, bin));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not here, or not executable — keep looking down the PATH.
+    }
+  }
+  return undefined;
 }
 
 function xmlEscape(s: string): string {

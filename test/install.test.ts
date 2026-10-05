@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS } from '../src/install.ts';
+import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS, findOnPath } from '../src/install.ts';
 import type { Ship } from '../src/config.ts';
 
 const ship = (over: Partial<Ship> = {}): Ship => ({
@@ -282,4 +285,39 @@ test('planDaemonControl targets the run job\'s own label/unit on every mechanism
   assert.equal(cron.startCommand, null);
   assert.equal(cron.stopCommand, null);
   assert.equal(cron.statusCommand, null);
+});
+
+test('findOnPath finds an executable file down the PATH, in order', () => {
+  const root = mkdtempSync(join(tmpdir(), 'crew-findonpath-'));
+  const first = join(root, 'first');
+  const second = join(root, 'second');
+  mkdirSync(first);
+  mkdirSync(second);
+  // Same name in both dirs: the earlier PATH entry wins.
+  writeFileSync(join(second, 'tool'), '#!/bin/sh\n');
+  chmodSync(join(second, 'tool'), 0o755);
+  writeFileSync(join(first, 'tool'), '#!/bin/sh\n');
+  chmodSync(join(first, 'tool'), 0o755);
+  assert.equal(findOnPath('tool', `${first}:${second}`), join(first, 'tool'));
+  assert.equal(findOnPath('tool', `${second}:${first}`), join(second, 'tool'));
+});
+
+test('findOnPath skips a non-executable file and a directory of the same name', () => {
+  const root = mkdtempSync(join(tmpdir(), 'crew-findonpath-'));
+  const dir = join(root, 'bin');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'tool'), 'not runnable\n');
+  chmodSync(join(dir, 'tool'), 0o644);
+  mkdirSync(join(root, 'elsewhere', 'git'), { recursive: true });
+  assert.equal(findOnPath('tool', dir), undefined);
+  assert.equal(findOnPath('git', join(root, 'elsewhere')), undefined);
+});
+
+test('findOnPath checks a slash-bearing name as a path, not against PATH', () => {
+  const root = mkdtempSync(join(tmpdir(), 'crew-findonpath-'));
+  const bin = join(root, 'claude');
+  writeFileSync(bin, '#!/bin/sh\n');
+  chmodSync(bin, 0o755);
+  assert.equal(findOnPath(bin, '/nonexistent'), bin);
+  assert.equal(findOnPath(join(root, 'missing'), root), undefined);
 });

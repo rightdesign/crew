@@ -79,7 +79,7 @@ import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.
 import { rankedCandidates } from './select.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
-import { planAgentRun, spawnAgent } from './agent.ts';
+import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
@@ -264,6 +264,76 @@ export type SpawnRoleAgent = (role: RoleName, decision: CycleDecision, ctx: Role
 /** The real per-cycle decision, or an injectable fake in tests (`decideCycle` needs a live tracker). */
 export type Decide = (ctx: RoleAgentContext) => Promise<CycleDecision>;
 
+// ---------------------------------------------------------------------------
+// Spawn-failure backoff (ISSUE-1365). A role whose agent binary cannot be
+// started (ENOENT on `ship.agent.bin`) used to count as started, so the loop
+// chained straight into another pass and retried as fast as the tracker poll
+// allowed: 38 passes in two minutes, one Agent Log error row each.
+// ---------------------------------------------------------------------------
+
+/** Consecutive failed starts for one role before it is parked for a ceiling interval. */
+export const SPAWN_PARK_AFTER = 3;
+
+export interface SpawnFailureReport {
+  /** This failure reached `SPAWN_PARK_AFTER`: the role is parked. */
+  parked: boolean;
+  /** The message differs from this role's previous failure, so it is worth a fresh log line. */
+  firstOfMessage: boolean;
+  /** Consecutive failed starts for this role, including this one. */
+  failures: number;
+  /** How long the role must wait before it may be started again. */
+  retryInMs: number;
+}
+
+interface SpawnFailureState {
+  failures: number;
+  retryAt: number;
+  lastMessage: string;
+}
+
+/**
+ * Per-role memory of failed starts. A failed start waits `floor * 2^(n-1)`
+ * (5s, then 10s, ...) before the role may start again. At `SPAWN_PARK_AFTER`
+ * consecutive failures the role is parked for the ceiling interval instead.
+ * Any run that spawns successfully clears the role's history.
+ *
+ * Held by the caller across passes (`cli.ts` keeps one per daemon process).
+ * `now` is injectable so tests never wait.
+ */
+export class SpawnBreaker {
+  private readonly states = new Map<RoleName, SpawnFailureState>();
+  private readonly now: () => number;
+  private readonly floorMs: number;
+  private readonly ceilingMs: number;
+
+  constructor(opts: { now?: () => number; floorMs?: number; ceilingMs?: number } = {}) {
+    this.now = opts.now ?? Date.now;
+    this.floorMs = opts.floorMs ?? DEFAULT_FLOOR_MS;
+    this.ceilingMs = opts.ceilingMs ?? DEFAULT_CEILING_MS;
+  }
+
+  /** Whether `role` may be started right now. */
+  allows(role: RoleName): boolean {
+    const s = this.states.get(role);
+    return !s || this.now() >= s.retryAt;
+  }
+
+  /** Records a failed start of `role` and says what to report about it. */
+  recordFailure(role: RoleName, message: string): SpawnFailureReport {
+    const prev = this.states.get(role);
+    const failures = (prev?.failures ?? 0) + 1;
+    const parked = failures >= SPAWN_PARK_AFTER;
+    const retryInMs = parked ? this.ceilingMs : Math.min(this.floorMs * 2 ** (failures - 1), this.ceilingMs);
+    this.states.set(role, { failures, retryAt: this.now() + retryInMs, lastMessage: message });
+    return { parked, firstOfMessage: prev?.lastMessage !== message, failures, retryInMs };
+  }
+
+  /** A run for `role` spawned: forget its earlier failed starts. */
+  recordSuccess(role: RoleName): void {
+    this.states.delete(role);
+  }
+}
+
 export interface RunOnePassOptions {
   route: Route;
   ship: Ship;
@@ -296,6 +366,13 @@ export interface RunOnePassOptions {
    * `@tablation/client` backend) when left undefined.
    */
   getSessionStore?: () => import('@tablation/client').SessionStore;
+  /**
+   * Spawn-failure memory (ISSUE-1365). Must be the same instance across every
+   * pass of one daemon run — a fresh one per pass forgets its failures and
+   * re-enables the retry storm. Left unset, a per-call one is used, which is
+   * only correct for a single pass (tests).
+   */
+  spawnBreaker?: SpawnBreaker;
 }
 
 /**
@@ -326,6 +403,7 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
   const emit = o.newEmitter();
   const decide = o.decide ?? decideCycle;
   const spawn = o.spawnRoleAgent ?? runRoleAgent;
+  const breaker = o.spawnBreaker ?? new SpawnBreaker();
   const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit };
 
   const decision = await decide(ctx);
@@ -357,6 +435,10 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
   const skipped: Array<{ role: RoleName; reason: string }> = [];
 
   for (const role of order) {
+    if (!breaker.allows(role)) {
+      skipped.push({ role, reason: 'agent recently failed to start — waiting before retry' });
+      continue;
+    }
     const lock = o.state.acquireRun(role, o.maxConcurrentAgents);
     if (!lock.ok) {
       skipped.push({ role, reason: lock.reason });
@@ -364,8 +446,25 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
     }
     started.push(role);
     const run = spawn(role, decision, ctx)
+      .then(() => { breaker.recordSuccess(role); })
       .catch((e) => {
-        emit.warn(`${role} agent run failed: ${(e as Error).message}`, { step: 'agent', role });
+        const message = (e as Error).message;
+        if (!(e instanceof AgentSpawnError)) {
+          emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
+          return;
+        }
+        // Nothing ran, so this is not an agent run failure: warn once per
+        // distinct message, and say so when the role is parked.
+        const report = breaker.recordFailure(role, message);
+        if (report.firstOfMessage || report.parked) {
+          emit.warn(`${role} agent could not start: ${message}`, { step: 'agent', role });
+        }
+        if (report.parked) {
+          emit.error(
+            `${role} parked for ${Math.round(report.retryInMs / 1000)}s after ${report.failures} ` +
+              'consecutive failed starts — check that ship.agent.bin is installed and on PATH',
+          );
+        }
       })
       .finally(() => lock.release());
     if (o.inFlight) {
