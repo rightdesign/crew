@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.6.1] — 2026-10-05
+
+- `crew pause` now stops the release timer and `crew daemon` too; `crew pause release` pauses only shipping (CREW-1372)
+- `crew daemon` honors `crew pause` too: a paused ship claims no tickets and posts no comments until resumed (CREW-1372)
+- `crew pause` now stops the release timer as well (merge, deploy, release), and `crew pause release` pauses shipping alone (CREW-1372)
+
 ## [0.6.0] — 2026-10-05
 
 - Host Passengers runs the container image published to Docker Hub for this crew version, so `crew install` no longer needs a crew repo checkout to start it (CREW-1369)
