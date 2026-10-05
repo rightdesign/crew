@@ -109,6 +109,15 @@ export interface ContractStatuses {
    * ticket wrongly is worse than leaving it open.
    */
   wontFix: string;
+  /**
+   * The holding state for tickets not yet ready to act on (the epic grill-me
+   * flow files Maps and child Issues here, then promotes them to `new`).
+   *
+   * Neither open nor resolved: never polled, and a blocker sitting here is
+   * still blocking. It exists as a role only so `crew connect`'s status
+   * discovery recognises it instead of asking whether it is terminal.
+   */
+  draft: string;
 }
 
 /**
@@ -216,6 +225,7 @@ export const DEFAULT_CONTRACT: Contract = {
     needsHuman: 'needs_info',
     reviewing: null,
     wontFix: 'closed_wont_fix',
+    draft: 'draft',
   },
   epics: {
     statusColumn: 'status',

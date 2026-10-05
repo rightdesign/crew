@@ -406,7 +406,11 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         }>;
       }>(o, `/data-models/${out.models.issues}`);
       const statusField = issuesModel.fields.find((f) => f.columnName === DEFAULT_CONTRACT.columns.status);
-      const known = new Set([...DEFAULT_CONTRACT.statuses.open, ...DEFAULT_CONTRACT.statuses.resolved]);
+      const known = new Set([
+        ...DEFAULT_CONTRACT.statuses.open,
+        ...DEFAULT_CONTRACT.statuses.resolved,
+        DEFAULT_CONTRACT.statuses.draft,
+      ]);
       out.unrecognizedStatuses = (statusField?.fieldType?.choiceOptions ?? [])
         .filter((opt) => !known.has(opt.value))
         .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))

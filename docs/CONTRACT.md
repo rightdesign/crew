@@ -139,10 +139,12 @@ terminal — asks once per value it doesn't recognise whether it means
 resolved/terminal. A "yes" folds it into `contract.statuses.resolved` in the
 resolved state file; a "no" (or a value nobody has answered about yet) is
 left unclassified, same as before this existed, rather than guessed into
-`open` or any other role — a pre-triage `draft` status (the epic grill-me
-flow's holding state for Issues not yet ready to act on: they either get
-promoted to `new` or, if later scoped out, closed as `closed_wont_fix`) is
-exactly this case, correctly answered "no". Re-running `crew connect` only
+`open` or any other role. (`draft` — the epic grill-me flow's holding state
+for Issues not yet ready to act on, promoted to `new` or closed as
+`closed_wont_fix` — used to be exactly this case; it is now the default
+contract's `statuses.draft` role, so it is recognised and never asked about.
+It is neither open nor resolved: never polled, and a ticket blocked by a
+`draft` one stays blocked.) Re-running `crew connect` only
 asks about values it
 hasn't asked about before (`reviewedStatuses`, alongside `contract` in the
 same file) — it never re-asks, and never overwrites what a hand-authored
