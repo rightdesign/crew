@@ -8,7 +8,7 @@
 
 import type { Route, RoleName, Ship } from './config.ts';
 import { configuredMembers, routeSlug } from './config.ts';
-import { Tracker, ticketBranchContext, type Ticket, type Comment } from './tracker.ts';
+import { Tracker, ticketBranchContext, type Ticket, type Comment, type ShipRow } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
@@ -33,6 +33,8 @@ export interface CycleDecision {
   tickets: Ticket[];
   comments: Comment[];
   roster: Roster;
+  /** The workspace's Ships rows (CREW-1371), empty when it has no Ships table. */
+  ships: ShipRow[];
   blocked: Set<string>;
   info: BlockerInfo;
   sweep: SweepStep[];
@@ -84,11 +86,12 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const tracker = new Tracker(route, ship);
   emit.enter('poll');
 
-  const [tickets, comments, crewRows, epicRows] = await Promise.all([
+  const [tickets, comments, crewRows, epicRows, ships] = await Promise.all([
     tracker.openTickets(),
     tracker.comments(200),
     tracker.crewRows(),
     tracker.epicRows(),
+    tracker.shipRows(),
   ]);
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
@@ -224,7 +227,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const selection = selectRole(selectionInput);
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, blocked, info, sweep, epicSync, stranded, selection, actionable, watermark,
+    tickets, comments, roster, ships, blocked, info, sweep, epicSync, stranded, selection, actionable, watermark,
     selectionInput, attention: attentionCurrent,
   };
 
@@ -341,6 +344,10 @@ export function writeDigest(
       comments: d.comments,
       me,
       roster: d.roster,
+      // CREW-1371: a comment from another ship is labelled with that ship's
+      // name, so two ships under one API key are distinguishable on the queue.
+      ships: d.ships,
+      myShipId: d.ships.find((s) => (s.name ?? '').trim() === o.ship.name.trim())?.id ?? null,
       watermark: d.watermark,
       blocked: d.blocked,
       blockerInfo: d.info,

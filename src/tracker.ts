@@ -122,6 +122,8 @@ export interface Comment {
    * reply reliably has. Joined to a Crew row through `Crew.user_id`.
    */
   created_by_id?: string | null;
+  /** The `Ships` row the comment was posted from (CREW-1371); absent on older rows. */
+  ship_id?: string | null;
   reporter_name?: string | null;
   kind?: string | null;
   created_at: string;
@@ -191,6 +193,23 @@ const encodeSort = (s: Sort[]): string => JSON.stringify(s);
  * One tracker, for one route. A ship holds several of these — one per
  * project it is connected to — which is why nothing here is ship-global.
  */
+/**
+ * Which of the optional authorship columns (CREW-1371) this workspace's
+ * tables carry, and this ship's own `Ships` row id. A column a table does not
+ * have is simply not written: the install has not taken the `crew.issues`
+ * template update yet, and `crew doctor` says so rather than a write failing.
+ */
+export interface Authorship {
+  /** Issues has the `contract.columns.author` column (`filed_by_id`). */
+  issueAuthor: boolean;
+  /** Issues has the `contract.columns.ship` column (`ship_id`). */
+  issueShip: boolean;
+  /** Comments has the `contract.comments.ship` column (`ship_id`). */
+  commentShip: boolean;
+  /** This ship's `Ships` row id; null when there is no row for this ship's name. */
+  shipId: string | null;
+}
+
 export class Tracker {
   // NB: explicit fields, not TypeScript parameter properties — node's
   // --experimental-strip-types cannot transform those, and the test runner
@@ -201,9 +220,15 @@ export class Tracker {
   private readonly client: TablationClient;
   private readonly models: { issues: string; comments: string; crew: string };
   private readonly userAgent: string;
+  private readonly shipName: string | undefined;
+  /**
+   * The once-per-process authorship probe (CREW-1371), memoised as a promise
+   * so concurrent first writes share one round of field-metadata reads.
+   */
+  private authorship?: Promise<Authorship>;
   private readonly stateDir: string | undefined;
 
-  constructor(route: Route, ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'stateDir'>>) {
+  constructor(route: Route, ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'name' | 'stateDir'>>) {
     this.route = route;
     if (!route.resolved) {
       throw new ConfigError(
@@ -213,6 +238,7 @@ export class Tracker {
     this.models = route.resolved.models;
     this.contract = resolveContract(route.contract);
     this.userAgent = ship.userAgent;
+    this.shipName = ship.name;
     this.stateDir = ship.stateDir;
     this.client = new TablationClient({
       baseUrl: `${route.baseUrl}/api`,
@@ -594,9 +620,60 @@ export class Tracker {
    * someone else" wake signal.
    */
   async postEvent(ticketId: string, body: string, memberId: string): Promise<void> {
+    const auth = await this.authorshipProbe();
     await this.client.records.create(this.models.comments, {
       ticket_id: ticketId, body, team_member_id: memberId, kind: 'event',
+      ...(auth.commentShip && auth.shipId ? { [this.contract.comments.ship]: auth.shipId } : {}),
     });
+  }
+
+  /**
+   * The authorship probe (CREW-1371), read once per process: which optional
+   * `filed_by_id`/`ship_id` columns exist on Issues and Comments, and this
+   * ship's own Ships row id. Memoised as a promise so concurrent first writes
+   * share one round of metadata reads. A table whose metadata cannot be read
+   * reads as "column absent", the same way `connect.ts`'s `owner_id` probe does.
+   */
+  authorshipProbe(): Promise<Authorship> {
+    this.authorship ??= this.probeAuthorship();
+    return this.authorship;
+  }
+
+  private async probeAuthorship(): Promise<Authorship> {
+    const [issueFields, commentFields, shipRow] = await Promise.all([
+      this.columnNames(this.models.issues),
+      this.columnNames(this.models.comments),
+      // No name (a caller that only beats or patches, never stamps) means no row to find.
+      this.shipName ? this.myShipRow(this.shipName) : Promise.resolve(undefined),
+    ]);
+    return {
+      issueAuthor: issueFields.has(this.contract.columns.author),
+      issueShip: issueFields.has(this.contract.columns.ship),
+      commentShip: commentFields.has(this.contract.comments.ship),
+      shipId: shipRow?.id ?? null,
+    };
+  }
+
+  private async columnNames(modelId: string): Promise<Set<string>> {
+    try {
+      const model = await this.client.dataModels.get(modelId);
+      return new Set(model.fields.map((f) => f.columnName));
+    } catch {
+      return new Set();
+    }
+  }
+
+  /**
+   * The authorship columns this workspace is missing, as `table.column` names
+   * for `crew doctor` to report (CREW-1371). Empty on a fully updated install.
+   */
+  async missingAuthorshipColumns(): Promise<string[]> {
+    const auth = await this.authorshipProbe();
+    const missing: string[] = [];
+    if (!auth.issueAuthor) missing.push(`Issues.${this.contract.columns.author}`);
+    if (!auth.issueShip) missing.push(`Issues.${this.contract.columns.ship}`);
+    if (!auth.commentShip) missing.push(`Comments.${this.contract.comments.ship}`);
+    return missing;
   }
 
   /**
@@ -641,7 +718,15 @@ export class Tracker {
    * not among them (`postEvent` above hardcodes its own fields the same
    * way).
    */
-  async fileTicket(fields: Record<string, unknown>): Promise<Ticket> {
-    return this.client.records.create<Ticket>(this.models.issues, fields);
+  async fileTicket(fields: Record<string, unknown>, memberId: string): Promise<Ticket> {
+    const auth = await this.authorshipProbe();
+    // Stamped after the caller's own fields, so the filer is never whatever a
+    // caller happened to put in `fields` (CREW-1371: authorship is the seat
+    // and ship this process runs as, not something a field list asserts).
+    return this.client.records.create<Ticket>(this.models.issues, {
+      ...fields,
+      ...(auth.issueAuthor && memberId ? { [this.contract.columns.author]: memberId } : {}),
+      ...(auth.issueShip && auth.shipId ? { [this.contract.columns.ship]: auth.shipId } : {}),
+    });
   }
 }

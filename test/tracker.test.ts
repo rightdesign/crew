@@ -38,7 +38,7 @@ test('terminalTickets() sorts by updatedAt descending, so a truncated page still
     globalThis.fetch = originalFetch;
   });
 
-  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.terminalTickets();
 
   assert.equal(requests.length, 1);
@@ -58,7 +58,7 @@ test('setCrewStatus(working, ticketId) patches status, the ticket reference, and
     globalThis.fetch = originalFetch;
   });
 
-  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.setCrewStatus('member-1', 'working', 'ticket-uuid-1');
 
   assert.equal(bodies.length, 1);
@@ -80,7 +80,7 @@ test('setCrewStatus(idle) with no ticket id leaves current_issue_id untouched â€
     globalThis.fetch = originalFetch;
   });
 
-  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.setCrewStatus('member-1', 'idle');
 
   assert.equal(bodies.length, 1);
@@ -94,7 +94,7 @@ test('beatShip() is a no-op when the workspace has no Ships table', async (t) =>
   globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify([]), { status: 200 }); }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.beatShip("Brad's Mac");
 
   assert.equal(calls, 0, 'no Ships table means nothing to list or patch');
@@ -110,7 +110,7 @@ test('beatShip() is a no-op when no row (or more than one) matches this ship\'s 
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.beatShip("Brad's Mac");
 
   assert.equal(patched, false, 'an unmatched ship name must not write to a row that isn\'t this ship\'s');
@@ -127,7 +127,7 @@ test('beatShip() patches last_seen/host/pid on this ship\'s own row, leaving eng
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.beatShip("Brad's Mac");
 
   assert.equal(bodies.length, 1);
@@ -148,7 +148,7 @@ test('beatEngaged() marks the ship engaged, naming the route, ticket and since-w
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.beatEngaged("Brad's Mac", 'synthesis', 'ticket-uuid-1');
 
   assert.equal(bodies.length, 1);
@@ -169,7 +169,7 @@ test('beatIdle() clears engagement back to idle', async (t) => {
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.beatIdle("Brad's Mac");
 
   assert.equal(bodies.length, 1);
@@ -190,7 +190,7 @@ test('updateTunnelState() PATCHes tunnel_status onto this ship\'s own Ships row 
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.updateTunnelState("Brad's Mac", { tunnel_status: 'connected' });
 
   assert.equal(bodies.length, 1);
@@ -203,7 +203,7 @@ test('updateTunnelState() is a no-op when the workspace has no Ships row for thi
   globalThis.fetch = (async () => { calls++; return new Response('[]', { status: 200 }); }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   await tracker.updateTunnelState("Brad's Mac", { tunnel_status: 'disconnected' });
 
   // One GET to look the row up, no PATCH to follow since nothing was found.
@@ -216,7 +216,7 @@ test('repoRow() is undefined when the workspace has no Repos table', async (t) =
   globalThis.fetch = (async () => { calls++; return new Response('{}', { status: 200 }); }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
   assert.equal(await tracker.repoRow('repo-1'), undefined);
   assert.equal(calls, 0);
 });
@@ -227,7 +227,7 @@ test('repoRow() returns the row, project_id included', async (t) => {
     new Response(JSON.stringify({ id: 'repo-1', project_id: 'proj-1' }), { status: 200 })) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ reposModelId: 'repos-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ reposModelId: 'repos-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   assert.deepEqual(await tracker.repoRow('repo-1'), { id: 'repo-1', project_id: 'proj-1' });
 });
 
@@ -236,7 +236,7 @@ test('repoRow() is undefined, not thrown, when the row is gone', async (t) => {
   globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ reposModelId: 'repos-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ reposModelId: 'repos-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   assert.equal(await tracker.repoRow('repo-1'), undefined);
 });
 
@@ -246,7 +246,7 @@ test('projectRow() is undefined when the workspace has no Projects table', async
   globalThis.fetch = (async () => { calls++; return new Response('{}', { status: 200 }); }) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
   assert.equal(await tracker.projectRow('proj-1'), undefined);
   assert.equal(calls, 0);
 });
@@ -257,8 +257,118 @@ test('projectRow() returns the row, issue_prefix included', async (t) => {
     new Response(JSON.stringify({ id: 'proj-1', issue_prefix: 'CREW' }), { status: 200 })) as typeof fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const tracker = new Tracker(makeRoute({ areaModelId: 'projects-model-id' }), { userAgent: 'crew-test' });
+  const tracker = new Tracker(makeRoute({ areaModelId: 'projects-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
   assert.deepEqual(await tracker.projectRow('proj-1'), { id: 'proj-1', issue_prefix: 'CREW' });
+});
+
+/**
+ * Mock just enough of the Tablation API for the authorship probe (CREW-1371):
+ * each table's field metadata, the Ships list, and every record create.
+ */
+function mockAuthorshipApi(
+  t: { after(fn: () => void): void },
+  opts: { issueFields: string[]; commentFields: string[]; ships: Array<{ id: string; name: string }> },
+): Array<{ model: string; body: Record<string, unknown> }> {
+  const creates: Array<{ model: string; body: Record<string, unknown> }> = [];
+  const originalFetch = globalThis.fetch;
+  const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const path = url.pathname;
+    if (init?.method === 'POST' && path.endsWith('/records')) {
+      const model = path.split('/')[3]!;
+      creates.push({ model, body: JSON.parse(init.body as string) });
+      return json({ id: 'new-row', issue_id: 'ISSUE-1' });
+    }
+    if (path === '/api/data-models/issues-model-id') {
+      return json({ id: 'issues-model-id', fields: opts.issueFields.map((columnName) => ({ columnName })) });
+    }
+    if (path === '/api/data-models/comments-model-id') {
+      return json({ id: 'comments-model-id', fields: opts.commentFields.map((columnName) => ({ columnName })) });
+    }
+    if (path === '/api/data-models/ships-model-id/records') return json(opts.ships);
+    return json([]);
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  return creates;
+}
+
+const ROUTE_WITH_SHIPS = () => makeRoute({ shipsModelId: 'ships-model-id' });
+
+test('fileTicket() stamps filed_by_id and ship_id when the Issues table has them (CREW-1371)', async (t) => {
+  const creates = mockAuthorshipApi(t, {
+    issueFields: ['title', 'filed_by_id', 'ship_id'],
+    commentFields: ['body'],
+    ships: [{ id: 'ship-row-1', name: 'test-ship' }],
+  });
+  const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
+  await tracker.fileTicket({ title: 'boom' }, 'seat-dev');
+
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0]!.model, 'issues-model-id');
+  assert.deepEqual(creates[0]!.body, { title: 'boom', filed_by_id: 'seat-dev', ship_id: 'ship-row-1' });
+});
+
+test('fileTicket() omits authorship columns the Issues table does not have yet (CREW-1371)', async (t) => {
+  const creates = mockAuthorshipApi(t, {
+    issueFields: ['title'],
+    commentFields: ['body'],
+    ships: [{ id: 'ship-row-1', name: 'test-ship' }],
+  });
+  const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
+  await tracker.fileTicket({ title: 'boom' }, 'seat-dev');
+
+  assert.deepEqual(creates[0]!.body, { title: 'boom' });
+});
+
+test('fileTicket() writes no ship_id when this ship has no Ships row, but still stamps the filer', async (t) => {
+  const creates = mockAuthorshipApi(t, {
+    issueFields: ['filed_by_id', 'ship_id'],
+    commentFields: [],
+    ships: [{ id: 'ship-row-1', name: 'some-other-ship' }],
+  });
+  const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
+  await tracker.fileTicket({ title: 'boom' }, 'seat-dev');
+
+  assert.deepEqual(creates[0]!.body, { title: 'boom', filed_by_id: 'seat-dev' });
+});
+
+test('postEvent() stamps ship_id on the comment when the Comments table has it (CREW-1371)', async (t) => {
+  const creates = mockAuthorshipApi(t, {
+    issueFields: [],
+    commentFields: ['body', 'ship_id'],
+    ships: [{ id: 'ship-row-1', name: 'test-ship' }],
+  });
+  const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
+  await tracker.postEvent('ticket-1', 'hello', 'seat-dev');
+
+  assert.equal(creates[0]!.model, 'comments-model-id');
+  assert.deepEqual(creates[0]!.body, {
+    ticket_id: 'ticket-1', body: 'hello', team_member_id: 'seat-dev', kind: 'event', ship_id: 'ship-row-1',
+  });
+});
+
+test('postEvent() leaves ship_id off a comment on a Comments table without the column', async (t) => {
+  const creates = mockAuthorshipApi(t, {
+    issueFields: [],
+    commentFields: ['body'],
+    ships: [{ id: 'ship-row-1', name: 'test-ship' }],
+  });
+  const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
+  await tracker.postEvent('ticket-1', 'hello', 'seat-dev');
+
+  assert.equal('ship_id' in creates[0]!.body, false);
+});
+
+test('missingAuthorshipColumns() names each column the workspace lacks, so doctor can say what to add', async (t) => {
+  mockAuthorshipApi(t, {
+    issueFields: ['filed_by_id'],
+    commentFields: ['body'],
+    ships: [],
+  });
+  const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
+
+  assert.deepEqual(await tracker.missingAuthorshipColumns(), ['Issues.ship_id', 'Comments.ship_id']);
 });
 
 test('beatShip() carries the open attention items when the Ships table has the column, omits them when it does not (CREW-1373)', async (t) => {

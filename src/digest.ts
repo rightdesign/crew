@@ -24,6 +24,14 @@ export interface DigestTicket extends Rankable {
   needs_design?: boolean | null;
   blocked_by?: string[] | null;
   repo_id?: string | null;
+  /** The Crew row that filed the ticket (CREW-1371's `filed_by_id`). */
+  filed_by_id?: string | null;
+  /** The Ships row it was filed from (CREW-1371's `ship_id`). */
+  ship_id?: string | null;
+  /** Server-stamped identity, for tickets filed in the UI (CREW-1304). */
+  created_by_id?: string | null;
+  /** Free text; never read as authorship except as a marked last resort. */
+  reporter_name?: string | null;
   updated_at: string;
 }
 
@@ -32,6 +40,8 @@ export interface DigestComment {
   team_member_id?: string | null;
   /** Server-stamped author identity; the only authorship a UI-posted comment has (CREW-1304). */
   created_by_id?: string | null;
+  /** The Ships row the comment was posted from (CREW-1371). */
+  ship_id?: string | null;
   reporter_name?: string | null;
   kind?: string | null;
   created_at: string;
@@ -78,6 +88,10 @@ export interface DigestInput {
   /** The running seat's Crew row id — what "you" means in every column. */
   me: string;
   roster: Roster;
+  /** The workspace's Ships rows, for naming the ship a comment came from (CREW-1371). */
+  ships?: { id: string; name?: string | null }[];
+  /** This ship's own Ships row id, or null when it has none; its comments carry no suffix. */
+  myShipId?: string | null;
   watermark: string;
   /**
    * The branch this ticket's work is actually on, or null when none exists.
@@ -113,7 +127,8 @@ function displayKey(t: { issue_id?: string; issue_tag?: string | null }): string
  * whoever filed the ticket. Getting this backwards would make the loop treat
  * its own notes as a reply from someone else.
  */
-function author(c: DigestComment, me: string, roster: Roster): string {
+function author(c: DigestComment, i: DigestInput): string {
+  const { me, roster } = i;
   if (c.team_member_id === me) return 'you';
   if (c.team_member_id === null || c.team_member_id === undefined) {
     // CREW-1304: a comment posted from the app's UI never sets
@@ -125,7 +140,37 @@ function author(c: DigestComment, me: string, roster: Roster): string {
     if (byIdentity) return byIdentity.id === me ? 'you' : (crewLabel(byIdentity) ?? byIdentity.name);
     return `${c.reporter_name ?? 'anon'} (no identity)`;
   }
-  return crewLabel(roster.get(c.team_member_id)) ?? 'someone off this ship';
+  return (crewLabel(roster.get(c.team_member_id)) ?? 'someone off this ship') + shipSuffix(c, i);
+}
+
+/**
+ * CREW-1371: a seat's comment posted from another ship says which ship, so two
+ * ships under one API key are not read as the same author. Our own ship and
+ * a comment with no `ship_id` (written before the column existed) get nothing.
+ */
+function shipSuffix(c: DigestComment, i: DigestInput): string {
+  if (!c.ship_id || c.ship_id === i.myShipId) return '';
+  const name = i.ships?.find((s) => s.id === c.ship_id)?.name;
+  return name ? ` (${name})` : '';
+}
+
+/**
+ * CREW-1371 D7: who filed a ticket. The seat a crew writer stamped
+ * (`filed_by_id`) comes first, then the server-stamped identity of a UI-filed
+ * ticket (`created_by_id`, via Crew.user_id), and only last the ticket's own
+ * free-text `reporter_name`, marked unverified: that field is whoever the
+ * form said, not who filed it (ISSUE-1370 carried the operator's identity
+ * with a ship's alert).
+ */
+function filedBy(t: DigestTicket, i: DigestInput): string {
+  const member = (t.filed_by_id ? i.roster.get(t.filed_by_id) : undefined) ?? memberByIdentity(i.roster, t.created_by_id);
+  if (member) {
+    if (member.id === i.me) return 'you';
+    const label = crewLabel(member) ?? member.name;
+    const ship = t.ship_id && t.ship_id !== i.myShipId ? i.ships?.find((s) => s.id === t.ship_id)?.name : undefined;
+    return ship ? `${label} (${ship})` : label;
+  }
+  return t.reporter_name ? `${t.reporter_name} (unverified)` : '—';
 }
 
 function lastComment(i: DigestInput, ticketId: string): string {
@@ -134,7 +179,7 @@ function lastComment(i: DigestInput, ticketId: string): string {
     .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
   const last = forTicket[forTicket.length - 1];
   if (!last) return '—';
-  return `${last.created_at.slice(0, 16)}Z ${author(last, i.me, i.roster)}`;
+  return `${last.created_at.slice(0, 16)}Z ${author(last, i)}`;
 }
 
 /** Comments from someone other than the running seat since the poll watermark. */
@@ -188,15 +233,15 @@ function table(ts: DigestTicket[], i: DigestInput, header: string, row: (t: Dige
 /** The digest for a building role — dev or design. */
 export function buildingDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | branch | worktree | status | assignee | sev | pri | eff | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | branch | worktree | status | assignee | filed by | sev | pri | eff | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
     const branch = i.branchFor ? i.branchFor(t) : '';
     const worktree = i.worktreeFor ? i.worktreeFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${t.status} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -235,8 +280,8 @@ export function buildingDigest(i: DigestInput): string {
 /** The digest for the QA role. */
 export function qaDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | status | built by | assignee | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | status | built by | assignee | filed by | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   /**
    * The branch to verify, or a mark that there is none.
    *
@@ -266,7 +311,7 @@ export function qaDigest(i: DigestInput): string {
     const n = newFromOthers(i, t.id);
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   return stream([
     '## Current queue — built for you by the poll\n',

@@ -50,6 +50,18 @@ export interface ContractColumns {
    * the column merely having a default here.
    */
   epic: string;
+  /**
+   * The Crew row that filed a ticket (CREW-1371's `filed_by_id`). Optional on
+   * the workspace: a table that has not taken the column is written without
+   * it (see `Tracker`'s authorship probe), so nothing reads it as required.
+   */
+  author: string;
+  /**
+   * The Ships row a ticket was filed from (CREW-1371's `ship_id`, "Filed
+   * from"). Optional, like `author` — absent on a workspace that has not
+   * taken the column.
+   */
+  ship: string;
 }
 
 export interface ContractComments {
@@ -61,6 +73,11 @@ export interface ContractComments {
   /** The value of `kind` that means "audit trail" — never wakes a role. */
   eventKind: string;
   createdAt: string;
+  /**
+   * The Ships row a comment was posted from (CREW-1371's `ship_id`, "Posted
+   * from"). Optional: a comments table without the column is written without it.
+   */
+  ship: string;
 }
 
 export interface ContractStatuses {
@@ -196,6 +213,8 @@ export const DEFAULT_CONTRACT: Contract = {
     needsDesign: 'needs_design',
     reportType: 'report_type',
     epic: 'epic_id',
+    author: 'filed_by_id',
+    ship: 'ship_id',
   },
   comments: {
     parent: 'ticket_id',
@@ -204,6 +223,7 @@ export const DEFAULT_CONTRACT: Contract = {
     kind: 'kind',
     eventKind: 'event',
     createdAt: 'created_at',
+    ship: 'ship_id',
   },
   statuses: {
     open: ['new', 'accepted', 'blocked', 'in_progress', 'needs_info', 'fixed', 'qa', 'verified'],

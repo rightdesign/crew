@@ -104,3 +104,27 @@ test('names the workspace id and the attachment upload recipe', () => {
   assert.match(out, /targetMediaLibrary=true/);
   assert.match(out, /\$CREW_API_KEY/);
 });
+
+test('authorship bullets name only the columns the workspace has, and this ship\'s row (CREW-1371)', () => {
+  const withRepo = [{ ...repo('synthesis', '/w/synthesis', SYN), id: 'repo-1' }];
+  const present = renderEnvironment({
+    route, userAgent: 'crew/1', repos: withRepo, contract: DEFAULT_CONTRACT,
+    authorship: { issueAuthor: true, issueShip: true, commentShip: true, shipId: 'ship-9' },
+  });
+  assert.match(present, /`filed_by_id`: your own Crew row id/);
+  assert.match(present, /`ship_id`: `ship-9`/);
+  assert.match(present, /`ship_id` on every comment you post: `ship-9`/);
+
+  // The Issues table has no authorship columns yet: naming them would have
+  // an agent write a column the workspace rejects, so nothing is named at all.
+  const absent = renderEnvironment({
+    route, userAgent: 'crew/1', repos: withRepo, contract: DEFAULT_CONTRACT,
+    authorship: { issueAuthor: false, issueShip: false, commentShip: false, shipId: 'ship-9' },
+  });
+  assert.doesNotMatch(absent, /filed_by_id/);
+  assert.doesNotMatch(absent, /ship-9/);
+
+  // No probe at all (a caller that did not read the workspace) says nothing either.
+  const unprobed = renderEnvironment({ route, userAgent: 'crew/1', repos: withRepo, contract: DEFAULT_CONTRACT });
+  assert.doesNotMatch(unprobed, /filed_by_id/);
+});

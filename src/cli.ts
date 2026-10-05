@@ -16,7 +16,7 @@ import {
   ticketsByRepo,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
-  ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route,
+  ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat,
 } from './config.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
@@ -1033,7 +1033,8 @@ async function explainUnservable(c: typeof route): Promise<string> {
 }
 
 async function environmentFor(c: typeof route, ticket?: string | null): Promise<string> {
-  const contract = new Tracker(c, cfg.ship).contract;
+  const tracker = new Tracker(c, cfg.ship);
+  const contract = tracker.contract;
   // Every repository the route serves, not just the first. Which one
   // THIS ticket's work happens in is unknowable here — the brief describes
   // them all (ISSUE-350). `ticket`, when the caller already resolved one
@@ -1042,6 +1043,7 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
   // never which repo section applies.
   return renderEnvironment({
     route: c, userAgent: cfg.ship.userAgent, repos: await resolvedRepos(c), contract, sourceTicket: ticket,
+    authorship: await tracker.authorshipProbe().catch(() => null),
   });
 }
 
@@ -1208,7 +1210,7 @@ async function releasePhase(
       try {
         const g = outcome.gateRed;
         const comments = await tracker.comments();
-        const seat = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+        const seat = releaseSeat(c);
         for (const t of gateRedTickets(outcome.merged, outcome.decision.merges)) {
           if (alreadyReported(t, g, comments)) continue;
           await tracker.postEvent(t.id, gateRedComment(g), seat);
@@ -1242,7 +1244,7 @@ async function releasePhase(
       // tracker ticket directly, the same way synthesis's bash dev-loop.sh
       // has always done for a deploy failure.
       if (!notified && news.level === 'fail') {
-        const memberId = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+        const memberId = releaseSeat(c);
         await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun).catch((e) => {
           remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
@@ -1261,7 +1263,7 @@ async function releasePhase(
       // is almost never — it costs a request on the rare cycle that needs
       // one, and none at all on the rest. Shared between both loops below.
       const comments = await tracker.comments();
-      const seat = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+      const seat = releaseSeat(c);
 
       for (const f of outcome.conflicts ?? []) {
         try {
@@ -2619,6 +2621,7 @@ switch (command) {
         recordLinkViewId: found.recordLinkViewId,
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
+        ...(found.releaseSeat ? { releaseSeat: found.releaseSeat } : {}),
         ...(operator ? { operator } : {}),
         ...(contract ? { contract } : {}),
         ...(reviewedStatuses.length > 0 ? { reviewedStatuses } : {}),
@@ -3417,6 +3420,22 @@ switch (command) {
         process.stdout.write(`                   - ${p2}\n`);
       }
     }
+
+    // Authorship columns (CREW-1371). A missing one is not a fault — the write
+    // just leaves it empty — so this reports it without gating `--fix`.
+    const missingAuthorship = await tracker.missingAuthorshipColumns();
+    process.stdout.write(
+      missingAuthorship.length === 0
+        ? 'authorship:       filed_by_id, ship_id present\n'
+        : `authorship:       missing ${missingAuthorship.join(', ')} — update the Issues template\n`,
+    );
+    // Release seat (CREW-1371 D5). Absent is not a fault: release comments are
+    // credited to the dev seat instead, which is what they were before.
+    process.stdout.write(
+      route.resolved?.releaseSeat
+        ? 'release seat:    this ship has its own Release Crew row\n'
+        : 'release seat:    none — release comments are credited to the dev seat; run `crew connect` once the Crew table has this ship\'s row\n',
+    );
 
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
     if (ships.length === 0) {

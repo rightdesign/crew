@@ -6,7 +6,7 @@ import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
   resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo, passengerRepoTargets,
-  passengerCheckoutDir, passengerCheckoutTargets,
+  passengerCheckoutDir, passengerCheckoutTargets, releaseSeat,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -386,6 +386,39 @@ routes:
     { id: 'pair-seat-1', role: 'Pair', kind: 'hold' },
     { id: 'op-1', role: 'Operator', kind: 'hold' },
   ]);
+});
+
+test('the release seat is its own resolved row, never a polled seat, and falls back dev then qa (CREW-1371)', () => {
+  const withRelease = `
+ship:
+  agent: { bin: /bin/true }
+routes:
+  - route: issues/dev-crew
+    dir: /tmp/proj
+    worktreePrefix: proj-issue-
+    baseUrl: https://example.test/
+    resolved:
+      workspaceId: ws-1
+      models: { issues: i, comments: c, crew: m }
+      seats: { dev: dev-1, qa: qa-1 }
+      releaseSeat: rel-1
+      operator: op-1
+      holds: []
+`;
+  const { dir, file } = withConfig(withRelease);
+  const r = findRoute(loadConfig(dir, file), 'issues/dev-crew');
+  assert.equal(releaseSeat(r), 'rel-1');
+  // Not a seat: no polled role is given the release row, and it is no hold either.
+  assert.deepEqual(configuredMembers(r).map((m) => m.id), ['dev-1', 'qa-1', 'op-1']);
+
+  const withoutRelease = withRelease.replace('      releaseSeat: rel-1\n', '');
+  const { dir: dir2, file: file2 } = withConfig(withoutRelease);
+  const r2 = findRoute(loadConfig(dir2, file2), 'issues/dev-crew');
+  assert.equal(releaseSeat(r2), 'dev-1');
+
+  const qaOnly = withoutRelease.replace('seats: { dev: dev-1, qa: qa-1 }', 'seats: { qa: qa-1 }');
+  const { dir: dir3, file: file3 } = withConfig(qaOnly);
+  assert.equal(releaseSeat(findRoute(loadConfig(dir3, file3), 'issues/dev-crew')), 'qa-1');
 });
 
 test('an unresolved route says to run crew connect', () => {

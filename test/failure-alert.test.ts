@@ -51,6 +51,17 @@ test('a ticket already open with the same headline gets a comment instead of a d
   assert.match(notes[0]!.body, /Still failing/);
 });
 
+test('the filed ticket is attributed to the seat that filed it (CREW-1371 filed_by_id)', async () => {
+  const filedBy: string[] = [];
+  const w: FailureAlertWriter = {
+    fileTicket: async (_fields, memberId) => { filedBy.push(memberId); return ticket({ id: 'new-row', issue_id: 'ISSUE-1000' }); },
+    postEvent: async () => {},
+  };
+  await applyFailureAlert(w, n, 'proj', [], 'seat-dev', silent, false);
+
+  assert.deepEqual(filedBy, ['seat-dev']);
+});
+
 test('findOpenFailureAlert matches on the exact headline only', () => {
   const t = ticket({ title: 'other: build FAILED' });
   assert.equal(findOpenFailureAlert([t], 'proj: build FAILED'), undefined);

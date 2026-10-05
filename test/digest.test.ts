@@ -173,3 +173,37 @@ test('a UI-posted comment (no team_member_id) is attributed through Crew.user_id
   const unlinked = buildingDigest({ ...i, roster });
   assert.match(unlinked, /Pair agent \(no identity\)/);
 });
+
+test('a seat comment posted from another ship names that ship; this ship\'s own comments do not (CREW-1371)', () => {
+  const ships = [{ id: 'ship-mac', name: 'Brads-Mac-Studio.local' }, { id: 'ship-here', name: 'Brads-MBP' }];
+  const i = input({
+    ships,
+    myShipId: 'ship-here',
+    tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', assignee_id: 'dev-1' })],
+    comments: [
+      { ticket_id: 'a', team_member_id: 'qa-1', ship_id: 'ship-mac', reporter_name: 'x',
+        created_at: '2026-08-23T11:00:00.000Z' },
+    ],
+  });
+  assert.match(buildingDigest(i), /QA agent \(Brads-Mac-Studio\.local\)/);
+
+  const own = buildingDigest({
+    ...i,
+    comments: [{ ticket_id: 'a', team_member_id: 'qa-1', ship_id: 'ship-here', reporter_name: 'x', created_at: '2026-08-23T11:00:00.000Z' }],
+  });
+  assert.match(own, /QA agent(?! \()/);
+  assert.doesNotMatch(own, /Brads-Mac-Studio|Brads-MBP/);
+});
+
+test('a ticket names who filed it: the stamped seat first, then the UI identity, then reporter_name marked unverified (CREW-1371)', () => {
+  const ships = [{ id: 'ship-mac', name: 'Brads-Mac-Studio.local' }];
+  const userRoster = buildRoster(MEMBERS, [...ROWS.slice(0, 2), { id: 'op-1', name: 'Brad C.', user_id: 'user-brad' }, ...ROWS.slice(3)]);
+  const i = input({ ships, myShipId: 'ship-here', roster: userRoster });
+  const filed = (t: Partial<DigestInput['tickets'][number]>) =>
+    buildingDigest({ ...i, tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', ...t })] });
+
+  assert.match(filed({ filed_by_id: 'qa-1', ship_id: 'ship-mac', reporter_name: 'Crew release' }), /\| QA agent \(Brads-Mac-Studio\.local\) \|/);
+  assert.match(filed({ created_by_id: 'user-brad', reporter_name: 'Crew release' }), /\| Brad C\. \(Operator\) \|/);
+  assert.match(filed({ reporter_name: 'Crew release' }), /\| Crew release \(unverified\) \|/);
+  assert.match(filed({}), /\| — \|/);
+});

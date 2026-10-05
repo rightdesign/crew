@@ -623,7 +623,8 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
  * `cli.ts`'s `resolvedRepos`: no ship/area worktree-prefix network lookup.
  */
 async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null): Promise<string> {
-  const contract = new Tracker(route, ship).contract;
+  const tracker = new Tracker(route, ship);
+  const contract = tracker.contract;
   const repos: EnvironmentRepo[] = reposOf(route).map((t) => {
     const id = repoIdForName(route, t.name);
     const o = route.repoOverrides[t.name];
@@ -638,5 +639,8 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
       }, t.dir),
     };
   });
-  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket });
+  // The authorship probe is best-effort guidance for the brief: a failed read
+  // leaves the filing block without authorship lines, never a failed cycle.
+  const authorship = await tracker.authorshipProbe().catch(() => null);
+  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship });
 }

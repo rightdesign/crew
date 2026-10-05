@@ -267,6 +267,7 @@ function fakeDecision(pending: CycleDecision['selection']['pending']): CycleDeci
     tickets: [],
     comments: [],
     roster: {} as CycleDecision['roster'],
+    ships: [],
     blocked: new Set(),
     info: {} as CycleDecision['info'],
     sweep: [], epicSync: [],

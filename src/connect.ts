@@ -125,6 +125,8 @@ export interface Discovered {
   /** The record-link-only View bound to Issues (ISSUE-928) — see the field's matching doc comment on `ResolvedIds` in config.ts. */
   recordLinkViewId?: string;
   seats: Record<string, string>;
+  /** This ship's "Release" Crew row (CREW-1371) — see `ResolvedIds.releaseSeat`. */
+  releaseSeat?: string;
   /** The Crew row that is the human running this — auto-matched by email
    * against `meEmail` when possible. Left unset when no hold's email matches
    * (or none is on file): the caller decides then, by asking. */
@@ -635,8 +637,28 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // a person's to place, not this command's.
     const pairId = seatFor(scoped, 'pair') || (shipRowId ? seatFor(unclaimed, 'pair') : undefined);
     if (pairId) out.seats.pair = pairId;
+    // The per-ship "Release" row (CREW-1371 D5): release-phase comments and
+    // failure tickets are written as this row, not the Developer agent. Only
+    // ever scoped to this ship — an unscoped "Release" row would be shared by
+    // every machine on the workspace, which is the very thing this avoids.
+    // Found-or-created like the polled seats, but never claimed from a legacy
+    // unscoped row and never given an agent_id: it has no persona to link.
+    if (shipRowId) {
+      const releaseId = seatFor(scoped, 'release');
+      if (releaseId) out.releaseSeat = releaseId;
+      else {
+        const created = await post<{ id: string }>(o, `/data-models/${out.models.crew}/records`, {
+          name: 'Release agent',
+          ship_id: shipRowId,
+        });
+        out.releaseSeat = created.id;
+        provisioning.push('created Crew row for the release seat');
+      }
+    }
     // Anything that is not one of the seats is a person or a session: a hold.
-    const seatIds = new Set(Object.values(out.seats));
+    // The release row is not a seat, but it is not a person either — leaving
+    // it out of this set would list it as a hold the poll loop then respects.
+    const seatIds = new Set([...Object.values(out.seats), ...(out.releaseSeat ? [out.releaseSeat] : [])]);
     out.holds = rows.filter((r) => !seatIds.has(r.id)).map((r) => ({ id: r.id, name: r.name ?? '' }));
     if (out.holds.length === 0) {
       problems.push('no non-seat Crew rows — which row is the operator?');

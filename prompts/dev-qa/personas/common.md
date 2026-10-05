@@ -600,6 +600,11 @@ filed without them has nowhere to route to — it sits unclaimed by any
 per-repo queue until a person notices and fixes it by hand, however
 urgent its priority.
 
+If that block also lists `filed_by_id` (your own Crew row) or `ship_id` (the
+ship you are running on), set those too, and `ship_id` on every comment you
+post. They record who filed the ticket and from where. The block lists a column
+only when this workspace has it, so a column it does not name is not yours to set.
+
 Name the ticket you were working when you noticed it in the new ticket's
 description. Only put it in the new ticket's `blocked by` column if your
 own ticket genuinely cannot proceed without the new one being fixed

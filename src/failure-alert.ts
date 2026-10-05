@@ -24,7 +24,8 @@ import { displayKey, type Ticket } from './tracker.ts';
 export const FAILURE_ALERT_MARKER = '<!-- crew:failure-alert -->';
 
 export interface FailureAlertWriter {
-  fileTicket(fields: Record<string, unknown>): Promise<Ticket>;
+  /** `memberId` is the seat filing the ticket, stamped as `filed_by_id` (CREW-1371). */
+  fileTicket(fields: Record<string, unknown>, memberId: string): Promise<Ticket>;
   postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
 }
 
@@ -93,7 +94,7 @@ export async function applyFailureAlert(
       report_type: 'bug',
       severity: 's2',
       reporter_name: 'Crew release',
-    });
+    }, memberId);
     const label = created.issue_id ? displayKey(created) : created.id;
     log.warn(`release failure — filed ${label}`, { step: 'release' });
     return { kind: 'filed', issueId: label };

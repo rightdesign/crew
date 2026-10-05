@@ -124,6 +124,15 @@ export interface ResolvedIds {
   recordLinkViewId?: string;
   models: { issues: string; comments: string; crew: string };
   seats: Partial<Record<RoleName, string>>;
+  /**
+   * This ship's own "Release" Crew row (CREW-1371). Release-phase comments and
+   * failure tickets are written as this row, so a release alert is not credited
+   * to the Developer agent. Deliberately NOT a `seats` entry: `RoleName` is the
+   * fixed set of polled roles, and this row is never assigned work. Absent when
+   * the workspace has no Crew table or no Ships row for this machine — the
+   * release phase then falls back to the dev seat (see `releaseSeat()`).
+   */
+  releaseSeat?: string;
   operator: string;
   holds: HoldConfig[];
   /**
@@ -787,6 +796,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     operator: m.req(raw.operator, `${where}.resolved.operator`),
     holds,
     contract: raw.contract ?? undefined,
+    ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}),
     ...(Object.keys(agentPersonas).length > 0 ? { agentPersonas } : {}),
     ...(Object.keys(agentSkills).length > 0 ? { agentSkills } : {}),
   };
@@ -1184,6 +1194,18 @@ export async function hydrateApiKeys(
       // right one to surface, exactly as before this existed.
     }
   }
+}
+
+/**
+ * The Crew row the release phase writes as: this ship's own "Release" row
+ * (CREW-1371), falling back to the dev seat and then the QA seat on an install
+ * that has not provisioned one yet. Every release-phase comment and failure
+ * ticket goes through this one helper so the fallback order lives in one place.
+ * The fallback is a `crew doctor` note, not an error — the write still lands.
+ */
+export function releaseSeat(rt: Route): string {
+  const r = rt.resolved;
+  return r?.releaseSeat ?? r?.seats.dev ?? r?.seats.qa ?? '';
 }
 
 /** Seats and holds as the roster builder wants them. Requires resolved ids. */

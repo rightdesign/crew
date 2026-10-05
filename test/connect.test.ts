@@ -448,6 +448,8 @@ test('discover() creates the Ships row when this ship has no row yet, and report
       { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-new' },
       { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-new' },
     ],
+    // The per-ship Release row (CREW-1371) is created alongside the new Ships row.
+    '/api/data-models/crew-model/records': { id: 'release-new' },
   });
   t.after(restore);
 
@@ -458,6 +460,36 @@ test('discover() creates the Ships row when this ship has no row yet, and report
   assert.ok(found.provisioning.some((p) => p.includes('created Ships row')));
   const createShip = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
   assert.deepEqual(createShip?.body, { name: "Brad's MacBook", platform: 'macos', host_passengers: false });
+});
+
+test('discover() creates a Release Crew row scoped to this ship, records it as releaseSeat, and never lists it as a hold (CREW-1371)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }],
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+    ],
+    '/api/data-models/crew-model/records': { id: 'release-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.releaseSeat, 'release-new');
+  assert.ok(found.provisioning.includes('created Crew row for the release seat'));
+  const create = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/crew-model/records');
+  assert.deepEqual(create?.body, { name: 'Release agent', ship_id: 'ship-1' });
+  assert.ok(!found.holds.some((h) => h.id === 'release-new'), 'the release row is not a person or a session');
+  assert.ok(!Object.values(found.seats).includes('release-new'), 'the release row is not a polled seat');
 });
 
 test('discover() stamps host_passengers on a newly-created Ships row when this route\'s config says true (ISSUE-644)', async (t) => {
@@ -811,6 +843,8 @@ function ownerFixture(me: Record<string, unknown>, shipsRows: unknown[], shipsMo
       { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
       { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
     ],
+    // The per-ship Release row (CREW-1371) is created on the first connect.
+    '/api/data-models/crew-model/records': { id: 'release-new' },
   };
 }
 const SHIP = { name: 'Box', platform: 'macos' as const };

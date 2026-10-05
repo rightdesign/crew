@@ -16,6 +16,7 @@ import { basename } from 'node:path';
 import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
+import type { Authorship } from './tracker.ts';
 import { renderBranchName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
 
 /** The environment variable the crew hands the session its tracker key in. */
@@ -56,6 +57,28 @@ export interface EnvironmentInput {
   repoDir?: string | null;
   /** The ticket this session was spawned to work, when the cycle knows it. */
   sourceTicket?: string | null;
+  /**
+   * Which authorship columns this workspace has, and this ship's Ships row id
+   * (CREW-1371 D6), from `Tracker.authorshipProbe()`. Absent when the caller
+   * did not probe, which renders no authorship guidance at all.
+   */
+  authorship?: Authorship | null;
+}
+
+/**
+ * The authorship bullets for the filing block (CREW-1371 D6). Only the columns
+ * this workspace actually has are named: an agent told to write a column the
+ * Issues table lacks would have its whole ticket rejected, which costs far more
+ * than the authorship it was trying to record. The probe is what makes this
+ * safe to show at all.
+ */
+function authorshipBullets(a: Authorship | null | undefined, contract: Contract): string[] {
+  if (!a) return [];
+  return [
+    ...(a.issueAuthor ? [`- \`${contract.columns.author}\`: your own Crew row id, from "Your crew" above — who filed it`] : []),
+    ...(a.issueShip && a.shipId ? [`- \`${contract.columns.ship}\`: \`${a.shipId}\` — this ship, where it was filed from`] : []),
+    ...(a.commentShip && a.shipId ? [`- \`${contract.comments.ship}\` on every comment you post: \`${a.shipId}\` — this ship`] : []),
+  ];
 }
 
 /**
@@ -331,6 +354,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
       ...(only?.id ? [`- \`${contract.columns.repo}\`: \`${only.id}\` (this repository)`] : repos.filter((r) => r.id).map(
         (r) => `- \`${contract.columns.repo}\`: \`${r.id}\` — when the new ticket belongs to ${r.name}`,
       )),
+      ...authorshipBullets(i.authorship, contract),
       '',
       ...(i.sourceTicket
         ? [
