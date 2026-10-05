@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.6.0] — 2026-10-05
+
+- Host Passengers runs the container image published to Docker Hub for this crew version, so `crew install` no longer needs a crew repo checkout to start it (CREW-1369)
+- `crew install` pulls the Host Passengers image up front and reports a failed pull; `crew doctor` shows the image and whether it is present (CREW-1369)
+- `ship.passengerImage` (or CREW_PASSENGER_IMAGE) runs a locally built Host Passengers image instead of the published one (CREW-1369)
+
 ## [0.5.0] — 2026-10-05
 
 - `crew doctor` checks that the agent binary and git resolve on the PATH the scheduler gives the daemon, and says where to fix it when they do not (CREW-1365)
