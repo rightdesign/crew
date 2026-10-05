@@ -140,7 +140,7 @@ test('startTunnel().stop() sends SIGTERM to the child', () => {
 
 function makePlan(workspaceId: string, mountsHash = 'hash-1'): ContainerPlan {
   return {
-    workspaceId, containerName: `crew-passenger-${workspaceId}`, port: 28800,
+    workspaceId, containerName: `crew-passenger-${workspaceId}`, port: 28800, image: 'tablation/crew-passenger-mcp:9.9.9',
     mounts: [{ hostPath: '/tmp/only', containerPath: '/workspace/only' }], mountsHash,
   };
 }

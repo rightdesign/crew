@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   planContainers, portFor, containerNameFor, listPassengerContainers, startContainer, stopContainer,
-  syncPassengerContainers, syncAllPassengerCheckouts, dockerAvailable, IMAGE_TAG, type Exec, type ContainerPlan,
+  syncPassengerContainers, syncAllPassengerCheckouts, dockerAvailable, passengerImageRef, ensureImage, type Exec, type ContainerPlan,
 } from '../src/passenger-containers.ts';
 import type { CrewConfig, Route } from '../src/config.ts';
 import { passengerCheckoutDir } from '../src/config.ts';
@@ -136,6 +136,105 @@ test('planContainers() gives two different workspaces two different mountsHash v
   assert.notEqual(plans[0]!.mountsHash, plans[1]!.mountsHash);
 });
 
+/** Runs `fn` with `CREW_PASSENGER_IMAGE` set to `value` (or unset), restoring the caller's env afterwards. */
+function withEnvImage<T>(value: string | undefined, fn: () => T): T {
+  const prev = process.env.CREW_PASSENGER_IMAGE;
+  if (value === undefined) delete process.env.CREW_PASSENGER_IMAGE;
+  else process.env.CREW_PASSENGER_IMAGE = value;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.CREW_PASSENGER_IMAGE;
+    else process.env.CREW_PASSENGER_IMAGE = prev;
+  }
+}
+
+test('passengerImageRef() defaults to the Hub repository tagged with this crew\'s own version', () => {
+  const crewHome = mkdtempSync(join(tmpdir(), 'crew-version-'));
+  writeFileSync(join(crewHome, 'package.json'), JSON.stringify({ version: '1.2.3' }));
+  const cfg = { ship: { stateDir: '/tmp/state' }, routes: [], crewHome } as unknown as CrewConfig;
+  withEnvImage(undefined, () => {
+    assert.equal(passengerImageRef(cfg), 'tablation/crew-passenger-mcp:1.2.3');
+  });
+});
+
+test('passengerImageRef() prefers ship.passengerImage over the default, and CREW_PASSENGER_IMAGE over both', () => {
+  const cfg = { ship: { stateDir: '/tmp/state', passengerImage: 'crew-passenger-mcp:dev' }, routes: [], crewHome: '/tmp/crew' } as unknown as CrewConfig;
+  withEnvImage(undefined, () => {
+    assert.equal(passengerImageRef(cfg), 'crew-passenger-mcp:dev');
+  });
+  withEnvImage('crew-passenger-mcp:env', () => {
+    assert.equal(passengerImageRef(cfg), 'crew-passenger-mcp:env');
+  });
+});
+
+test('planContainers() carries the resolved image on each plan, and a different image changes the mountsHash', () => {
+  const routes = [makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } })];
+  const plansAt = (image: string) => withEnvImage(undefined, () => planContainers(
+    { ...makeConfig(routes), ship: { stateDir: '/tmp/state', passengerImage: image } } as unknown as CrewConfig,
+  ));
+  const before = plansAt('tablation/crew-passenger-mcp:1.0.0')[0]!;
+  const after = plansAt('tablation/crew-passenger-mcp:1.1.0')[0]!;
+  assert.equal(before.image, 'tablation/crew-passenger-mcp:1.0.0');
+  assert.notEqual(before.mountsHash, after.mountsHash, 'an image upgrade must read as a stale container so it is recreated');
+});
+
+test('ensureImage() does nothing when Docker already has the image, and never pulls a present tag', () => {
+  const { exec, calls } = fakeExec();
+  ensureImage('tablation/crew-passenger-mcp:1.0.0', exec);
+  assert.deepEqual(calls, [['docker', 'image', 'inspect', 'tablation/crew-passenger-mcp:1.0.0']]);
+});
+
+test('ensureImage() pulls an image Docker does not have locally', () => {
+  const { exec, calls } = fakeExec();
+  const missing: Exec = (cmd, args) => {
+    if (args[0] === 'image') throw new Error('No such image');
+    return exec(cmd, args);
+  };
+  ensureImage('tablation/crew-passenger-mcp:1.0.0', missing);
+  assert.deepEqual(calls.slice(-1), [['docker', 'pull', 'tablation/crew-passenger-mcp:1.0.0']]);
+});
+
+test('ensureImage() surfaces a failed pull rather than swallowing it', () => {
+  const failing: Exec = (_cmd, args) => {
+    if (args[0] === 'image') throw new Error('No such image');
+    throw new Error('pull access denied for tablation/crew-passenger-mcp');
+  };
+  assert.throws(() => ensureImage('tablation/crew-passenger-mcp:1.0.0', failing), /pull access denied/);
+});
+
+test('syncPassengerContainers() pulls the image before starting a container, when Docker lacks it', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
+  ]);
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': '',
+  });
+  const missing: Exec = (cmd, args) => {
+    if (args[0] === 'image') throw new Error('No such image');
+    return exec(cmd, args);
+  };
+  withEnvImage(undefined, () => syncPassengerContainers(cfg, 'https://app.tablation.com/api', missing));
+
+  const pullAt = calls.findIndex((c) => c[1] === 'pull');
+  const runAt = calls.findIndex((c) => c[1] === 'run');
+  assert.ok(pullAt >= 0 && runAt > pullAt, 'the pull must happen before the run');
+});
+
+test('syncPassengerContainers() never touches Docker Hub while a healthy container is already running', () => {
+  const cfg = makeConfig([
+    makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { only: '/tmp/only' } }),
+  ]);
+  const plans = withEnvImage(undefined, () => planContainers(cfg));
+  const name = plans[0]!.containerName;
+  const { exec, calls } = fakeExec({
+    'docker ps -a --filter name=crew-passenger- --format {{.Names}}\t{{.State}}': `${name}\trunning\n`,
+    [`docker inspect --format {{ index .Config.Labels "crew.mounts.hash" }} ${name}`]: `${plans[0]!.mountsHash}\n`,
+  });
+  withEnvImage(undefined, () => syncPassengerContainers(cfg, 'https://app.tablation.com/api', exec));
+  assert.ok(!calls.some((c) => c[1] === 'pull' || c[1] === 'image'));
+});
+
 /** Records every docker invocation and lets a test script canned responses per argv-joined key. */
 function fakeExec(responses: Record<string, string> = {}): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];
@@ -167,10 +266,10 @@ test('listPassengerContainers() parses newline-separated name+state pairs, dropp
   ]);
 });
 
-test('startContainer() runs `docker run -d` with one -v per mount, the mountsHash label, and the fixed image tag', () => {
+test('startContainer() runs `docker run -d` with one -v per mount, the mountsHash label, and the plan\'s image', () => {
   const { exec, calls } = fakeExec();
   const plan: ContainerPlan = {
-    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800,
+    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800, image: 'tablation/crew-passenger-mcp:9.9.9',
     mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }, { hostPath: '/tmp/b', containerPath: '/workspace/b' }],
     mountsHash: 'deadbeef',
   };
@@ -187,14 +286,14 @@ test('startContainer() runs `docker run -d` with one -v per mount, the mountsHas
   assert.ok(args.includes('crew.mounts.hash=deadbeef'));
   assert.ok(args.includes('/tmp/a:/workspace/a:ro'));
   assert.ok(args.includes('/tmp/b:/workspace/b:ro'));
-  assert.equal(args[args.length - 1], IMAGE_TAG);
+  assert.equal(args[args.length - 1], 'tablation/crew-passenger-mcp:9.9.9');
   assert.ok(!args.includes('host.docker.internal:host-gateway'), 'no --add-host without a sync endpoint');
 });
 
 test('startContainer() wires up the sync-daemon callback when given a SyncDaemonEndpoint', () => {
   const { exec, calls } = fakeExec();
   const plan: ContainerPlan = {
-    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800,
+    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800, image: 'tablation/crew-passenger-mcp:9.9.9',
     mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }],
     mountsHash: 'deadbeef',
   };
@@ -211,7 +310,7 @@ test('startContainer() wires up the sync-daemon callback when given a SyncDaemon
 test('startContainer() omits PASSENGER_MCP_SECRET, same as the sync env vars, when there is no sync endpoint (ISSUE-685)', () => {
   const { exec, calls } = fakeExec();
   const plan: ContainerPlan = {
-    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800,
+    workspaceId: 'ws-1', containerName: 'crew-passenger-ws-1', port: 28800, image: 'tablation/crew-passenger-mcp:9.9.9',
     mounts: [{ hostPath: '/tmp/a', containerPath: '/workspace/a' }],
     mountsHash: 'deadbeef',
   };

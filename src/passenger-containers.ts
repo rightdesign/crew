@@ -3,9 +3,11 @@
  *
  * One Docker container per WORKSPACE this ship has at least one
  * `hostPassengers: true` route connected to (decision 6 in the Map) — never
- * per session, never per repo. The container runs the image built from
- * `../Dockerfile.passenger-mcp` (`docker/passenger-mcp/package.json`'s
- * pruned dependency set), with a read-only bind mount per repo
+ * per session, never per repo. The container runs the image published for
+ * this crew's version from `../Dockerfile.passenger-mcp`
+ * (`docker/passenger-mcp/package.json`'s pruned dependency set; see
+ * `passengerImageRef` for how the tag is chosen and `ensureImage` for how a
+ * missing image is pulled), with a read-only bind mount per repo
  * `passengerCheckoutTargets` (config.ts) says belongs to that workspace —
  * each one a dedicated, `crewd`-maintained checkout (ISSUE-554, decision 7
  * in the Map), never a role's ephemeral build worktree and never even the
@@ -21,7 +23,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { CrewConfig } from './config.ts';
-import { passengerCheckoutTargets, reposOf } from './config.ts';
+import { crewVersion, passengerCheckoutTargets, reposOf } from './config.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { syncPassengerCheckout, type PassengerCheckoutOutcome } from './git.ts';
 
@@ -48,7 +50,45 @@ export function dockerAvailable(exec: Exec = realExec): boolean {
   }
 }
 
-export const IMAGE_TAG = 'crew-passenger-mcp:latest';
+/** The Docker Hub repository `.github/workflows/docker.yml` publishes to. */
+export const PASSENGER_IMAGE_REPO = 'tablation/crew-passenger-mcp';
+
+/**
+ * The image a ship runs its Host Passengers containers from (CREW-1369).
+ *
+ * Precedence: `CREW_PASSENGER_IMAGE` in the environment, then
+ * `ship.passengerImage` in crew.yaml, then `PASSENGER_IMAGE_REPO` tagged with
+ * this crew's own version. The version tag is what keeps a ship's container
+ * paired with its own `passenger-mcp.ts` contract: the release workflow builds
+ * `:X.Y.Z` for every `v*` tag, so the CLI at X.Y.Z pulls exactly that build.
+ */
+export function passengerImageRef(cfg: CrewConfig): string {
+  return process.env.CREW_PASSENGER_IMAGE
+    || cfg.ship.passengerImage
+    || `${PASSENGER_IMAGE_REPO}:${crewVersion(cfg.crewHome)}`;
+}
+
+/** Whether Docker already has `image` locally. */
+export function imagePresent(image: string, exec: Exec = realExec): boolean {
+  try {
+    exec('docker', ['image', 'inspect', image]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pulls `image` only when Docker does not already have it (CREW-1369).
+ * A present tag is never re-pulled: the version tag is immutable, and a
+ * ship's container must not silently change image between syncs. A failed
+ * pull throws — `docker pull`'s own stderr is in the message — so a bad
+ * Docker Hub namespace or a missing image fails at install or the first
+ * sync, not as an opaque `docker run` error.
+ */
+export function ensureImage(image: string, exec: Exec = realExec): void {
+  if (!imagePresent(image, exec)) exec('docker', ['pull', image]);
+}
 
 /** `crew-passenger-<workspaceId>` — stable, greppable in `docker ps`. */
 export function containerNameFor(workspaceId: string): string {
@@ -66,8 +106,10 @@ export interface ContainerPlan {
   workspaceId: string;
   containerName: string;
   port: number;
+  /** The image to run — see `passengerImageRef`. */
+  image: string;
   mounts: Mount[];
-  /** A stable digest of `mounts`, stamped as a Docker label — see `mountsDigest`. */
+  /** A stable digest of `mounts` and `image`, stamped as a Docker label — see `mountsDigest`. */
   mountsHash: string;
 }
 
@@ -85,9 +127,15 @@ export function portFor(workspaceId: string, base = 28765, span = 1000): number 
   return base + (digest.readUInt32BE(0) % span);
 }
 
-function mountsDigest(mounts: Mount[]): string {
+/**
+ * Digest of a container's mount set AND image (CREW-1369). The image is
+ * folded in so a crew upgrade that changes the image tag reads as a stale
+ * container and recreates it on the next cycle, the same path a mounts
+ * change already takes.
+ */
+function mountsDigest(mounts: Mount[], image: string): string {
   const sorted = [...mounts].sort((a, b) => a.containerPath.localeCompare(b.containerPath));
-  return createHash('sha256').update(JSON.stringify(sorted)).digest('hex').slice(0, 16);
+  return createHash('sha256').update(JSON.stringify({ mounts: sorted, image })).digest('hex').slice(0, 16);
 }
 
 /**
@@ -100,6 +148,7 @@ function mountsDigest(mounts: Mount[]): string {
  */
 export function planContainers(cfg: CrewConfig): ContainerPlan[] {
   const byWorkspace = new Map<string, Map<string, Mount>>();
+  const image = passengerImageRef(cfg);
   for (const route of cfg.routes) {
     if (!route.enabled || !route.hostPassengers || !route.resolved?.workspaceId) continue;
     const workspaceId = route.resolved.workspaceId;
@@ -117,8 +166,9 @@ export function planContainers(cfg: CrewConfig): ContainerPlan[] {
         workspaceId,
         containerName: containerNameFor(workspaceId),
         port: portFor(workspaceId),
+        image,
         mounts: mountList,
-        mountsHash: mountsDigest(mountList),
+        mountsHash: mountsDigest(mountList, image),
       };
     });
 }
@@ -221,7 +271,7 @@ export function startContainer(
     );
   }
   for (const m of plan.mounts) args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);
-  args.push(IMAGE_TAG);
+  args.push(plan.image);
   exec('docker', args);
 }
 
@@ -274,19 +324,31 @@ export function syncPassengerContainers(
   const recreated: string[] = [];
   const stopped: string[] = [];
 
+  // Pull on first need only, and only for a container that is actually about
+  // to start (CREW-1369): a ship whose containers are all healthy never
+  // touches Docker Hub, and a missing image fails here rather than in `run`.
+  const ensured = new Set<string>();
+  const start = (plan: ContainerPlan, sync: SyncDaemonEndpoint | undefined) => {
+    if (!ensured.has(plan.image)) {
+      ensureImage(plan.image, exec);
+      ensured.add(plan.image);
+    }
+    startContainer(plan, tablationApiBaseUrl, sync, exec);
+  };
+
   for (const plan of plans) {
     const sync = syncEndpoints.get(plan.workspaceId);
     const current = existingByName.get(plan.containerName);
     if (!current) {
-      startContainer(plan, tablationApiBaseUrl, sync, exec);
+      start(plan, sync);
       started.push(plan.containerName);
     } else if (!current.running) {
       stopContainer(plan.containerName, exec);
-      startContainer(plan, tablationApiBaseUrl, sync, exec);
+      start(plan, sync);
       started.push(plan.containerName);
     } else if (currentMountsHash(plan.containerName, exec) !== plan.mountsHash) {
       stopContainer(plan.containerName, exec);
-      startContainer(plan, tablationApiBaseUrl, sync, exec);
+      start(plan, sync);
       recreated.push(plan.containerName);
     }
   }

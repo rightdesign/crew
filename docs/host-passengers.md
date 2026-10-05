@@ -35,6 +35,10 @@ and requests are authenticated by the ship's own MCP server, not the relay.
 - **Docker** with a running daemon (`docker info` must answer). Without it the
   setting stays recorded but nothing starts; `crew doctor` says so.
 - **`ssh-keygen`** (OpenSSH), used to mint the ship's tunnel identity.
+- Network access to Docker Hub the first time a ship starts a container. The
+  container image is `tablation/crew-passenger-mcp`, tagged with the crew
+  version the ship runs, so `crew install` pulls it up front and nothing needs
+  a clone of the crew repo. `crew doctor` shows whether the image is present.
 - `ship.relayHost` set in `crew.yaml`. With no relay host the container runs
   with no tunnel.
 
@@ -58,7 +62,13 @@ true` for a workspace is enough to host it, and the container's mounts cover
 every repo the ship has connected there.
 
 `crew doctor` prints the state: which routes host, whether Docker and
-`ssh-keygen` are available, and the relay host. `crew status` shows the same.
+`ssh-keygen` are available, the container image and whether it is present, and
+the relay host. `crew status` shows the same.
+
+To run a locally built image instead, set `ship.passengerImage` in `crew.yaml`
+(or export `CREW_PASSENGER_IMAGE`, which takes precedence). Build it from the
+crew repo root with `docker build -f Dockerfile.passenger-mcp -t
+crew-passenger-mcp:dev .`, then set `passengerImage: crew-passenger-mcp:dev`.
 
 To sync containers and tunnels once by hand, run `crew passengers`; the
 scheduler's passengers unit invokes the same command.

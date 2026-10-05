@@ -75,7 +75,9 @@ import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
-import { dockerAvailable, planContainers, syncAllPassengerCheckouts, syncPassengerContainers } from './passenger-containers.ts';
+import {
+  dockerAvailable, ensureImage, imagePresent, passengerImageRef, planContainers, syncAllPassengerCheckouts, syncPassengerContainers,
+} from './passenger-containers.ts';
 import {
   syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, rotatePersistedSlug,
 } from './tunnel.ts';
@@ -813,6 +815,25 @@ async function installScheduler(): Promise<void> {
   // (ISSUE-677). `release`/`passengers` stay one-shot-per-fire on their own
   // fixed timers; `run` (ISSUE-763) is now the persistent `crew daemon`
   // loop on launchd/systemd — see `install.ts`'s `subcommandFor`.
+  // Host Passengers' image is pulled here, not left to the passengers timer's
+  // first fire (CREW-1369): a missing image or a bad Docker Hub namespace
+  // should show up in the install output. A failure is reported and sets a
+  // non-zero exit, but the units still install so the ship is not left
+  // half-configured.
+  if (!dryRun && cfg.routes.some((r) => r.enabled && r.hostPassengers) && dockerAvailable()) {
+    const image = passengerImageRef(cfg);
+    if (imagePresent(image)) {
+      process.stdout.write(`Host Passengers image ${image} is already present\n`);
+    } else {
+      process.stdout.write(`pulling Host Passengers image ${image}\n`);
+      try {
+        ensureImage(image);
+      } catch (e) {
+        process.stderr.write(`crew install: could not pull Host Passengers image ${image}: ${(e as Error).message}\n`);
+        process.exitCode = 1;
+      }
+    }
+  }
   const hasSystemd = detectSystemd();
   for (const job of ['run', 'release', 'passengers'] as const) {
     const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job);
@@ -3448,10 +3469,13 @@ switch (command) {
     } else {
       const dockerOk = dockerAvailable();
       const keygenOk = sshKeygenAvailable();
+      const image = passengerImageRef(cfg);
+      const imageOk = dockerOk && imagePresent(image);
       process.stdout.write(
         `host passengers:   ON for ${passengerRoutes.map((r) => r.route).join(', ')}\n` +
           `                   docker:     ${dockerOk ? 'OK' : 'NOT AVAILABLE'}\n` +
           `                   ssh-keygen: ${keygenOk ? 'OK' : 'NOT AVAILABLE'}\n` +
+          `                   image:      ${image} (${imageOk ? 'present' : 'missing'})\n` +
           `                   relay host: ${cfg.ship.relayHost ? `${cfg.ship.relayHost}:${cfg.ship.relayPort}` : 'not set (ship.relayHost) — containers will run with no tunnel'}\n`,
       );
       if (!dockerOk) {

@@ -408,6 +408,15 @@ export interface Ship {
    * part of `relayHost`; set it when the SSH host and the public domain differ.
    */
   relayPublicDomain?: string;
+  /**
+   * Overrides the Host Passengers container image (CREW-1369). Unset, the
+   * ship runs `tablation/crew-passenger-mcp:<this crew's version>`, the image
+   * the release workflow publishes for every `v*` tag. Set it to run a locally
+   * built image instead, e.g. `crew-passenger-mcp:dev` while developing the
+   * container. `CREW_PASSENGER_IMAGE` in the environment takes precedence over
+   * this. See `passengerImageRef` in passenger-containers.ts.
+   */
+  passengerImage?: string;
 }
 
 export interface CrewConfig {
@@ -431,7 +440,7 @@ export class ConfigError extends Error {}
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
-  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain',
+  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -641,7 +650,7 @@ class Missing {
  * they actually are. Falls back rather than throwing: a User-Agent that
  * cannot be built is not a reason to refuse to run.
  */
-function crewVersion(crewHome: string): string {
+export function crewVersion(crewHome: string): string {
   try {
     const pkg = JSON.parse(readFileSync(join(crewHome, 'package.json'), 'utf8')) as { version?: string };
     return pkg.version ?? '0.0.0';
@@ -903,6 +912,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       relayPort: shipRaw.relayPort !== undefined ? Number(shipRaw.relayPort) : 2222,
       relayHttpPort: shipRaw.relayHttpPort !== undefined ? Number(shipRaw.relayHttpPort) : 443,
       relayPublicDomain: shipRaw.relayPublicDomain ? String(shipRaw.relayPublicDomain) : undefined,
+      passengerImage: shipRaw.passengerImage ? String(shipRaw.passengerImage) : undefined,
     },
     routes,
     crewHome,

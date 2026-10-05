@@ -6,8 +6,12 @@
 # serves is bind-mounted read-only under /workspace at `docker run` time;
 # nothing inside the image itself is per-workspace.
 #
-# Build from the crew repo root:
-#   docker build -f Dockerfile.passenger-mcp -t crew-passenger-mcp:latest .
+# Published builds: `.github/workflows/docker.yml` pushes
+# tablation/crew-passenger-mcp:<version> for every v* tag, and a ship pulls the
+# tag matching its own crew version (CREW-1369). To develop the image locally,
+# build from the crew repo root and point the ship at the local tag with
+# `ship.passengerImage` (or CREW_PASSENGER_IMAGE):
+#   docker build -f Dockerfile.passenger-mcp -t crew-passenger-mcp:dev .
 #
 # Run (repeated -v per repo this workspace's connections cover):
 #   docker run -d \
