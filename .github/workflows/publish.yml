@@ -1,5 +1,7 @@
-# Publishes @tablation/crew to npm when a v* tag is pushed (which is what
-# crew's own release phase does after a release).
+# Publishes @tablation/crew to npm when a v* tag is pushed. The tag push comes
+# from crew's own release phase (`release.mode: ci_auto` in .crew.yaml), which
+# bumps package.json and CHANGELOG.md, commits `Release vX.Y.Z` and pushes
+# main and the annotated tag; nobody runs `npm version` or `git tag` by hand.
 #
 # Auth is npm Trusted Publishing (OIDC): no NPM_TOKEN secret anywhere. The
 # package's npmjs.com Settings page must list this repo + this workflow

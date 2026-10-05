@@ -11,8 +11,6 @@ worktrees:
   copy: []
 
 hooks:
-  # `link:` to the sibling client, so a fresh worktree needs the install to
-  # resolve it — there is no published package to fall back on.
   setup: pnpm install
 
   # Runs directly, not through `pnpm test`: type stripping means there is no
@@ -28,11 +26,22 @@ hooks:
 
   version: node -p "require('./package.json').version"
 
+  # What npm reports as live: matched against the version just released, so
+  # the batch's tickets are stamped closed_deployed once publish.yml is done.
+  released: npm view @tablation/crew version
+
 release:
-  # There is no target to deploy TO. Merging to the base branch IS the
-  # release, and an operator upgrades by pulling — which is exactly what
-  # `integrate` means (ISSUE-345). It merges, versions and tags; it runs no
-  # deploy hook, and declaring one here is an error rather than a no-op.
-  mode: integrate
-  versioning: none
+  # The release phase bumps package.json, writes CHANGELOG.md, commits
+  # `Release vX.Y.Z`, and pushes main plus the annotated tag. The tag push
+  # triggers .github/workflows/publish.yml (OIDC Trusted Publishing), which
+  # is what actually publishes to npm — crew itself runs no deploy hook.
+  mode: ci_auto
+  ci: { provider: github }
+  versioning: auto
+  versionFiles: [package.json]
   changelog: CHANGELOG.md
+  verify:
+    match: version
+    # publish.yml runs install + typecheck + test + build before publish.
+    timeoutSeconds: 900
+    intervalSeconds: 20

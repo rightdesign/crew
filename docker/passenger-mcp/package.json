@@ -2,7 +2,7 @@
   "name": "crew-passenger-mcp",
   "private": true,
   "type": "module",
-  "description": "Standalone dependency set for the Host Passengers container image (see ../../Dockerfile.passenger-mcp). Deliberately NOT the crew repo's own package.json: that one carries @tablation/client as a link: dependency into a sibling checkout (../tablation-js) that doesn't exist inside the Docker build context, and passenger-mcp.ts/git.ts need none of what it provides anyway.",
+  "description": "Standalone dependency set for the Host Passengers container image (see ../../Dockerfile.passenger-mcp). Deliberately NOT the crew repo's own package.json: that one carries @tablation/client and the rest of the CLI's dependencies, and passenger-mcp.ts/git.ts need none of what they provide anyway.",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server-filesystem": "^2026.8.31",

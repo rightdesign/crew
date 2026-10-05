@@ -278,6 +278,38 @@ running or failed build simply answers with nothing rather than needing
 script-side state logic — the same "print nothing until you actually know"
 contract every other `hooks.released` script follows.
 
+### Recipe: an npm package repo (`ci_auto`)
+
+For a package published to npm from a tag-triggered workflow (OIDC Trusted
+Publishing, a guard that `package.json` equals the tag). The release phase
+bumps the version, writes the changelog, commits `Release vX.Y.Z` and pushes
+`main` and the annotated tag; the workflow does the publish. This repo's own
+`.crew.yaml` is the example.
+
+```yaml
+release:
+  mode: ci_auto
+  ci: { provider: github }
+  versioning: auto
+  versionFiles: [package.json]
+  changelog: CHANGELOG.md
+  verify:
+    match: version
+    timeoutSeconds: 900     # size to the workflow's install + test + build + publish
+    intervalSeconds: 20
+hooks:
+  released: npm view <package> version
+```
+
+Seed `CHANGELOG.md` with a short header explaining the `Bump:` / `Changelog:`
+commit trailers; the first release inserts its section under it. The last
+release tag is found with `git describe --tags --match 'v*'`, so an existing
+`v*` tag on `main` makes the first run start from an up-to-date baseline.
+
+`releases_after` is still prose-only: the release phase does not act on it. A
+dependency such as `@tablation/client` is bumped by an ordinary ticket branch
+after that package's release, not by this one.
+
 ### Why `isolate` and `handoff` are hooks
 
 Both express a principle that is general and an implementation that is not.
