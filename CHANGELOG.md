@@ -17,6 +17,13 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.7.0] — 2026-10-05
+
+- CREW-1371 — tickets and comments record the seat and ship that wrote them, and the queue digest names who filed each ticket, once the workspace's Issues and Comments templates have the new columns
+- Queue digest shows who filed each ticket (CREW-1371)
+- CREW-1371 — release alerts and failure tickets are credited to a per-ship "Release agent" Crew row instead of the Developer agent, and agents record the seat and ship that filed a ticket when the workspace has those columns
+- CREW-1371 — tickets and comments record the seat and ship that wrote them, once the workspace's Issues template has the new columns
+
 ## [0.6.1] — 2026-10-05
 
 - `crew pause` now stops the release timer and `crew daemon` too; `crew pause release` pauses only shipping (CREW-1372)
