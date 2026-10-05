@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.8.0] — 2026-10-05
+
+- `crew connect` registers the Tablation MCP server with Claude Code when it is missing, using the key it just resolved; `crew doctor` reports it, `--no-mcp` opts out (CREW-1378)
+
 ## [0.7.1] — 2026-10-05
 
 - Host Passengers reports a `docker` missing from the scheduler PATH with the directory to add to `ship.extraPath`, in `crew doctor`, `crew install` and the passengers timer (CREW-1375)
