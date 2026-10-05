@@ -2305,7 +2305,9 @@ switch (command) {
       // uses — rather than crew's own now-deleted copy of it.
       let result;
       try {
-        result = await loginWithDeviceCode(baseUrl, {
+        // `@tablation/client` takes the `.../api` base and appends
+        // `/auth/device/authorize` itself; the bare route URL hits the SPA (405 HTML).
+        result = await loginWithDeviceCode(`${baseUrl}/api`, {
           deviceName: `crew on ${hostname()}`,
           onCode: (info) => {
             process.stderr.write(
