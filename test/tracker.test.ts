@@ -260,3 +260,36 @@ test('projectRow() returns the row, issue_prefix included', async (t) => {
   const tracker = new Tracker(makeRoute({ areaModelId: 'projects-model-id' }), { userAgent: 'crew-test' });
   assert.deepEqual(await tracker.projectRow('proj-1'), { id: 'proj-1', issue_prefix: 'CREW' });
 });
+
+test('beatShip() carries the open attention items when the Ships table has the column, omits them when it does not (CREW-1373)', async (t) => {
+  const { mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { State } = await import('../src/state.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'crew-trk-att-'));
+  new State(dir).shipAttention().persist([
+    { kind: 'role_parked', key: 'role_parked:qa', message: 'qa parked', since: '2026-10-05T00:00:00.000Z' },
+  ]);
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const run = async (row: Record<string, unknown>) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (init?.body) bodies.push(JSON.parse(init.body as string));
+      if (url.includes('/records/ship-1')) return new Response(JSON.stringify({ id: 'ship-1' }), { status: 200 });
+      return new Response(JSON.stringify([{ id: 'ship-1', name: "Brad's Mac", ...row }]), { status: 200 });
+    }) as typeof fetch;
+    const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', stateDir: dir });
+    await tracker.beatShip("Brad's Mac");
+    return bodies;
+  };
+
+  const withColumn = await run({ attention: null });
+  assert.equal(withColumn.length, 1);
+  assert.deepEqual((withColumn[0]!.attention as Array<{ key: string }>).map((i) => i.key), ['role_parked:qa']);
+
+  const withoutColumn = await run({});
+  assert.equal('attention' in withoutColumn[0]!, false, 'an install without the column must not be sent it');
+});

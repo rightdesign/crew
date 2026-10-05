@@ -9,6 +9,7 @@
  * Single-repo. The multi-repo DAG (ISSUE-331) is a follow-up.
  */
 
+import type { ShipAttentionItem } from './ship-attention.ts';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -50,6 +51,16 @@ export interface ReleaseRunOptions {
     clearTestGateFailed?(): void;
     testGateReported?(sha: string): boolean;
     noteTestGateReported?(sha: string): void;
+  };
+  /**
+   * Ship-level attention (CREW-1373): a hook that exits 127 had a command
+   * missing from the scheduler PATH, which is the operator's to fix and
+   * otherwise visible only in a scheduler log; a later clean run closes it.
+   * Optional so a caller with no ship state (most of this file's tests) skips it.
+   */
+  attention?: {
+    raise(item: ShipAttentionItem): Promise<unknown> | void;
+    clear(key: string): void;
   };
   cwd: string;
   repo: EffectiveRepoConfig;
@@ -333,12 +344,27 @@ const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'de
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
   if (!script) return null;
-  return runScript(script, {
+  const result = await runScript(script, {
     cwd: o.cwd,
     env,
     shell: resolveShell(o.repo.shell ?? o.shell),
     onLine: (l) => { if (l.trim()) o.emit.emit(l.trim(), { data: { hook: name } }); },
   });
+  if (o.attention && !o.dryRun) {
+    const key = `hook_missing:${o.scope ?? 'release'}/${name}`;
+    if (result.code === 127) {
+      await o.attention.raise({
+        kind: 'hook_missing',
+        key,
+        message: `${o.scope ?? 'release'}: the ${name} hook exited 127 — a command it runs is not on the scheduler PATH ` +
+          `(${lastLines(result.output, 1).trim() || 'command not found'}); add its directory to ship.extraPath in crew.yaml`,
+        since: new Date().toISOString(),
+      });
+    } else if (result.code === 0) {
+      o.attention.clear(key);
+    }
+  }
+  return result;
 };
 
 /**

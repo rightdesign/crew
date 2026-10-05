@@ -7,9 +7,10 @@
  * node:path throughout — a state dir on Windows is as valid as one on POSIX.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName } from './config.ts';
+import type { ShipAttentionItem } from './ship-attention.ts';
 
 /** Before the first poll, everything is new. */
 export const EPOCH = '1970-01-01T00:00:00.000Z';
@@ -307,6 +308,43 @@ export class State {
       },
       persist: (next: Record<string, string[]>): void => {
         writeFileSync(this.path(file), JSON.stringify(next));
+      },
+    };
+  }
+
+  /**
+   * Open ship-level attention items (CREW-1373), ship-wide rather than
+   * per-route: a parked role or a missing hook command is about this
+   * machine. A corrupt or missing file reads as empty.
+   */
+  shipAttention() {
+    const file = '.ship-attention.json';
+    return {
+      previous: (): ShipAttentionItem[] => {
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(this.path(file), 'utf8'));
+          return Array.isArray(parsed) ? (parsed as ShipAttentionItem[]) : [];
+        } catch {
+          return [];
+        }
+      },
+      persist: (next: ShipAttentionItem[]): void => {
+        writeFileSync(this.path(file), JSON.stringify(next));
+      },
+    };
+  }
+
+  /**
+   * When the release phase last ran a cycle (CREW-1373), as the mtime of a
+   * marker file. `touch()` is called at the start and the end of every cycle
+   * so a long deploy does not read as a stopped timer.
+   */
+  releaseHeartbeat() {
+    const file = '.release-last-run';
+    return {
+      touch: (): void => { writeFileSync(this.path(file), new Date().toISOString()); },
+      at: (): number | null => {
+        try { return statSync(this.path(file)).mtimeMs; } catch { return null; }
       },
     };
   }

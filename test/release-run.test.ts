@@ -1341,3 +1341,25 @@ test('emitReleaseSummary: a single-repo release prints no roll-up', () => {
   emitReleaseSummary(e, [{ ...summarizeOutcome(outcome({ deployed: true, version: '1.0.0' }), 'r/x', true), route: 'r' }]);
   assert.deepEqual(lines, []);
 });
+
+test('a hook exiting 127 raises hook_missing for that scope/hook, and a later clean run clears it (CREW-1373)', async () => {
+  const raised: string[] = [];
+  const cleared: string[] = [];
+  const attention = {
+    raise: (i: { key: string }) => { raised.push(i.key); },
+    clear: (k: string) => { cleared.push(k); },
+  };
+  const bad = project(LOCAL.replace('hooks:\n', 'hooks:\n  setup: exit 127\n'));
+  await runRelease({
+    cwd: bad.dir, repo: bad.repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false, scope: 'issues/crew', attention,
+  });
+  assert.deepEqual(raised, ['hook_missing:issues/crew/setup']);
+
+  const ok = project(LOCAL.replace('hooks:\n', 'hooks:\n  setup: exit 0\n'));
+  await runRelease({
+    cwd: ok.dir, repo: ok.repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false, scope: 'issues/crew', attention,
+  });
+  assert.ok(cleared.includes('hook_missing:issues/crew/setup'));
+});

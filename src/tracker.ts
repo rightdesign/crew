@@ -14,6 +14,8 @@ import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
 import { DEFAULT_CONTRACT, closedStatuses, resolveContract, type Contract } from './contract.ts';
 import type { EpicRow } from './epics.ts';
+import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
+import { State } from './state.ts';
 import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './board-lock.ts';
 
 export interface Ticket {
@@ -164,6 +166,12 @@ export interface ShipRow {
   host_passengers?: boolean | null;
   ssh_public_key?: string | null;
   tunnel_status?: string | null;
+  /**
+   * This ship's open attention items (CREW-1373). The column is optional on
+   * the board: a workspace that has not taken the template update returns
+   * rows with no `attention` key at all, and that absence is the probe.
+   */
+  attention?: ShipAttentionItem[] | null;
 }
 
 /**
@@ -193,8 +201,9 @@ export class Tracker {
   private readonly client: TablationClient;
   private readonly models: { issues: string; comments: string; crew: string };
   private readonly userAgent: string;
+  private readonly stateDir: string | undefined;
 
-  constructor(route: Route, ship: Pick<Ship, 'userAgent'>) {
+  constructor(route: Route, ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'stateDir'>>) {
     this.route = route;
     if (!route.resolved) {
       throw new ConfigError(
@@ -204,6 +213,7 @@ export class Tracker {
     this.models = route.resolved.models;
     this.contract = resolveContract(route.contract);
     this.userAgent = ship.userAgent;
+    this.stateDir = ship.stateDir;
     this.client = new TablationClient({
       baseUrl: `${route.baseUrl}/api`,
       apiKey: resolveApiKey(route),
@@ -366,6 +376,35 @@ export class Tracker {
   }
 
   /**
+   * The `attention` field of a Ships-row patch (CREW-1373): this ship's open
+   * items, so every heartbeat carries the current set and a cleared item
+   * disappears from the board on the next one. Empty when there is nothing
+   * to write: no state directory to read, or a Ships table without the
+   * column (probed by the key's absence from the row, the way `owner_id` is
+   * skipped on an install that has not taken the template update).
+   */
+  private attentionPatch(row: ShipRow): { attention: ShipAttentionItem[] | null } | Record<string, never> {
+    if (!this.stateDir || !('attention' in row)) return {};
+    const items = openShipAttention(new State(this.stateDir));
+    return { attention: items.length ? items : null };
+  }
+
+  /**
+   * Writes this ship's attention items on their own, without touching
+   * `last_seen` — for the daemon, which raises one between heartbeats and
+   * should not wait for the next engaged/idle beat to show it. Skips the
+   * write when the row already holds the same set.
+   */
+  async publishShipAttention(shipName: string): Promise<void> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return;
+    const patch = this.attentionPatch(row);
+    if (!('attention' in patch)) return;
+    if (JSON.stringify(patch.attention) === JSON.stringify(row.attention ?? null)) return;
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, patch);
+  }
+
+  /**
    * Ship-level heartbeat (ISSUE-380): "is this ship online" — independent
    * of any one seat's Working/Idle status (`setCrewStatus`), which only
    * exists for the duration of an actual agent run. This one fires once
@@ -390,6 +429,7 @@ export class Tracker {
       last_seen: new Date().toISOString(),
       host: hostname(),
       pid: process.pid,
+      ...this.attentionPatch(row),
     });
   }
 
@@ -411,6 +451,7 @@ export class Tracker {
       engaged_since: new Date().toISOString(),
       engaged_connection: connectionName,
       engaged_ticket_id: ticketRecordId,
+      ...this.attentionPatch(row),
     });
   }
 
@@ -443,6 +484,7 @@ export class Tracker {
       engaged_since: null,
       engaged_connection: null,
       engaged_ticket_id: null,
+      ...this.attentionPatch(row),
     });
   }
 

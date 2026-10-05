@@ -126,6 +126,13 @@ connect), it prints the block instead of writing a file with no key in it.
 Ships table, when that table has an `owner_id` column (a workspace that has not
 taken the latest Issues template update just skips it and says so).
 
+If the Ships table also has an `attention` column (JSON), the ship writes its
+open ship-level problems there on every heartbeat — a role parked after repeated
+failed starts, a repo hook whose command is not on the scheduler PATH, a release
+timer that has stopped firing — so they are visible from the workspace and from
+`crew status` on any other ship, whether or not that ship runs a menu-bar client.
+A workspace without the column just skips it.
+
 Either way, it looks up the workspace (and project) by slug, resolves their
 internal ids (and the Issues/Comments/Crew/Ships table ids inside them), and
 writes the result to a local state file — nothing here starts polling or

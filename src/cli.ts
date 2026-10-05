@@ -84,6 +84,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
+import { openShipAttention, raiseShipAttention, clearShipAttention, hookCommand } from './ship-attention.ts';
 import { runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker } from './daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
@@ -698,6 +699,9 @@ async function releaseFleet(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
   const summaries: RoutedReleaseSummary[] = [];
+  // Touched at both ends so a long deploy does not read as a stopped timer
+  // (`release_stale`, CREW-1373).
+  if (!dryRun) state.releaseHeartbeat().touch();
   for (const c of cfg.routes) {
     if (!dryRun && !c.enabled) continue;
     // No route-wide platform gate: releasePhase checks each repo's own
@@ -705,6 +709,7 @@ async function releaseFleet(
     for (const r of reposOf(c)) summaries.push({ ...(await releasePhase(c, r, opts)), route: c.route });
   }
   emitReleaseSummary(emit, summaries);
+  if (!dryRun) state.releaseHeartbeat().touch();
 }
 
 /**
@@ -728,8 +733,10 @@ async function releaseTargets(
     process.exit(2);
   }
   const summaries: RoutedReleaseSummary[] = [];
+  if (!dryRun) state.releaseHeartbeat().touch();
   for (const t of chosen) summaries.push({ ...(await releasePhase(route, t, opts)), route: route.route });
   emitReleaseSummary(emit, summaries);
+  if (!dryRun) state.releaseHeartbeat().touch();
 
   // Ship-wide, not per-repo — one sweep per release cycle, alongside the
   // worktree sweep each repo just ran above (ISSUE-401).
@@ -1114,6 +1121,10 @@ async function releasePhase(
       // genuinely unreleased.
       force: command === 'deploy' || flag('force'),
       isDeployCommand: opts.isDeployCommand,
+      attention: {
+        raise: (item) => raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, item),
+        clear: (key) => clearShipAttention(state, key),
+      },
     });
     const summary = summarizeOutcome(outcome, scope, !!repo.hooks.test && !flag('skip-tests'));
 
@@ -3220,6 +3231,9 @@ switch (command) {
           stateDir: cfg.ship.stateDir,
           logFile: cfg.ship.logFile,
           eventFile: eventFileFor(cfg.ship.stateDir),
+          // Additive (CREW-1373): open ship-level items, including the
+          // derived `release_stale`. `version` stays 1.
+          attention: openShipAttention(state),
         },
         crew: {
           paused: state.isPaused(),
@@ -3257,6 +3271,7 @@ switch (command) {
           engagedSince: s.engaged_since ?? null,
           engagedRoute: s.engaged_connection ?? null,
           engagedTicket: s.engaged_ticket_id ? issueLabelById.get(s.engaged_ticket_id) ?? null : null,
+          attention: s.attention ?? [],
         })),
       }, null, 2)}\n`);
       break;
@@ -3272,6 +3287,9 @@ switch (command) {
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
       if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);
     }
+    for (const i of openShipAttention(state)) {
+      process.stdout.write(`attention:  ${i.kind} — ${i.message}\n`);
+    }
     if (waiting) {
       process.stdout.write(
         `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +
@@ -3286,6 +3304,10 @@ switch (command) {
       process.stdout.write('ships:\n');
       for (const s of shipRows) {
         process.stdout.write(`  ${renderShipLine(s, issueLabelById)}\n`);
+        // Other ships' items come from their own Ships rows; this ship's were printed above.
+        if (s.name !== cfg.ship.name) {
+          for (const i of s.attention ?? []) process.stdout.write(`    attention: ${i.kind} — ${i.message}\n`);
+        }
       }
     }
     break;
@@ -3385,6 +3407,34 @@ switch (command) {
         `                   scheduler PATH is ${schedulerPath} — ` +
           'add the directory holding the missing binary to ship.extraPath in crew.yaml, then re-run `crew doctor`.\n',
       );
+    }
+
+    // Repo hook commands against the same scheduler PATH (CREW-1373): a hook
+    // whose command is missing exits 127 under the scheduler and, until now,
+    // was visible only because the failed release filed a ticket. Raised here
+    // as `hook_missing` so it shows on the board and in `crew status`; the
+    // release phase raises the same key when it actually sees the exit.
+    for (const c of cfg.routes.filter((r) => r.enabled)) {
+      let repos: Awaited<ReturnType<typeof resolvedRepos>>;
+      try { repos = await resolvedRepos(c); } catch { continue; }
+      for (const r of repos) {
+        for (const name of ['setup', 'test', 'build', 'deploy'] as const) {
+          const script = r.config.hooks[name];
+          const cmd = script ? hookCommand(script) : null;
+          if (!cmd) continue;
+          const key = `hook_missing:${c.route}/${r.name}/${name}`;
+          if (findOnPath(cmd, schedulerPath)) { clearShipAttention(state, key); continue; }
+          process.stdout.write(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND on the scheduler PATH\n`);
+          await raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, {
+            kind: 'hook_missing', key,
+            message: `${c.route}/${r.name}: the ${name} hook runs \`${cmd}\`, which is not on the scheduler PATH — add its directory to ship.extraPath in crew.yaml`,
+            since: new Date().toISOString(),
+          });
+        }
+      }
+    }
+    for (const i of openShipAttention(state)) {
+      process.stdout.write(`attention:         ${i.kind} — ${i.message} (since ${i.since})\n`);
     }
 
     // Host Passengers preflight (ISSUE-553): a route can declare

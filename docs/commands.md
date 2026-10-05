@@ -13,7 +13,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | `crew repos list ROUTE` | The checkouts a route has, with the Repos row each matches. |
 | `crew doctor [route] [--fix]` | Read-only preflight; `--fix` enables clean routes and offers `crew install`. |
 | `crew install` / `crew uninstall` | Write and load, or unload and remove, this platform's scheduler unit. |
-| `crew status [route] [--json]` | Paused/running state; `--json` for a machine reader. |
+| `crew status [route] [--json]` | Paused/running state, plus any open ship-level attention items (a parked role, a hook command missing from the scheduler PATH, a stalled release timer) for this ship and, from the Ships table, for others; `--json` for a machine reader (`ship.attention`). |
 | `crew pause\|resume [route] [ROLE]` | Pause or resume everything, or one role. |
 | `crew inbox [--member NAME] [--by-route] [--all]` | Your tickets across every workspace, or a colleague's. |
 

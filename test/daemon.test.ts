@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Emitter, eventFileFor } from '../src/events.ts';
@@ -580,4 +580,35 @@ test('runOnePass: a spawn failure that is not a failed start (plain Error) does 
     assert.deepEqual(result.started, ['dev'], `pass ${i + 1} must still start the role`);
     await new Promise((r) => setTimeout(r, 0));
   }
+});
+
+test('runOnePass: a park raises role_parked once with one sweep event; a later successful spawn clears it silently (CREW-1373)', async () => {
+  const { opts, state } = rig();
+  const decision = fakeDecision(['dev']);
+  let t = 0;
+  const breaker = new SpawnBreaker({ now: () => t, floorMs: 1000, ceilingMs: 8000 });
+  let fail = true;
+  const pass = () => runOnePass({
+    ...opts,
+    spawnBreaker: breaker,
+    decide: async () => decision,
+    spawnRoleAgent: async () => { if (fail) throw new AgentSpawnError('cannot run claude: spawn ENOENT'); },
+  });
+  const settle = () => new Promise((r) => setTimeout(r, 5));
+  const sweepEvents = () => readFileSync(eventFileFor(state.dir), 'utf8').trim().split('\n')
+    .map((l) => JSON.parse(l)).filter((e) => e.step === 'sweep' && e.data?.attention);
+
+  for (const at of [0, 1000, 3000]) { t = at; await pass(); await settle(); }
+  assert.deepEqual(state.shipAttention().previous().map((i) => i.key), ['role_parked:dev']);
+  assert.equal(sweepEvents().length, 1);
+  assert.deepEqual(sweepEvents()[0].data.attention, ['ship:role_parked']);
+
+  // A second park at the ceiling re-raises the same key: no second event.
+  t = 11000; await pass(); await settle();
+  assert.equal(sweepEvents().length, 1);
+
+  fail = false;
+  t = 30000; await pass(); await settle();
+  assert.deepEqual(state.shipAttention().previous(), []);
+  assert.equal(sweepEvents().length, 1, 'clearing announces nothing');
 });

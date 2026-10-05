@@ -86,6 +86,7 @@ import { DEFAULT_CONTRACT } from './contract.ts';
 import { Tracker } from './tracker.ts';
 import { ensureRepoCheckout, type GitError } from './git.ts';
 import { fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId } from './agents.ts';
+import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 
 /** The idle backoff floor: short, so a just-missed cycle doesn't wait long. */
@@ -446,8 +447,11 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
     }
     started.push(role);
     const run = spawn(role, decision, ctx)
-      .then(() => { breaker.recordSuccess(role); })
-      .catch((e) => {
+      .then(() => {
+        breaker.recordSuccess(role);
+        clearShipAttention(o.state, `role_parked:${role}`);
+      })
+      .catch(async (e) => {
         const message = (e as Error).message;
         if (!(e instanceof AgentSpawnError)) {
           emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
@@ -464,6 +468,13 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
             `${role} parked for ${Math.round(report.retryInMs / 1000)}s after ${report.failures} ` +
               'consecutive failed starts — check that ship.agent.bin is installed and on PATH',
           );
+          // CREW-1373: visible from the board and `crew status`, not only this ship's log.
+          await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, {
+            kind: 'role_parked',
+            key: `role_parked:${role}`,
+            message: `${role} agent is parked after ${report.failures} failed starts: ${message}`,
+            since: new Date().toISOString(),
+          });
         }
       })
       .finally(() => lock.release());
@@ -474,7 +485,23 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
     }
   }
 
+  // Show a change to the open ship-attention set on the board without
+  // waiting for the next engaged/idle beat (CREW-1373). Best effort, and only
+  // when the set differs from what this process last published.
+  await publishShipAttention(o);
+
   return { pending: decision.selection.pending, started, skipped };
+}
+
+let lastPublishedAttention: string | undefined;
+
+async function publishShipAttention(o: RunOnePassOptions): Promise<void> {
+  const key = JSON.stringify(openShipAttention(o.state).map((i) => i.key));
+  if (key === lastPublishedAttention) return;
+  try {
+    await new Tracker(o.route, o.ship).publishShipAttention(o.ship.name);
+    lastPublishedAttention = key;
+  } catch { /* the board being unreachable must not fail a pass; the next change retries */ }
 }
 
 // ---------------------------------------------------------------------------
