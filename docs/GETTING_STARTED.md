@@ -170,39 +170,39 @@ The polled seats (dev/design/QA/triage) talk to the tracker entirely
 through crew's own REST calls — this step is for anyone driving a live,
 interactive Claude Code session against the tracker: the **Pair** persona,
 or a session invoked via an Epic's `grill_link` to run the `Grill-Me`
-skill (§2.5). Neither works well without the `mcp__tablation__*` tools —
-Pair's own brief and the `Grill-Me` skill both assume they're available,
-and fall back to slower, error-prone raw `curl` calls without them.
+skill (§2.5). Neither works well without the `mcp__tablation__*` tools.
 
-Tablation exposes an MCP server at `/api/mcp` on the same backend as the
-REST API, using the Streamable HTTP transport, authenticated the same way
-as everything else — a workspace `sk_...` API key, presented as a Bearer
-token when the MCP session starts:
+**`crew connect` does this for you.** After it resolves a route, it checks
+whether Claude Code already has a server named `tablation` and, if not,
+registers one at user scope (`~/.claude.json`) using the key it just
+resolved, so the tools are available from any directory. Re-running it makes
+no second entry. A `tablation` server that points elsewhere (a dev instance)
+or carries another key is reported and left alone; `crew connect --mcp
+replace` overwrites it, and `crew connect --no-mcp` skips the step if you
+manage `~/.claude.json` another way. With no `claude` on the PATH it prints
+the manual command instead. `crew doctor` reports whether the server is
+registered for the route.
+
+The manual form, for project scope or a different key:
 
 ```sh
 claude mcp add --transport http tablation https://app.tablation.com/api/mcp \
   --header "Authorization: Bearer sk_..." \
-  --scope local
+  --scope user
 ```
 
 Notes:
 
 - **Hostname**: Modify `app.tablation.com` to match the hostname for any dev
   instance you're using.
-- **The key**: MCP needs a workspace `sk_...` API key. `crew connect` keeps its
-  own credential in the keychain rather than showing you one, so mint a key
-  for this from **Settings → API Keys** (workspace admins). There is no
-  scope-narrowing mechanism today, so the key can reach everything its holder
-  can reach over the REST API.
-- **`--scope local`** stores this in your own `~/.claude.json`, not shared
-  with anyone else or checked into a repo — right for a key. `--scope
-  project` writes a shared `.mcp.json`, which is fine for the *server URL*
-  but never commit a raw key in it; use that scope only with env-var
+- **The key**: the key in `~/.claude.json` is stored in plaintext. There is no
+  scope-narrowing mechanism today, so it can reach everything its holder can
+  reach over the REST API.
+- **Scopes**: `--scope local` is keyed to the directory you ran the command in.
+  `--scope project` writes a shared `.mcp.json`, which is fine for the *server
+  URL* but never commit a raw key in it; use that scope only with env-var
   expansion (`"Authorization": "Bearer ${TABLATION_API_KEY}"`) and an
   `export` in your own shell profile.
-- This has to be run once per machine (or per project, at `project` scope)
-  — there's no `crew connect`-driven auto-registration for it today (a
-  filed idea, not built).
 - The server is plain HTTP, not HTTPS, when the backend is running on
   `localhost` — swap in whatever host you're actually pointed at.
 

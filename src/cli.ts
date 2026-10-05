@@ -62,6 +62,7 @@ import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, f
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { ensureClaudeMcp, inspectClaudeMcp, mcpUrlFor } from './claude-mcp.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -277,7 +278,7 @@ function usage(): never {
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
-  crew connect                  resolve a workspace's ids into a crew.yaml block
+  crew connect                  resolve a workspace's ids into a crew.yaml block (--no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
   crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
@@ -2708,6 +2709,11 @@ switch (command) {
         if (!wroteConfig) process.stderr.write(`(${wizard.configPath} appeared while connecting — leaving it alone)\n`);
       }
       if (!wroteConfig) process.stdout.write(routeBlock);
+      // CREW-1378: give interactive Claude Code sessions the tablation MCP tools.
+      if (!flag('no-mcp') && apiKey) {
+        const replace = value('mcp') === 'replace';
+        process.stderr.write(`${ensureClaudeMcp({ bin: cfg.ship.agent.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun })}\n`);
+      }
       if (found.provisioning.length) {
         process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);
         for (const p of found.provisioning) process.stderr.write(`    - ${p}\n`);
@@ -3486,6 +3492,18 @@ switch (command) {
       process.stdout.write(
         `                   scheduler PATH is ${schedulerPath} — ` +
           'add the directory holding the missing binary to ship.extraPath in crew.yaml, then re-run `crew doctor`.\n',
+      );
+    }
+
+    // CREW-1378: is the Tablation MCP server registered with Claude Code for this route?
+    if (route.apiKey) {
+      const mcpUrl = mcpUrlFor(route.baseUrl);
+      const m = inspectClaudeMcp({ bin: cfg.ship.agent.bin, url: mcpUrl, key: route.apiKey });
+      process.stdout.write(
+        m.state === 'registered' ? `mcp:               tablation registered (user scope) → ${m.url}\n`
+          : m.state === 'no-claude' ? `mcp:               claude not found — Claude Code was not checked\n`
+          : m.state === 'different' ? `mcp:               tablation registered but not for this route — ${m.detail}\n`
+          : `mcp:               not registered — run crew connect\n`,
       );
     }
 
