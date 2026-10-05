@@ -34,7 +34,7 @@ import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
 } from './connect-wizard.ts';
-import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath } from './install.ts';
+import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
@@ -572,8 +572,11 @@ async function syncHostPassengers(): Promise<void> {
   const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
   if (passengerRoutes.length === 0) return;
   if (!dockerAvailable()) {
+    // Under the timer there is no interactive PATH, so look in Docker's usual
+    // directories to tell "docker is not on our PATH" from "the daemon is down".
+    const pathProblem = dockerPathProblem(cfg.ship, COMMON_DOCKER_DIRS);
     emit.warn(
-      'Host Passengers is on for at least one route but Docker is not available — skipping container sync this cycle',
+      `Host Passengers is on for at least one route but ${pathProblem ?? 'Docker is not available'} — skipping container sync this cycle`,
       { step: 'passengers' },
     );
     return;
@@ -840,7 +843,13 @@ async function installScheduler(): Promise<void> {
   // should show up in the install output. A failure is reported and sets a
   // non-zero exit, but the units still install so the ship is not left
   // half-configured.
-  if (!dryRun && cfg.routes.some((r) => r.enabled && r.hostPassengers) && dockerAvailable()) {
+  const installPathProblem = cfg.routes.some((r) => r.enabled && r.hostPassengers) ? dockerPathProblem(cfg.ship) : undefined;
+  if (installPathProblem) {
+    // The pull below would succeed in this shell and leave the passengers
+    // timer a silent no-op (CREW-1375), so fail the way the timer will.
+    process.stderr.write(`crew install: Host Passengers is on but ${installPathProblem}\n`);
+    process.exitCode = 1;
+  } else if (!dryRun && cfg.routes.some((r) => r.enabled && r.hostPassengers) && dockerAvailable()) {
     const image = passengerImageRef(cfg);
     if (imagePresent(image)) {
       process.stdout.write(`Host Passengers image ${image} is already present\n`);
@@ -3518,6 +3527,18 @@ switch (command) {
       process.stdout.write('host passengers:   off (no enabled route sets hostPassengers: true)\n');
     } else {
       const dockerOk = dockerAvailable();
+      const dockerPathIssue = dockerPathProblem(cfg.ship);
+      const dockerKey = 'docker_missing';
+      if (dockerPathIssue) {
+        process.stdout.write(`docker on scheduler PATH: NOT FOUND — ${dockerPathIssue}\n`);
+        await raiseShipAttention({ state, emit, route: passengerRoutes[0]!, ship: cfg.ship }, {
+          kind: 'docker_missing', key: dockerKey,
+          message: `Host Passengers is on but ${dockerPathIssue}`,
+          since: new Date().toISOString(),
+        });
+      } else {
+        clearShipAttention(state, dockerKey);
+      }
       const keygenOk = sshKeygenAvailable();
       const image = passengerImageRef(cfg);
       const imageOk = dockerOk && imagePresent(image);

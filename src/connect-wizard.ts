@@ -118,8 +118,7 @@ export async function runWizard(p: Prompter, env: WizardEnv): Promise<WizardAnsw
 
   const nodeDir = dirname(env.nodePath);
   const pnpmPath = findOnPath('pnpm', env.pathEnv, isExec);
-  const extraPath = deriveExtraPath([nodeDir, pnpmPath ? dirname(pnpmPath) : undefined]);
-  if (extraPath) p.say(`Hooks will get ${extraPath} on their PATH (where node and pnpm live).`);
+  const baseDirs = [nodeDir, pnpmPath ? dirname(pnpmPath) : undefined];
 
   p.say(
     '\nHost Passengers lets this machine run the agent sessions that other people\'s\n' +
@@ -128,6 +127,14 @@ export async function runWizard(p: Prompter, env: WizardEnv): Promise<WizardAnsw
   const hostPassengers = await p.confirm('Host Passengers on this machine?', false);
   if (hostPassengers && !env.dockerAvailable) {
     p.say('Docker is not available here, so nothing will be hosted until it is. Your answer is recorded anyway.');
+  }
+
+  // Docker's CLI is usually in /usr/local/bin, which a scheduler's PATH lacks
+  // (CREW-1375), so its directory goes in extraPath when Passengers is on.
+  const dockerPath = hostPassengers ? findOnPath('docker', env.pathEnv, isExec) : undefined;
+  const extraPath = deriveExtraPath([...baseDirs, dockerPath ? dirname(dockerPath) : undefined]);
+  if (extraPath) {
+    p.say(`Hooks will get ${extraPath} on their PATH (where node, pnpm${dockerPath ? ' and docker' : ''} live).`);
   }
 
   return { name, platform: env.platform, agentBin, extraPath, hostPassengers };

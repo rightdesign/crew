@@ -218,6 +218,28 @@ export function findOnPath(bin: string, searchPath: string): string | undefined 
   return undefined;
 }
 
+/**
+ * Why Host Passengers cannot see `docker` under the scheduler (CREW-1375), or
+ * undefined when it can. A Docker Desktop CLI in `/usr/local/bin` answers
+ * `docker info` in the operator's shell but is absent from `pathFor(ship)`,
+ * so the timer logs a bare "Docker is not available" while `crew install`'s
+ * pull (run in the shell) succeeds. When the shell does find it, the message
+ * names the directory `ship.extraPath` needs.
+ */
+/** Where Docker's CLI usually lives, for a unit that has no interactive PATH to consult. */
+export const COMMON_DOCKER_DIRS = ['/usr/local/bin', '/opt/homebrew/bin', join(homedir(), '.docker', 'bin')].join(':');
+
+export function dockerPathProblem(ship: Ship, shellPath: string = process.env.PATH ?? ''): string | undefined {
+  const schedulerPath = pathFor(ship);
+  if (findOnPath('docker', schedulerPath)) return undefined;
+  const inShell = findOnPath('docker', shellPath);
+  return inShell
+    ? `\`docker\` is not on the scheduler PATH (${schedulerPath}) but is at ${inShell} in your shell; ` +
+        `add ${dirname(inShell)} to ship.extraPath in crew.yaml and run \`crew install\``
+    : `\`docker\` is not on the scheduler PATH (${schedulerPath}) or your shell PATH; install Docker, ` +
+        'then add its directory to ship.extraPath in crew.yaml and run `crew install`';
+}
+
 function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

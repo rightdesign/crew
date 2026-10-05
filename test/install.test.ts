@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS, findOnPath } from '../src/install.ts';
+import { planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS, findOnPath, dockerPathProblem, pathFor } from '../src/install.ts';
 import type { Ship } from '../src/config.ts';
 
 const ship = (over: Partial<Ship> = {}): Ship => ({
@@ -320,4 +320,19 @@ test('findOnPath checks a slash-bearing name as a path, not against PATH', () =>
   chmodSync(bin, 0o755);
   assert.equal(findOnPath(bin, '/nonexistent'), bin);
   assert.equal(findOnPath(join(root, 'missing'), root), undefined);
+});
+
+test('dockerPathProblem names the shell directory ship.extraPath needs, and clears once it is added', (t) => {
+  if (findOnPath('docker', pathFor(ship()))) return t.skip('docker is on the scheduler base PATH here');
+  const root = mkdtempSync(join(tmpdir(), 'crew-docker-'));
+  writeFileSync(join(root, 'docker'), '#!/bin/sh\n');
+  chmodSync(join(root, 'docker'), 0o755);
+  const missing = dockerPathProblem(ship(), root);
+  assert.match(missing!, new RegExp(`add ${root} to ship\\.extraPath`));
+  assert.equal(dockerPathProblem(ship({ extraPath: root }), root), undefined);
+});
+
+test('dockerPathProblem with docker nowhere says so rather than naming a directory', (t) => {
+  if (findOnPath('docker', pathFor(ship()))) return t.skip('docker is on the scheduler base PATH here');
+  assert.match(dockerPathProblem(ship(), '/nonexistent')!, /or your shell PATH; install Docker/);
 });

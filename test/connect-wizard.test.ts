@@ -126,3 +126,12 @@ test('nextSteps: repos hint only when needed, says nothing runs yet, flags Windo
   assert.doesNotMatch(nextSteps({ route: 'a/b', configPath: '/c', platform: 'linux', needsRepos: false }), /repos add/);
   assert.match(nextSteps({ route: 'a/b', configPath: '/c', platform: 'windows', needsRepos: false }), /Windows has no scheduler/);
 });
+
+test('wizard: Host Passengers yes puts the directory docker lives in on extraPath', async () => {
+  const { p } = script(['', true, true]);
+  const a = await runWizard(p, env({
+    pathEnv: '/opt/bin:/usr/local/bin:/usr/bin',
+    isExecutable: (x) => ['/opt/bin/claude', '/opt/bin/pnpm', '/usr/local/bin/docker'].includes(x),
+  }));
+  assert.equal(a.extraPath, '/opt/node/bin:/opt/bin:/usr/local/bin');
+});

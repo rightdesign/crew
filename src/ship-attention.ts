@@ -21,7 +21,7 @@ import { notify } from './notify.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import type { State } from './state.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
