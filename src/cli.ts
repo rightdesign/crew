@@ -2309,6 +2309,9 @@ switch (command) {
         // `/auth/device/authorize` itself; the bare route URL hits the SPA (405 HTML).
         result = await loginWithDeviceCode(`${baseUrl}/api`, {
           deviceName: `crew on ${hostname()}`,
+          // Lets the approval page preselect the workspace this connect is for.
+          // A bare `crew connect` has none and passes nothing.
+          ...(workspace ? { workspaceSlug: workspace } : {}),
           onCode: (info) => {
             process.stderr.write(
               'No API key given — approve this device from a browser you\'re already signed into Tablation with:\n\n' +
