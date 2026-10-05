@@ -1,4 +1,4 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@tablation/client@0.1.0'
+  - '@tablation/client@0.1.0 || 0.1.1'
