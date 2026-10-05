@@ -10,7 +10,9 @@
  * person (ISSUE-977). Both now come through here so they cannot disagree
  * about where a ticket's work is again.
  */
-import { branchForIssue } from './git.ts';
+import {
+  branchForIssue, remoteBranchForIssue, remoteConfigured, fetchRemote, materializeRemoteBranch,
+} from './git.ts';
 import {
   effectiveBranchTemplate, effectiveWorktreeDirName, renderBranchName, type EffectiveRepoConfig,
 } from './repo-config.ts';
@@ -40,11 +42,64 @@ export function worktreeForTicket(dir: string, cfg: EffectiveRepoConfig, t: Bran
   return effectiveWorktreeDirName(cfg, dir, branchName, number);
 }
 
-export function existingBranchForTicket(
-  dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
-): string | null {
+function branchTemplates(cfg: EffectiveRepoConfig, t: BranchLookupTicket) {
   const { prefix } = ticketBranchContext(t as Ticket);
   const name = effectiveBranchTemplate(cfg, prefix);
   const push = cfg.provenance['branch.push'] === 'default' ? name : cfg.branch.push;
-  return branchForIssue(dir, t.issue_id, { name, push }, branchRenderer(t, role));
+  return { name, push };
+}
+
+/** The ticket's branch on THIS ship only. What a lane resuming its own worktree wants. */
+export function existingBranchForTicket(
+  dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
+): string | null {
+  return branchForIssue(dir, t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role));
+}
+
+export interface LocatedBranch {
+  branch: string;
+  /** `local` here, or `remote` only — built on another ship and pushed at `fixed`. */
+  where: 'local' | 'remote';
+}
+
+/**
+ * The ticket's branch wherever it lives: this ship first, then the repo's
+ * remote (CREW-1364).
+ *
+ * A branch built on another ship exists here only as a remote-tracking ref,
+ * so a local-only lookup reported finished work as MISSING (QA) or stranded
+ * (release). On a local miss this fetches once — `fetchedDirs` remembers
+ * which checkouts a caller has already fetched, so a digest over many
+ * tickets pays for one fetch per repo, and only when something was missing —
+ * then looks at `refs/remotes/<remote>/…` with the same candidate names.
+ */
+export function locateBranchForTicket(
+  dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
+  fetchedDirs?: Set<string>,
+): LocatedBranch | null {
+  const local = existingBranchForTicket(dir, cfg, t, role);
+  if (local) return { branch: local, where: 'local' };
+  const remote = cfg.branch.remote;
+  if (!remoteConfigured(dir, remote)) return null;
+  if (fetchedDirs && !fetchedDirs.has(dir)) {
+    fetchedDirs.add(dir);
+    fetchRemote(dir, remote);
+  }
+  const found = remoteBranchForIssue(dir, remote, t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role));
+  return found ? { branch: found, where: 'remote' } : null;
+}
+
+/**
+ * `locateBranchForTicket`, then — for the release phase, which needs a local
+ * ref to squash — make the branch exist locally (and level with the remote
+ * when no worktree holds it). A no-op for a branch that is local and already
+ * current.
+ */
+export function materializeBranchForTicket(
+  dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
+): string | null {
+  const loc = locateBranchForTicket(dir, cfg, t, role);
+  if (!loc) return null;
+  materializeRemoteBranch(dir, cfg.branch.remote, loc.branch);
+  return loc.branch;
 }

@@ -47,11 +47,27 @@ export interface StrandedVerified {
   remote: string;
   /** How many times this ticket has already been flagged for this. */
   priorFlags: number;
+  /** When the most recent flag was posted, if any carries a timestamp. */
+  lastFlaggedAt?: number;
 }
+
+/**
+ * The shortest time between the flag and the escalation (CREW-1364).
+ *
+ * "One cycle later" was ~2.5 minutes — shorter than it takes another ship to
+ * push a branch, or this ship to next fetch. A ticket built elsewhere was
+ * flagged and escalated to a person before its branch could possibly have
+ * arrived. The lookup now fetches before it concludes anything, and this
+ * gap is the second guard: a flag only ripens into an escalation after the
+ * race it was meant to allow for has had time to resolve.
+ */
+export const STRANDED_ESCALATE_AFTER_MS = 30 * 60 * 1000;
 
 export type StrandedOutcome =
   /** First sighting — a note was left, status and assignee untouched. */
   | { kind: 'flagged' }
+  /** Flagged recently — too soon to escalate, nothing written. */
+  | { kind: 'waiting' }
   /** Flagged before and still unplaceable — handed to a person. */
   | { kind: 'escalated' }
   | { kind: 'failed'; why: string };
@@ -63,7 +79,15 @@ export const priorStrandedFlags = (ticket: Ticket, comments: Comment[]): number 
 export function planStrandedVerified(
   candidate: MergeCandidate, base: string, remote: string, comments: Comment[],
 ): StrandedVerified {
-  return { candidate, base, remote, priorFlags: priorStrandedFlags(candidate.ticket, comments) };
+  const stamps = comments
+    .filter((c) => c.ticket_id === candidate.ticket.id && (c.body ?? '').includes(STRANDED_MARKER))
+    .map((c) => Date.parse(c.created_at))
+    .filter((n) => !Number.isNaN(n));
+  return {
+    candidate, base, remote,
+    priorFlags: priorStrandedFlags(candidate.ticket, comments),
+    lastFlaggedAt: stamps.length ? Math.max(...stamps) : undefined,
+  };
 }
 
 export function flagComment(s: StrandedVerified): string {
@@ -81,7 +105,7 @@ export function escalateComment(s: StrandedVerified): string {
   return `${STRANDED_MARKER}
 **Still nothing to merge — stopping rather than repeating.**
 
-\`${key}\` was flagged as stranded at \`verified\` on an earlier cycle and still has no branch on this ship and no commit on \`${s.base}\` naming its key (searched \`${s.remote}/${s.base}\`). This needs a person: either the work landed under a commit that doesn't name the key and this ticket can simply close, or the branch is gone and the work needs redoing.
+\`${key}\` was flagged as stranded at \`verified\` on an earlier cycle and still has no branch on this ship or on \`${s.remote}\` and no commit on \`${s.base}\` naming its key (searched \`${s.remote}/${s.base}\`). This needs a person: either the work landed under a commit that doesn't name the key and this ticket can simply close, or the branch is gone and the work needs redoing.
 
 The crew will not close this on its own.`;
 }
@@ -113,8 +137,14 @@ export async function applyStrandedVerified(
   memberId: string,
   log: StrandedLog,
   dryRun: boolean,
+  now: number = Date.now(),
 ): Promise<StrandedOutcome> {
   const t = { ticket: s.candidate.ticket.issue_id, step: 'merge' };
+
+  if (s.priorFlags > 0 && s.lastFlaggedAt !== undefined && now - s.lastFlaggedAt < STRANDED_ESCALATE_AFTER_MS) {
+    log.emit('flagged as stranded recently — not escalating yet', t);
+    return { kind: 'waiting' };
+  }
 
   if (s.priorFlags > 0) {
     if (dryRun) {

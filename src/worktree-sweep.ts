@@ -28,8 +28,9 @@
  * what to delete.
  */
 
+import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
-import { worktrees, gitOk } from './git.ts';
+import { worktrees, gitOk, status, remoteConfigured, deleteRemoteBranch } from './git.ts';
 import { pidsInWorktree, killGently } from './ports.ts';
 import type { RepoTarget } from './config.ts';
 import type { Contract } from './contract.ts';
@@ -89,11 +90,25 @@ export interface SweepLog {
  * the same problem `reap` exists for on the orphan-process side.
  */
 export async function applyWorktreeSweep(
-  cwd: string, actions: SweepAction[], dryRun: boolean, log: SweepLog,
+  cwd: string, actions: SweepAction[], dryRun: boolean, log: SweepLog, remote = 'origin',
 ): Promise<{ removed: number; keptBranches: number }> {
   let removed = 0;
   let keptBranches = 0;
   for (const a of actions) {
+    // CREW-1364: a worktree with uncommitted work is reported, never removed
+    // — on a ship that only ever TESTED the ticket this is rare, but `--force`
+    // would destroy whatever a person left there.
+    if (!dryRun && existsSync(a.path)) {
+      let dirty = false;
+      try { dirty = status(a.path).length > 0; } catch { /* unreadable: treat as clean, same as before */ }
+      if (dirty) {
+        log.warn(
+          `not removing worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}): it has uncommitted changes`,
+          { ticket: a.ticket.issue_id, step: 'worktree' },
+        );
+        continue;
+      }
+    }
     const n = Number(a.ticket.issue_id.replace(/^\D+/, ''));
     const pids = pidsInWorktree(a.path, n);
     if (pids.length) {
@@ -117,7 +132,15 @@ export async function applyWorktreeSweep(
       continue;
     }
     gitOk(cwd, ['worktree', 'remove', '--force', a.path]);
-    if (!a.keepBranch && a.branch) gitOk(cwd, ['branch', '-D', a.branch]);
+    if (!a.keepBranch && a.branch) {
+      gitOk(cwd, ['branch', '-D', a.branch]);
+      // Deployed means the squash is on the base, so the pushed copy has
+      // nothing left to carry (CREW-1364). Whichever ship sweeps first deletes
+      // it; the rest find it already gone, which is success.
+      if (remoteConfigured(cwd, remote) && !deleteRemoteBranch(cwd, remote, a.branch)) {
+        log.warn(`could not delete ${remote}/${a.branch} — leaving it for the next sweep`, { ticket: a.ticket.issue_id, step: 'worktree' });
+      }
+    }
     log.emit(
       `removed worktree for ${a.ticket.issue_id} (${a.ticket.status}); ${branchNote}`,
       { ticket: a.ticket.issue_id, step: 'worktree' },
@@ -125,4 +148,54 @@ export async function applyWorktreeSweep(
     removed++;
   }
   return { removed, keptBranches };
+}
+
+/**
+ * Pushed ticket branches whose ticket has been deployed (CREW-1364).
+ *
+ * `applyWorktreeSweep` only reaches a branch that some worktree on THIS ship
+ * has checked out, so the ship that releases a ticket another ship built
+ * would never delete the copy pushed at `fixed`. This walks the remote's own
+ * branch list instead: one `for-each-ref`, however many tickets are closed,
+ * and a branch is a candidate only if its name is exactly a deployed
+ * ticket's own branch name (`tabl-1359`, `issue-1359`, `crew-1359-slug`). Anything else is left alone, including the base.
+ */
+export function planRemoteBranchCleanup(
+  cwd: string, remote: string, base: string, tickets: Ticket[], contract: Contract,
+): string[] {
+  if (!remoteConfigured(cwd, remote)) return [];
+  // Exact names only: every stem a deployed ticket's branch could carry
+  // (`issue-N`, `<project prefix>-N`), optionally followed by `-<slug>`. A free
+  // "contains the number" match would also take `v2`, `release-2` or `node-24`.
+  const stems = new Set<string>();
+  for (const t of tickets) {
+    if (t.status !== contract.statuses.deployed) continue;
+    const num = t.issue_id.replace(/^\D+/, '');
+    const unpadded = String(Number.parseInt(num, 10));
+    const prefixes = ['issue', t.project_issue_prefix?.toLowerCase()].filter((p): p is string => !!p);
+    for (const p of prefixes) { stems.add(`${p}-${num}`); stems.add(`${p}-${unpadded}`); }
+  }
+  if (stems.size === 0) return [];
+  const prefix = `refs/remotes/${remote}/`;
+  const refs = (gitOk(cwd, ['for-each-ref', '--format=%(refname)', prefix]) ?? '').split('\n').filter(Boolean);
+  const out: string[] = [];
+  for (const ref of refs) {
+    const name = ref.slice(prefix.length);
+    if (name === 'HEAD' || name === base) continue;
+    const m = /^(.+?-\d+)(?:-.*)?$/.exec(name);
+    if (m && stems.has(m[1]!)) out.push(name);
+  }
+  return out;
+}
+
+export function applyRemoteBranchCleanup(
+  cwd: string, remote: string, branches: string[], dryRun: boolean, log: SweepLog,
+): number {
+  let deleted = 0;
+  for (const b of branches) {
+    if (dryRun) { log.emit(`would delete ${remote}/${b} — its ticket is deployed`, { step: 'worktree' }); continue; }
+    if (deleteRemoteBranch(cwd, remote, b)) { deleted++; log.emit(`deleted ${remote}/${b} — its ticket is deployed`, { step: 'worktree' }); }
+    else log.warn(`could not delete ${remote}/${b} — leaving it for the next sweep`, { step: 'worktree' });
+  }
+  return deleted;
 }

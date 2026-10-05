@@ -96,3 +96,17 @@ test('priorStrandedFlags counts only this ticket, and only crew stranded-verifie
   ] as Comment[];
   assert.equal(priorStrandedFlags(t, comments), 1);
 });
+
+test('a second flag inside the gap waits instead of escalating (CREW-1364)', async () => {
+  const { w, patches } = writer();
+  const t0 = Date.parse('2026-10-05T10:00:00Z');
+  const comments = [{
+    id: 'c1', ticket_id: 'row-1', body: `${STRANDED_MARKER} flagged`, created_at: new Date(t0).toISOString(),
+  }] as Comment[];
+  const s = planStrandedVerified(candidate(), 'main', 'origin', comments);
+  const soon = await applyStrandedVerified(w, s, DEFAULT_CONTRACT, 'operator-1', 'seat', silent, false, t0 + 3 * 60 * 1000);
+  assert.equal(soon.kind, 'waiting');
+  assert.equal(patches.length, 0);
+  const later = await applyStrandedVerified(w, s, DEFAULT_CONTRACT, 'operator-1', 'seat', silent, false, t0 + 31 * 60 * 1000);
+  assert.equal(later.kind, 'escalated');
+});

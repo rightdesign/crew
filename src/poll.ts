@@ -23,7 +23,7 @@ import { attentionReasons, attentionTransitions, type AttentionReason } from './
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
-import { branchRenderer, existingBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
+import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { State } from './state.ts';
@@ -294,6 +294,7 @@ export function writeDigest(
       repoCache.set(dir, cfg);
       return cfg;
     };
+    const fetchedDirs = new Set<string>();
     const dirFor = (t: { repo_id?: string | null }) => dirForRepo(o.route, t.repo_id);
     // ISSUE-969: which template applies depends on the TICKET (its own
     // project tag), not only on the repo — a repo hosts tickets from more
@@ -325,6 +326,13 @@ export function writeDigest(
       existingBranchFor: (t: BranchTicket & { repo_id?: string | null }) => {
         const dir = dirFor(t);
         if (!dir) return null;
+        // QA can be handed a ticket another ship built (CREW-1364): the
+        // branch is on the remote only until a worktree is cut from it.
+        // Say so, rather than MISSING.
+        if (role === 'qa') {
+          const loc = locateBranchForTicket(dir, repoFor(dir), t, role, fetchedDirs);
+          return loc ? (loc.where === 'remote' ? `${loc.branch} (on ${repoFor(dir).branch.remote} only)` : loc.branch) : null;
+        }
         return existingBranchForTicket(dir, repoFor(dir), t, role);
       },
       tickets: role === 'triage'

@@ -107,6 +107,25 @@ export function branchForIssue(
   templates: { name: string; push?: string } = { name: 'issue-{number}' },
   render: (t: string) => string = (t) => t.replace(/\{number\}/g, issueKey.replace(/^\D+/, '')),
 ): string | null {
+  for (const c of branchCandidates(issueKey, templates, render)) {
+    const found = branches(cwd, c);
+    if (found.length) return found[0]!;
+  }
+  return null;
+}
+
+/**
+ * The names (or prefix globs) a ticket's branch may carry, best first. Shared
+ * by the local and the remote lookup so the two can never disagree about what
+ * counts as "this ticket's branch" — a ship that names branches `issue-N` and
+ * one that names them `<tag>-N` must resolve to the same remote branch
+ * (CREW-1364).
+ */
+function branchCandidates(
+  issueKey: string,
+  templates: { name: string; push?: string },
+  render: (t: string) => string,
+): string[] {
   const num = issueKey.replace(/^\D+/, '');
   const unpadded = String(Number.parseInt(num, 10));
   const candidates: string[] = [];
@@ -129,11 +148,60 @@ export function branchForIssue(
   // by the templated candidates above.
   candidates.push(`issue-${num}`);
   if (num !== unpadded) candidates.push(`issue-${unpadded}`);
-  for (const c of [...new Set(candidates)]) {
-    const found = branches(cwd, c);
-    if (found.length) return found[0]!;
+  return [...new Set(candidates)];
+}
+
+/**
+ * The ticket's branch as `<remote>` has it (from the last fetch), by its
+ * short name — `tabl-1359`, not `origin/tabl-1359`.
+ *
+ * The other half of `branchForIssue`: a branch built on another ship exists
+ * here only as a remote-tracking ref until something materializes it
+ * (CREW-1364). Same candidates, same order; the first hit wins.
+ */
+export function remoteBranchForIssue(
+  cwd: string,
+  remote: string,
+  issueKey: string,
+  templates: { name: string; push?: string } = { name: 'issue-{number}' },
+  render: (t: string) => string = (t) => t.replace(/\{number\}/g, issueKey.replace(/^\D+/, '')),
+): string | null {
+  const prefix = `refs/remotes/${remote}/`;
+  for (const c of branchCandidates(issueKey, templates, render)) {
+    const out = gitOk(cwd, ['for-each-ref', '--format=%(refname)', `${prefix}${c}`]);
+    const hit = out?.split('\n').filter((r) => r.startsWith(prefix) && r !== `${prefix}HEAD`)[0];
+    if (hit) return hit.slice(prefix.length);
   }
   return null;
+}
+
+/**
+ * Make `branch` exist locally, level with `<remote>/<branch>`, without
+ * checking it out anywhere.
+ *
+ * - No local branch: create one tracking the remote's.
+ * - A local branch that is strictly behind the remote and checked out in no
+ *   worktree: fast-forward it (`fetch <remote> b:b` refuses anything that is
+ *   not a fast-forward, and anything checked out). A worktree that holds it
+ *   is `crew sync`'s to move.
+ *
+ * Returns whether a local branch now exists.
+ */
+export function materializeRemoteBranch(cwd: string, remote: string, branch: string): boolean {
+  if (!remoteBranchExists(cwd, remote, branch)) {
+    return gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]) !== null;
+  }
+  if (gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]) === null) {
+    return gitOk(cwd, ['branch', '--track', branch, `${remote}/${branch}`]) !== null;
+  }
+  gitOk(cwd, ['fetch', '--quiet', remote, `${branch}:${branch}`]);
+  return true;
+}
+
+/** Deletes `<remote>/<branch>` upstream. A branch already gone is success. */
+export function deleteRemoteBranch(cwd: string, remote: string, branch: string): boolean {
+  if (!remoteBranchExists(cwd, remote, branch)) return true;
+  return gitOk(cwd, ['push', remote, '--delete', branch]) !== null;
 }
 
 /**

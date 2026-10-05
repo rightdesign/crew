@@ -20,8 +20,10 @@ marked **NO CHECKOUT** is not yours: this ship has no clone of its
 repository, and another ship may serve it.
 
 **`branch` is that repository's own branch for the ticket**, found there
-rather than derived. **MISSING** means the branch is gone and there is
-nothing left to verify — say so on the ticket. A `—` means the branch
+rather than derived. **`<name> (on origin only)`** means another ship built it
+and pushed it: it is testable — cut a worktree from the remote branch
+(`git worktree add <worktree> <name>`). **MISSING** means the branch is gone
+locally AND on the remote, so there is nothing left to verify — say so on the ticket. A `—` means the branch
 could not be looked for at all, because the repo has no checkout here.
 
 **`worktree` is where that branch should be checked out**, `<repo>/../<worktree>`

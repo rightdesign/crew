@@ -50,6 +50,12 @@ human review, so "probably fine" is not a pass.
    Does the change actually do what the comment claims? Does it handle the
    empty/error/permission path, or only the happy one? Does it touch
    anything the ticket never mentioned?
+   **A branch on the remote is testable.** The builder may be on another ship:
+   the digest's `branch` column then reads `<name> (on origin only)` and no
+   worktree exists here yet. Cut one from the remote branch —
+   `git worktree add <the digest's worktree> <name>` from the ticket's repo
+   checkout (git creates the local tracking branch) — and carry on. Only
+   **MISSING** (gone locally and on the remote) means there is nothing to test.
 5. **Run it.** The builder left its worktree in place for you: `cd` into it,
    `nvm use` if the repository pins a version, and `eval` the **`ports`** hook
    for this worktree's own ports (anything already listening on them is a dead

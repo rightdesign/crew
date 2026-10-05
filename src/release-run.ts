@@ -22,7 +22,7 @@ import {
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { hookLabel } from './repo-config.ts';
-import { existingBranchForTicket } from './ticket-branch.ts';
+import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
@@ -626,7 +626,7 @@ async function confirm(o: ReleaseRunOptions, expected: string): Promise<boolean 
  *     Fast-forwarding is impossible and merging would be this crew inventing a
  *     resolution nobody asked for, on the branch everything ships from.
  */
-function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: string } {
+function refreshBase(o: ReleaseRunOptions): { ok: true; stale?: true } | { ok: false; why: string } {
   // The actual fetch-and-compare is `refreshBaseBranch` (git.ts), shared with
   // `crew sync`'s equivalent check before an agent cuts a new ticket's
   // worktree — this wrapper only adds the emitting and blocking this call
@@ -644,7 +644,9 @@ function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: str
       return { ok: true };
     case 'fetch-failed':
       o.emit.warn(`${r.detail} — releasing from what this ship already has`);
-      return { ok: true };
+      // Anything concluded about a MISSING branch is suspect too: it may be
+      // sitting on the remote, unseen (CREW-1364).
+      return { ok: true, stale: true };
     case 'would-fast-forward':
     case 'fast-forwarded':
       o.emit.emit(r.detail);
@@ -711,7 +713,12 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
 
   const decision = decideRelease(o.cwd, o.tickets, o.contract, {
     tagPattern, base: o.repo.branch.base,
-    branchFor: (t) => existingBranchForTicket(o.cwd, o.repo, t),
+    // CREW-1364: a branch another ship built and pushed at `fixed` exists
+    // here only on the remote. Materialize it so the squash below has a ref.
+    // A dry run only looks.
+    branchFor: (t) => o.dryRun
+      ? (locateBranchForTicket(o.cwd, o.repo, t)?.branch ?? null)
+      : materializeBranchForTicket(o.cwd, o.repo, t),
   });
 
   if (!fresh.ok) {
@@ -781,7 +788,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
         );
       } else {
         o.emit.emit('verified but has no branch and nothing on the base names it — nothing to merge', { ticket: c.ticket.issue_id });
-        unbuildable.push(c);
+        // Not flagged on a stale view: with the fetch failed, the branch may
+        // exist on the remote and this ship simply cannot see it.
+        if (fresh.ok && fresh.stale) {
+          o.emit.warn('not flagging as stranded — the remote could not be fetched, so the branch may exist there', { ticket: c.ticket.issue_id });
+        } else unbuildable.push(c);
       }
       continue;
     }

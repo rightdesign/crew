@@ -64,9 +64,10 @@ import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProjec
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
+  remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange,
   ensureRepoCheckout, GitError, refreshBaseBranch, type SyncState,
 } from './git.ts';
-import { planWorktreeSweep, applyWorktreeSweep } from './worktree-sweep.ts';
+import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
@@ -1216,9 +1217,13 @@ async function releasePhase(
       const actions = planWorktreeSweep(target, scoped, tracker.contract);
       if (actions.length) {
         remit.enter('worktree');
-        const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit);
+        const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, repo.branch.remote);
         remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
       }
+      // CREW-1364: the pushed copy of a branch this ship may never have had a
+      // worktree for. After the stamp, so a ticket is `deployed` by now.
+      const stale = planRemoteBranchCleanup(target.dir, repo.branch.remote, repo.branch.base, scoped, tracker.contract);
+      if (stale.length) applyRemoteBranchCleanup(target.dir, repo.branch.remote, stale, dryRun, remit);
     } catch (e) {
       remit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
     }
@@ -2772,9 +2777,11 @@ switch (command) {
     const { byRepo } = ticketsByRepo(route, terminal);
     for (const r of await resolvedRepos(route)) {
       const actions = planWorktreeSweep(r, byRepo.get(r.name) ?? [], tracker.contract);
+      const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, byRepo.get(r.name) ?? [], tracker.contract);
+      if (stale.length) { anything = true; applyRemoteBranchCleanup(r.dir, r.config.branch.remote, stale, dryRun, emit); }
       if (!actions.length) continue;
       anything = true;
-      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit);
+      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote);
       emit.emit(
         `swept ${res.removed} worktree(s) for ${r.name}, kept ${res.keptBranches} branch(es)`,
         { step: 'worktree' },
@@ -2849,7 +2856,23 @@ switch (command) {
       break;
     }
     gitOk(target.dir, ['worktree', 'remove', '--force', wt]);
-    if (branch) gitOk(target.dir, ['branch', '-D', branch]);
+    if (branch) {
+      gitOk(target.dir, ['branch', '-D', branch]);
+      // CREW-1364: the pushed copy goes too, but only once the work is known
+      // to have landed — `drop` is also how an abandoned branch is removed,
+      // and the remote may then hold the only copy. "Landed" is the same test
+      // closure detection uses: the ticket key names a commit on the base.
+      const { remote, base } = target.config.branch;
+      if (remoteConfigured(target.dir, remote) && remoteBranchExists(target.dir, remote, branch)) {
+        if (findKeyInRange(target.dir, `ISSUE-${n}`, `${remote}/${base}`)) {
+          emit.emit(deleteRemoteBranch(target.dir, remote, branch)
+            ? `deleted ${remote}/${branch}`
+            : `could not delete ${remote}/${branch}`);
+        } else {
+          emit.warn(`${remote}/${branch} kept — nothing on ${remote}/${base} names ISSUE-${n} yet, so it may be the only copy`);
+        }
+      }
+    }
     else emit.warn(`no branch found for ISSUE-${n} in ${target.name} — worktree removed, nothing to delete`);
     emit.emit(`dropped ISSUE-${n} from ${target.name}`);
     break;

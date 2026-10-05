@@ -172,6 +172,12 @@ since your last comment: an answer to a question, new direction, or a
   to leave such tickets alone, which — combined with the poll not waking
   for them — left ISSUE-049 parked for hours mid-implementation with no
   question outstanding, restartable only by someone commenting on it.
+- **Before resuming in an existing worktree, run `crew sync`** (it fetches and
+  fast-forwards every worktree branch that tracks a remote, never merging or
+  rebasing) — another ship may have pushed to the branch since you left it.
+  If it reports your branch as diverged (local commits not on the remote AND
+  the remote has moved), stop: comment on the ticket with what it printed and
+  set `needs_info`; do not merge or rebase it yourself.
 - A ticket QA has bounced back to you comes in as `in_progress`,
   reassigned to your row, with a comment saying what still fails. Treat
   that exactly like new direction from a hold: read the comment, fix what
@@ -501,6 +507,15 @@ if `report_type` is either of those.
    part).
 9. Set the ticket's `status` to `fixed` once you have verified it yourself,
    and **clear `assignee_id`** — that pair is the hand-off to the QA lane.
+   **Push the branch first, in the same step:**
+   `git push --set-upstream <remote> <branch>` from the worktree (the remote is
+   `origin` unless the repo's `.crew.yaml` says otherwise; a repo with no remote
+   configured has nothing to push to, so say so in your comment and skip it).
+   Another ship may be the one that verifies and releases this ticket, and a
+   branch that never left this machine looks MISSING to it. A bounce back to
+   `in_progress` and the next `fixed` push again — a plain fast-forward, never
+   `--force`; if the push is rejected, someone else moved the branch, so stop
+   and say so on the ticket instead of forcing it.
    Leave the worktree and branch exactly where they are, unmerged: QA boots
    *your worktree* on its derived ports to test the fix, so removing it
    would leave QA nothing to test. Your last progress comment is what QA
