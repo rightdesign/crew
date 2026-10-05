@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.4.0] — 2026-10-05
+
+- A verified ticket whose commit already shipped in an earlier release is stamped deployed instead of being parked as stranded, and a test gate that stays red for 3 cycles is reported on the tickets it holds back (CREW-1368)
+
 ## [0.3.0] — 2026-10-05
 
 - Remote ticket-branch cleanup deletes only a deployed ticket's own branch (`issue-N`, `<prefix>-N`, optional `-slug`), never other branches whose name merely contains its number (CREW-1364)
