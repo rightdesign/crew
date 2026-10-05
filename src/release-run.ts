@@ -27,6 +27,7 @@ import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
 import { planStamp } from './stamp.ts';
+import { GATE_RED_AFTER, lastLines, type GateRed } from './gate-red.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
@@ -43,6 +44,12 @@ export interface ReleaseRunOptions {
     blockedCount(): number;
     noteBlocked(): number;
     clearBlocked(): void;
+    // Optional so a caller that only cares about deploy/blocked bookkeeping
+    // (and the tests that stub it) need not supply the gate-red counters.
+    noteTestGateFailed?(sha: string): number;
+    clearTestGateFailed?(): void;
+    testGateReported?(sha: string): boolean;
+    noteTestGateReported?(sha: string): void;
   };
   cwd: string;
   repo: EffectiveRepoConfig;
@@ -136,6 +143,12 @@ export interface ReleaseOutcome {
    * this into work on the board — see stranded-verified.ts.
    */
   unbuildable?: MergeCandidate[];
+  /**
+   * Set when the test gate failed on a head it has now failed on repeatedly
+   * (CREW-1368). The caller turns it into a note on the tickets the red head
+   * is holding back — see gate-red.ts.
+   */
+  gateRed?: GateRed;
   decision: ReleaseDecision;
   /**
    * Consecutive cycles `decision.block` has refused this release, from
@@ -781,7 +794,12 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   let applied = 0;
   for (const c of decision.merges) {
     if (!c.branch || c.mergedSha) {
-      if (c.skipReason === 'already-merged') {
+      if (c.skipReason === 'already-released') {
+        o.emit.emit(
+          `verified and already released (on the base as ${c.mergedSha?.slice(0, 7)}), waiting to be stamped`,
+          { ticket: c.ticket.issue_id },
+        );
+      } else if (c.skipReason === 'already-merged') {
         o.emit.emit(
           `verified and already merged${c.mergedSha ? ` (on the base as ${c.mergedSha.slice(0, 7)})` : ''}, waiting on a successful release`,
           { ticket: c.ticket.issue_id },
@@ -916,8 +934,14 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       }
       if (r && r.code !== 0) {
         o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
-        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision };
+        const sha = headSha(o.cwd);
+        const count = o.state?.noteTestGateFailed?.(sha) ?? 1;
+        const gateRed = count >= GATE_RED_AFTER && !o.state?.testGateReported?.(sha)
+          ? { sha, count, hook: hookLabel(o.repo, 'test'), tail: lastLines(r.output, 15) }
+          : undefined;
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed };
       }
+      o.state?.clearTestGateFailed?.();
     }
   }
 

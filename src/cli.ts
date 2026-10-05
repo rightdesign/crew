@@ -27,6 +27,7 @@ import { applySweep } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
+import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import {
@@ -64,7 +65,7 @@ import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProjec
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
-  remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange,
+  remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, GitError, refreshBaseBranch, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup } from './worktree-sweep.ts';
@@ -1130,6 +1131,41 @@ async function releasePhase(
       if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun, target.dir);
     } else if (outcome.stopped) {
       remit.emit(`nothing stamped — ${outcome.stopped}`);
+    }
+
+    // A verified ticket with no branch whose commit is already inside a
+    // release tag: it shipped, the board just never heard (it was bounced off
+    // `verified` across a release cut, or the stamp never ran). `planStamp`
+    // only reads the latest release's range, so it can never close these —
+    // stamp them against the tag that actually carries the commit (CREW-1368).
+    // Non-fatal, like the stamp above.
+    for (const m of outcome.decision.merges) {
+      if (m.skipReason !== 'already-released' || !m.mergedSha) continue;
+      const tag = firstReleaseTagContaining(target.dir, m.mergedSha, repo.release.tagPattern ?? 'v*');
+      if (!tag) continue;
+      remit.enter('reconcile');
+      await applyStamp(
+        tracker, [{ ticket: m.ticket, reason: `carried by ${tag}`, sha: m.mergedSha }],
+        tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir,
+      );
+    }
+
+    // The test gate has been red on this head for several cycles running:
+    // say so on each ticket it is holding back, once (gate-red.ts).
+    if (outcome.gateRed && !dryRun) {
+      try {
+        const g = outcome.gateRed;
+        const comments = await tracker.comments();
+        const seat = c.resolved?.seats.dev ?? c.resolved?.seats.qa ?? '';
+        for (const t of gateRedTickets(outcome.merged, outcome.decision.merges)) {
+          if (alreadyReported(t, g, comments)) continue;
+          await tracker.postEvent(t.id, gateRedComment(g), seat);
+          remit.warn(`test gate red for ${g.count} cycles — noted on the ticket`, { ticket: t.issue_id, step: 'merge' });
+        }
+        state.release(scope).noteTestGateReported(g.sha);
+      } catch (e) {
+        remit.warn(`could not note the red test gate on the board: ${(e as Error).message}`, { step: 'merge' });
+      }
     }
 
     // `release.mode: external`: the crew ships nothing itself, but a ticket

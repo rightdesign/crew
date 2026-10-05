@@ -41,7 +41,7 @@ test('first sighting leaves a note and touches neither status nor assignee', asy
   assert.deepEqual(patches, [], 'a first sighting must not wake anyone');
   assert.match(notes[0]!, /flagging before this repeats forever/);
   assert.match(notes[0]!, /ISSUE-345/);
-  assert.match(notes[0]!, /origin\/main/);
+  assert.match(notes[0]!, /searched all of it/);
 });
 
 test('still unplaceable after a prior flag escalates to a person', async () => {

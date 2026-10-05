@@ -9,7 +9,7 @@ import {
   insertChangelogSection, decideRelease, renderTag, describeUnplaceable,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
-import { branchForIssue } from '../src/git.ts';
+import { branchForIssue, firstReleaseTagContaining } from '../src/git.ts';
 import type { Ticket } from '../src/tracker.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
 import { existingBranchForTicket } from '../src/ticket-branch.ts';
@@ -340,4 +340,30 @@ test('an unmerged branch whose ticket is named by an unrelated commit is still m
   g('commit', '-qm', 'mentions ISSUE-21 in passing');
   const [c] = planMerge(dir, [T('ISSUE-21')], DEFAULT_CONTRACT, last);
   assert.equal(c!.branch, 'issue-21');
+});
+
+test('no branch, key only in an EARLIER release: already-released, not never-built (CREW-1368)', () => {
+  const { dir, g } = repo();
+  writeFileSync(join(dir, 'a.txt'), '1');
+  g('add', '.');
+  g('commit', '-qm', 'shipped ISSUE-20 (ISSUE-20)');
+  g('tag', 'v0.1.0');
+  writeFileSync(join(dir, 'b.txt'), '2');
+  g('add', '.');
+  g('commit', '-qm', 'something else');
+  g('tag', 'v0.1.1');
+  const last = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  const [c] = planMerge(dir, [T('ISSUE-20')], DEFAULT_CONTRACT, last);
+  assert.equal(c!.skipReason, 'already-released');
+  assert.ok(c!.mergedSha);
+  assert.equal(firstReleaseTagContaining(dir, c!.mergedSha!), 'v0.1.0');
+});
+
+test('no branch, no release tag yet, key on the base: already-merged, not never-built (CREW-1368)', () => {
+  const { dir, g } = repo();
+  writeFileSync(join(dir, 'a.txt'), '1');
+  g('add', '.');
+  g('commit', '-qm', 'shipped ISSUE-21');
+  const [c] = planMerge(dir, [T('ISSUE-21')], DEFAULT_CONTRACT, null);
+  assert.equal(c!.skipReason, 'already-merged');
 });

@@ -242,6 +242,15 @@ export function latestReleaseTag(cwd: string, pattern = 'v*', ref = 'HEAD'): str
   return gitOk(cwd, ['describe', '--tags', '--abbrev=0', '--match', pattern, ref]);
 }
 
+/**
+ * The oldest release tag whose history contains `sha`, or null when no tag
+ * does (the commit is on the base but not yet released).
+ */
+export function firstReleaseTagContaining(cwd: string, sha: string, pattern = 'v*'): string | null {
+  const out = gitOk(cwd, ['tag', '--contains', sha, '--list', pattern, '--sort=creatordate']);
+  return out?.split('\n').map((l) => l.trim()).find(Boolean) ?? null;
+}
+
 /** The commit a tag points at, following the annotation. */
 export const tagCommit = (cwd: string, tag: string): string | null => resolve(cwd, tag);
 

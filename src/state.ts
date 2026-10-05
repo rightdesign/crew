@@ -182,6 +182,8 @@ export class State {
     const suffix = State.safe(route);
     const blocked = `.release-blocked-${suffix}`;
     const failed = `.deploy-failed-sha-${suffix}`;
+    const gateFailed = `.test-gate-failed-${suffix}`;
+    const gateReported = `.test-gate-reported-${suffix}`;
     const read = (f: string): string | null => {
       try { return readFileSync(this.path(f), 'utf8').trim() || null; } catch { return null; }
     };
@@ -205,6 +207,22 @@ export class State {
       deployFailedSha: (): string | null => read(failed),
       noteDeployFailed: (sha: string): void => { writeFileSync(this.path(failed), `${sha}\n`); },
       clearDeployFailed: (): void => { rmSync(this.path(failed), { force: true }); },
+
+      /**
+       * Consecutive test-gate failures on the same head (CREW-1368). A failure
+       * on a new head restarts the count. Held on disk because one process is
+       * one cycle, and "failed three cycles running" only exists across them.
+       */
+      noteTestGateFailed: (sha: string): number => {
+        const [prev, n] = (read(gateFailed) ?? '').split(' ');
+        const next = prev === sha ? (Number.parseInt(n ?? '', 10) || 0) + 1 : 1;
+        writeFileSync(this.path(gateFailed), `${sha} ${next}\n`);
+        return next;
+      },
+      clearTestGateFailed: (): void => { rmSync(this.path(gateFailed), { force: true }); },
+      /** Whether the board was already told about this head's red gate. */
+      testGateReported: (sha: string): boolean => read(gateReported) === sha,
+      noteTestGateReported: (sha: string): void => { writeFileSync(this.path(gateReported), `${sha}\n`); },
     };
   }
 

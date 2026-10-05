@@ -95,7 +95,7 @@ export function flagComment(s: StrandedVerified): string {
   return `${STRANDED_MARKER}
 **Verified, but nothing to merge — flagging before this repeats forever.**
 
-\`${key}\` is \`verified\` with no branch on this ship, and its key names no commit on \`${s.base}\` (searched \`${s.remote}/${s.base}\`'s history for a bounded \`${key}\` in a commit subject or body). One of three things is true: it landed under a commit that never named the key, the branch was deleted before it merged, or it was verified in error — the crew cannot tell these apart and will not guess.
+\`${key}\` is \`verified\` with no branch on this ship, and its key names no commit anywhere in this ship's \`${s.base}\` history (searched all of it, local commits included, for a bounded \`${key}\` in a commit subject or body). One of three things is true: it landed under a commit that never named the key, the branch was deleted before it merged, or it was verified in error — the crew cannot tell these apart and will not guess.
 
 If it is still unplaceable next cycle, this ticket is escalated to a person. If the work already landed, closing this ticket by hand now avoids that.`;
 }
@@ -105,7 +105,7 @@ export function escalateComment(s: StrandedVerified): string {
   return `${STRANDED_MARKER}
 **Still nothing to merge — stopping rather than repeating.**
 
-\`${key}\` was flagged as stranded at \`verified\` on an earlier cycle and still has no branch on this ship or on \`${s.remote}\` and no commit on \`${s.base}\` naming its key (searched \`${s.remote}/${s.base}\`). This needs a person: either the work landed under a commit that doesn't name the key and this ticket can simply close, or the branch is gone and the work needs redoing.
+\`${key}\` was flagged as stranded at \`verified\` on an earlier cycle and still has no branch on this ship or on \`${s.remote}\` and no commit in this ship's \`${s.base}\` history naming its key (searched all of it, local commits included). This needs a person: either the work landed under a commit that doesn't name the key and this ticket can simply close, or the branch is gone and the work needs redoing.
 
 The crew will not close this on its own.`;
 }

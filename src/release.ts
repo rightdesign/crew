@@ -131,7 +131,7 @@ export interface MergeCandidate {
   bump: BumpSize;
   majorRequested: boolean;
   /** Why it is not mergeable, when branch is null. */
-  skipReason?: 'already-merged' | 'never-built';
+  skipReason?: 'already-merged' | 'already-released' | 'never-built';
   /** For `already-merged` with a branch still present: the base commit that carries its work. */
   mergedSha?: string;
   /**
@@ -180,13 +180,35 @@ export function planMerge(
       // ticket "never built" the moment work landed under its tag instead
       // (`CREW-969` rather than `ISSUE-969`), which is now the branch/commit
       // convention for a ticket that has one.
-      const onMain = lastReleased
-        ? findKeyInRange(cwd, referenceKeys(ticket), `${lastReleased}..HEAD`) !== null
-        : false;
+      const keys = referenceKeys(ticket);
+      const unreleased = lastReleased ? findKeyInRange(cwd, keys, `${lastReleased}..HEAD`) : null;
+      if (unreleased) {
+        return {
+          ticket, branch: null, entries: [], usedFallback: false,
+          bump: 'patch', majorRequested: false, skipReason: 'already-merged',
+        };
+      }
+      // Not in the unreleased range does not mean not on the base. A squash
+      // that shipped in an EARLIER release than the latest (the ticket was
+      // bounced off `verified` and back across a release cut), or on a repo
+      // with no release tag yet, is invisible to the bounded search above and
+      // used to read as `never-built` — and be parked as stranded with a
+      // note claiming nothing on the base names it (CREW-1368). Search the
+      // whole local base before concluding anything. With a `lastReleased`,
+      // a hit here is necessarily at or before it: already released. With
+      // none, nothing has shipped, so it is merged and waiting on a release.
+      const anywhere = findKeyInRange(cwd, keys, 'HEAD');
+      if (anywhere) {
+        return {
+          ticket, branch: null, entries: [], usedFallback: false,
+          bump: 'patch', majorRequested: false,
+          skipReason: lastReleased ? 'already-released' : 'already-merged',
+          mergedSha: anywhere,
+        };
+      }
       return {
         ticket, branch: null, entries: [], usedFallback: false,
-        bump: 'patch', majorRequested: false,
-        skipReason: onMain ? 'already-merged' : 'never-built',
+        bump: 'patch', majorRequested: false, skipReason: 'never-built',
       };
     }
     // The branch outlives its own squash-merge until the stamp, so a ticket
