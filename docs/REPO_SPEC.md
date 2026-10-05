@@ -196,10 +196,12 @@ release:
 | `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
 | `release.mode` | no | `local` | `local` / `integrate` / `ci_manual` / `ci_auto` / `external` |
-| `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none` |
-| `release.ci.ref` | when not `local` | — | Workflow file or pipeline slug. |
+| `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none`. Validated and recorded, but nothing reads it yet: the tag push is what triggers CI, and `hooks.released` is how the crew learns it finished. |
+| `release.ci.ref` | when not `local` | — | Workflow file or pipeline slug. Same: validated, not yet read. |
+| `release.tag` | no | `v{version}` | Template for the annotated tag the release creates (and, in `ci_*`, pushes). `false` for none. |
+| `release.tagPattern` | no | `v*` | Glob the crew uses to find the last release tag. Must match what `release.tag` produces. |
 | `release.versioning` | no | `auto` | `auto` or `none`. `none` means the crew never writes a version. |
-| `release.verify.match` | no | `commit` | `commit` (prefix match) or `version` (exact). |
+| `release.verify.match` | no | `commit` | `commit` (prefix match against the released HEAD) or `version` (exact match against the version just released — for a `hooks.released` like `npm view <pkg> version`). If a `ci_*` release is not confirmed within `timeoutSeconds`, a later cycle re-checks it and stamps the batch once it is live; no further ticket needs to land. |
 | `release.verify.timeoutSeconds` | no | `600` | How long to wait for `released` to match. |
 | `release.verify.intervalSeconds` | no | `15` | How often to ask. |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |

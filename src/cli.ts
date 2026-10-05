@@ -1123,7 +1123,7 @@ async function releasePhase(
       remit.enter('reconcile');
       const plan = planStamp(
         target.dir, tickets, tracker.contract,
-        outcome.decision.lastReleased, outcome.decision.head,
+        outcome.stampFrom ?? outcome.decision.lastReleased, outcome.decision.head,
         new Map(outcome.merged.map((m) => [m.ticket.issue_id, m.sha])),
       );
       if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun);

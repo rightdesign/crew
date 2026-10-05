@@ -916,6 +916,80 @@ release:
   })();
 });
 
+const CI_VERSION = (bare: string, file: string) => `version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  released: cat ${file} 2>/dev/null || true
+release:
+  mode: ci_auto
+  ci: { provider: github }
+  verify: { match: version, timeoutSeconds: 1, intervalSeconds: 1 }
+`;
+
+test('verify.match: version confirms against the bumped version, not the HEAD sha', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+    writeFileSync(file, '1.3.0\n');
+    const { dir, repo } = projectWithRemote(CI_VERSION(bare, file), bare);
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.version, '1.3.0');
+    assert.equal(out.confirmed, true);
+  })();
+});
+
+test('verify.match: version stays unconfirmed while the registry reports the old version', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+    writeFileSync(file, '1.2.3\n');
+    const { dir, repo } = projectWithRemote(CI_VERSION(bare, file), bare);
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.confirmed, false);
+  })();
+});
+
+test('a ci_* release whose confirm timed out is re-confirmed on a later cycle, then stamped', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+    writeFileSync(file, '1.2.3\n');
+    const { dir, repo } = projectWithRemote(CI_VERSION(bare, file), bare);
+    const tickets = [T('ISSUE-7')];
+    const first = await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: false });
+    assert.equal(first.confirmed, false);
+
+    // Still not live: nothing is stamped, and the cycle says so.
+    const waiting = await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: false });
+    assert.ok(!waiting.confirmed && !waiting.alreadyLive);
+
+    // CI finishes. The next cycle has nothing new to merge, yet confirms and hands back the range to stamp.
+    writeFileSync(file, '1.3.0\n');
+    const later = await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: false });
+    assert.ok(later.confirmed || later.alreadyLive, `expected a stampable outcome, got ${JSON.stringify(later.stopped)}`);
+    assert.equal(later.version, '1.3.0');
+    assert.equal(later.tag, undefined, 'it must not cut another release');
+  })();
+});
+
+test('re-confirm does not poll when no verified ticket was in the last release', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+    writeFileSync(file, '1.3.0\n');
+    const { dir, repo } = projectWithRemote(CI_VERSION(bare, file), bare);
+    await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false });
+    const idle = await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], emit: emitter(), dryRun: false });
+    assert.equal(idle.stopped, 'nothing to release');
+    assert.equal(idle.confirmed, undefined);
+  })();
+});
+
 test('local and integrate modes never push a tag, even with a remote configured', () => {
   return (async () => {
     const bare = bareRemote();

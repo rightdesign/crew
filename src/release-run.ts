@@ -13,7 +13,8 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
-  isAncestor, pushBranch, pushTag, refreshBaseBranch, remoteConfigured, tagExists, type ClosureCheck,
+  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, remoteConfigured, tagCommit, tagExists,
+  type ClosureCheck,
 } from './git.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
@@ -25,6 +26,7 @@ import { existingBranchForTicket } from './ticket-branch.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
+import { planStamp } from './stamp.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
@@ -105,6 +107,13 @@ export interface ReleaseOutcome {
    * but the tickets are live and must still be stamped.
    */
   alreadyLive?: boolean;
+  /**
+   * Set when a cycle that had nothing new to release re-confirmed the LAST
+   * release for tickets still `verified` (see `reconfirmLastRelease`): the
+   * base of the range `planStamp` should read, since `decision.lastReleased`
+   * is HEAD itself and so names nothing.
+   */
+  stampFrom?: string | null;
   /** Why nothing happened, when nothing did. */
   stopped?: string;
   /**
@@ -651,6 +660,45 @@ function refreshBase(o: ReleaseRunOptions): { ok: true } | { ok: false; why: str
   }
 }
 
+/**
+ * In ci_* modes the tickets are only stamped once `confirm()` sees the release
+ * live. If that timed out (CI slower than `verify.timeoutSeconds`), the next
+ * cycle sees `upToDate` and used to stop at "nothing to release", leaving the
+ * batch `verified` until some unrelated ticket forced another release.
+ *
+ * So when up to date, look at whether any still-`verified` ticket is named in
+ * the last release's own range; if so, confirm that release again and let the
+ * caller stamp. No such ticket means no polling, so an idle repo costs nothing.
+ */
+async function reconfirmLastRelease(
+  o: ReleaseRunOptions, decision: ReleaseDecision,
+): Promise<{ confirmed: boolean; version: string; from: string } | undefined> {
+  if (!canReconfirm(o, decision)) return undefined;
+  const prevTag = latestReleaseTag(o.cwd, o.repo.release.tagPattern ?? 'v*', `${decision.lastTag}^`);
+  const from = prevTag ? tagCommit(o.cwd, prevTag) : null;
+  if (!from) return undefined;
+  const pending = planStamp(o.cwd, o.tickets, o.contract, from, decision.lastReleased!);
+  if (pending.length === 0) return undefined;
+  o.emit.emit(
+    `${pending.length} verified ticket(s) were in ${decision.lastTag} but never confirmed live — re-checking`,
+  );
+  return { ...(await confirmLastRelease(o, decision)), from };
+}
+
+const canReconfirm = (o: ReleaseRunOptions, decision: ReleaseDecision): boolean =>
+  !o.dryRun && (o.repo.release.mode === 'ci_manual' || o.repo.release.mode === 'ci_auto') &&
+  !!o.repo.hooks.released && !!decision.lastTag && !!decision.lastReleased;
+
+async function confirmLastRelease(
+  o: ReleaseRunOptions, decision: ReleaseDecision,
+): Promise<{ confirmed: boolean; version: string }> {
+  const version = decision.lastTag!.replace(/^v/, '');
+  const expected = o.repo.release.verify.match === 'version' ? version : decision.lastReleased!;
+  const confirmed = (await confirm(o, expected)) === true;
+  if (!confirmed) o.emit.warn(`${decision.lastTag} is still not confirmed live — tickets stay verified`);
+  return { confirmed, version };
+}
+
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
   const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
@@ -754,6 +802,13 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   o.emit.enter('release');
   const head = o.dryRun ? decision.head : headSha(o.cwd);
   if (merged.length === 0 && decision.upToDate && !o.force) {
+    const re = await reconfirmLastRelease(o, decision);
+    if (re) {
+      return {
+        merged, conflicts, unbuildable, deployed: false, version: re.version, confirmed: re.confirmed || undefined,
+        stampFrom: re.from, stopped: 'nothing to release', decision,
+      };
+    }
     o.emit.emit('nothing to release');
     return { merged, conflicts, unbuildable, deployed: false, stopped: 'nothing to release', decision };
   }
@@ -789,6 +844,15 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   // diff is its own version bump, purely to have something to stamp against,
   // is what produced two empty releases (ISSUE-342).
   if (applied === 0 && merged.length > 0 && decision.upToDate && !o.force) {
+    // The branches survive until the stamp, so a ci_* release whose confirm
+    // timed out comes back through here rather than the case above. Their work
+    // is in the last tag but not necessarily live yet: confirm before stamping.
+    if (canReconfirm(o, decision)) {
+      const re = await confirmLastRelease(o, decision);
+      if (!re.confirmed) {
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'release not yet confirmed live', decision };
+      }
+    }
     o.emit.emit(
       `nothing to release — ${merged.length} branch(es) were already contained in ` +
         `${o.repo.branch.base}; stamping without cutting a version`,
@@ -990,7 +1054,11 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     }
   }
 
-  const confirmed = await confirm(o, o.dryRun ? head : headSha(o.cwd));
+  // `match: version` compares against what the released hook prints, which is
+  // a version (e.g. `npm view <pkg> version`) — never the HEAD sha. Handing it
+  // the sha made every ci_* release time out.
+  const expected = o.repo.release.verify.match === 'version' && version ? version : o.dryRun ? head : headSha(o.cwd);
+  const confirmed = await confirm(o, expected);
   o.emit.emit(
     `release ${o.dryRun ? 'plan complete' : 'complete'}: ${merged.length} merged` +
       `${version ? `, ${version}` : ''}${tag ? `, tagged ${tag}` : ''}`,
