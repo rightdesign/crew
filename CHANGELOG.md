@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.7.1] — 2026-10-05
+
+- Host Passengers reports a `docker` missing from the scheduler PATH with the directory to add to `ship.extraPath`, in `crew doctor`, `crew install` and the passengers timer (CREW-1375)
+
 ## [0.7.0] — 2026-10-05
 
 - CREW-1371 — tickets and comments record the seat and ship that wrote them, and the queue digest names who filed each ticket, once the workspace's Issues and Comments templates have the new columns
