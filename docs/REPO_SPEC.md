@@ -370,6 +370,11 @@ in — so the hook prints that, and the crew carries it.
   that does not version, or whose version something else owns. Combining it
   with `bump` or `versionFiles` is refused rather than merged — that
   combination means someone changed their mind in one place only.
+  Tickets still get `released_at` and `commit_sha` when stamped; only
+  `released_version` stays empty. Note that with no version there is no release
+  tag, so a `ci_*` re-confirmation on a later cycle has nothing to key on: size
+  `verify.timeoutSeconds` to the full CI build and deploy, or merged tickets
+  stay `verified` after a timed-out poll.
 - **`bump` must print the version it produced**, and the crew uses what it
   printed rather than recomputing. A hook that bumps differently from the
   crew's arithmetic (a calendar version, a build counter, a pre-release

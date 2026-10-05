@@ -278,3 +278,13 @@ test('a landed-but-not-yet-confirmed external closure still stamps commit_sha bu
   assert.equal('status' in calls[0]!.patch, false);
   assert.equal('released_version' in calls[0]!.patch, false);
 });
+
+test('with no version (versioning: none) a stamp still writes released_at, and no released_version', async () => {
+  const calls: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => { calls.push({ id, patch }); return {} as Ticket; },
+  } as unknown as Parameters<typeof applyStamp>[0];
+  await applyStamp(tracker, [{ ticket: T('ISSUE-1'), reason: 'r' }], undefined, DEFAULT_CONTRACT, emitter([]), false);
+  assert.equal(typeof calls[0]!.patch.released_at, 'string');
+  assert.ok(!('released_version' in calls[0]!.patch));
+});

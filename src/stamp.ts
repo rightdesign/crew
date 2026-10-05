@@ -98,7 +98,9 @@ export async function applyStamp(
     try {
       await tracker.updateTicket(ticket.id, {
         status: contract.statuses.deployed,
-        ...(version ? { released_version: version, released_at: at } : {}),
+        // `released_at` is always a real release moment here; only the version is optional (versioning: none).
+        released_at: at,
+        ...(version ? { released_version: version } : {}),
         // Written here rather than only on the external path (below): a
         // ticket's record should mean the same thing regardless of which
         // release mode closed it (ISSUE-218). `merged_at` is stamped
