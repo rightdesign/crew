@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
  * the crew would hang waiting for a reply this process could not send.
  */
 const run = promisify(execFile);
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FakeTracker, MODELS, SEATS, OPERATOR, crewRows, ticket } from './helpers/fake-tracker.ts';
@@ -243,6 +243,58 @@ test('a release held by another ship on the board is skipped, not merged twice (
     const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'test/proj');
     assert.match(out, /claimed by another ship|held by other-ship:999/);
     assert.ok(!t.writes.some((w) => w.model === MODELS.issues), 'a skipped release must not touch the ticket');
+  } finally { await t.stop(); }
+});
+
+test('ISSUE-1372: a paused crew or paused releases refuses `release --fleet` before touching the board', async () => {
+  // The release timer runs `crew release --fleet`. With either sentinel set
+  // it must log why it skipped, exit 0, and write nothing to the tracker.
+  // The state-level unit tests cannot show that the CLI actually gates.
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
+    .start();
+  try {
+    const s = ship(t);
+    const stateDir = join(s.home, 'state');
+    mkdirSync(stateDir, { recursive: true });
+    // `release` is refused inside a crew-launched agent session (ISSUE-980).
+    // This test points CREW_CONFIG at its own scratch config, so the guard's
+    // concern (the live config) does not apply: clear the lane marker here.
+    const env: NodeJS.ProcessEnv = { ...process.env, ...CREW_ENV, CREW_CONFIG: s.cfgPath };
+    delete env.CREW_LANE_ROLE;
+    const release = async () => {
+      const { stdout, stderr } = await run(process.execPath, [CREW, 'release', '--fleet'], { env, timeout: 30_000 });
+      return `${stdout}${stderr}`;
+    };
+
+    writeFileSync(join(stateDir, '.crew-paused'), '');
+    assert.match(await release(), /the crew is paused — release skipped/);
+    rmSync(join(stateDir, '.crew-paused'));
+
+    writeFileSync(join(stateDir, '.release-paused'), '');
+    assert.match(await release(), /releases are paused — release skipped/);
+    rmSync(join(stateDir, '.release-paused'));
+
+    assert.equal(t.writes.length, 0, 'a refused release must not write to the board');
+
+    // CREW-1372 (QA bounce): on a one-route ship the bare form names no route,
+    // so the word sits at positional[1] and must not be read as a route name.
+    const toggle = async (...args: string[]) => {
+      const { stdout, stderr } = await run(process.execPath, [CREW, ...args], { env, timeout: 30_000 });
+      return `${stdout}${stderr}`;
+    };
+    await toggle('pause', 'release');
+    assert.ok(existsSync(join(stateDir, '.release-paused')), 'bare `pause release` writes the release sentinel');
+    await toggle('resume', 'release');
+    assert.ok(!existsSync(join(stateDir, '.release-paused')), 'bare `resume release` clears it');
+    await toggle('pause', 'dev');
+    assert.ok(existsSync(join(stateDir, '.role-paused-dev')), 'bare `pause dev` writes the role sentinel');
+    await toggle('resume', 'dev');
+    assert.ok(!existsSync(join(stateDir, '.role-paused-dev')), 'bare `resume dev` clears it');
+
+    // Control: with neither marker the same ticket is not refused.
+    assert.doesNotMatch(await release(), /release skipped/);
   } finally { await t.stop(); }
 });
 

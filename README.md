@@ -207,7 +207,7 @@ crew ports [route]             which checkout owns which ports, and what is up
 crew reap [route]              kill servers left behind by removed worktrees
 crew drop [route] NNN          remove a merged ticket's worktree and branch
 crew sync [route]              fast-forward the checkout and its worktrees from the remote
-crew pause|resume [route] [R]  pause everything, or one role
+crew pause|resume [route] [R|release]  pause everything, one role, or releases only (passengers keep running)
 crew log [route]               tail the log
 crew inbox [--member NAME]    your tickets across every workspace
 crew connect WS[/PROJECT]     resolve a workspace/project's ids into the state tree

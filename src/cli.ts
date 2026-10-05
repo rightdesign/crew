@@ -273,7 +273,8 @@ function usage(): never {
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
-  crew pause|resume [route] [R]  pause everything, or one role
+  crew pause|resume [route] [R|release]  pause everything, one role, or releases only (merge/deploy/release; passengers keeps running).
+                                 resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block
@@ -460,7 +461,11 @@ const DAEMON_SUBCOMMANDS = new Set(['start', 'stop', 'status', 'restart']);
 const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? '')
   ? positional[2]
   : positional[1];
+// `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
+// own stateDir, so the word `release` or a role name sits at positional[1] and
+// must never be read as a route name (QA, on a one-route ship).
 const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || releaseFleetWide ||
+  command === 'pause' || command === 'resume' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -700,6 +705,7 @@ function endpointReconcileDeps(routes: Route[], relayHost: string): ReconcileDep
 async function releaseFleet(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
+  if (releaseRefused()) return;
   const summaries: RoutedReleaseSummary[] = [];
   // Touched at both ends so a long deploy does not read as a stopped timer
   // (`release_stale`, CREW-1373).
@@ -715,6 +721,19 @@ async function releaseFleet(
 }
 
 /**
+ * ISSUE-1372: a paused ship must not merge, deploy or file release alerts,
+ * and `crew pause` only ever stopped `run`/`poll`. The release timer runs
+ * `crew release --fleet` on its own schedule, so it reaches here too. Logs one
+ * line and returns true when the release must not run.
+ */
+function releaseRefused(): boolean {
+  const why = state.releaseSkipReason();
+  if (!why) return false;
+  emit.emit(`${why} — release skipped`, { step: 'release' });
+  return true;
+}
+
+/**
  * Release every repository of the route in play.
  *
  * `crew run` on a single route still has to cover all of its
@@ -724,6 +743,7 @@ async function releaseFleet(
 async function releaseTargets(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
+  if (releaseRefused()) return;
   const only = value('repo');
   const targets = reposOf(route);
   const chosen = only ? targets.filter((t) => t.name === only) : targets;
@@ -3129,6 +3149,13 @@ switch (command) {
 
   case 'pause':
   case 'resume': {
+    // `crew pause release` stops only the release phase (ISSUE-1372); the
+    // word may sit where a route or role would, so check both positions.
+    if (positional[1] === 'release' || positional[2] === 'release') {
+      state.setReleasePaused(command === 'pause');
+      process.stdout.write(`${command}d releases\n`);
+      break;
+    }
     const role = positional[2] ?? (['dev', 'design', 'qa'].includes(positional[1] ?? '') ? positional[1] : undefined);
     if (command === 'pause') state.pause(role as RoleName | undefined);
     else state.resume(role as RoleName | undefined);
@@ -3258,6 +3285,9 @@ switch (command) {
         },
         crew: {
           paused: state.isPaused(),
+          // The release timer honors the whole-crew pause too, so this is
+          // true whenever releases are stopped for either reason.
+          releasePaused: state.releaseSkipReason() !== null,
           roles: ROLE_NAMES.map((r) => ({ name: r, label: ROLE_LABEL[r], paused: state.isRolePaused(r) })),
           seats,
         },
@@ -3303,6 +3333,7 @@ switch (command) {
         `route:      ${route.route} -> ${route.dir}\n` +
         `enabled:    ${route.enabled}\n` +
         `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
+        `release:    ${state.releaseSkipReason() ? 'paused' : 'active'}\n` +
         `watermark:  ${state.watermark()}\n`,
     );
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {

@@ -80,6 +80,32 @@ export class State {
   }
 
   /**
+   * The release phase (merge, deploy, release) has its own sentinel, one
+   * level below the whole-crew pause: `crew pause release` stops shipping
+   * while agents keep working.
+   */
+  isReleasePaused(): boolean {
+    return existsSync(this.path('.release-paused'));
+  }
+  setReleasePaused(paused: boolean): void {
+    if (paused) writeFileSync(this.path('.release-paused'), '');
+    else rmSync(this.path('.release-paused'), { force: true });
+  }
+  /**
+   * Why a release cycle must not run right now, or null when it may. Every
+   * release entry point checks this first — the release timer, `crew release`,
+   * `crew merge`, `crew deploy` and the inline release a `run` cycle used to
+   * do — so a paused ship cannot merge, deploy, or file release alerts.
+   * A release already in flight when the pause lands finishes; only new
+   * cycles are refused.
+   */
+  releaseSkipReason(): string | null {
+    if (this.isPaused()) return 'the crew is paused';
+    if (this.isReleasePaused()) return 'releases are paused';
+    return null;
+  }
+
+  /**
    * Take an exclusive lock, or report who holds it.
    *
    * A timer fires every couple of minutes and an agent run takes minutes, so

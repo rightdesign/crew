@@ -395,6 +395,14 @@ export interface RunOnePassOptions {
  * immediately (zero-idle chaining) while those agents are still running.
  */
 export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
+  // CREW-1372: `crew pause` is honored here too, the same refusal the one-shot
+  // `run` makes before `decideCycle` (cli.ts). A paused pass does no keychain
+  // read, no poll, no sweep and no spawn, so the loop backs off like any idle
+  // pass. A run already in flight when the marker appears is not touched.
+  // Per-role pauses need no check here: `decideCycle` already drops paused
+  // roles from selection (poll.ts `pausedRoles`), so they never reach the loop.
+  if (o.state.isPaused()) return { pending: [], started: [], skipped: [] };
+
   // Re-check the OS keychain for this route on every cycle (ISSUE-966) —
   // cheap for a route that isn't keychain-backed at all (see
   // `hydrateApiKeys`'s own doc comment), and what lets a re-`crew connect`

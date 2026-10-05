@@ -59,6 +59,28 @@ test('resuming something that was never paused is not an error', () => {
   assert.equal(s.isPaused(), false);
 });
 
+test('ISSUE-1372: a paused crew refuses releases, not just polls', () => {
+  const s = fresh();
+  assert.equal(s.releaseSkipReason(), null);
+  s.pause();
+  assert.equal(s.releaseSkipReason(), 'the crew is paused');
+  s.resume();
+  assert.equal(s.releaseSkipReason(), null);
+});
+
+test('ISSUE-1372: pausing releases alone leaves the agents running', () => {
+  const s = fresh();
+  s.setReleasePaused(true);
+  assert.equal(s.isReleasePaused(), true);
+  assert.equal(s.isPaused(), false);
+  assert.equal(s.isRolePaused('dev'), false);
+  assert.equal(s.releaseSkipReason(), 'releases are paused');
+  s.setReleasePaused(false);
+  assert.equal(s.releaseSkipReason(), null);
+  s.setReleasePaused(false);   // resuming twice is not an error
+  assert.equal(s.isReleasePaused(), false);
+});
+
 test('the release-block counter is what makes a persistent refusal loud', () => {
   const r = fresh().release('proj');
   assert.equal(r.blockedCount(), 0);

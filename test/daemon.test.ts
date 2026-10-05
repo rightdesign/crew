@@ -425,6 +425,31 @@ test('a role with no rank sorts last rather than crashing the pass', async () =>
 // keychain call here.
 // ---------------------------------------------------------------------------
 
+test('ISSUE-1372: a paused crew makes a daemon pass poll nothing and start nothing, until resumed', async () => {
+  const { state, opts } = rig();
+  const decision = fakeDecision(['dev']);
+  let decides = 0;
+  const spawned: string[] = [];
+  const pass = () => runOnePass({
+    ...opts,
+    getSessionStore: () => fakeSessionStore({}),
+    decide: async () => { decides++; return decision; },
+    spawnRoleAgent: async (role) => { spawned.push(role); },
+  });
+
+  state.pause();
+  assert.deepEqual(await pass(), { pending: [], started: [], skipped: [] });
+  assert.equal(decides, 0, 'a paused pass must not poll the tracker');
+  assert.deepEqual(spawned, [], 'a paused pass must not start an agent');
+
+  state.resume();
+  const resumed = await pass();
+  assert.equal(decides, 1, 'the first pass after resume polls again');
+  assert.deepEqual(resumed.started, ['dev']);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(spawned, ['dev']);
+});
+
 test('runOnePass hydrates a keychain-backed route\'s apiKey before deciding the cycle', async () => {
   const { opts } = rig({ apiKey: undefined, apiKeyFile: undefined, apiKeyVar: undefined });
   const decision = fakeDecision([]);

@@ -14,7 +14,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | `crew doctor [route] [--fix]` | Read-only preflight; `--fix` enables clean routes and offers `crew install`. |
 | `crew install` / `crew uninstall` | Write and load, or unload and remove, this platform's scheduler unit. |
 | `crew status [route] [--json]` | Paused/running state, plus any open ship-level attention items (a parked role, a hook command missing from the scheduler PATH, a stalled release timer) for this ship and, from the Ships table, for others; `--json` for a machine reader (`ship.attention`). |
-| `crew pause\|resume [route] [ROLE]` | Pause or resume everything, or one role. |
+| `crew pause\|resume [route] [ROLE\|release]` | Pause or resume everything, one role, or releases only. `crew pause` stops agents (both one-shot `run` and `crew daemon` claim nothing) and the release timer (merge, deploy, release). `crew pause release` stops only shipping and leaves agents running. Passengers keep running through both. `crew resume` clears only the whole-crew pause, so a release pause stays until `crew resume release`, the same as a role pause. |
 | `crew inbox [--member NAME] [--by-route] [--all]` | Your tickets across every workspace, or a colleague's. |
 
 ## Running the crew
