@@ -211,7 +211,7 @@ crew pause|resume [route] [R]  pause everything, or one role
 crew log [route]               tail the log
 crew inbox [--member NAME]    your tickets across every workspace
 crew connect WS[/PROJECT]     resolve a workspace/project's ids into the state tree
-crew repos add ROUTE PATH     attach a local checkout to a route in crew.yaml, creating its Repos row if missing (--dry-run previews)
+crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml, creating its Repos row if missing (--dry-run previews)
 crew repos list ROUTE         the checkouts a route has, and the tracker Repos row each matches
 crew install                  write and load this platform's scheduler unit
 crew uninstall                unload and remove it

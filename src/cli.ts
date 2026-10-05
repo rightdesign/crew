@@ -60,7 +60,7 @@ import {
 import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -275,7 +275,7 @@ function usage(): never {
   crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
-  crew repos add ROUTE PATH     attach a local checkout to a route in crew.yaml (--dry-run previews)
+  crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
@@ -2056,19 +2056,32 @@ switch (command) {
     // names no `dir`/`repos` yet fails config validation and is dropped from
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
-    const routeName = positional[2];
     const usage = () => {
-      process.stderr.write('crew repos add <workspace/project> <path> [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos list <workspace/project>\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos list <workspace/project>\n');
       process.exit(2);
     };
-    if ((sub !== 'add' && sub !== 'list') || !routeName || (sub === 'add' && !positional[3])) usage();
+    if (sub !== 'add' && sub !== 'list') usage();
+    const configText = readFileSync(cfg.configFile, 'utf8');
+    let routeName = positional[2];
+    let addPath = '.';
+    let addName: string | undefined;
+    if (sub === 'list' && !routeName) usage();
+    if (sub === 'add') {
+      try {
+        const a = parseAddArgs(positional.slice(2), routeNamesOf(configText), (p) => existsSync(resolvePath(p.replace(/^~(?=\/|$)/, homedir()))));
+        routeName = a.route; addPath = a.path; addName = a.name;
+      } catch (e) {
+        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        throw e;
+      }
+    }
     const resolvedFile = resolvedPathFor(cfg.ship.stateDir, routeName!);
     let resolvedRemotes: RepoRemotes | undefined;
     if (existsSync(resolvedFile)) {
       try { resolvedRemotes = JSON.parse(readFileSync(resolvedFile, 'utf8')) as RepoRemotes; } catch { /* unreadable: treated as not connected */ }
     }
     const originOf = (dir: string) => gitOk(dir, ['remote', 'get-url', 'origin']) ?? undefined;
-    const text = readFileSync(cfg.configFile, 'utf8');
+    const text = configText;
     const base = dirname(cfg.configFile);
     try {
       if (sub === 'list') {
@@ -2084,12 +2097,12 @@ switch (command) {
         }
         break;
       }
-      const target = resolvePath(positional[3]!.replace(/^~(?=\/|$)/, homedir()));
+      const target = resolvePath(addPath.replace(/^~(?=\/|$)/, homedir()));
       const top = existsSync(target) ? gitOk(target, ['rev-parse', '--show-toplevel']) : null;
       if (!top) throw new ReposError(`${target} is not a git checkout`);
       const origin = originOf(top);
       const plan = planRepoAdd({
-        text, base, route: routeName!, path: top, origin, resolved: resolvedRemotes, name: value('name'),
+        text, base, route: routeName!, path: top, origin, resolved: resolvedRemotes, name: value('name') ?? addName,
         nameForExisting: (d) => matchRepoName(originOf(d), resolvedRemotes),
       });
       // No Repos row for this checkout: create one (CREW-1310) unless told not to.

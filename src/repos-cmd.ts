@@ -54,6 +54,39 @@ export function matchRepoName(origin: string | undefined, resolved: RepoRemotes 
   return undefined;
 }
 
+/** The route names a config's yaml declares, in file order. */
+export function routeNamesOf(text: string): string[] {
+  const routes = parseDocument(text).get('routes', true);
+  if (!isSeq(routes)) return [];
+  return routes.items.flatMap((i) => (isMap(i) && typeof i.get('route') === 'string' ? [i.get('route') as string] : []));
+}
+
+export interface AddArgs { route: string; name?: string; path: string }
+
+/**
+ * `crew repos add [route] [name] [path]` (CREW-1362). Every part is optional:
+ * a leading arg naming a configured route is the route (omitted: the only
+ * route, else an error listing them); of what remains, two args are
+ * `name path`, and one is a path when it is an existing directory, otherwise a
+ * repo name. No path means the current directory.
+ */
+export function parseAddArgs(args: string[], routes: string[], isDir: (p: string) => boolean): AddArgs {
+  const rest = [...args];
+  let route: string | undefined;
+  if (rest.length > 0 && routes.includes(rest[0]!)) route = rest.shift();
+  else if (rest.length > 0 && /^[^/\s]+\/[^/\s]+$/.test(rest[0]!) && !isDir(rest[0]!)) {
+    throw new ReposError(`no route "${rest[0]}" in the config (have: ${routes.join(', ') || 'none'})`);
+  }
+  if (!route) {
+    if (routes.length === 1) route = routes[0];
+    else throw new ReposError(routes.length === 0 ? 'the config has no routes — run `crew connect` first' : `several routes are configured; name one: ${routes.join(', ')}`);
+  }
+  if (rest.length > 2) throw new ReposError('too many arguments: expected [route] [name] [path]');
+  if (rest.length === 2) return { route: route!, name: rest[0], path: rest[1]! };
+  if (rest.length === 1) return isDir(rest[0]!) ? { route: route!, path: rest[0]! } : { route: route!, name: rest[0], path: '.' };
+  return { route: route!, path: '.' };
+}
+
 export interface RepoEntry { name: string; dir: string }
 
 export interface AddPlan {
@@ -139,7 +172,7 @@ export function planRepoAdd(i: AddInput): AddPlan {
   }
 
   const matched = matchRepoName(i.origin, i.resolved);
-  const name = matched ?? i.name ?? basename(target);
+  const name = matched ?? i.name ?? normalizeRemote(i.origin)?.split('/').pop() ?? basename(target);
   let warning: string | undefined;
   if (!matched) {
     const known = Object.values(i.resolved?.repoNames ?? {});

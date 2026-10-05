@@ -346,12 +346,16 @@ tail -f ~/Library/Logs/Crew.log
 
 ## Attaching a checkout to a route
 
-`crew repos add <workspace/project> <path>` points a route at a local checkout
-without editing `crew.yaml` by hand. It checks that `<path>` is a git checkout,
+`crew repos add [workspace/project] [name] [path]` points a route at a local
+checkout without editing `crew.yaml` by hand. Every argument is optional: run
+from inside the checkout, `crew repos add` alone uses the current directory,
+the only configured route (several routes: name one), and a repo name taken
+from the checkout's `origin` remote. A single trailing argument is a path if it
+is an existing directory, otherwise a repo name. It checks that the path is a git checkout,
 reads its `origin`, and matches that against the route's Repos table (the ids
 `crew connect` resolved). A match records the checkout under the Repos row's
-name. With no match, it creates the Repos row for you: `name` is the checkout's
-folder name (or `--name`), `remote` the normalised `owner/repo`, and
+name. With no match, it creates the Repos row for you: `name` is the `--name` / `name` argument, else the
+remote's repo name, else the folder name, `remote` the normalised `owner/repo`, and
 `platform` / `release_mode` / `ci_provider` come from the checkout's own
 `.crew.yaml` when it has one (else `unix` / `local` / `none`). The row's project
 is `--project <name>` if given, else the route's area, else the tracker's only

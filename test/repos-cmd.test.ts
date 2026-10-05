@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
+import { parseAddArgs, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
 import { parse } from 'yaml';
 
 const BASE = '/cfg';
@@ -115,4 +115,36 @@ test('resolveRepoProject: --project, route area, a lone project, else an error',
   assert.equal(resolveRepoProject(two, undefined, 'route-area'), 'route-area');
   assert.equal(resolveRepoProject([{ id: 'only' }], undefined), 'only');
   assert.throws(() => resolveRepoProject(two, undefined), /--project/);
+});
+
+test('routeNamesOf lists the configured routes in order', () => {
+  assert.deepEqual(routeNamesOf(empty), ['acme/product', 'other/thing']);
+});
+
+test('parseAddArgs: no args means the only route and the current directory', () => {
+  assert.deepEqual(parseAddArgs([], ['a/b'], () => false), { route: 'a/b', path: '.' });
+});
+
+test('parseAddArgs: route, name and path (the form that used to treat the name as the path)', () => {
+  assert.deepEqual(parseAddArgs(['a/b', 'tablation', '.'], ['a/b'], () => true), { route: 'a/b', name: 'tablation', path: '.' });
+});
+
+test('parseAddArgs: one trailing arg is a path when it is a directory, else a name', () => {
+  assert.deepEqual(parseAddArgs(['a/b', '~/src/x'], ['a/b'], () => true), { route: 'a/b', path: '~/src/x' });
+  assert.deepEqual(parseAddArgs(['a/b', 'tablation'], ['a/b'], () => false), { route: 'a/b', name: 'tablation', path: '.' });
+});
+
+test('parseAddArgs: an omitted route is only inferred when unambiguous', () => {
+  assert.throws(() => parseAddArgs([], ['a/b', 'c/d'], () => false), /name one: a\/b, c\/d/);
+  assert.throws(() => parseAddArgs([], [], () => false), /no routes/);
+  assert.deepEqual(parseAddArgs(['/tmp/x'], ['a/b'], () => true), { route: 'a/b', path: '/tmp/x' });
+});
+
+test('parseAddArgs: a route-shaped first arg that is not configured is an error', () => {
+  assert.throws(() => parseAddArgs(['x/y', '.'], ['a/b'], () => false), /no route "x\/y"/);
+});
+
+test('planRepoAdd names an unmatched checkout after its remote repo, not its folder', () => {
+  const plan = planRepoAdd({ text: empty, base: BASE, route: 'acme/product', path: '/src/checkout-dir', origin: 'git@github.com:acme/widget.git' });
+  assert.equal(plan.name, 'widget');
 });
