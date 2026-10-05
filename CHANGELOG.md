@@ -16,3 +16,7 @@ squash-merges every verified ticket, then in one following commit adds one
 `Changelog:` line across the batch) and bumps `package.json`, sized by the
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
+
+## [0.1.7] — 2026-10-05
+
+- `merged_at` now records the merge commit's own date instead of the stamp time, so it no longer mirrors `released_at` in ci_* modes (CREW-1361)
