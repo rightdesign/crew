@@ -53,6 +53,14 @@ export function gitOk(cwd: string, args: string[]): string | null {
   try { return git(cwd, args); } catch { return null; }
 }
 
+/** The committer date (strict ISO 8601) of `sha`, or null when it can't be read (unknown sha, no checkout). */
+export function commitDate(cwd: string, sha: string): string | null {
+  const out = gitOk(cwd, ['show', '-s', '--format=%cI', sha]);
+  if (!out) return null;
+  const t = new Date(out);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString();
+}
+
 export const currentBranch = (cwd: string): string => git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
 export const headSha = (cwd: string): string => git(cwd, ['rev-parse', 'HEAD']);
 

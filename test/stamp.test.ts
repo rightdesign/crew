@@ -288,3 +288,39 @@ test('with no version (versioning: none) a stamp still writes released_at, and n
   assert.equal(typeof calls[0]!.patch.released_at, 'string');
   assert.ok(!('released_version' in calls[0]!.patch));
 });
+
+function datedCommit(): { dir: string; sha: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-stamp-date-'));
+  const env = { ...process.env, GIT_COMMITTER_DATE: '2026-01-02T03:04:05Z', GIT_AUTHOR_DATE: '2026-01-02T03:04:05Z' };
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe', env }).toString().trim();
+  g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+  writeFileSync(join(dir, 'a'), '0'); g('add', '.'); g('commit', '-qm', 'merged');
+  return { dir, sha: g('rev-parse', 'HEAD') };
+}
+
+test('merged_at is the commit date when a checkout is given, not the stamp time', async () => {
+  const { dir, sha } = datedCommit();
+  const calls: Record<string, unknown>[] = [];
+  const tracker = {
+    updateTicket: async (_id: string, patch: Record<string, unknown>) => { calls.push(patch); return {} as Ticket; },
+  } as unknown as Parameters<typeof applyStamp>[0];
+  await applyStamp(tracker, [{ ticket: T('ISSUE-1'), reason: 'r', sha }], '1.0.0', DEFAULT_CONTRACT, emitter([]), false, dir);
+  assert.equal(calls[0]!.merged_at, '2026-01-02T03:04:05.000Z');
+  assert.notEqual(calls[0]!.merged_at, calls[0]!.released_at);
+
+  await applyExternalClosures(
+    tracker, [{ ticket: T('ISSUE-2'), closure: { state: 'merged', mergedAt: sha } as ClosureCheck, confirmed: true }],
+    DEFAULT_CONTRACT, emitter([]), false, dir,
+  );
+  assert.equal(calls[1]!.merged_at, '2026-01-02T03:04:05.000Z');
+});
+
+test('merged_at falls back to stamp time when the sha cannot be read', async () => {
+  const { dir } = datedCommit();
+  const calls: Record<string, unknown>[] = [];
+  const tracker = {
+    updateTicket: async (_id: string, patch: Record<string, unknown>) => { calls.push(patch); return {} as Ticket; },
+  } as unknown as Parameters<typeof applyStamp>[0];
+  await applyStamp(tracker, [{ ticket: T('ISSUE-1'), reason: 'r', sha: 'deadbeef'.repeat(5) }], '1.0.0', DEFAULT_CONTRACT, emitter([]), false, dir);
+  assert.equal(calls[0]!.merged_at, calls[0]!.released_at);
+});

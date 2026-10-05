@@ -15,7 +15,7 @@
 import { referenceKeys, type Tracker, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 import type { Emitter } from './events.ts';
-import { commitBodies, findKeyInRange, type ClosureCheck } from './git.ts';
+import { commitBodies, commitDate, findKeyInRange, type ClosureCheck } from './git.ts';
 
 export interface StampPlan {
   ticket: Ticket;
@@ -80,9 +80,19 @@ export function planStamp(
     .filter((p): p is StampPlan => p !== null);
 }
 
+/**
+ * When the work actually merged: the commit's own committer date. Stamp time
+ * is only the fallback (no checkout to ask, or an unreadable sha) — in `ci_*`
+ * modes the stamp runs after the release is confirmed live, so using it would
+ * make `merged_at` a second `released_at` and lose the real merge time.
+ */
+function mergedAtFor(cwd: string | undefined, sha: string, fallback: string): string {
+  return (cwd && commitDate(cwd, sha)) || fallback;
+}
+
 export async function applyStamp(
   tracker: Tracker, plan: StampPlan[], version: string | undefined,
-  contract: Contract, emit: Emitter, dryRun: boolean,
+  contract: Contract, emit: Emitter, dryRun: boolean, cwd?: string,
 ): Promise<number> {
   let stamped = 0;
   const at = new Date().toISOString();
@@ -103,10 +113,9 @@ export async function applyStamp(
         ...(version ? { released_version: version } : {}),
         // Written here rather than only on the external path (below): a
         // ticket's record should mean the same thing regardless of which
-        // release mode closed it (ISSUE-218). `merged_at` is stamped
-        // alongside — not read off the commit itself — since that is the
-        // moment the tracker learns of it, same as the external path.
-        ...(sha ? { commit_sha: sha, merged_at: at } : {}),
+        // release mode closed it (ISSUE-218). `merged_at` is the commit's own
+        // date, not the stamp time (which trails the deploy in ci_* modes).
+        ...(sha ? { commit_sha: sha, merged_at: mergedAtFor(cwd, sha, at) } : {}),
       });
       emit.emit(`stamped ${contract.statuses.deployed}${version ? ` (${version})` : ''}${shaNote}`, {
         ticket: ticket.issue_id,
@@ -151,6 +160,7 @@ export async function applyExternalClosures(
   contract: Contract,
   emit: Emitter,
   dryRun: boolean,
+  cwd?: string,
 ): Promise<number> {
   if (!closures?.length) return 0;
   let stamped = 0;
@@ -166,7 +176,7 @@ export async function applyExternalClosures(
     try {
       await tracker.updateTicket(ticket.id, {
         commit_sha: closure.mergedAt,
-        merged_at: at,
+        merged_at: mergedAtFor(cwd, closure.mergedAt, at),
         ...(confirmed ? { status: contract.statuses.deployed, released_at: at, ...(version ? { released_version: version } : {}) } : {}),
       });
       emit.emit(`stamped commit_sha (${closure.mergedAt.slice(0, 8)})${shippedNote}`, { ticket: ticket.issue_id });

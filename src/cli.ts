@@ -1126,7 +1126,7 @@ async function releasePhase(
         outcome.stampFrom ?? outcome.decision.lastReleased, outcome.decision.head,
         new Map(outcome.merged.map((m) => [m.ticket.issue_id, m.sha])),
       );
-      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun);
+      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun, target.dir);
     } else if (outcome.stopped) {
       remit.emit(`nothing stamped — ${outcome.stopped}`);
     }
@@ -1138,7 +1138,7 @@ async function releasePhase(
     // repo-defined `hooks.released` confirms the landing actually shipped,
     // the ticket closes out to `deployed` too (ISSUE-811).
     if (outcome.externalClosures?.length) {
-      await applyExternalClosures(tracker, outcome.externalClosures, tracker.contract, remit, dryRun);
+      await applyExternalClosures(tracker, outcome.externalClosures, tracker.contract, remit, dryRun, target.dir);
     }
 
     // Last, and non-fatal: whatever happened has happened, and telling someone
