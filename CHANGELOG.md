@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.14.0] — 2026-10-06
+
+- A repo can name the one ship that releases it (`release.ship`), `crew connect` provisions the release lock row, and a missing lock row now refuses the release instead of silently skipping the lock (CREW-1384)
+
 ## [0.13.2] — 2026-10-06
 
 - A failed release setup, build or deploy now files its alert with the failing hook's name and last output lines instead of a fixed message (CREW-1396)
