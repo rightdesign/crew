@@ -37,7 +37,7 @@ test('an unknown key is an error — a mistyped hook must never silently not run
     (e: Error) => {
       assert.ok(e instanceof RepoConfigError);
       assert.match(e.message, /unknown hooks key: tests/);
-      assert.match(e.message, /allowed: build, bump, deploy, handoff, isolate, merged, ports, pr, released, setup, test, version/);
+      assert.match(e.message, /allowed: build, bump, deploy, handoff, isolate, merged, ports, pr, released, review, setup, test, version/);
       return true;
     });
   assert.throws(() => parseRepoConfig('version: 1\nplatfrom: unix\n', 'f'), /unknown top-level key: platfrom/);
