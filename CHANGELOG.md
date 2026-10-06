@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.14.1] — 2026-10-06
+
+- A comment posted from the app by a person whose Crew row is on another ship is now attributed to them instead of reading "(no identity)", and `crew doctor` checks the operator's identity link (CREW-1390)
+
 ## [0.14.0] — 2026-10-06
 
 - A repo can name the one ship that releases it (`release.ship`), `crew connect` provisions the release lock row, and a missing lock row now refuses the release instead of silently skipping the lock (CREW-1384)
