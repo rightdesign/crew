@@ -10,11 +10,12 @@
  */
 
 import type { ShipAttentionItem } from './ship-attention.ts';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
-  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, remoteConfigured, tagCommit, tagExists,
+  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, recoverStrandedReleaseCheckouts, remoteBranchExists, remoteConfigured, fetchRemote, resolve, tagCommit, tagExists,
   type ClosureCheck,
 } from './git.ts';
 import {
@@ -744,6 +745,52 @@ async function confirmLastRelease(
   return { confirmed, version };
 }
 
+/**
+ * A temporary checkout of `<remote>/<base>` that a real release is cut in
+ * (CREW-1383). The primary checkout's own `base` is never the thing a release
+ * writes to: it is a cache of the remote, and a release that committed the
+ * version bump there left a hand commit the next ship's release could not
+ * fast-forward past. Everything the release does — squash-merges, the version
+ * bump and changelog, the build and deploy hooks, the tag, the base push —
+ * runs here, on a `crew/release-<ts>` branch, and the base is pushed to from
+ * that branch as a plain fast-forward (`<branch>:<base>`, never forced).
+ *
+ * `copy` is the repo's own `worktrees.copy` list: gitignored files (an `.env`,
+ * say) a fresh checkout cannot have, copied across the same way a ticket
+ * worktree gets them, before `setup` runs.
+ *
+ * `close()` always removes the checkout and its branch. A rejected push
+ * therefore leaves nothing behind: no branch, no tag, and the primary checkout
+ * untouched, so the next cycle retries from a fresh `<remote>/<base>`.
+ */
+interface ReleaseCheckout { dir: string; branch: string; close(): void }
+
+function openReleaseCheckout(o: ReleaseRunOptions): ReleaseCheckout {
+  const { remote, base } = o.repo.branch;
+  const branch = `crew/release-${Date.now()}`;
+  const root = mkdtempSync(join(tmpdir(), 'crew-release-'));
+  const dir = join(root, 'checkout');
+  const close = () => {
+    gitOk(o.cwd, ['worktree', 'remove', '--force', dir]);
+    rmSync(root, { recursive: true, force: true });
+    gitOk(o.cwd, ['worktree', 'prune']);
+    gitOk(o.cwd, ['branch', '-D', branch]);
+  };
+  try {
+    git(o.cwd, ['worktree', 'add', '-q', '-b', branch, dir, `${remote}/${base}`]);
+  } catch (e) {
+    close();
+    throw e;
+  }
+  for (const f of o.repo.worktrees.copy) {
+    const src = join(o.cwd, f);
+    if (!existsSync(src)) continue;
+    mkdirSync(dirname(join(dir, f)), { recursive: true });
+    copyFileSync(src, join(dir, f));
+  }
+  return { dir, branch, close };
+}
+
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
   const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
@@ -813,6 +860,56 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     return { merged: [], deployed: false, stopped: 'external', decision, externalClosures };
   }
 
+  // Dry runs write nothing, so they need no checkout of their own. `crew merge`
+  // stays on the primary checkout, which is where its merges are meant to land
+  // (it never pushes, so a discarded checkout would throw them away). A repo with
+  // no base on its remote has no `origin/<base>` to cut from, so it releases the
+  // way it always has.
+  const { remote, base } = o.repo.branch;
+  if (o.dryRun || o.mergeOnly || !remoteBranchExists(o.cwd, remote, base)) {
+    return mergeAndRelease(o, decision, fresh);
+  }
+  let checkout: ReleaseCheckout;
+  const stranded = recoverStrandedReleaseCheckouts(o.cwd);
+  if (stranded.length > 0) o.emit.warn(scoped(`dropped release checkout(s) stranded by a crash: ${stranded.join(', ')}`));
+  try {
+    checkout = openReleaseCheckout(o);
+  } catch (e) {
+    o.emit.error(scoped(`could not cut a release checkout from ${remote}/${base} — ${(e as Error).message}`));
+    return { merged: [], deployed: false, stopped: 'release checkout failed', decision };
+  }
+  try {
+    return await mergeAndRelease({ ...o, cwd: checkout.dir }, decision, fresh, checkout.branch);
+  } finally {
+    checkout.close();
+    // The primary checkout catches up to whatever was just pushed. A plain
+    // fast-forward from a clean tree only, so nothing a person has in progress
+    // is touched; the next cycle's refresh covers any case this one skips.
+    const refreshed = refreshBaseBranch(o.cwd, remote, base);
+    // Local runners execute `dist/cli.js` from the primary checkout (ISSUE-584),
+    // and the build the release just ran wrote its output in the temporary
+    // checkout, so the primary's bundle is stale until it is rebuilt here. The
+    // push already landed, so a failed rebuild is a warning, not a failed release.
+    if (refreshed.action === 'fast-forwarded' && o.repo.hooks.build) {
+      const r = await hook(o, 'build');
+      if (r && r.code !== 0) {
+        o.emit.warn(scoped(`rebuilding the primary checkout after the release failed (exit ${r.code}) — its dist/ is stale until \`${o.repo.hooks.build}\` is run there`));
+      }
+    }
+  }
+}
+
+/**
+ * The merge-and-release body of `runRelease`: everything from the squash-merges
+ * onward. `releaseBranch` is the temporary branch the release was cut on, when
+ * there is one (CREW-1383); its push is then `<releaseBranch>:<base>`.
+ */
+async function mergeAndRelease(
+  o: ReleaseRunOptions,
+  decision: ReleaseDecision,
+  fresh: ReturnType<typeof refreshBase>,
+  releaseBranch?: string,
+): Promise<ReleaseOutcome> {
   o.emit.enter('merge');
   const merged: MergeCandidate[] = [];
   const conflicts: ConflictFailure[] = [];
@@ -1022,6 +1119,20 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
     }
   }
 
+  // Another ship may have released while this one was testing and building. Its
+  // push would be rejected below, but a local-mode deploy would already have
+  // shipped a version the remote never gets, so look before deploying.
+  if (releaseBranch && !o.dryRun) {
+    const { remote, base } = o.repo.branch;
+    if (fetchRemote(o.cwd, remote) && remoteBranchExists(o.cwd, remote, base)) {
+      const moved = resolve(o.cwd, `${remote}/${base}`);
+      if (moved && !isAncestor(o.cwd, moved, 'HEAD')) {
+        o.emit.warn(`${remote}/${base} moved during the release — discarding it; the tickets stay verified and the next cycle retries`);
+        return { merged, conflicts, unbuildable, version, deployed: false, decision, stopped: 'base branch moved during release' };
+      }
+    }
+  }
+
   let deployed = false;
   let integrated = false;
   if (o.repo.release.mode === 'integrate') {
@@ -1065,7 +1176,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       o.emit.emit(`would push ${o.repo.branch.base} to ${o.repo.branch.remote}`);
     } else {
       try {
-        pushBranch(o.cwd, o.repo.branch.remote, o.repo.branch.base);
+        pushBranch(o.cwd, o.repo.branch.remote, releaseBranch ?? o.repo.branch.base, o.repo.branch.base);
         o.emit.emit(`pushed ${o.repo.branch.base} to ${o.repo.branch.remote}`);
       } catch (e) {
         o.emit.error(

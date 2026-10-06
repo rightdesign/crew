@@ -353,9 +353,12 @@ if `report_type` is either of those.
    reconcile it yourself. Post a comment on the ticket naming the repo and the
    counts `crew sync` printed, leave the ticket as you found it, and end the
    run — the operator reconciles the checkout. Otherwise, from
-   the primary checkout, `git worktree add` a sibling worktree for this
-   ticket, on a new branch cut from the base branch's current HEAD. The
-   digest's `worktree` and `branch` columns give this ticket's own directory
+   the primary checkout, `git worktree add <dir> -b <branch> <remote>/<base>`
+   a sibling worktree for this ticket, on a new branch cut from the base
+   branch's REMOTE-TRACKING ref (`origin/main`, say), never from the primary
+   checkout's own local base — that copy is a cache of the remote, and a
+   local commit on it would be carried into every ticket cut from it
+   (CREW-1383). The digest's `worktree` and `branch` columns give this ticket's own directory
    and branch name — use them verbatim. The Environment section names the
    base branch and describes the general pattern, but its own worked example
    is illustrative only (rendered before any ticket is chosen, so it cannot

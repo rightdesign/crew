@@ -684,14 +684,20 @@ export function refreshBaseBranch(cwd: string, remote: string, base: string, dry
   const [behindStr, aheadStr] = counts.split(/\s+/);
   const behind = Number.parseInt(behindStr ?? '0', 10);
   const ahead = Number.parseInt(aheadStr ?? '0', 10);
+  // The commits only this checkout has. Since a release is cut in a temporary
+  // checkout (CREW-1383), these can only be someone's hand commit, so name them.
+  const named = (): string => {
+    const subjects = (gitOk(cwd, ['log', '--format=%h %s', '-5', `${upstream}..${base}`]) ?? '').split('\n').filter(Boolean);
+    return subjects.length ? `: ${subjects.join('; ')}${ahead > subjects.length ? '; …' : ''}` : '';
+  };
   if (ahead > 0 && behind > 0) {
     return {
       action: 'diverged', ahead, behind,
-      detail: `${base} has diverged from ${upstream} (${ahead} ahead, ${behind} behind)`,
+      detail: `${base} has diverged from ${upstream} (${ahead} ahead, ${behind} behind)${named()}`,
     };
   }
   if (behind === 0 && ahead > 0) {
-    return { action: 'ahead', ahead, detail: `${base} has ${ahead} commit(s) ${upstream} does not` };
+    return { action: 'ahead', ahead, detail: `${base} has ${ahead} commit(s) ${upstream} does not${named()}` };
   }
   if (behind === 0) return { action: 'level', detail: `${base} is level with ${upstream}` };
   if (dryRun) {
@@ -706,9 +712,37 @@ export function refreshBaseBranch(cwd: string, remote: string, base: string, dry
   };
 }
 
-/** Pushes `branch`'s current local commit to `remote`. Throws on rejection. */
-export function pushBranch(cwd: string, remote: string, branch: string): void {
-  git(cwd, ['push', remote, branch]);
+/**
+ * A crash mid-release leaves its temporary checkout registered as a worktree
+ * on a `crew/release-*` branch, which nothing else would ever sweep. Nothing
+ * there is worth keeping (a failed release survives nowhere by design), so
+ * remove every such worktree and branch. Only ever called under the release
+ * lock, so none of them can be a live release. Returns the branches dropped.
+ */
+export function recoverStrandedReleaseCheckouts(cwd: string): string[] {
+  gitOk(cwd, ['worktree', 'prune']);
+  const out = gitOk(cwd, ['worktree', 'list', '--porcelain']) ?? '';
+  let path = '';
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
+    else if (line.startsWith('branch refs/heads/crew/release-') && path) {
+      gitOk(cwd, ['worktree', 'remove', '--force', path]);
+    }
+  }
+  const stranded = (gitOk(cwd, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/crew/release-*']) ?? '')
+    .split('\n').filter(Boolean);
+  for (const b of stranded) gitOk(cwd, ['branch', '-q', '-D', b]);
+  return stranded;
+}
+
+/**
+ * Pushes `branch`'s current local commit to `remote`, as `dst` there (same
+ * name when omitted). Throws on rejection. A release cut in a temporary
+ * checkout pushes its own `crew/release-*` branch onto the base this way
+ * (CREW-1383); a plain push is always a fast-forward, never forced.
+ */
+export function pushBranch(cwd: string, remote: string, branch: string, dst = branch): void {
+  git(cwd, ['push', remote, `${branch}:${dst}`]);
 }
 
 /**

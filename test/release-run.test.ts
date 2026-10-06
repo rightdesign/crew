@@ -1063,6 +1063,135 @@ test('a failed base branch push stops the release, even though the deploy alread
   })();
 });
 
+/** `git worktree list` entries (the primary checkout included), and any `crew/release-*` branches. */
+const releaseLeftovers = (dir: string) => ({
+  worktrees: execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: dir, encoding: 'utf8' })
+    .split('\n').filter((l) => l.startsWith('worktree ')).length,
+  branches: execFileSync('git', ['branch', '--list', 'crew/release-*'], { cwd: dir, encoding: 'utf8' }).trim(),
+});
+
+test('a real release is cut in a temporary checkout and leaves nothing behind; the primary base only catches up (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(LOCAL, bare);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, '1.3.0');
+  assert.deepEqual(releaseLeftovers(dir), { worktrees: 1, branches: '' });
+  // The primary checkout's base is level with the remote it pushed to: it was
+  // fast-forwarded, not released onto.
+  assert.equal(
+    execFileSync('git', ['rev-parse', 'main'], { cwd: dir, encoding: 'utf8' }).trim(),
+    execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
+  );
+});
+
+test('a rejected base push leaves no release branch, no tag, and the primary base untouched (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(LOCAL, bare);
+  // A remote that refuses every push, so the release has to be thrown away.
+  writeFileSync(join(bare, 'hooks', 'pre-receive'), '#!/bin/sh\necho refused >&2\nexit 1\n', { mode: 0o755 });
+  const primaryBefore = execFileSync('git', ['rev-parse', 'main'], { cwd: dir, encoding: 'utf8' }).trim();
+  const remoteBefore = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'base branch push failed');
+  assert.equal(out.tag, undefined);
+  assert.equal(execFileSync('git', ['rev-parse', 'main'], { cwd: dir, encoding: 'utf8' }).trim(), primaryBefore);
+  assert.equal(execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(), remoteBefore);
+  assert.ok(!execFileSync('git', ['tag', '--list'], { cwd: dir, encoding: 'utf8' }).includes('v1.3.0'));
+  assert.deepEqual(releaseLeftovers(dir), { worktrees: 1, branches: '' });
+});
+
+test('after a release the primary checkout\'s own build is re-run, so its dist/ is not stale (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: mkdir -p dist && echo built > dist/marker
+  deploy: exit 0
+`, bare);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, '1.3.0');
+  assert.ok(existsSync(join(dir, 'dist', 'marker')));
+});
+
+test('a failed rebuild of the primary checkout is a warning, not a failed release (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const once = join(mkdtempSync(join(tmpdir(), 'crew-rel-once-')), 'ran');
+  const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: if [ -f ${once} ]; then exit 3; fi; touch ${once}
+  deploy: exit 0
+`, bare);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, '1.3.0');
+  assert.equal(out.stopped, undefined);
+  assert.ok(lines.some((l) => /rebuilding the primary checkout after the release failed/.test(l)));
+});
+
+test('origin moving mid-release discards the release before the deploy: nothing deployed, no tag, primary untouched (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  deploy: touch DEPLOYED
+`, bare);
+  // Another ship pushes while this one's build hook runs.
+  const other = mkdtempSync(join(tmpdir(), 'crew-rel-other-'));
+  execFileSync('git', ['clone', '-q', bare, other], { stdio: 'pipe' });
+  const script = join(mkdtempSync(join(tmpdir(), 'crew-rel-hook-')), 'build.sh');
+  writeFileSync(script, `#!/bin/sh
+cd ${other} && git config user.email o@o && git config user.name O && echo x > other-ship.txt && git add . && git commit -qm other && git push -q origin main
+`, { mode: 0o755 });
+  repo.hooks.build = script;
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'base branch moved during release');
+  assert.equal(out.deployed, false);
+  assert.equal(existsSync(join(dir, 'DEPLOYED')), false);
+  // The primary only caught up to the other ship's push; nothing of ours is on it.
+  assert.equal(
+    execFileSync('git', ['rev-parse', 'main'], { cwd: dir, encoding: 'utf8' }).trim(),
+    execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
+  );
+  assert.ok(!execFileSync('git', ['log', '--format=%s', 'main'], { cwd: dir, encoding: 'utf8' }).includes('Release v1.3.0'));
+  assert.deepEqual(releaseLeftovers(dir), { worktrees: 1, branches: '' });
+  assert.ok(!execFileSync('git', ['tag', '--list'], { cwd: dir, encoding: 'utf8' }).includes('v1.3.0'));
+});
+
+test('a release checkout stranded by a crash is cleaned up at the start of the next release (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(LOCAL, bare);
+  const stray = join(mkdtempSync(join(tmpdir(), 'crew-release-')), 'checkout');
+  g('worktree', 'add', '-q', '-b', 'crew/release-123', stray, 'origin/main');
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, '1.3.0');
+  assert.deepEqual(releaseLeftovers(dir), { worktrees: 1, branches: '' });
+  assert.ok(lines.some((l) => /crew\/release-123/.test(l)));
+});
+
+test('a hand commit on local main is a hard stop that names the commit (CREW-1383)', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(LOCAL, bare);
+  writeFileSync(join(dir, 'hand.txt'), 'x'); g('add', '.'); g('commit', '-qm', 'hand edit on main');
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.match(out.stopped ?? '', /hand edit on main/);
+  assert.deepEqual(releaseLeftovers(dir), { worktrees: 1, branches: '' });
+});
+
 test('a failed tag push stops the release rather than waiting on a release that was never triggered', () => {
   return (async () => {
     const { dir, repo } = projectWithRemote(`version: 1
