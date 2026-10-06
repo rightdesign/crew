@@ -379,6 +379,17 @@ if `report_type` is either of those.
    not from this checkout's working
    state, is deliberate: the primary checkout may have anything going on.
    `cd` into the worktree and do everything else below there.
+   **`crew worktree <number>` does all of this for you and is the preferred
+   route** — it prints the worktree's path on stdout. It cuts from
+   `<remote>/<branch>` when the branch is already pushed (another ship built
+   it, or an earlier run of yours), fresh from `<remote>/<base>` when no
+   branch exists anywhere, fast-forwards a clean stale worktree at the same
+   path, and re-cuts one whose branch is gone from the remote and which holds
+   no work of its own. It exits 1 and leaves the directory alone when that
+   worktree has uncommitted changes or commits that are not on the remote
+   (someone may be editing it by hand) — say so in a ticket comment and carry
+   on from a fresh worktree path only if a person says so. **A missing
+   worktree is never a reason to stop.**
 2. A worktree is a clean checkout, so it is missing exactly the files git
    ignores — which are usually the ones without which nothing runs. Copy the
    files the Environment section lists across from the primary checkout, then
@@ -562,11 +573,17 @@ if `report_type` is either of those.
    found, and QA never sees it. When it matches, the runner records
    `pushed <sha> to <remote>/<branch>` on the ticket itself; you still state the
    sha in your last progress comment.
-   Leave the worktree and branch exactly where they are, unmerged: QA boots
-   *your worktree* on its derived ports to test the fix, so removing it
-   would leave QA nothing to test. Your last progress comment is what QA
-   reads first — say what you changed, how you verified it, which ports and
-   database the worktree uses, and anything you could not test yourself.
+   **Your worktree is yours for this run only, and the branch on the remote is
+   what QA tests.** Leave the branch exactly where it is, unmerged, and do not
+   remove the worktree by hand: when your session ends at a verified push the
+   runner removes it (nothing on this ship's disk is needed again). The one
+   exception is a repo that declares a `handoff` hook — there the worktree is
+   kept, because a server you left running serves from it; the runner records
+   that on the ticket, and QA on another ship cuts its own worktree from the
+   remote instead. Your last progress comment is what QA reads first — say what
+   you changed, how you verified it, which ports and database you used, and
+   anything you could not test yourself. A later run, on any ship, starts from
+   `<remote>/<branch>`, so anything not committed and pushed is gone.
 
 ## Question and Investigation tickets
 

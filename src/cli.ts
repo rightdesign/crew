@@ -32,6 +32,7 @@ import { planStrandedVerified, applyStrandedVerified } from './stranded-verified
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { guardRunHandoff } from './handoff-guard.ts';
+import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
@@ -276,6 +277,7 @@ function usage(): never {
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
+  crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [route] [R|release]  pause everything, one role, or releases only (merge/deploy/release; passengers keeps running).
@@ -3170,6 +3172,32 @@ switch (command) {
     // by the next regular `passengers` cycle once it has settled `connected`.
     await Promise.all(rotatePending);
     emit.emit(`rotated the passenger tunnel for ${route.route} — it reconnects under a fresh slug and the registered endpoint follows on the next passengers cycle`);
+    break;
+  }
+
+  case 'worktree': {
+    // CREW-1385: a run's worktree is materialized from the remote, never
+    // assumed to exist. Prints the path on stdout (everything else goes to the
+    // log) so a session can `cd "$(crew worktree NNN)"`; exits 1 when the
+    // existing worktree was left alone (dirty / unpushed commits) so the
+    // session knows to say so rather than work in it.
+    emit.enter('worktree');
+    const rawWt = positional[2] ?? positional[1];
+    const nWt = rawWt ? parseTicketNumber(rawWt) : null;
+    if (!nWt) { process.stderr.write('worktree: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
+    const trackerWt = new Tracker(route, cfg.ship);
+    const cWt = trackerWt.contract;
+    const ticketWt = (await trackerWt.openTickets()).find((t) => t[cWt.columns.key] === `ISSUE-${nWt}`);
+    if (!ticketWt) { process.stderr.write(`worktree: no open ticket ISSUE-${nWt} on ${route.route}\n`); process.exit(2); }
+    const repoWt = (await resolvedRepos(route)).find((r) => r.id === ticketWt.repo_id) ?? (await resolvedRepos(route))[0];
+    if (!repoWt) { process.stderr.write('worktree: this route has no repository\n'); process.exit(2); }
+    const roleWt = positional.find((p) => p === 'dev' || p === 'design' || p === 'qa');
+    const planWt = planRunWorktree(repoWt.dir, repoWt.config, ticketWt, roleWt);
+    if (dryRun) { emit.emit(`would ${describeRunWorktreePlan(planWt)}`); break; }
+    const pathWt = applyRunWorktree(repoWt.dir, repoWt.config, planWt);
+    emit.emit(describeRunWorktreePlan(planWt));
+    if (pathWt) process.stdout.write(`${pathWt}\n`);
+    if (!planIsUsable(planWt)) process.exitCode = 1;
     break;
   }
 

@@ -56,6 +56,10 @@ human review, so "probably fine" is not a pass.
    Does the change actually do what the comment claims? Does it handle the
    empty/error/permission path, or only the happy one? Does it touch
    anything the ticket never mentioned?
+   **You never need the builder's worktree.** Cut your own from the remote
+   branch with `crew worktree <number>` (prints its path) — unless the builder's
+   hand-off event says its ship kept a worktree and a server for you, in which
+   case you may open that URL instead. Remove yours when you hand the ticket on.
    **A branch on the remote is testable.** The builder may be on another ship:
    the digest's `branch` column then reads `<name> (on origin only)` and no
    worktree exists here yet. Cut one from the remote branch —

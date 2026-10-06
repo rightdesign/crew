@@ -32,6 +32,7 @@ import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, type Route, type Ship, type RoleName } from './config.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import type { Ticket, Tracker } from './tracker.ts';
+import { finishRunWorktree } from './run-worktree.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
 export const HANDOFF_BOUNCED_MARKER = '<!-- crew:handoff-bounced -->';
@@ -197,12 +198,40 @@ export async function guardRunHandoff(
       branch: { ...route.branch, ...o?.branch },
     }, target.dir);
     const affinity = await tracker.claimAffinity();
-    return await enforceHandoff({
+    const outcome = await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
       seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, log,
     });
+    if (outcome.kind === 'pushed') await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
+    return outcome;
   } catch (e) {
     log.warn(`could not check the hand-off: ${(e as Error).message}`, { step: 'handoff' });
     return null;
+  }
+}
+
+/**
+ * CREW-1385: the run's worktree has no reader once its branch is verifiably on
+ * the remote, so it is removed — except where the repo's `handoff` hook keeps a
+ * server up for QA, in which case it stays and the serving ship is recorded on
+ * the ticket (as an event; the workspace has no `serving_ship_id` column to
+ * write, and adding one is the operator's call). Non-fatal.
+ */
+async function retireRunWorktree(
+  tracker: Tracker, dir: string, cfg: EffectiveRepoConfig, t: Ticket, role: string,
+  seatId: string, shipName: string, log: HandoffLog,
+): Promise<void> {
+  try {
+    const branch = existingBranchForTicket(dir, cfg, t, role);
+    if (!branch) return;
+    const o = await finishRunWorktree(dir, cfg, branch);
+    const at = { ticket: t.issue_id, step: 'handoff' };
+    if (o.kind === 'removed') log.emit(`${t.issue_id}: removed the run's worktree ${o.path} — the branch is on ${cfg.branch.remote}`, at);
+    else if (o.kind === 'kept-handoff') {
+      log.emit(`${t.issue_id}: kept worktree ${o.path} — this repo's handoff hook serves from it`, at);
+      await tracker.postEvent(t.id, `worktree kept on ship ${shipName} at \`${o.path}\`: the repo's \`handoff\` hook serves from it. QA on another ship cuts its own from \`${cfg.branch.remote}/${branch}\` instead.`, seatId);
+    } else if (o.kind === 'kept-dirty') log.warn(`${t.issue_id}: left worktree ${o.path} — it has uncommitted changes`, at);
+  } catch (e) {
+    log.warn(`could not retire the run's worktree: ${(e as Error).message}`, { step: 'handoff' });
   }
 }
