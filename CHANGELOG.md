@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.13.0] — 2026-10-06
+
+- Ship affinity leftovers: QA verification is held per ship, ship names in seat comments, crew doctor warns on unheld in-flight tickets, and a dead-ship takeover leaves a comment (CREW-1389)
+- Ship affinity leftovers: QA verification is held per ship (a second ship's QA skips a ticket already being verified), ship names replace uuids in the brief and digest, `crew doctor` warns about in-flight tickets with no live ship hold, and taking over a dead ship's ticket leaves a comment (ISSUE-1389)
+
 ## [0.12.1] — 2026-10-06
 
 - CREW-1394 — a QA resume no longer overwrites another live ship's hold on a qa/fixed ticket; the ticket is verified without re-stamping the hold.
