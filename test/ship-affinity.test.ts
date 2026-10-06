@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { StaleWriteError } from '@tablation/client';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
-import { applyHoldReleases, heldByOtherShip, noteReaccepted, planHoldReleases, shipIdByName, shipIsAlive, SHIP_DEAD_AFTER_CYCLES } from '../src/ship-affinity.ts';
+import { applyHoldReleases, heldByLiveOtherShip, heldByOtherShip, noteReaccepted, planHoldReleases, shipIdByName, shipIsAlive, SHIP_DEAD_AFTER_CYCLES } from '../src/ship-affinity.ts';
 import { resolveTopCandidate, type ClaimableTracker } from '../src/claim.ts';
 import { roleHasWork, rankedCandidates, selectRole, withHoldCheck } from '../src/select.ts';
 import type { SelectionInput } from '../src/select.ts';
@@ -248,4 +248,38 @@ test('resuming an in_progress ticket with no held_by_ship_id stamps it; one that
   const s2 = fakeTracker([owned]);
   await resolveTopCandidate(s2.tracker, [owned], 'dev-B', 'accepted', 'in_progress', undefined, affinity);
   assert.equal(s2.calls.length, 0);
+});
+
+test('CREW-1394: a QA resume of a qa/fixed ticket a LIVE ship holds writes nothing and hands the ticket back', async () => {
+  const a = { myShipId: 'ship-B', ships: ships(), contract: DEFAULT_CONTRACT, now: NOW };
+  const affinity = {
+    column: 'held_by_ship_id',
+    shipId: 'ship-B',
+    isHeldElsewhere: (t: Ticket) => heldByOtherShip(t, a),
+    isLiveHoldElsewhere: (t: Ticket) => heldByLiveOtherShip(t, a),
+  };
+  for (const status of ['qa', 'fixed']) {
+    const held = T({ id: 't', issue_id: 'CREW-1386', status, assignee_id: 'qa-A', held_by_ship_id: 'ship-A' });
+    const { tracker, calls } = fakeTracker([held]);
+    const r = await resolveTopCandidate(tracker, [held], 'qa-B', 'accepted', 'in_progress', undefined, affinity);
+    assert.equal(calls.length, 0, status);
+    assert.equal(r.claimed, false, status);
+    assert.equal(r.ticket?.id, 't', status);
+    assert.equal(r.ticket?.held_by_ship_id, 'ship-A', status);
+  }
+});
+
+test('CREW-1394: a qa ticket whose hold names a DEAD ship is still stamped by the resuming ship', async () => {
+  const a = { myShipId: 'ship-B', ships: ships(dead), contract: DEFAULT_CONTRACT, now: NOW };
+  const affinity = {
+    column: 'held_by_ship_id',
+    shipId: 'ship-B',
+    isHeldElsewhere: (t: Ticket) => heldByOtherShip(t, a),
+    isLiveHoldElsewhere: (t: Ticket) => heldByLiveOtherShip(t, a),
+  };
+  const held = T({ id: 't', issue_id: 'CREW-1386', status: 'qa', assignee_id: 'qa-A', held_by_ship_id: 'ship-A' });
+  const { tracker, calls } = fakeTracker([held]);
+  const r = await resolveTopCandidate(tracker, [held], 'qa-B', 'accepted', 'in_progress', undefined, affinity);
+  assert.deepEqual(calls[0]!.patch, { held_by_ship_id: 'ship-B' });
+  assert.equal(r.ticket?.held_by_ship_id, 'ship-B');
 });

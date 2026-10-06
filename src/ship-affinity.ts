@@ -62,9 +62,19 @@ export function ticketHolderShipId(t: Ticket, contract: Contract): string | null
  * deleted, so nobody is left to resume it.
  */
 export function heldByOtherShip(t: Ticket, a: AffinityContext): boolean {
-  if (!a.myShipId) return false;
   const statuses = a.contract.statuses;
   if ([statuses.handoff, statuses.verifying].includes(t.status)) return false;
+  return heldByLiveOtherShip(t, a);
+}
+
+/**
+ * `heldByOtherShip` WITHOUT the `fixed`/`qa` exemption: true when another
+ * living ship holds the ticket at any status. The claim needs this one: a QA
+ * seat may verify a held `qa` ticket, but a resumption must never overwrite a
+ * live ship's stamp to do so (the CREW-1394 defect).
+ */
+export function heldByLiveOtherShip(t: Ticket, a: AffinityContext): boolean {
+  if (!a.myShipId) return false;
   const holder = ticketHolderShipId(t, a.contract);
   if (!holder || holder === a.myShipId) return false;
   const owner = a.ships.find((s) => s.id === holder);

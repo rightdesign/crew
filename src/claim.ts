@@ -47,6 +47,14 @@ export interface ClaimAffinity {
    * is the exact case that used to hand it to the wrong ship.
    */
   isHeldElsewhere?: (t: Ticket) => boolean;
+  /**
+   * True for a ticket a LIVE other ship holds at ANY status, `fixed`/`qa`
+   * included (CREW-1394). `isHeldElsewhere` exempts those so QA may verify,
+   * which is right for handing one over but wrong for stamping: a resumption
+   * must never overwrite a live ship's hold. Omitted, the resumption path
+   * falls back to `isHeldElsewhere`.
+   */
+  isLiveHoldElsewhere?: (t: Ticket) => boolean;
 }
 
 export interface ClaimResult {
@@ -109,7 +117,7 @@ async function stampResumption(tracker: ClaimableTracker, t: Ticket, affinity: C
     } catch {
       return { outcome: 'unknown' };
     }
-    if (affinity.isHeldElsewhere?.(current)) return { outcome: 'held' };
+    if ((affinity.isLiveHoldElsewhere ?? affinity.isHeldElsewhere)?.(current)) return { outcome: 'held' };
     if (current[affinity.column] === affinity.shipId) return { outcome: 'stamped', ticket: current };
     // Any other hold that `isHeldElsewhere` did not flag belongs to a dead or
     // unknown ship, which is takeover-able here exactly as it is on the
@@ -154,11 +162,17 @@ export async function resolveTopCandidate(
       continue;
     }
     if (t.status !== approvedStatus) {
-      // A resumption needs no claim, but one with no `ship_id` yet (started
-      // before ship affinity existed), or whose hold names a dead ship
-      // (`isHeldElsewhere` above already walked past live ones), takes the
-      // hold now, or the dead ship's return would resume it a second time. Conditional: a lost race re-reads the row
-      // and walks past the ticket unless the stamp is ours (`stampResumption`).
+      // A resumption needs no claim. A ticket a LIVE other ship holds is handed
+      // back as it is, with no write: the `fixed`/`qa` exemption in
+      // `isHeldElsewhere` lets QA verify it, but must not let this ship re-stamp
+      // the hold (CREW-1394). Otherwise a ticket with no `ship_id` yet (started
+      // before ship affinity existed), or whose hold names a dead ship, takes
+      // the hold now, or the dead ship's return would resume it a second time.
+      // Conditional: a lost race re-reads the row and walks past the ticket
+      // unless the stamp is ours (`stampResumption`).
+      if (affinity?.isLiveHoldElsewhere?.(t)) {
+        return { ticket: t, claimed: false, contended, unservable, held, reaccepted: false };
+      }
       if (affinity && t[affinity.column] !== affinity.shipId) {
         const stamp = await stampResumption(tracker, t, affinity);
         if (stamp.outcome === 'stamped') {

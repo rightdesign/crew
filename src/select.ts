@@ -16,7 +16,7 @@ import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
 import type { Ticket, Comment } from './tracker.ts';
 import type { RoleName } from './config.ts';
 import type { ShipRow } from './tracker.ts';
-import { heldByOtherShip } from './ship-affinity.ts';
+import { heldByLiveOtherShip, heldByOtherShip } from './ship-affinity.ts';
 
 export interface SelectionInput {
   tickets: Ticket[];
@@ -101,10 +101,15 @@ function affinityContext(i: SelectionInput) {
  * whether another live ship holds a ticket, read off the same ship snapshot
  * selection used. Passes `undefined` straight through (no hold column).
  */
-export function withHoldCheck<A extends object>(affinity: A | undefined, i: SelectionInput): (A & { isHeldElsewhere?: (t: Ticket) => boolean }) | undefined {
+export function withHoldCheck<A extends object>(
+  affinity: A | undefined,
+  i: SelectionInput,
+): (A & { isHeldElsewhere?: (t: Ticket) => boolean; isLiveHoldElsewhere?: (t: Ticket) => boolean }) | undefined {
   if (!affinity) return undefined;
   const a = affinityContext(i);
-  return a ? { ...affinity, isHeldElsewhere: (t: Ticket) => heldByOtherShip(t, a) } : affinity;
+  return a
+    ? { ...affinity, isHeldElsewhere: (t: Ticket) => heldByOtherShip(t, a), isLiveHoldElsewhere: (t: Ticket) => heldByLiveOtherShip(t, a) }
+    : affinity;
 }
 
 function notHeldByOtherShip(slice: Ticket[], i: SelectionInput): Ticket[] {
