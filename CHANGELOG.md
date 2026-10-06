@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.9.0] — 2026-10-06
+
+- CREW-1376 — `crew install` refuses, rather than removes, a foreign launchd unit whose ProgramArguments it cannot read, unless `--replace`
+- CREW-1376 — `crew install` clears launchd units left by a crew installed from another path (a stale one is removed; a live other install is refused unless `--replace`), `crew uninstall --all` removes every crew launchd unit, and `crew doctor` lists foreign units
+
 ## [0.8.0] — 2026-10-05
 
 - `crew connect` registers the Tablation MCP server with Claude Code when it is missing, using the key it just resolved; `crew doctor` reports it, `--no-mcp` opts out (CREW-1378)
