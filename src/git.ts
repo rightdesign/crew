@@ -622,7 +622,29 @@ export type BaseRefreshOutcome =
   | { action: 'would-fast-forward'; behind: number; detail: string }
   | { action: 'fast-forwarded'; behind: number; detail: string }
   | { action: 'diverged'; ahead: number; behind: number; detail: string }
+  | { action: 'ahead'; ahead: number; detail: string }
   | { action: 'ff-failed'; behind: number; detail: string };
+
+/**
+ * A base branch nobody should build on: local commits the remote lacks
+ * (`diverged`, `ahead`) or a remote it cannot fast-forward to (`ff-failed`).
+ * Cutting a ticket worktree from one hands the ticket a merge-base the real
+ * `main` does not share, which only surfaces as a conflict at release (CREW-1379).
+ * The release phase is stricter about `diverged`/`ff-failed` only: a bare
+ * `ahead` is also what a release whose push failed leaves behind, and that
+ * state must stay retryable.
+ */
+export function baseBranchUnsafe(r: BaseRefreshOutcome): r is Extract<BaseRefreshOutcome, { action: 'diverged' | 'ahead' | 'ff-failed' }> {
+  return r.action === 'diverged' || r.action === 'ahead' || r.action === 'ff-failed';
+}
+
+/** What to tell a person about an unsafe base: the counts and the way out. */
+export function describeUnsafeBase(r: Extract<BaseRefreshOutcome, { action: 'diverged' | 'ahead' | 'ff-failed' }>, remote: string, base: string): string {
+  const counts = r.action === 'diverged' ? `${r.ahead} ahead, ${r.behind} behind ${remote}/${base}`
+    : r.action === 'ahead' ? `${r.ahead} ahead of ${remote}/${base}`
+    : `${r.behind} behind ${remote}/${base}, cannot fast-forward`;
+  return `${r.detail} [${counts}] — reconcile it (\`crew sync\` afterwards), or \`git reset --hard ${remote}/${base}\` if the local commits duplicate a release`;
+}
 
 /**
  * Brings `base`'s local ref in `cwd` level with `<remote>/<base>`,
@@ -667,6 +689,9 @@ export function refreshBaseBranch(cwd: string, remote: string, base: string, dry
       action: 'diverged', ahead, behind,
       detail: `${base} has diverged from ${upstream} (${ahead} ahead, ${behind} behind)`,
     };
+  }
+  if (behind === 0 && ahead > 0) {
+    return { action: 'ahead', ahead, detail: `${base} has ${ahead} commit(s) ${upstream} does not` };
   }
   if (behind === 0) return { action: 'level', detail: `${base} is level with ${upstream}` };
   if (dryRun) {

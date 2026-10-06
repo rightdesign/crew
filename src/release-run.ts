@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
-  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, remoteConfigured, tagCommit, tagExists,
+  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, remoteConfigured, tagCommit, tagExists,
   type ClosureCheck,
 } from './git.ts';
 import {
@@ -695,9 +695,13 @@ function refreshBase(o: ReleaseRunOptions): { ok: true; stale?: true } | { ok: f
     // base. Fast-forwarding is impossible and merging would be this crew
     // inventing a resolution nobody asked for, on the branch everything
     // ships from.
+    // AHEAD is a stop too (CREW-1379): local commits nobody asked for on the
+    // base are how a second ship's release came to diverge from origin's.
+    // Releasing on top of a hand commit is the failure; reconcile it first.
+    case 'ahead':
     case 'diverged':
     case 'ff-failed':
-      return { ok: false, why: r.detail };
+      return { ok: false, why: describeUnsafeBase(r, o.repo.branch.remote, o.repo.branch.base) };
   }
 }
 

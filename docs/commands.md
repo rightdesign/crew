@@ -40,7 +40,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew sync [route]` | Fast-forward the checkout and its worktrees from the remote. |
+| `crew sync [route]` | Fast-forward the checkout and its worktrees from the remote. A base branch that is diverged, ahead of the remote, or cannot fast-forward prints `DO NOT CUT A WORKTREE FROM THIS BASE` and exits 1; `crew status` and `crew doctor` report the same state, and each fetches once per repo to do so. |
 | `crew ports [route]` | Which checkout owns which ports, and what is up. |
 | `crew reap [route]` | Kill orphaned servers, drop worktrees for closed tickets. |
 | `crew drop [route] NNN` | Remove a merged ticket's worktree and branch. |

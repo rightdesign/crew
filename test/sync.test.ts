@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  syncState, fastForward, worktrees, fetchRemote, status, refreshBaseBranch, syncPassengerCheckout,
+  syncState, fastForward, worktrees, fetchRemote, status, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, syncPassengerCheckout,
   acquireCheckoutLock, checkoutLockPath,
 } from '../src/git.ts';
 
@@ -179,6 +179,29 @@ test('refreshBaseBranch reports divergence rather than merging on anyone\'s beha
   const r = refreshBaseBranch(ship.d, 'origin', 'main');
   assert.equal(r.action, 'diverged');
   assert.match(r.detail, /diverged from origin\/main/);
+});
+
+test('a base with local commits is unsafe to cut from, but level and fast-forwarded outcomes are not', () => {
+  const a = world();
+  writeFileSync(join(a.ship.d, 'ours.txt'), '1'); a.ship.g('add', '.'); a.ship.g('commit', '-qm', 'ours');
+  const r = refreshBaseBranch(a.ship.d, 'origin', 'main');
+  assert.equal(r.action, 'ahead');
+  assert.ok(baseBranchUnsafe(r));
+  if (baseBranchUnsafe(r)) assert.match(describeUnsafeBase(r, 'origin', 'main'), /1 ahead of origin\/main.*git reset --hard origin\/main/);
+
+  const d = world();
+  writeFileSync(join(d.reviewer.d, 'theirs.txt'), '1'); d.reviewer.g('add', '.');
+  d.reviewer.g('commit', '-qm', 'theirs'); d.reviewer.g('push', '-q', 'origin', 'main');
+  writeFileSync(join(d.ship.d, 'ours.txt'), '1'); d.ship.g('add', '.'); d.ship.g('commit', '-qm', 'ours');
+  const dv = refreshBaseBranch(d.ship.d, 'origin', 'main');
+  assert.ok(baseBranchUnsafe(dv));
+  if (baseBranchUnsafe(dv)) assert.match(describeUnsafeBase(dv, 'origin', 'main'), /1 ahead, 1 behind origin\/main/);
+
+  const f = world();
+  writeFileSync(join(f.reviewer.d, 'e.txt'), '1'); f.reviewer.g('add', '.');
+  f.reviewer.g('commit', '-qm', 'e'); f.reviewer.g('push', '-q', 'origin', 'main');
+  assert.equal(baseBranchUnsafe(refreshBaseBranch(f.ship.d, 'origin', 'main')), false, 'fast-forwarded');
+  assert.equal(baseBranchUnsafe(refreshBaseBranch(f.ship.d, 'origin', 'main')), false, 'level');
 });
 
 test('refreshBaseBranch is a no-op when no remote is configured', () => {

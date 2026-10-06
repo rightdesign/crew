@@ -327,10 +327,13 @@ if `report_type` is either of those.
    missing commits another ship or a reviewer pushed since the last sync. It
    is quiet, not an alert, about a primary checkout that isn't cleanly on the
    base branch (something else may be mid-edit there) — that's expected, not
-   a fault, and just means this sync is a no-op. A genuinely DIVERGED base
-   branch is reported in `crew sync`'s own output; that's for the operator to
-   reconcile, not something to resolve yourself — carry on and cut the
-   worktree from whatever HEAD the primary checkout actually has. Then, from
+   a fault, and just means this sync is a no-op. A DIVERGED base
+   branch (local commits the remote lacks, or one that cannot fast-forward)
+   makes `crew sync` print `DO NOT CUT A WORKTREE FROM THIS BASE` and exit
+   non-zero. That is a hard stop: do not run `git worktree add`, do not try to
+   reconcile it yourself. Post a comment on the ticket naming the repo and the
+   counts `crew sync` printed, leave the ticket as you found it, and end the
+   run — the operator reconciles the checkout. Otherwise, from
    the primary checkout, `git worktree add` a sibling worktree for this
    ticket, on a new branch cut from the base branch's current HEAD. The
    digest's `worktree` and `branch` columns give this ticket's own directory

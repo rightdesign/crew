@@ -1157,6 +1157,21 @@ test('a base that has diverged from the remote refuses to release', async () => 
   assert.ok(lines.some((l) => /refusing to release/.test(l)));
 });
 
+test('a base with a local commit the remote lacks refuses to release (CREW-1379)', async () => {
+  const bare = bareRemote();
+  const { dir, repo, g } = projectWithRemote(LOCAL, bare);
+  writeFileSync(join(dir, 'ours.txt'), 'x');
+  g('add', '.'); g('commit', '-qm', 'ours');
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+  });
+
+  assert.match(out.stopped ?? '', /1 ahead of origin\/main/);
+  assert.equal(out.merged.length, 0);
+});
+
 test('a "refusing to release" message names which route/repo it is about, when told one', async () => {
   // A route with several repos produces one of these per repo per cycle —
   // with no scope, they were indistinguishable from one another (a person

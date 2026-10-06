@@ -67,7 +67,7 @@ import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } 
 import {
   worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
-  ensureRepoCheckout, GitError, refreshBaseBranch, type SyncState,
+  ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup } from './worktree-sweep.ts';
 import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -982,6 +982,17 @@ async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatf
     prompter?.close();
   }
   process.stdout.write(changed.length ? `fix: changed\n${changed.map((c) => `  - ${c}\n`).join('')}` : 'fix: nothing changed\n');
+}
+
+/**
+ * Read-only base-branch health for one repo (CREW-1379): fetches but never
+ * fast-forwards. `unsafe` is the stop condition for cutting a worktree.
+ */
+function baseHealth(r: { dir: string; config: { branch: { remote: string; base: string } } }) {
+  const { remote, base } = r.config.branch;
+  const out = refreshBaseBranch(r.dir, remote, base, true);
+  const unsafe = baseBranchUnsafe(out);
+  return { action: out.action, unsafe, detail: unsafe ? describeUnsafeBase(out, remote, base) : out.detail };
 }
 
 /**
@@ -3128,6 +3139,7 @@ switch (command) {
     let acted = 0;
     let baseChecked = 0;
     let baseActed = 0;
+    let baseUnsafe = 0;
     // Every repository of the route: a reviewer's commits on the second
     // repo's branch are no less stale for being next door (ISSUE-350), and
     // neither is a second repo's own base branch.
@@ -3136,7 +3148,12 @@ switch (command) {
       if (base.action !== 'not-applicable') {
         baseChecked++;
         if (base.action === 'fetch-failed') emit.warn(base.detail);
-        else if (base.action === 'diverged' || base.action === 'ff-failed') { baseActed++; emit.warn(base.detail); }
+        else if (baseBranchUnsafe(base)) {
+          // A hard stop for cutting a worktree (CREW-1379), not a note: the
+          // dev/design persona reads this exit code before `git worktree add`.
+          baseActed++; baseUnsafe++;
+          emit.error(`${r.name}: DO NOT CUT A WORKTREE FROM THIS BASE — ${describeUnsafeBase(base, r.config.branch.remote, r.config.branch.base)}`);
+        }
         else if (base.action === 'would-fast-forward' || base.action === 'fast-forwarded') { baseActed++; emit.emit(base.detail); }
       }
 
@@ -3169,6 +3186,7 @@ switch (command) {
       }
     }
     // Silence would read as "checked and fine"; say which it was.
+    if (baseUnsafe > 0) process.exitCode = 1;
     if (baseChecked > 0 && baseActed === 0) emit.emit(`${baseChecked} base branch(es) checked, all level with the remote`);
     if (tracked === 0) emit.emit('no worktree tracks a remote branch — nothing to sync');
     else if (acted === 0) emit.emit(`${tracked} worktree(s) tracking a remote, all level with it`);
@@ -3338,6 +3356,9 @@ switch (command) {
           repos: repos.map((r) => ({
             name: r.name,
             dir: r.dir,
+            // Additive (CREW-1379): `unsafe` means a ship must not cut a
+            // worktree or release from this base. `version` stays 1.
+            baseBranch: baseHealth(r),
             worktreePrefix: r.config.worktrees.prefix,
             // A repo with no explicit `worktrees.prefix` no longer names its
             // worktrees `<prefix><number>` (ISSUE-969) — the checkout's own
@@ -3378,6 +3399,10 @@ switch (command) {
     }
     for (const i of openShipAttention(state)) {
       process.stdout.write(`attention:  ${i.kind} — ${i.message}\n`);
+    }
+    for (const r of await resolvedRepos(route)) {
+      const bh = baseHealth(r);
+      if (bh.unsafe) process.stdout.write(`base:       ${r.name} — UNSAFE, no worktree cuts or releases: ${bh.detail}\n`);
     }
     if (waiting) {
       process.stdout.write(
@@ -3452,6 +3477,11 @@ switch (command) {
       }
       for (const p2 of validateEffective(config)) {
         process.stdout.write(`                   - ${p2}\n`);
+      }
+      const bh = baseHealth(r);
+      if (bh.action !== 'not-applicable') {
+        process.stdout.write(`                   base ${config.branch.base}: ${bh.unsafe ? 'ERROR — ' : ''}${bh.detail}\n`);
+        if (bh.unsafe) process.exitCode = 1;
       }
     }
 
