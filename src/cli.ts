@@ -43,6 +43,7 @@ import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName,
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
+import { applyReview } from './review.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
@@ -1230,6 +1231,7 @@ async function releasePhase(
     const outcome = await runRelease({
       cwd: target.dir, repo, contract: tracker.contract, tickets, emit: remit, scope,
       state: state.release(scope),
+      reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',
       // `deploy` is the "go now" button: it exists for a commit a previous
@@ -1303,6 +1305,16 @@ async function releasePhase(
     // the ticket closes out to `deployed` too (ISSUE-811).
     if (outcome.externalClosures?.length) {
       await applyExternalClosures(tracker, outcome.externalClosures, tracker.contract, remit, dryRun, target.dir);
+    }
+
+    // `release.mode: external` with a `reviewing` status: the branches this
+    // cycle pushed for review move to it, and any whose branch moved past
+    // what QA verified go back to QA (review.ts).
+    if (outcome.review) {
+      await applyReview(
+        tracker, tracker.contract, outcome.review, repo.branch.remote, remit, releaseSeat(c),
+        await tracker.reviewColumns(), dryRun,
+      );
     }
 
     // Last, and non-fatal: whatever happened has happened, and telling someone

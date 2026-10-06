@@ -496,6 +496,12 @@ export interface ClosureOptions {
    */
   aliases?: string[];
   /**
+   * The pull request this ticket was handed off under (`pr_ref`), exported to
+   * the `merged` hook as `CREW_PR` so it need not guess the PR from the branch
+   * name — which can resolve to the wrong one when a branch is reused.
+   */
+  pr?: string;
+  /**
    * The repo's own `merged` hook. When present its answer is authoritative
    * and the heuristics below are not consulted at all.
    */
@@ -515,6 +521,7 @@ export async function detectClosure(o: ClosureOptions): Promise<ClosureCheck> {
   if (o.mergedHook) {
     const code = await o.mergedHook({
       CREW_TICKET: o.key, CREW_BRANCH: o.pushedBranch, CREW_BASE: base,
+      ...(o.pr ? { CREW_PR: o.pr } : {}),
     });
     if (code === 0) {
       // The hook only answers WHETHER it merged, not WHERE — resolve the same

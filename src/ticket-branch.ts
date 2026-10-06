@@ -49,6 +49,15 @@ function branchTemplates(cfg: EffectiveRepoConfig, t: BranchLookupTicket) {
   return { name, push };
 }
 
+/**
+ * What this ticket's branch is called on the remote — `branch.push`, rendered
+ * for the ticket. The name a reviewer sees and `hooks.merged` is asked about,
+ * which is not the local branch's name when the repo sets a `push` template.
+ */
+export function pushedBranchForTicket(cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string {
+  return branchRenderer(t, role)(branchTemplates(cfg, t).push);
+}
+
 /** The ticket's branch on THIS ship only. What a lane resuming its own worktree wants. */
 export function existingBranchForTicket(
   dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,

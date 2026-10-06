@@ -192,6 +192,7 @@ release:
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
+| `hooks.pr` | `external` + a `reviewing` status: after the branch is pushed | — | Opens the pull request. Receives `CREW_TICKET`, `CREW_BRANCH` (the pushed name), `CREW_BASE`, `CREW_TITLE`; what it prints (one line, a URL or number) is stored on the ticket's `pr_ref`. Optional — without it the crew pushes and leaves the PR to a person. |
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
@@ -282,6 +283,34 @@ hooks:
       "https://api.buildkite.com/v2/organizations/$ORG/pipelines/$PIPELINE/builds?branch=main&state=passed&per_page=1" \
       | jq -r '.[0].commit // empty'
 ```
+
+### Handing work off for review (`external` + `statuses.reviewing`)
+
+When the workspace's contract names a `reviewing` status (the default has none
+— a workspace adopting review adds the status and names it), `external` also
+covers the hand-off itself. Each cycle, for a ticket at `verified` whose
+branch has not landed:
+
+1. The branch is pushed to `branch.remote` as `branch.push` — a plain
+   fast-forward, never forced; a rejection means a reviewer's commits are
+   there, so the ticket stays at `verified` and the log says why.
+2. `hooks.pr`, if defined, opens the pull request. What it prints (a lone
+   line, or the last URL/number) is stored on the ticket as `pr_ref` and
+   handed to `hooks.merged` as `CREW_PR`, since looking a PR up by branch name
+   can find the wrong one once a branch is reused. A failing `hooks.pr` does
+   not undo the push: the ticket still moves, with a comment saying no PR was
+   recorded.
+3. The ticket moves to `reviewing` with a comment saying what was pushed.
+
+`reviewing` is open-but-unresolved and **not a hold**: QA keeps watching. QA
+writes the branch head it tested to `verified_sha` with the move to
+`verified`, and every cycle a `verified` or `reviewing` ticket whose branch —
+here or as the reviewer left it on the remote — is no longer that sha returns
+to the QA queue (`statuses.handoff`) with a comment naming both shas. A table
+without a `verified_sha` column skips that comparison. `branch.push` must name
+`{key}`, `{number}` or `{tag}`: the pushed branch is the only durable link
+from a forge's squash or rebase merge back to its ticket, so a template that
+cannot carry one is refused.
 
 The `released` example above filters server-side to passed builds, so a
 running or failed build simply answers with nothing rather than needing

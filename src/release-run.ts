@@ -29,6 +29,10 @@ import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
 import { planStamp } from './stamp.ts';
+import { pushedBranchForTicket } from './ticket-branch.ts';
+import {
+  reviewApplies, reviewProblems, runReview, type ReviewColumns, type ReviewItem, type ReviewOutcome,
+} from './review.ts';
 import { GATE_RED_AFTER, lastLines, type GateRed } from './gate-red.ts';
 import type { Contract } from './contract.ts';
 
@@ -67,6 +71,12 @@ export interface ReleaseRunOptions {
   repo: EffectiveRepoConfig;
   contract: Contract;
   tickets: Ticket[];
+  /**
+   * Which of the optional review columns (`verified_sha`, `pr_ref`) the Issues
+   * table carries. Unset reads as neither: no re-verification, no PR reference
+   * recorded — the push and the move to `reviewing` still happen.
+   */
+  reviewColumns?: ReviewColumns;
   emit: Emitter;
   /**
    * `route/repo`, prefixed onto a message that would otherwise read the same
@@ -195,6 +205,13 @@ export interface ReleaseOutcome {
    * thing regardless of which path closed it.
    */
   externalClosures?: ExternalClosure[];
+  /**
+   * `release.mode: external` with a `statuses.reviewing` contract: tickets
+   * whose branch was pushed for review this cycle, and tickets whose branch
+   * moved past what QA verified. The caller writes both to the tracker
+   * (`applyReview`) — the git side has already happened.
+   */
+  review?: ReviewOutcome;
 }
 
 /**
@@ -354,7 +371,7 @@ function looksLikeTransientResolveFailure(output: string): boolean {
   return resolveFailure.test(output) && !realBuildError.test(output);
 }
 
-const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'deploy' | 'bump' | 'released',
+const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'deploy' | 'bump' | 'released' | 'pr',
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
   if (!script) return null;
@@ -395,7 +412,7 @@ const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'de
  * the hook about.
  */
 async function detectExternalClosures(
-  o: ReleaseRunOptions, candidates: MergeCandidate[],
+  o: ReleaseRunOptions, candidates: Pick<MergeCandidate, 'ticket' | 'branch'>[],
 ): Promise<ExternalClosure[]> {
   const script = o.repo.hooks.merged;
   const mergedHook = script
@@ -410,14 +427,51 @@ async function detectExternalClosures(
   const out: ExternalClosure[] = [];
   for (const c of candidates) {
     if (!c.branch) continue;
+    const prRef = (c.ticket as Record<string, unknown>)[o.contract.columns.prRef];
     const closure = await detectClosure({
-      cwd: o.cwd, key: c.ticket.issue_id, aliases: referenceKeys(c.ticket).slice(1), pushedBranch: c.branch,
+      cwd: o.cwd, key: c.ticket.issue_id, aliases: referenceKeys(c.ticket).slice(1),
+      // The name the remote knows it by — `branch.push`, which is not the
+      // local branch's when the repo sets one.
+      pushedBranch: pushedBranchForTicket(o.repo, c.ticket),
+      pr: typeof prRef === 'string' && prRef.trim() ? prRef.trim() : undefined,
       remote: o.repo.branch.remote, base: o.repo.branch.base, mergedHook,
     });
     o.emit.emit(closure.detail, { ticket: c.ticket.issue_id, data: { confidence: closure.confidence } });
     out.push({ ticket: c.ticket, closure });
   }
   return out;
+}
+
+/**
+ * The review hand-off for an external repo (review.ts): push each `verified`
+ * ticket that has not landed, open its PR, and catch any verified or reviewing
+ * ticket whose branch moved past what QA verified. Nothing happens for a repo
+ * whose contract has no `reviewing` status.
+ */
+async function reviewHandoff(
+  o: ReleaseRunOptions, closures: ExternalClosure[],
+  verifiedCandidates: MergeCandidate[], reviewing: ReviewItem[],
+): Promise<ReviewOutcome | undefined> {
+  if (!reviewApplies(o.repo, o.contract)) return undefined;
+  const problems = reviewProblems(o.repo, o.contract);
+  if (problems.length) {
+    for (const p of problems) o.emit.error(`${o.scope ?? 'release'}: ${p}`);
+    return undefined;
+  }
+  // A landed ticket has nothing left to review.
+  const open = new Set(closures.filter((c) => c.closure.state !== 'merged').map((c) => c.ticket.id));
+  const verified: ReviewItem[] = verifiedCandidates
+    .filter((c): c is MergeCandidate & { branch: string } => !!c.branch && open.has(c.ticket.id))
+    .map((c) => ({ ticket: c.ticket, branch: c.branch }));
+  const outcome = await runReview({
+    cwd: o.cwd, repo: o.repo, contract: o.contract, emit: o.emit, dryRun: o.dryRun,
+    columns: o.reviewColumns ?? { verifiedSha: false, prRef: false },
+    runPrHook: async (env) => {
+      const r = await hook(o, 'pr', env);
+      return r ? { code: r.code, output: r.output } : null;
+    },
+  }, verified, reviewing.filter((r) => open.has(r.ticket.id)));
+  return outcome.handoffs.length || outcome.requeues.length ? outcome : undefined;
 }
 
 /**
@@ -868,9 +922,20 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   // whatever does.
   if (o.repo.release.mode === 'external') {
     o.emit.emit('release.mode is external — the crew hands work off and does not release');
-    const landed = await detectExternalClosures(o, decision.merges);
+    // Tickets already handed off for review are watched too: `reviewing` is
+    // open, so they are in `o.tickets`, and they are the ones a human merges.
+    const reviewingStatus = o.contract.statuses.reviewing;
+    const reviewing: ReviewItem[] = [];
+    if (reviewingStatus) {
+      for (const t of o.tickets.filter((x) => x.status === reviewingStatus)) {
+        const branch = locateBranchForTicket(o.cwd, o.repo, t)?.branch;
+        if (branch) reviewing.push({ ticket: t, branch });
+      }
+    }
+    const landed = await detectExternalClosures(o, [...decision.merges, ...reviewing]);
     const externalClosures = await confirmExternalReleased(o, landed);
-    return { merged: [], deployed: false, stopped: 'external', decision, externalClosures };
+    const review = await reviewHandoff(o, externalClosures, decision.merges, reviewing);
+    return { merged: [], deployed: false, stopped: 'external', decision, externalClosures, review };
   }
 
   // Dry runs write nothing, so they need no checkout of their own. `crew merge`

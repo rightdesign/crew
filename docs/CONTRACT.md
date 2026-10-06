@@ -38,6 +38,13 @@ to mean exactly this, and needs no configuration at all.
 | comment kind | `kind`, with `event` meaning the runner's own audit trail | |
 | crew name / ship | `name` / `ship_id` | Crew |
 
+**Optional columns on Issues** (a table without one has simply not adopted the
+feature, and the crew writes around it): `held_by_ship_id` (the ship holding a
+ticket), `verified_sha` (the branch head QA verified — written by QA with the
+move to `verified`) and `pr_ref` (the pull request a ticket was handed off
+under — a number or URL, written by the crew). The last two belong to the
+review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`).
+
 ### The order of choice values
 
 ```

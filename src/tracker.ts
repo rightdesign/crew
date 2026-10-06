@@ -652,6 +652,19 @@ export class Tracker {
   }
 
   /**
+   * Which of the optional review columns (`verified_sha`, `pr_ref`) the Issues
+   * table carries. A table without them has not adopted the review hand-off:
+   * the crew then pushes and moves the ticket without recording either.
+   */
+  async reviewColumns(): Promise<{ verifiedSha: boolean; prRef: boolean }> {
+    const fields = await this.columnNames(this.models.issues);
+    return {
+      verifiedSha: fields.has(this.contract.columns.verifiedSha),
+      prRef: fields.has(this.contract.columns.prRef),
+    };
+  }
+
+  /**
    * The authorship probe (CREW-1371), read once per process: which optional
    * `filed_by_id`/`ship_id` columns exist on Issues and Comments, and this
    * ship's own Ships row id. Memoised as a promise so concurrent first writes

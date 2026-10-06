@@ -131,7 +131,12 @@ human review, so "probably fine" is not a pass.
    write itself conditional on the `updated_at` you just read, with an
    `X-Expected-Updated-At` header; a 409 means the same thing.
 
-   - **It holds up** → `status` = `verified`, and clear `assignee_id`. That
+   - **It holds up** → `status` = `verified`, and clear `assignee_id`. When
+     the Issues table has a `verified_sha` column, set it in the same write to
+     the full sha of the branch head you tested (`git rev-parse HEAD` in the
+     worktree): for a repo that hands work to human review, the crew compares
+     the branch against it every cycle and sends the ticket back to you if a
+     reviewer's commit moves it. That
      is the merge trigger: the release phase will squash-merge the branch,
      bump the version, and deploy this cycle or the next. Say in
      the comment what you exercised, so the record shows what "verified"

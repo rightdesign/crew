@@ -70,6 +70,24 @@ export interface ContractColumns {
    * hand-off and `verified` clear it. Optional like `ship`.
    */
   heldBy: string;
+  /**
+   * The branch head QA verified (`verified_sha`) — written by QA with the move
+   * to `verified`, and what the review hand-off compares the branch against
+   * every cycle: a head that no longer equals it means someone (a reviewer, a
+   * rebase) changed what was verified, and the ticket returns to QA.
+   *
+   * Optional on the workspace, like `heldBy`: a table without the column has
+   * simply not adopted review, and the comparison is skipped rather than
+   * guessed at.
+   */
+  verifiedSha: string;
+  /**
+   * The pull request a ticket was handed off under (`pr_ref`) — free text, a
+   * number or a URL, written from what `hooks.pr` prints. Carried to
+   * `hooks.merged` as `CREW_PR`, because a branch-name lookup can resolve to
+   * the wrong PR when a branch is reused. Optional like `verifiedSha`.
+   */
+  prRef: string;
 }
 
 export interface ContractComments {
@@ -224,6 +242,8 @@ export const DEFAULT_CONTRACT: Contract = {
     author: 'filed_by_id',
     ship: 'ship_id',
     heldBy: 'held_by_ship_id',
+    verifiedSha: 'verified_sha',
+    prRef: 'pr_ref',
   },
   comments: {
     parent: 'ticket_id',
