@@ -17,6 +17,14 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.18.0] — 2026-10-06
+
+- Per-run worktrees are cut from the remote branch (`crew worktree NNN`) and removed once the branch is pushed at hand-off, unless a `handoff` hook keeps a server up (CREW-1385)
+- The crew can now push a verified branch for human review, open the pull request through hooks.pr, move the ticket to a reviewing status, and send it back to QA if the branch moves past verified_sha (CREW-1393)
+- `crew status` now opens with a "to do" block listing what the operator owes: needs_info tickets assigned to them, needs_planning tickets and ships needing attention (CREW-1402)
+- Building lanes skip a repo whose primary checkout is diverged, say why in the digest, and resume on their own once it is level (CREW-1403)
+- `crew reap` and the release phase remove a handoff-hook-kept worktree once its ticket is `verified`, the runner removes the worktree a QA run cut when that run ends, neither ever removes a worktree holding commits missing from the remote, and `crew worktree` is listed in the README and docs/commands.md (CREW-1405)
+
 ## [0.17.0] — 2026-10-06
 
 - Per-run worktrees are cut from the remote branch (`crew worktree NNN`) and removed once the branch is pushed at hand-off, unless a `handoff` hook keeps a server up (CREW-1385)
