@@ -32,6 +32,8 @@ import { planStrandedVerified, applyStrandedVerified } from './stranded-verified
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { guardRunHandoff } from './handoff-guard.ts';
+import { settleReviews } from './external-review.ts';
+import { existingBranchForTicket } from './ticket-branch.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
@@ -1224,6 +1226,18 @@ async function releasePhase(
     const { byRepo, unplaceable } = ticketsByRepo(c, all);
     const tickets = byRepo.get(target.name) ?? [];
     reportUnplaceable(c, unplaceable, tracker.contract.statuses.verified, remit);
+
+    // `external` repos: tickets waiting in review are promoted to `fixed` once
+    // their branch lands, or returned to the dev seat when changes are
+    // requested (CREW-1387). Before the release step so a ticket that landed
+    // this cycle is already handed on to QA.
+    const devSeat = c.resolved?.seats.dev;
+    if (repo.release.mode === 'external' && devSeat) {
+      await settleReviews({
+        tracker, contract: tracker.contract, cfg: repo, tickets, cwd: target.dir, devSeatId: devSeat, dryRun, log: remit,
+        branchFor: (t) => existingBranchForTicket(target.dir, repo, t, 'dev'),
+      });
+    }
 
     const outcome = await runRelease({
       cwd: target.dir, repo, contract: tracker.contract, tickets, emit: remit, scope,

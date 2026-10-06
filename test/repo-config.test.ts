@@ -37,7 +37,7 @@ test('an unknown key is an error — a mistyped hook must never silently not run
     (e: Error) => {
       assert.ok(e instanceof RepoConfigError);
       assert.match(e.message, /unknown hooks key: tests/);
-      assert.match(e.message, /allowed: build, bump, deploy, handoff, isolate, merged, ports, pr, released, setup, test, version/);
+      assert.match(e.message, /allowed: build, bump, deploy, handoff, isolate, merged, ports, pr, released, review, setup, test, version/);
       return true;
     });
   assert.throws(() => parseRepoConfig('version: 1\nplatfrom: unix\n', 'f'), /unknown top-level key: platfrom/);
@@ -111,9 +111,19 @@ test('merged config is validated too — ship settings do not escape the rules',
 });
 
 test('external needs no CI provider — it never touches CI at all, unlike ci_manual/ci_auto', () => {
-  const c = parseRepoConfig('version: 1\nhooks:\n  test: t\n  build: b\n  merged: m\nrelease:\n  mode: external\n', 'f');
+  const c = parseRepoConfig('version: 1\nhooks:\n  test: t\n  build: b\n  pr: p\n  merged: m\nrelease:\n  mode: external\n', 'f');
   const eff = resolveRepoConfig(c, undefined, '/tmp/x');
   assert.deepEqual(validateEffective(eff), []);
+});
+
+test('external needs a pr hook — the dev seat opens the pull request at hand-off (CREW-1387)', () => {
+  const c = parseRepoConfig('version: 1\nhooks:\n  test: t\n  build: b\n  merged: m\nrelease:\n  mode: external\n', 'f');
+  const problems = validateEffective(resolveRepoConfig(c, undefined, '/tmp/x'));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0]!, /without a pr hook/);
+  // The review hook is optional.
+  const withReview = parseRepoConfig('version: 1\nhooks:\n  test: t\n  build: b\n  pr: p\n  merged: m\n  review: r\nrelease:\n  mode: external\n', 'f');
+  assert.equal(withReview.hooks.review, 'r');
 });
 
 test('hookLabel prefers the readable name over eight lines of shell', () => {

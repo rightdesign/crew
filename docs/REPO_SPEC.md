@@ -192,6 +192,8 @@ release:
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
+| `hooks.pr` | required for `external` | — | Opens a pull request for the pushed branch and prints its URL as the last URL-looking line. Receives `CREW_TICKET`, `CREW_BRANCH`, `CREW_BASE`, `CREW_TITLE`. Run by the runner at dev hand-off on an `external` repo. |
+| `hooks.review` | no (`external` only) | — | Prints `approved`, `changes_requested` or `open` (anything else reads as `open`) for a ticket waiting in review. Receives `CREW_TICKET`, `CREW_BRANCH`, `CREW_BASE`, `CREW_REVIEW_URL`. `changes_requested` returns the ticket to the dev seat. |
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
@@ -235,6 +237,31 @@ its verified branches were never merged and every ticket had to be closed by
 hand.
 
 ### `release.mode: external`
+
+**The review flow (CREW-1387).** On an `external` repo the work is reviewed on
+the forge *before* it counts as done, so a ticket's path is
+`accepted → in_progress → (in review) → fixed → verified → closed_deployed`,
+and QA never tests a branch a reviewer may still change or reject.
+
+- **Hand-off opens the PR.** When the dev seat finishes, the runner checks the
+  push as usual, runs `hooks.pr`, and records the URL it printed in a
+  machine-written comment (`**In review:** <url>`). The ticket is not set to
+  `fixed`: it stays `in_progress` with `needs_review` set and no assignee, the
+  state `select` already refuses to resume. If the hook fails or prints no URL
+  the ticket is parked the same way, with the hook's output on a comment for a
+  person to act on.
+- **Review feedback returns to dev.** Each release phase asks `hooks.review`
+  (if defined) about every ticket in review. `changes_requested` returns the
+  ticket to the dev seat (`in_progress`, `needs_review` cleared) with a comment
+  quoting the PR URL. The dev seat pushes to the same branch, and the next
+  hand-off reuses the recorded PR rather than opening another. Without the
+  hook only `merged` is watched.
+- **`merged` gates `fixed`.** When `hooks.merged` says the branch landed, the
+  ticket moves to `fixed` and `needs_review` is cleared. QA verifies the merged
+  base branch (or the deployed artifact, via `hooks.released`).
+- `crew doctor` reports an `external` repo with no `hooks.pr` as an error.
+
+The rest of this section describes closure of a landed ticket.
 
 For a repository where **the crew does not release at all** — a `verified`
 branch is merged by a person or another tool (`gh pr merge`, a forge's own

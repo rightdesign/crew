@@ -121,6 +121,22 @@ export interface RepoHooks {
    */
   pr?: string;
   /**
+   * `release.mode: external` only. Prints one line saying where a ticket's
+   * open pull request stands: `approved`, `changes_requested` or `open`
+   * (anything else reads as `open`). Receives CREW_TICKET, CREW_BRANCH,
+   * CREW_BASE and CREW_REVIEW_URL (what `hooks.pr` printed at hand-off).
+   *
+   * Optional: without it the crew watches only `hooks.merged`, so review
+   * feedback never bounces a ticket back to the dev seat by itself.
+   * Typically:
+   *
+   *   gh pr view "$CREW_REVIEW_URL" --json reviewDecision -q \
+   *     '.reviewDecision | ascii_downcase'
+   *
+   * (`CHANGES_REQUESTED` lower-cases to the word the crew expects.)
+   */
+  review?: string;
+  /**
    * Answers "did this ticket's work land?" — exit 0 for yes, non-zero for no.
    *
    * Receives CREW_TICKET (ISSUE-326), CREW_BRANCH (the pushed branch) and
@@ -307,7 +323,7 @@ export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
   'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff',
-  'version', 'bump', 'pr', 'merged', 'released',
+  'version', 'bump', 'pr', 'review', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
@@ -945,6 +961,12 @@ export function validateEffective(cfg: EffectiveRepoConfig): string[] {
     problems.push(
       `release.ship "${cfg.release.ship}" only applies to release.mode "local" or "integrate" ` +
         `(this ship's settings make it "${cfg.release.mode}") — CI-mode repos keep multi-ship merging`,
+    );
+  }
+  if (cfg.release.mode === 'external' && !cfg.hooks.pr) {
+    problems.push(
+      'release.mode "external" without a pr hook — the dev seat opens the pull request at ' +
+        'hand-off, and a ticket cannot wait in review without one',
     );
   }
   if (cfg.release.mode === 'external' && !cfg.hooks.merged) {

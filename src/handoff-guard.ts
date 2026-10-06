@@ -31,7 +31,8 @@ import { existingBranchForTicket, type BranchLookupTicket } from './ticket-branc
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, type Route, type Ship, type RoleName } from './config.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
-import type { Ticket, Tracker } from './tracker.ts';
+import type { Comment, Ticket, Tracker } from './tracker.ts';
+import { openReview, reviewFailedBody, reviewOpenedBody, reviewUrlFrom } from './external-review.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
 export const HANDOFF_BOUNCED_MARKER = '<!-- crew:handoff-bounced -->';
@@ -105,6 +106,8 @@ export interface HandoffWriter {
   ticket(id: string): Promise<Ticket>;
   updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
   postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  /** Needed only to find a pull request already opened for this ticket (`external` repos). */
+  comments?(): Promise<Comment[]>;
 }
 
 export interface HandoffLog {
@@ -115,6 +118,8 @@ export interface HandoffLog {
 export type HandoffOutcome =
   | { kind: 'not-handed-off' }
   | { kind: 'pushed'; sha: string }
+  /** `external` repo: pushed, pull request open, ticket parked in review instead of handed to QA. */
+  | { kind: 'in-review'; sha: string; url: string | null }
   | { kind: 'unverified'; why: string }
   | { kind: 'bounced' }
   | { kind: 'failed'; why: string };
@@ -136,6 +141,36 @@ export interface HandoffGuardInput {
 }
 
 /**
+ * `release.mode: external` (CREW-1387): the branch is pushed, but QA must not
+ * test work a reviewer may still change or reject, so the ticket does not go
+ * to `fixed`. It gets a pull request and waits in review — `in_progress` with
+ * `needs_review` and no assignee, the ship hold left alone because the branch
+ * lives here. `settleReviews` (external-review.ts) is what moves it on.
+ *
+ * A pull request recorded by an earlier hand-off is reused, not reopened: a
+ * ticket bounced for changes pushes to the same branch, which updates the PR.
+ */
+async function parkInReview(
+  i: HandoffGuardInput, t: Ticket, v: Extract<HandoffVerdict, { kind: 'pushed' }>, log: Record<string, string>,
+): Promise<HandoffOutcome> {
+  let url = reviewUrlFrom((await i.writer.comments?.() ?? []).filter((c) => c.ticket_id === t.id));
+  if (!url) {
+    const wt = worktrees(i.dir).find((w) => w.branch === v.branch);
+    const r = await openReview({ cfg: i.cfg, ticket: t, branch: v.branch, cwd: wt?.path ?? i.dir });
+    if (r.ok) {
+      url = r.url;
+      await i.writer.postEvent(t.id, reviewOpenedBody(url, v.branch), i.seatId);
+    } else {
+      await i.writer.postEvent(t.id, reviewFailedBody(v.branch, r.output), i.seatId);
+      i.log.warn(`${t.issue_id}: could not open a pull request: ${r.output}`, log);
+    }
+  }
+  await i.writer.updateTicket(t.id, { status: i.contract.statuses.building, needs_review: true, assignee_id: null });
+  i.log.emit(`${t.issue_id} pushed at ${v.sha.slice(0, 7)} — waiting in review${url ? ` (${url})` : ''}`, log);
+  return { kind: 'in-review', sha: v.sha, url };
+}
+
+/**
  * Run after a dev/design session ends. A ticket not at `fixed` is none of this
  * guard's business (the session is mid-work, parked at `needs_info`, ...).
  * Non-fatal throughout: a tracker blip here must not fail a run that already
@@ -154,6 +189,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     }
     if (v.kind === 'pushed') {
       await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId);
+      if (i.cfg.release.mode === 'external') return await parkInReview(i, t, v, log);
       i.log.emit(`${t.issue_id} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
     }

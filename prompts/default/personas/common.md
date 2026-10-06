@@ -562,6 +562,12 @@ if `report_type` is either of those.
    found, and QA never sees it. When it matches, the runner records
    `pushed <sha> to <remote>/<branch>` on the ticket itself; you still state the
    sha in your last progress comment.
+   **A repo on `release.mode: external` is reviewed on its forge before QA.**
+   The runner (not you) opens the pull request at hand-off and parks the ticket
+   at `in_progress` with `needs_review` instead of leaving it `fixed`; the
+   operator or the crew's release phase moves it on. Set `fixed` and clear
+   `assignee_id` exactly as above. A ticket that comes back to you from review
+   says `Changes requested` in its newest comment: push to the same branch.
    Leave the worktree and branch exactly where they are, unmerged: QA boots
    *your worktree* on its derived ports to test the fix, so removing it
    would leave QA nothing to test. Your last progress comment is what QA
