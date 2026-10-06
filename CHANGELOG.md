@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.10.1] — 2026-10-06
+
+- Released persona prompt changes now reach the lanes on the next run without a manual `crew agents sync`; a workspace admin's own edit to a persona row still takes precedence (ISSUE-1382)
+
 ## [0.10.0] — 2026-10-06
 
 - A release no longer proceeds on a base branch carrying local commits its remote lacks; it stops and says how to reconcile (CREW-1379)
