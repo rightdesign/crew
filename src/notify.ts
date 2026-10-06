@@ -135,7 +135,10 @@ export function describeRelease(o: {
     return {
       level: 'fail',
       headline: `${route}: deploy FAILED`,
-      detail: withHookTail('nothing new is live', o.hookFailure),
+      detail: withHookTail(
+        'the version is merged to the base branch but not live — run `crew deploy` to retry; do not re-release',
+        o.hookFailure,
+      ),
     };
   }
   if (o.stopped === 'build failed') {

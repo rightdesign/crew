@@ -1056,7 +1056,7 @@ test('a repo with no remote configured is never asked to push the base branch', 
   assert.ok(!lines.some((l) => /push main/.test(l)));
 });
 
-test('a failed base branch push stops the release, even though the deploy already ran', () => {
+test('a failed base branch push stops the release before the deploy runs (CREW-1400)', () => {
   return (async () => {
     const { dir, repo } = projectWithRemote(LOCAL, bareRemote());
     // Point origin somewhere that doesn't exist rather than removing it —
@@ -1068,7 +1068,7 @@ test('a failed base branch push stops the release, even though the deploy alread
       cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
     });
     assert.equal(out.stopped, 'base branch push failed');
-    assert.equal(out.deployed, true);   // the local deploy hook already ran and succeeded
+    assert.equal(out.deployed, false);   // published first, so a refused push never reaches the deploy hook
     assert.ok(lines.some((l) => /failed to push main/.test(l)));
   })();
 });
@@ -1516,4 +1516,57 @@ test('a hook exiting 127 raises hook_missing for that scope/hook, and a later cl
     emit: emitter(), dryRun: false, scope: 'issues/crew', attention,
   });
   assert.ok(cleared.includes('hook_missing:issues/crew/setup'));
+});
+
+test('two ships from the same base: the loser\'s push is rejected and its deploy hook never runs (CREW-1400)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  deploy: touch DEPLOYED
+`, bare);
+  // Another ship pushes after this one's pre-deploy fetch-and-check but before
+  // its push: simulated by a pre-receive hook that rejects as non-fast-forward.
+  writeFileSync(join(bare, 'hooks', 'pre-receive'), '#!/bin/sh\necho "non-fast-forward" >&2\nexit 1\n', { mode: 0o755 });
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'base branch push failed');
+  assert.equal(out.deployed, false);
+  assert.equal(existsSync(join(dir, 'DEPLOYED')), false);
+});
+
+test('the deploy hook runs only after the base push succeeded (CREW-1400)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  deploy: git --git-dir ${bare} rev-parse main > DEPLOYED_AT && git rev-parse HEAD > DEPLOYED_HEAD
+`, bare);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.deployed, true);
+  const pushIdx = lines.findIndex((l) => /pushed main to origin/.test(l));
+  assert.ok(pushIdx >= 0);
+  const remoteHead = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
+  assert.ok(remoteHead.length === 40);
+});
+
+test('a deploy failure after a successful push leaves the base published and the marker set (CREW-1400)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(LOCAL.replace('deploy: exit 0', 'deploy: exit 3'), bare);
+  const before = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
+  const state = memory();
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    state,
+  });
+  assert.equal(out.stopped, 'deploy failed');
+  const after = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
+  assert.notEqual(after, before);
+  assert.equal(state.calls.failed, after);
+  assert.ok(lines.some((l) => /already merged to origin\/main but NOT live/.test(l)));
 });

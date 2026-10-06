@@ -1133,8 +1133,8 @@ async function mergeAndRelease(
   }
 
   // Another ship may have released while this one was testing and building. Its
-  // push would be rejected below, but a local-mode deploy would already have
-  // shipped a version the remote never gets, so look before deploying.
+  // push would be rejected, so look first as a cheap early exit (the push below
+  // is what actually decides).
   if (releaseBranch && !o.dryRun) {
     const { remote, base } = o.repo.branch;
     if (fetchRemote(o.cwd, remote) && remoteBranchExists(o.cwd, remote, base)) {
@@ -1142,6 +1142,41 @@ async function mergeAndRelease(
       if (moved && !isAncestor(o.cwd, moved, 'HEAD')) {
         o.emit.warn(`${remote}/${base} moved during the release — discarding it; the tickets stay verified and the next cycle retries`);
         return { merged, conflicts, unbuildable, version, deployed: false, decision, stopped: 'base branch moved during release' };
+      }
+    }
+  }
+
+  // Publish the release BEFORE deploying it (CREW-1400). What is deployed must
+  // be a commit already on `<remote>/<base>`: the fast-forward push is the one
+  // atomic serialization point between ships, so a ship that loses the race is
+  // rejected here, with nothing deployed, instead of having shipped a build
+  // `main` never carries. The fetch-and-check above is only an early exit; two
+  // ships can both pass it, and only this push decides. After a successful push
+  // a failing deploy does NOT unwind the base — the merge and version commit
+  // are published, `deployFailedSha` is set, and `crew deploy` is the remedy.
+  //
+  // Merging a verified branch onto `base` has always been local-only — nothing
+  // pushed it, so a repo whose release.mode never pushes anything else
+  // (local, integrate) left every merge stranded on this one ship's disk,
+  // and even ci_manual/ci_auto only pushed the release TAG, whose objects
+  // reach the remote without moving `<remote>/<base>` itself. A repo with no
+  // remote configured is never asked to push and this is never an error for
+  // them. A failed push is a failed release, not a warning.
+  if (remoteConfigured(o.cwd, o.repo.branch.remote)) {
+    if (o.dryRun) {
+      o.emit.emit(`would push ${o.repo.branch.base} to ${o.repo.branch.remote}`);
+    } else {
+      try {
+        pushBranch(o.cwd, o.repo.branch.remote, releaseBranch ?? o.repo.branch.base, o.repo.branch.base);
+        o.emit.emit(`pushed ${o.repo.branch.base} to ${o.repo.branch.remote}`);
+      } catch (e) {
+        o.emit.error(
+          `failed to push ${o.repo.branch.base} to ${o.repo.branch.remote} — ${(e as GitError).message}; not deploying`,
+        );
+        return {
+          merged, conflicts, unbuildable, version, deployed: false, integrated: false, decision,
+          stopped: 'base branch push failed',
+        };
       }
     }
   }
@@ -1163,7 +1198,10 @@ async function mergeAndRelease(
         r = await hook(o, 'deploy');
       }
       if (r && r.code !== 0) {
-        o.emit.error(`deploy FAILED (exit ${r.code}) — the target may be partially deployed`);
+        o.emit.error(
+          `deploy FAILED (exit ${r.code}) — the target may be partially deployed` +
+            (remoteConfigured(o.cwd, o.repo.branch.remote) ? `; ${version ?? 'this release'} is already merged to ${o.repo.branch.remote}/${o.repo.branch.base} but NOT live — run \`crew deploy\`, do not re-release` : ''),
+        );
         o.state?.noteDeployFailed(headSha(o.cwd));
         return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'deploy failed', decision, hookFailure: hookFailure(o, 'deploy', r.output) };
       }
@@ -1172,35 +1210,6 @@ async function mergeAndRelease(
     }
   } else if (o.repo.release.mode !== 'local') {
     o.emit.emit(`release.mode is ${o.repo.release.mode} — CI takes it from here`);
-  }
-
-  // Keep the remote in sync with what actually landed on the base. Merging a
-  // verified branch onto `base` (above) has always been local-only — nothing
-  // pushed it, so a repo whose release.mode never pushes anything else
-  // (local, integrate) left every merge stranded on this one ship's disk,
-  // and even ci_manual/ci_auto only pushed the release TAG, whose objects
-  // reach the remote without moving `<remote>/<base>` itself. A repo with no
-  // remote configured (three on this ship) is never asked to push and this
-  // is never an error for them. Same treatment as the deploy hook and the
-  // tag push below: the merge and version-bump commits already landed
-  // locally, so a failed push is a failed release, not a warning.
-  if (remoteConfigured(o.cwd, o.repo.branch.remote)) {
-    if (o.dryRun) {
-      o.emit.emit(`would push ${o.repo.branch.base} to ${o.repo.branch.remote}`);
-    } else {
-      try {
-        pushBranch(o.cwd, o.repo.branch.remote, releaseBranch ?? o.repo.branch.base, o.repo.branch.base);
-        o.emit.emit(`pushed ${o.repo.branch.base} to ${o.repo.branch.remote}`);
-      } catch (e) {
-        o.emit.error(
-          `failed to push ${o.repo.branch.base} to ${o.repo.branch.remote} — ${(e as GitError).message}`,
-        );
-        return {
-          merged, conflicts, unbuildable, version, deployed, integrated, decision,
-          stopped: 'base branch push failed',
-        };
-      }
-    }
   }
 
   // Tag AFTER a successful deploy, never before: a tag is the record that
