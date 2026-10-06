@@ -22,7 +22,7 @@ import { INTERVAL_SECONDS } from './install.ts';
 import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, type BaseRefreshOutcome } from './git.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;

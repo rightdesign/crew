@@ -77,9 +77,10 @@ import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
-import { applyHoldReleases, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
+import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
+import { runStalledSweep } from './stalled.ts';
 import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
 import { guardRunHandoff } from './handoff-guard.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
@@ -436,6 +437,22 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
   if (decision.holdReleases?.length) {
     const tracker = new Tracker(o.route, o.ship);
     await applyHoldReleases(tracker, decision.holdReleases, tracker.contract, emit);
+  }
+  // CREW-1401: stalled work is flagged every pass, and this ship's own
+  // `stalled:*` attention items clear here once the ticket moves again.
+  {
+    const tracker = new Tracker(o.route, o.ship);
+    const memberId = o.route.resolved?.seats.qa ?? o.route.resolved?.seats.dev;
+    try {
+      // No seat to author the event comment as: skip rather than post one with an empty author.
+      if (memberId) await runStalledSweep({
+        tracker, state: o.state, emit, route: o.route, ship: o.ship, ships: decision.ships,
+        memberId,
+        myShipId: shipIdByName(decision.ships, o.ship.name),
+      }, decision.stalled ?? []);
+    } catch (e) {
+      emit.warn(`could not sweep stalled tickets: ${(e as Error).message}`, { step: 'sweep' });
+    }
   }
 
   // Most urgent first, same comparator `decideCycle`/`selectRole` already
