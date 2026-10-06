@@ -487,3 +487,23 @@ test('a worktree prefix may not contain a path separator', () => {
     /non-empty string/,
   );
 });
+
+test('release.ship names the one releasing ship, for local and integrate repos (CREW-1384)', () => {
+  assert.equal(parseRepoConfig(MIN, 'f').release.ship, null);
+  const c = parseRepoConfig(`${MIN}release:\n  mode: local\n  ship: Brads-Mac-mini\n`, 'f');
+  assert.equal(c.release.ship, 'Brads-Mac-mini');
+  const i = parseRepoConfig('version: 1\nhooks:\n  test: t\nrelease:\n  mode: integrate\n  ship: Mini\n', 'f');
+  assert.equal(i.release.ship, 'Mini');
+});
+
+test('release.ship is refused on a CI-mode repo and when empty (CREW-1384)', () => {
+  const ci = 'version: 1\nhooks:\n  released: r\nrelease:\n  mode: ci_auto\n  ci: { provider: github }\n  ship: Mini\n';
+  assert.throws(() => parseRepoConfig(ci, 'f'), /release\.ship only applies to release\.mode "local" or "integrate"/);
+  assert.throws(() => parseRepoConfig(`${MIN}release:\n  ship: ""\n`, 'f'), /release\.ship is empty/);
+});
+
+test('resolveRepoConfig carries release.ship from the repo only (CREW-1384)', () => {
+  const repo = parseRepoConfig(`${MIN}release:\n  ship: Mini\n`, 'f');
+  assert.equal(resolveRepoConfig(repo, undefined, '/x').release.ship, 'Mini');
+  assert.equal(resolveRepoConfig(null, undefined, '/x').release.ship, null);
+});

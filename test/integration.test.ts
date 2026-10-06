@@ -246,6 +246,38 @@ test('a release held by another ship on the board is skipped, not merged twice (
   } finally { await t.stop(); }
 });
 
+test('CREW-1384: a Locks table with no row for the repo refuses the release and says how to fix it', async () => {
+  const LOCKS = 'm-locks';
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
+    .table(LOCKS, [])
+    .start();
+  try {
+    const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'test/proj');
+    assert.match(out, /no Locks row for test\/proj\/project — run `crew connect test\/proj`/);
+    assert.ok(!t.writes.some((w) => w.model === MODELS.issues), 'a refused release must not touch the ticket');
+  } finally { await t.stop(); }
+});
+
+test('CREW-1384: a ship that is not the repo\'s named releaser skips the release and says who releases', async () => {
+  const LOCKS = 'm-locks';
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
+    .table(LOCKS, [{ id: 'lock-1', scope: 'test/proj/project', holder: '', updated_at: new Date().toISOString() }])
+    .start();
+  try {
+    const s = ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` });
+    writeFileSync(join(s.repo, '.crew.yaml'),
+      'version: 1\nhooks:\n  test: "true"\n  deploy: "true"\nrelease:\n  mode: local\n  ship: Other Ship\n');
+    const out = await s.run('run', 'test/proj');
+    assert.match(out, /release for project runs on Other Ship/);
+    assert.ok(!t.writes.some((w) => w.model === LOCKS), 'a non-releaser never touches the lock');
+    assert.ok(!t.writes.some((w) => w.model === MODELS.issues), 'and never the tickets');
+  } finally { await t.stop(); }
+});
+
 test('ISSUE-1372: a paused crew or paused releases refuses `release --fleet` before touching the board', async () => {
   // The release timer runs `crew release --fleet`. With either sentinel set
   // it must log why it skipped, exit 0, and write nothing to the tracker.

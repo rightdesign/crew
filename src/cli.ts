@@ -46,14 +46,15 @@ import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { StaleWriteError } from '@tablation/client';
-import type { BoardLockResult } from './board-lock.ts';
+import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
+import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
 import { validateContract, DEFAULT_CONTRACT } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
-  discover, listWorkspaces, renderConnection, ConnectHttpError,
+  discover, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks,
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIER,
 } from './connect.ts';
 import {
@@ -1082,6 +1083,26 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
 }
 
 /**
+ * `crew status`'s per-repo release line (CREW-1384): which ship releases the
+ * repo and whether its board lock row exists and who holds it.
+ */
+async function releaserLine(
+  tracker: Tracker, routeName: string, repo: string, release: Parameters<typeof releaserFor>[0],
+): Promise<string> {
+  const who = release.ship ? `released by ${release.ship}` : 'any ship may release';
+  let lock: string;
+  try {
+    const st = await tracker.lockState(releaseLockScope(routeName, repo));
+    lock = st === undefined ? 'no Locks table'
+      : !st.exists ? 'lock row MISSING (run crew connect)'
+      : st.holder ? `lock held by ${st.holder}` : 'lock row free';
+  } catch (e) {
+    lock = `lock unreadable (${(e as Error).message})`;
+  }
+  return `${who}; ${lock}`;
+}
+
+/**
  * Routes whose unplaceable tickets have already been reported this run.
  *
  * `releasePhase` runs once per REPOSITORY, and every one of them computes the
@@ -1120,7 +1141,7 @@ async function releasePhase(
   c: typeof route, target: RepoTarget,
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<RepoReleaseSummary> {
-  const scope = `${c.route}/${target.name}`;
+  const scope = releaseLockScope(c.route, target.name);
   // Route-scoped: a fleet-wide release runs this once per (route, repo), but
   // the top-level `emit` is stamped with just routes[0] for the whole run
   // (see the `fleetWide` Emitter construction above) — every event this
@@ -1165,12 +1186,27 @@ async function releasePhase(
       return { scope, tests: 'skipped', outcome: 'skipped', detail };
     }
 
+    // A repo that names its releaser (`release.ship`) is released by that ship
+    // alone; every other ship reports where it runs and does nothing (CREW-1384).
+    // Checked before the board lock so a non-releaser never touches it.
+    const who = releaserFor(repo.release, cfg.ship.name);
+    if (!who.releases) {
+      const note = nonReleaserNote(target.name, who.releaser as string);
+      remit.emit(note, { step: 'release' });
+      return { scope, tests: 'skipped', outcome: 'skipped', detail: note };
+    }
+
     if (!dryRun && !c.enabled) return { scope, tests: 'skipped', outcome: 'skipped', detail: 'route not enabled' };
     const tracker = new Tracker(c, cfg.ship);
 
     if (!dryRun) {
       const holderLabel = `${cfg.ship.name}:${process.pid}`;
       const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS);
+      if (!got.ok && got.reason === 'missing') {
+        const detail = `no Locks row for ${scope} — run \`crew connect ${c.route}\` to provision it`;
+        remit.warn(`release for ${scope} refused: ${detail}`, { step: 'release' });
+        return { scope, tests: 'skipped', outcome: 'skipped', detail };
+      }
       if (!got.ok) {
         const why = got.reason === 'held' ? `held by ${got.heldBy ?? 'another ship'}` : 'claimed by another ship mid-check';
         remit.emit(`release for ${scope} is ${why} on the board — skipping`, { step: 'release' });
@@ -2591,6 +2627,20 @@ switch (command) {
       // route string and a state-file path segment cannot.
       const route = `${found.workspaceSlug}/${found.projectSlug ?? found.projectId}`;
       const resolvedPath = resolvedPathFor(cfg.ship.stateDir, route);
+      // One release-lock row per repo of this route (CREW-1384): every repo the
+      // board's Repos table names plus every checkout this ship configured for
+      // the route. Idempotent and safe against another ship connecting at once.
+      if (found.locksModelId && !dryRun) {
+        const configured = cfg.routes.find((r) => r.route === route);
+        const repoNames = [...Object.values(found.repoNames ?? {}), ...(configured ? reposOf(configured).map((t) => t.name) : [])]
+          .filter((n) => !!n);
+        try {
+          const made = await provisionReleaseLocks(authOpts, found.locksModelId, route, repoNames);
+          for (const sc of made) process.stderr.write(`created release lock row ${sc}\n`);
+        } catch (e) {
+          process.stderr.write(`(could not provision release lock rows — ${(e as Error).message})\n`);
+        }
+      }
       // `discover()` already tried to match this key's own identity email
       // against a Crew row; ask interactively only when that came up empty
       // (or ambiguous) AND there is a person on the other end of a terminal
@@ -3435,6 +3485,7 @@ switch (command) {
     for (const r of await resolvedRepos(route)) {
       const bh = baseHealth(r);
       if (bh.unsafe) process.stdout.write(`base:       ${r.name} — UNSAFE, no worktree cuts or releases: ${bh.detail}\n`);
+      process.stdout.write(`releaser:   ${r.name} — ${await releaserLine(statusTracker, route.route, r.name, r.config.release)}\n`);
     }
     if (waiting) {
       process.stdout.write(
@@ -3514,6 +3565,14 @@ switch (command) {
       if (bh.action !== 'not-applicable') {
         process.stdout.write(`                   base ${config.branch.base}: ${bh.unsafe ? 'ERROR — ' : ''}${bh.detail}\n`);
         if (bh.unsafe) process.exitCode = 1;
+      }
+      // Who releases this repo (CREW-1384): the named ship, or a warning when
+      // a locally-released repo names none and several ships could race.
+      if (config.release.ship) {
+        process.stdout.write(`                   release.ship ${config.release.ship}${config.release.ship === cfg.ship.name ? ' (this ship)' : ''}\n`);
+      } else {
+        const warn = missingReleaserWarning(r.name, config.release, await tracker.shipRows().catch(() => []));
+        if (warn) process.stdout.write(`                   WARNING ${warn}\n`);
       }
     }
 

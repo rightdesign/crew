@@ -13,12 +13,13 @@
  * `StaleWriteError` on conflict) is exactly the primitive a contended claim
  * needs. This wraps that primitive around one row of a `Locks` table.
  *
- * Deliberately does NOT create the row: the caller (`acquireBoardLock`)
- * treats a missing row as "this scope has no board lock provisioned yet"
- * and falls back to the old local-only behaviour, rather than racing every
- * ship's first-ever release on which one gets to create it. A Locks table
- * is optional per workspace, and a scope's row is provisioned once, by
- * hand, the same way the table itself is.
+ * `acquireBoardLock` never creates the row, so a release cannot race two
+ * ships on who creates it. Since CREW-1384 `crew connect` provisions one row
+ * per repo scope (`ensureLockRows`), and a workspace that HAS a Locks table
+ * but no row for a scope is an error, not a silent downgrade to local-only
+ * locking: that fallback is how every ship ended up releasing at once while
+ * the rows sat stale (CREW-1399). A workspace with no Locks table at all
+ * still has no board lock, as before.
  */
 
 import { StaleWriteError } from '@tablation/client';
@@ -27,6 +28,7 @@ interface LockRow {
   id: string;
   scope: string;
   holder?: string | null;
+  created_at?: string;
   updated_at: string;
 }
 
@@ -45,7 +47,12 @@ export interface LockRecordsClient {
 
 export type BoardLockResult =
   | { ok: true; release: () => Promise<void> }
-  | { ok: false; heldBy?: string; reason: 'held' | 'contended' };
+  | { ok: false; heldBy?: string; reason: 'held' | 'contended' | 'missing' };
+
+/** The key a repo's lock row carries — one definition for `crew connect`, the release phase and `crew status`. */
+export function releaseLockScope(route: string, repo: string): string {
+  return `${route}/${repo}`;
+}
 
 /**
  * Claim `scope` on the board, or say who holds it.
@@ -69,7 +76,7 @@ export async function acquireBoardLock(
   const filters = JSON.stringify([{ columnName: 'scope', operator: 'EQ', value: scope }]);
   const rows = await client.list(modelId, { filters, limit: 1 });
   const row = rows[0];
-  if (!row) return { ok: true, release: async () => {} };   // scope not provisioned — no board lock for it yet
+  if (!row) return { ok: false, reason: 'missing' };   // `crew connect` provisions it
 
   const age = Date.now() - new Date(row.updated_at).getTime();
   const free = !row.holder || row.holder === holderLabel || age > ttlMs;
@@ -94,4 +101,64 @@ export async function acquireBoardLock(
       }
     },
   };
+}
+
+/** What `crew status` shows for one scope: whether a row exists and who holds it. */
+export interface LockRowState { exists: boolean; holder?: string; since?: string }
+
+export async function lockRowState(
+  client: Pick<LockRecordsClient, 'list'>, modelId: string, scope: string,
+): Promise<LockRowState> {
+  const rows = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+  const row = rows[0];
+  if (!row) return { exists: false };
+  return { exists: true, ...(row.holder ? { holder: row.holder, since: row.updated_at } : {}) };
+}
+
+const scopeFilter = (scope: string): string => JSON.stringify([{ columnName: 'scope', operator: 'EQ', value: scope }]);
+
+/** The slice of RecordsResource `ensureLockRows` needs on top of `list`. */
+export interface LockProvisionClient extends Pick<LockRecordsClient, 'list'> {
+  create(modelId: string, body: Record<string, unknown>): Promise<LockRow>;
+  remove(modelId: string, recordId: string): Promise<void>;
+}
+
+/**
+ * Make sure each scope has exactly one Locks row; returns the scopes this
+ * call created. Idempotent: an existing row (held or not) is never touched.
+ *
+ * Two ships connecting at once both see "missing" and both create, so after
+ * creating, re-read the scope: when more than one row exists, the earliest
+ * (`created_at`, then `id`) survives and every other creator removes its own.
+ * Both ships apply the same ordering, so exactly one row is left whatever
+ * the interleaving. A uniqueness rejection on `scope` (the template may
+ * enforce one) means someone else won and is treated the same as a loser.
+ */
+export async function ensureLockRows(
+  client: LockProvisionClient, modelId: string, scopes: string[],
+): Promise<string[]> {
+  const created: string[] = [];
+  for (const scope of scopes) {
+    const filters = scopeFilter(scope);
+    if ((await client.list(modelId, { filters, limit: 1 })).length > 0) continue;
+    let mine: LockRow;
+    try {
+      mine = await client.create(modelId, { scope, holder: '' });
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 409 || status === 400) {
+        if ((await client.list(modelId, { filters, limit: 1 })).length > 0) continue;
+      }
+      throw e;
+    }
+    const all = await client.list(modelId, { filters, limit: 20 });
+    const keeper = [...all].sort((a, b) =>
+      (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id))[0];
+    if (keeper && keeper.id !== mine.id) {
+      await client.remove(modelId, mine.id).catch(() => {});
+      continue;
+    }
+    created.push(scope);
+  }
+  return created;
 }

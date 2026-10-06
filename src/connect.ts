@@ -19,6 +19,7 @@
  */
 
 import { DEFAULT_CONTRACT } from './contract.ts';
+import { ensureLockRows, releaseLockScope, type LockProvisionClient } from './board-lock.ts';
 import { PERSONA_NAME } from './agents.ts';
 import type { RoleName } from './config.ts';
 
@@ -218,6 +219,45 @@ async function patch<T>(o: AuthOptions, path: string, body: unknown): Promise<T>
   });
   if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
   return (await res.json()) as T;
+}
+
+async function del(o: AuthOptions, path: string): Promise<void> {
+  const res = await fetch(`${o.baseUrl.replace(/\/+$/, '')}/api${path}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${o.apiKey}`,
+      'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
+    },
+  });
+  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+}
+
+/**
+ * Provision the release-lock row for each repo scope of a route (CREW-1384):
+ * one `Locks` row per `<route>/<repo>`, created when missing and left alone
+ * otherwise, so the release phase can treat a missing row as an error rather
+ * than silently releasing without a board lock. Returns the scopes created.
+ * Safe to run from two ships at once — see `ensureLockRows`.
+ */
+export async function provisionReleaseLocks(
+  o: AuthOptions, locksModelId: string, route: string, repoNames: string[],
+): Promise<string[]> {
+  const scopes = [...new Set(repoNames)].sort().map((r) => releaseLockScope(route, r));
+  if (scopes.length === 0) return [];
+  const client: LockProvisionClient = {
+    // The Locks table is a handful of rows, so read it whole and match in
+    // memory rather than depend on the HTTP filter syntax.
+    list: async (model, params) => {
+      const want = (JSON.parse(params?.filters ?? '[]') as Array<{ value?: string }>)[0]?.value;
+      const rows = await get<Array<{ id: string; scope: string; created_at?: string; updated_at: string }>>(
+        o, `/data-models/${model}/records?limit=500`,
+      );
+      return rows.filter((r) => r.scope === want).slice(0, params?.limit ?? rows.length);
+    },
+    create: (model, body) => post(o, `/data-models/${model}/records`, body),
+    remove: (model, id) => del(o, `/data-models/${model}/records/${id}`),
+  };
+  return ensureLockRows(client, locksModelId, scopes);
 }
 
 /** One template on the platform-wide Tablation Library (`GET /library-templates` — no `workspaceId`, every published template is visible from anywhere). */

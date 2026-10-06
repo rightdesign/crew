@@ -17,7 +17,7 @@ import type { EpicRow } from './epics.ts';
 import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
-import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './board-lock.ts';
+import { acquireBoardLock as claimBoardLock, lockRowState, type BoardLockResult, type LockRowState } from './board-lock.ts';
 
 export interface Ticket {
   id: string;
@@ -589,12 +589,18 @@ export class Tracker {
   /**
    * Claim a board-visible lock for `scope` (ISSUE-394) — see board-lock.ts
    * for the CAS mechanics. Resolves to `{ ok: true }` immediately, with a
-   * no-op release, when this workspace has no Locks table or no row
-   * provisioned for `scope`: a route that has not adopted board
-   * locking keeps behaving exactly as it always has.
+   * no-op release, only when this workspace has no Locks table at all. A
+   * Locks table with no row for `scope` is `{ ok: false, reason: 'missing' }`
+   * (CREW-1384): `crew connect` provisions the row.
    */
   acquireBoardLock(scope: string, holderLabel: string, ttlMs: number): Promise<BoardLockResult> {
     return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs);
+  }
+
+  /** The Locks row for `scope` — present? held by whom? Undefined when this workspace has no Locks table. */
+  async lockState(scope: string): Promise<LockRowState | undefined> {
+    const model = this.route.resolved?.locksModelId;
+    return model ? lockRowState(this.client.records, model, scope) : undefined;
   }
 
   /**

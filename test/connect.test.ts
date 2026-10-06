@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   discover, listWorkspaces, renderConnection, type Discovered,
-  listLibraryTemplates, previewTemplateInstall, installTemplate,
+  listLibraryTemplates, previewTemplateInstall, installTemplate, provisionReleaseLocks,
 } from '../src/connect.ts';
 
 /** Wires a fetch mock keyed by exact pathname+query, ignoring host/baseUrl. */
@@ -894,4 +894,17 @@ test('discover() treats unreadable Ships field metadata as "no owner_id column" 
   t.after(restore);
   const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
   assert.ok(found.provisioning.some((p) => p.includes('could not record the ship owner')));
+});
+
+test('provisionReleaseLocks creates a row for each repo scope that has none and leaves existing rows alone (CREW-1384)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/data-models/locks/records?limit=500': [{ id: 'l1', scope: 'ws/proj/crew', holder: 'Mini:1', updated_at: '2026-10-06T00:00:00Z' }],
+    '/api/data-models/locks/records': { id: 'l2', scope: 'ws/proj/tablation', created_at: '2026-10-06T00:00:01Z', updated_at: '2026-10-06T00:00:01Z' },
+  });
+  t.after(restore);
+  const made = await provisionReleaseLocks(BASE, 'locks', 'ws/proj', ['tablation', 'crew', 'crew']);
+  assert.deepEqual(made, ['ws/proj/tablation']);
+  const writes = calls.filter((c) => c.method !== 'GET');
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0]!.body, { scope: 'ws/proj/tablation', holder: '' });
 });

@@ -270,6 +270,16 @@ export interface RepoConfig {
   labels: Partial<Record<keyof RepoHooks, string>>;
   release: {
     mode: ReleaseMode;
+    /**
+     * The one ship (a Ships row name) that runs the release phase for this
+     * repo, or null when any ship may (CREW-1384). Only meaningful for
+     * `local` and `integrate`, where a release is merged, versioned and
+     * pushed from a laptop-class machine and N ships racing to do it is a
+     * guaranteed collision. CI-mode repos keep multi-ship merging: their
+     * deploy is not a ship's own, and the board lock plus the
+     * fast-forward-only push already serialise them.
+     */
+    ship: string | null;
     ci: { provider: CiProvider; ref?: string };
     verify: ReleaseVerify;
     versioning: Versioning;
@@ -308,7 +318,7 @@ const TOP_LEVEL = new Set([
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
 const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag)\}/g;
 const RELEASE_KEYS = new Set([
-  'mode', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
+  'mode', 'ship', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
 /** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
 export const VERSIONINGS: Versioning[] = ['auto', 'none'];
@@ -445,6 +455,17 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   if (!MODES.includes(mode)) {
     throw new RepoConfigError(`${file}: release.mode must be one of ${MODES.join('|')} (got "${mode}")`);
   }
+  let ship: string | null = null;
+  if (raw.release?.ship !== undefined && raw.release?.ship !== null) {
+    ship = String(raw.release.ship).trim();
+    if (ship === '') throw new RepoConfigError(`${file}: release.ship is empty`);
+    if (mode !== 'local' && mode !== 'integrate') {
+      throw new RepoConfigError(
+        `${file}: release.ship only applies to release.mode "local" or "integrate" (got "${mode}") — ` +
+          'CI-mode repos keep multi-ship merging, protected by the board lock and the fast-forward-only push',
+      );
+    }
+  }
   const provider = String(raw.release?.ci?.provider ?? 'none') as CiProvider;
   if (!PROVIDERS.includes(provider)) {
     throw new RepoConfigError(
@@ -575,6 +596,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     labels,
     release: {
       mode,
+      ship,
       ci: { provider, ref: raw.release?.ci?.ref ? String(raw.release.ci.ref) : undefined },
       verify,
       versioning,
@@ -805,6 +827,9 @@ export function resolveRepoConfig(
     labels,
     release: {
       mode,
+      // Repo-only, like `platform`: which ship releases a repo is a fact the
+      // repo declares (CREW-1384), never something a ship's own fallback sets.
+      ship: repo?.release.ship ?? null,
       ci: {
         provider,
         ref: pick('release.ci.ref', repo?.release.ci.ref, ship?.release?.ci?.ref, undefined as string | undefined),
@@ -915,6 +940,12 @@ export function validateEffective(cfg: EffectiveRepoConfig): string[] {
   }
   if (cfg.release.mode === 'local' && !cfg.hooks.deploy) {
     problems.push('release.mode "local" needs a deploy hook');
+  }
+  if (cfg.release.ship && cfg.release.mode !== 'local' && cfg.release.mode !== 'integrate') {
+    problems.push(
+      `release.ship "${cfg.release.ship}" only applies to release.mode "local" or "integrate" ` +
+        `(this ship's settings make it "${cfg.release.mode}") — CI-mode repos keep multi-ship merging`,
+    );
   }
   if (cfg.release.mode === 'external' && !cfg.hooks.merged) {
     problems.push(
