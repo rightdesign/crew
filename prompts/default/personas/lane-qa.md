@@ -38,8 +38,14 @@ human review, so "probably fine" is not a pass.
    unfinished) always comes before any `fixed` one. One ticket per run;
    the loop gives your lane the next cycle too while your queue is
    non-empty.
-2. **Claim it:** set `status` to `qa` and `assignee_id` to yourself, then
-   post a short comment saying you've started verifying.
+2. **Claim it.** The crew has usually already done this for you: a ticket
+   it handed you is at `qa`, assigned to you, with `held_by_ship_id` naming
+   this ship — that stamp is what keeps another ship's QA seat off the same
+   ticket (a second verdict on one branch has let a defective one merge). If
+   the ticket is still at `fixed`, set `status` to `qa`, `assignee_id` to
+   yourself and `held_by_ship_id` to this ship's own Ships row, then re-read
+   the ticket: if `held_by_ship_id` now names another ship, stop — that ship
+   is verifying it. Post a short comment saying you've started verifying.
 3. **Read the case, not just the ticket.** Fetch the full record
    (`description`, `repro_steps`, `resolution_note`) *and* every comment on
    it. The builder's own closing comment — what it changed, how it says it
@@ -107,6 +113,13 @@ human review, so "probably fine" is not a pass.
 8. **Then give the verdict**, with a comment that shows your work — what
    you ran, what you saw, what you deliberately didn't cover:
 
+   **Before you write it, re-read the ticket.** If `updated_at` has moved
+   since you claimed it, or `held_by_ship_id` no longer names this ship,
+   someone else has acted on it (a bounce, a verdict, a takeover): do not
+   overwrite their write — say so in a comment and stop. Send the verdict
+   write itself conditional on the `updated_at` you just read, with an
+   `X-Expected-Updated-At` header; a 409 means the same thing.
+
    - **It holds up** → `status` = `verified`, and clear `assignee_id`. That
      is the merge trigger: the release phase will squash-merge the branch,
      bump the version, and deploy this cycle or the next. Say in
@@ -114,11 +127,11 @@ human review, so "probably fine" is not a pass.
      covered.
    - **It doesn't** → `status` = `in_progress`, `assignee_id` = the building
      lane's own Crew row id from the roster above — the dev seat if
-     `needs_design` is false or null, the design seat if true. **Exception:** when the ticket carries a `held_by_ship_id`, leave that column
-     untouched and **clear** `assignee_id` instead of naming a seat — seats are
-     per ship, and the ship that holds the branch resumes an unassigned
-     `in_progress` ticket because it is the holder. Naming this ship's seat
-     would hand the bounce to a ship that never built it. The comment
+     `needs_design` is false or null, the design seat if true. **Exception:** when the Issues table has a `held_by_ship_id` column, **clear** `assignee_id` *and* `held_by_ship_id` instead of naming a seat — the
+     hold on a `qa` ticket is yours, as verifier, and seats are per ship, so
+     naming this ship's seat would hand the bounce to a ship that never built
+     it. An unassigned, unheld `in_progress` ticket is picked up by whichever
+     ship's building seat polls next, from the branch on origin. The comment
      must be actionable:
      exactly what you did, what you expected, what happened, with a
      screenshot or the failing output. This includes a red suite, a

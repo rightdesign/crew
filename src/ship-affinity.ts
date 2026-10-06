@@ -55,20 +55,22 @@ export function ticketHolderShipId(t: Ticket, contract: Contract): string | null
  * from", CREW-1371), so it holds at EVERY status a building role can see —
  * `accepted` included. That is what makes an operator's re-`accepted` of a
  * held ticket a resume rather than a fresh claim: the owning ship's hold
- * survives the status flip. Only `fixed`/`qa` are exempt: those are QA's, and
- * any ship's QA may verify once the branch is on origin.
+ * survives the status flip. Only `fixed` is exempt: it is waiting for ANY
+ * ship's QA to claim it. At `qa` the hold is the verifying ship's (CREW-1389:
+ * the QA claim stamps it, so two ships' QA seats cannot both verdict one
+ * ticket), and the verdict clears it again.
  *
  * A ship id that matches no Ships row at all reads as dead: the row was
  * deleted, so nobody is left to resume it.
  */
 export function heldByOtherShip(t: Ticket, a: AffinityContext): boolean {
   const statuses = a.contract.statuses;
-  if ([statuses.handoff, statuses.verifying].includes(t.status)) return false;
+  if (t.status === statuses.handoff) return false;
   return heldByLiveOtherShip(t, a);
 }
 
 /**
- * `heldByOtherShip` WITHOUT the `fixed`/`qa` exemption: true when another
+ * `heldByOtherShip` WITHOUT the `fixed` exemption: true when another
  * living ship holds the ticket at any status. The claim needs this one: a QA
  * seat may verify a held `qa` ticket, but a resumption must never overwrite a
  * live ship's stamp to do so (the CREW-1394 defect).
@@ -153,4 +155,89 @@ export async function applyHoldReleases(
     }
   }
   return cleared;
+}
+
+/**
+ * CREW-1389: a seat took over a ticket a dead ship held. Say so once, as an
+ * `event` comment naming both ships and the commit the takeover continues
+ * from on `origin/<branch>`, so the operator reading the ticket can tell why
+ * its worker changed. `continuingFrom` is best effort (null: nothing on origin
+ * yet); a failed comment never blocks the work.
+ */
+export async function noteTakeover(
+  tracker: { postEvent(ticketId: string, body: string, memberId: string): Promise<void> },
+  result: { ticket: Ticket | null; tookOverFrom: string | null },
+  seat: string,
+  ships: ShipRow[],
+  myShipName: string,
+  continuingFrom: (t: Ticket) => string | null,
+): Promise<void> {
+  if (!result.tookOverFrom || !result.ticket) return;
+  let sha: string | null = null;
+  try {
+    sha = continuingFrom(result.ticket);
+  } catch {
+    // best effort; the comment says there was nothing to name
+  }
+  try {
+    await tracker.postEvent(
+      result.ticket.id,
+      `Taken over from ${shipName(ships, result.tookOverFrom)} (not seen recently) by ${myShipName}; ` +
+        (sha ? `continuing from \`${sha}\` on origin.` : 'no branch commit was found on origin to continue from.'),
+      seat,
+    );
+  } catch {
+    // an audit comment; the takeover itself already happened
+  }
+}
+
+/**
+ * The short sha of a ticket's branch on `origin`, for `noteTakeover`. The
+ * branch is looked for under the names this crew cuts them with (`<tag>-N`,
+ * lowercase, then the `issue-N` fallback) — a name that matches none reads as
+ * "nothing to continue from" rather than a wrong sha.
+ */
+export function originBranchSha(
+  dir: string,
+  t: Pick<Ticket, 'issue_id' | 'issue_tag'>,
+  rev: (cwd: string, ref: string) => string | null,
+): string | null {
+  const num = (t.issue_tag ?? t.issue_id).replace(/^\D+/, '');
+  const names = [...new Set([(t.issue_tag ?? '').toLowerCase(), `issue-${num}`].filter(Boolean))];
+  for (const n of names) {
+    const sha = rev(dir, `origin/${n}`);
+    if (sha) return sha.slice(0, 7);
+  }
+  return null;
+}
+
+/**
+ * CREW-1389: what `crew doctor` says about holds on this route's in-flight
+ * tickets. A ticket being built (`in_progress`) or verified (`qa`) with no
+ * `held_by_ship_id` is invisible to ship affinity — any ship may take it — and
+ * one held by a ship that has stopped heartbeating will not be worked until
+ * another ship takes it over. `fixed` is not checked: its hold is released by
+ * design (`planHoldReleases`). A ticket assigned to a human hold is a person's
+ * and carries no ship hold either, so it is skipped.
+ */
+export function holdWarnings(
+  tickets: Ticket[],
+  ships: ShipRow[],
+  contract: Contract,
+  humanHolds: ReadonlySet<string>,
+  now: number = Date.now(),
+): string[] {
+  const inFlight = [contract.statuses.building, contract.statuses.verifying];
+  const out: string[] = [];
+  for (const t of tickets) {
+    if (!inFlight.includes(t.status)) continue;
+    if (t.assignee_id && humanHolds.has(t.assignee_id)) continue;
+    const holder = ticketHolderShipId(t, contract);
+    if (!holder) {
+      out.push(`${t.issue_id} (${t.status}) has no ${contract.columns.heldBy} — any ship may take it`);
+    } else if (!shipIsAlive(ships.find((s) => s.id === holder), now)) {
+      out.push(`${t.issue_id} (${t.status}) is held by ${shipName(ships, holder)}, which has not been seen for ${SHIP_DEAD_AFTER_CYCLES}+ cycles`);
+    }
+  }
+  return out;
 }

@@ -28,6 +28,8 @@ export interface DigestTicket extends Rankable {
   filed_by_id?: string | null;
   /** The Ships row it was filed from (CREW-1371's `ship_id`). */
   ship_id?: string | null;
+  /** The Ships row holding the ticket (CREW-1386's `held_by_ship_id`). */
+  held_by_ship_id?: string | null;
   /** Server-stamped identity, for tickets filed in the UI (CREW-1304). */
   created_by_id?: string | null;
   /** Free text; never read as authorship except as a marked last resort. */
@@ -199,6 +201,21 @@ function newFromOthers(i: DigestInput, ticketId: string): number {
  * still listed below.
  */
 function who(t: DigestTicket, i: DigestInput): string {
+  return whoAssigned(t, i) + heldBySuffix(t, i);
+}
+
+/**
+ * CREW-1389: name the ship holding a ticket, by its Ships row name and never
+ * the bare uuid. Nothing for a ticket this ship holds itself, or one nobody
+ * holds. An id matching no Ships row says so rather than printing the id.
+ */
+function heldBySuffix(t: DigestTicket, i: DigestInput): string {
+  if (!t.held_by_ship_id || t.held_by_ship_id === i.myShipId) return '';
+  const name = i.ships?.find((s) => s.id === t.held_by_ship_id)?.name?.trim();
+  return ` (held by ${name || 'an unknown ship'})`;
+}
+
+function whoAssigned(t: DigestTicket, i: DigestInput): string {
   if (!t.assignee_id) return 'unassigned';
   if (t.assignee_id === i.me) return 'you';
   const label = crewLabel(i.roster.get(t.assignee_id));

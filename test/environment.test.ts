@@ -128,3 +128,10 @@ test('authorship bullets name only the columns the workspace has, and this ship\
   const unprobed = renderEnvironment({ route, userAgent: 'crew/1', repos: withRepo, contract: DEFAULT_CONTRACT });
   assert.doesNotMatch(unprobed, /filed_by_id/);
 });
+
+test('the brief names this ship so comments can say "Brads-Mac-mini", not a uuid (CREW-1389)', () => {
+  const out = renderEnvironment({ route, userAgent: 'crew/1', repos: [repo('synthesis', '/w/synthesis', SYN)], contract: DEFAULT_CONTRACT, shipName: 'Brads-Mac-mini' });
+  assert.match(out, /## Ships/);
+  assert.match(out, /\*\*Brads-Mac-mini\*\*/);
+  assert.doesNotMatch(render([repo('synthesis', '/w/synthesis', SYN)]), /## Ships/);
+});

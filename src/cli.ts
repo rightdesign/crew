@@ -13,16 +13,17 @@ import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
-  ticketsByRepo,
+  ticketsByRepo, configuredMembers,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat,
 } from './config.ts';
+import { buildRoster, holdIds } from './roster.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
-import { rankedCandidates, withHoldCheck } from './select.ts';
-import { applyHoldReleases, noteReaccepted } from './ship-affinity.ts';
+import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
+import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
@@ -66,7 +67,7 @@ import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProjec
 import { ensureClaudeMcp, inspectClaudeMcp, mcpUrlFor } from './claude-mcp.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
-  worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
+  resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
@@ -1076,6 +1077,7 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
   return renderEnvironment({
     route: c, userAgent: cfg.ship.userAgent, repos: await resolvedRepos(c), contract, sourceTicket: ticket,
     authorship: await tracker.authorshipProbe().catch(() => null),
+    shipName: cfg.ship.name,
   });
 }
 
@@ -1545,15 +1547,15 @@ switch (command) {
       // before this ticket, and the next poll re-ranks everything fresh.
       let fleetTicketHint = w.decision.actionable.top?.issue_id;
       let fleetWorkingId = w.decision.actionable.top?.id ?? null;
-      if (w.role === 'dev' || w.role === 'design') {
+      if (w.role === 'dev' || w.role === 'design' || w.role === 'qa') {
         const seat = w.route.resolved?.seats[w.role];
         if (seat) {
           const candidates = rankedCandidates(w.role, w.decision.selectionInput);
           const contract = w.decision.selectionInput.contract ?? DEFAULT_CONTRACT;
           const result = await resolveTopCandidate(
             fleetTracker, candidates, seat,
-            contract.statuses.approved,
-            contract.statuses.building,
+            claimStatuses(w.role, contract).approved,
+            claimStatuses(w.role, contract).building,
             (t) => dirForRepo(w.route, t.repo_id) !== null,
             withHoldCheck(await fleetTracker.claimAffinity(), w.decision.selectionInput),
           );
@@ -1572,6 +1574,10 @@ switch (command) {
             wemit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: w.role });
           }
           await noteReaccepted(fleetTracker, result, seat, cfg.ship.name);
+          await noteTakeover(
+            fleetTracker, result, seat, w.decision.selectionInput.ships?.rows ?? [], cfg.ship.name,
+            (t) => { const d = dirForRepo(w.route, t.repo_id); return d ? originBranchSha(d, t, gitResolve) : null; },
+          );
           if (!result.ticket) {
             wemit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
             if (!skipInlineRelease) await releaseFleet();
@@ -1759,15 +1765,15 @@ switch (command) {
       // back as-is.
       let ticketHint = decision.actionable.top?.issue_id;
       let workingId = decision.actionable.top?.id ?? null;
-      if (!dryRun && (current === 'dev' || current === 'design')) {
+      if (!dryRun && (current === 'dev' || current === 'design' || current === 'qa')) {
         const seat = route.resolved?.seats[current];
         if (seat) {
           const candidates = rankedCandidates(current, decision.selectionInput);
           const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
           const result = await resolveTopCandidate(
             tracker2, candidates, seat,
-            contract.statuses.approved,
-            contract.statuses.building,
+            claimStatuses(current, contract).approved,
+            claimStatuses(current, contract).building,
             (t) => dirForRepo(route, t.repo_id) !== null,
             withHoldCheck(await tracker2.claimAffinity(), decision.selectionInput),
           );
@@ -1786,6 +1792,10 @@ switch (command) {
             emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: current });
           }
           await noteReaccepted(tracker2, result, seat, cfg.ship.name);
+          await noteTakeover(
+            tracker2, result, seat, decision.selectionInput.ships?.rows ?? [], cfg.ship.name,
+            (t) => { const d = dirForRepo(route, t.repo_id); return d ? originBranchSha(d, t, gitResolve) : null; },
+          );
           if (!result.ticket) {
             emit.emit(`${current} skipped this cycle — every candidate was already claimed elsewhere`);
             dropLock();
@@ -3546,6 +3556,21 @@ switch (command) {
             `${declared && declared !== host ? ` — MISMATCH, this host is ${host}` : ''}\n` +
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
+      }
+    }
+
+    // CREW-1389: in-flight tickets with no ship hold, or held by a ship that has gone quiet.
+    if (ships.length > 0) {
+      try {
+        const humanHolds = new Set(holdIds(buildRoster(configuredMembers(route), crewRows)));
+        const warnings = holdWarnings(await tracker.openTickets(), ships, tracker.contract, humanHolds);
+        process.stdout.write(
+          warnings.length === 0
+            ? 'ship holds:       every in-flight ticket is held by a live ship\n'
+            : warnings.map((w) => `ship holds:       WARNING ${w}\n`).join(''),
+        );
+      } catch (e) {
+        process.stdout.write(`ship holds:       could not check — ${(e as Error).message}\n`);
       }
     }
 

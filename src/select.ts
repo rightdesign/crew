@@ -208,7 +208,7 @@ export function buildingRoleHasWork(
  */
 export function qaRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: string } {
   if (!i.seats.qa) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const n = qaSlice(i.tickets).filter((t) => !isHeld(t, i.holds)).length;
+  const n = notHeldByOtherShip(qaSlice(i.tickets), i).filter((t) => !isHeld(t, i.holds)).length;
   return n > 0
     ? { hasWork: true, reason: `${n} ticket(s) awaiting or in verification` }
     : { hasWork: false, reason: 'nothing awaiting verification' };
@@ -253,7 +253,7 @@ export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boole
  */
 /** Every ticket `role` could actually start or resume right now. */
 export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
-  if (role === 'qa') return qaSlice(i.tickets).filter((t) => !isHeld(t, i.holds));
+  if (role === 'qa') return notHeldByOtherShip(qaSlice(i.tickets), i).filter((t) => !isHeld(t, i.holds));
   if (role === 'triage') return triageSlice(i.tickets, i.seats.triage).filter((t) => !isHeld(t, i.holds));
   if (role === 'pair') return [];
   const me = i.seats[role];
@@ -264,6 +264,18 @@ export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
         (t.status === 'in_progress' && (t.assignee_id === me || !t.assignee_id))) &&
       !isHeld(t, i.holds),
   );
+}
+
+/**
+ * The statuses a role's claim moves a ticket between (CREW-1389): a building
+ * role takes `accepted` -> `in_progress`; QA takes `fixed` -> `qa`. One claim
+ * mechanism (claim.ts) serves both, so a QA seat is arbitrated between ships
+ * by the same conditional write a dev seat is.
+ */
+export function claimStatuses(role: 'dev' | 'design' | 'qa', c: Contract): { approved: string; building: string } {
+  return role === 'qa'
+    ? { approved: c.statuses.handoff, building: c.statuses.verifying }
+    : { approved: c.statuses.approved, building: c.statuses.building };
 }
 
 /**

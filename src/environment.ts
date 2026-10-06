@@ -63,6 +63,11 @@ export interface EnvironmentInput {
    * did not probe, which renders no authorship guidance at all.
    */
   authorship?: Authorship | null;
+  /**
+   * This ship's name (its Ships row `name`, CREW-1389). Rendered so a seat that
+   * mentions a ship in a comment says "Brads-Mac-mini", never a bare uuid.
+   */
+  shipName?: string;
 }
 
 /**
@@ -292,6 +297,16 @@ export function renderEnvironment(i: EnvironmentInput): string {
       'means no field type id has to be looked up. If the upload fails, post the HTTP',
       'status and response body in your comment — do not write that uploads are',
       'impossible.',
+    );
+  }
+
+  if (i.shipName) {
+    lines.push(
+      '',
+      '## Ships',
+      '',
+      `This run is on the ship **${i.shipName}**. When a comment names a ship — this one or`,
+      'another (the digest prints other ships by name) — write its name, never a Ships row id.',
     );
   }
 

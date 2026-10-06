@@ -207,3 +207,17 @@ test('a ticket names who filed it: the stamped seat first, then the UI identity,
   assert.match(filed({ reporter_name: 'Crew release' }), /\| Crew release \(unverified\) \|/);
   assert.match(filed({}), /\| — \|/);
 });
+
+test('a held ticket names its holding ship, never the id; our own ship adds nothing (CREW-1389)', () => {
+  const ships = [{ id: 'ship-A', name: 'Brads-Mac-mini' }, { id: 'ship-B', name: 'Brads-Mac-Studio' }];
+  const tickets = [
+    T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', held_by_ship_id: 'ship-A' }),
+    T({ id: 'b', issue_id: 'ISSUE-2', status: 'in_progress', held_by_ship_id: 'ship-B' }),
+    T({ id: 'c', issue_id: 'ISSUE-3', status: 'in_progress', held_by_ship_id: 'ghost-uuid' }),
+  ];
+  const out = buildingDigest(input({ tickets, ships, myShipId: 'ship-B' }));
+  assert.match(out, /\(held by Brads-Mac-mini\)/);
+  assert.doesNotMatch(out, /held by Brads-Mac-Studio/);
+  assert.match(out, /\(held by an unknown ship\)/);
+  assert.doesNotMatch(out, /ghost-uuid|ship-A/);
+});

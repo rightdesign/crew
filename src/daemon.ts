@@ -76,8 +76,8 @@ import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, reso
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
-import { rankedCandidates, withHoldCheck } from './select.ts';
-import { applyHoldReleases, noteReaccepted } from './ship-affinity.ts';
+import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
+import { applyHoldReleases, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
@@ -85,7 +85,7 @@ import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { Tracker } from './tracker.ts';
-import { ensureRepoCheckout, type GitError } from './git.ts';
+import { ensureRepoCheckout, resolve as gitResolve, type GitError } from './git.ts';
 import { fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId } from './agents.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
@@ -532,13 +532,13 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
   let ticketHint = decision.actionable.top?.issue_id;
   let workingId = decision.actionable.top?.id ?? null;
 
-  if (role === 'dev' || role === 'design') {
+  if (role === 'dev' || role === 'design' || role === 'qa') {
     const seat = route.resolved?.seats[role];
     if (seat) {
       const candidates = rankedCandidates(role, decision.selectionInput);
       const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
       const result = await resolveTopCandidate(
-        tracker, candidates, seat, contract.statuses.approved, contract.statuses.building,
+        tracker, candidates, seat, claimStatuses(role, contract).approved, claimStatuses(role, contract).building,
         (t) => dirForRepo(route, t.repo_id) !== null,
         withHoldCheck(await tracker.claimAffinity(), decision.selectionInput),
       );
@@ -556,6 +556,10 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
         emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: role });
       }
       await noteReaccepted(tracker, result, seat, ship.name);
+      await noteTakeover(
+        tracker, result, seat, decision.selectionInput.ships?.rows ?? [], ship.name,
+        (t) => { const d = dirForRepo(route, t.repo_id); return d ? originBranchSha(d, t, gitResolve) : null; },
+      );
       if (!result.ticket) {
         emit.emit(`${role} skipped this cycle — every candidate was already claimed elsewhere`);
         return;
@@ -652,5 +656,5 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
   // The authorship probe is best-effort guidance for the brief: a failed read
   // leaves the filing block without authorship lines, never a failed cycle.
   const authorship = await tracker.authorshipProbe().catch(() => null);
-  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship });
+  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship, shipName: ship.name });
 }
