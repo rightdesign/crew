@@ -85,6 +85,12 @@ export interface DigestInput {
    * skipping it.
    */
   dirFor?: (t: DigestTicket) => string | null;
+  /**
+   * Why this ticket's repo is stopped on this ship (CREW-1403), or null. A
+   * stopped repo's tickets are out of the building lanes' Step 2 table and
+   * named under "Held repos" with the reason, rather than disappearing.
+   */
+  repoStop?: (t: DigestTicket) => string | null;
   tickets: DigestTicket[];
   comments: DigestComment[];
   /** The running seat's Crew row id — what "you" means in every column. */
@@ -273,9 +279,12 @@ export function buildingDigest(i: DigestInput): string {
       (t.status === 'in_progress' && (t.assignee_id === i.me || !t.assignee_id)) ||
       t.status === 'needs_info',
   );
+  const stopOf = (t: DigestTicket) => (i.repoStop ? i.repoStop(t) : null);
   const step2 = i.tickets.filter(
-    (t) => (t.status === 'accepted' || t.status === 'blocked') && !isBlocked(t),
+    (t) => (t.status === 'accepted' || t.status === 'blocked') && !isBlocked(t) && stopOf(t) === null,
   );
+  const held = i.tickets.filter((t) => (t.status === 'accepted' || t.status === 'blocked') && !isBlocked(t) && stopOf(t) !== null);
+  const heldTable = held.length === 0 ? '' : `\n### Held repos — this ship cannot start these right now\n\nNot yours to start this run: the ship's checkout of their repo is stopped. It\nresumes by itself once the checkout is level; no one needs to change the ticket.\n\n| ticket | why |\n|---|---|\n${sorted(held).map((t) => `| ${displayKey(t)} | ${stopOf(t)} |`).join('\n')}\n`;
 
   return stream([
     '## Current queue — built for you by the poll\n',
@@ -291,6 +300,7 @@ export function buildingDigest(i: DigestInput): string {
     '\n### Blocked — waiting on a dependency, not yours to start\n',
     '\nListed rather than hidden so "nothing to do" stays distinguishable from\n"everything is parked". The loop parks and restores these itself, on every\npoll: an approved ticket whose `Blocked by` entries are unresolved moves to\n`blocked`, and back to `accepted` once the last one resolves. **Do not pick\none up, do not set or clear `blocked` by hand, and do not "unblock" one by\nediting its `Blocked by` field** — if a blocker looks wrong, say so in your\nrun summary. A blocker counts as resolved at `verified`, `closed_deployed`,\n`closed_wont_fix` or `closed_duplicate`; `fixed` is still an unmerged branch\nawaiting QA, so it does not count.\n',
     blockedTable(i.tickets.filter(isBlocked)),
+    ...(heldTable ? [heldTable] : []),
   ]);
 }
 

@@ -115,3 +115,12 @@ test('base_unsafe survives a persist/clear round trip like any other ship-attent
   clearShipAttention(state, baseUnsafeKey('crew'));
   assert.deepEqual(openShipAttention(state), []);
 });
+
+test('repoStopFor names the stopped repo for its tickets only (CREW-1403)', async () => {
+  const { repoStopFor } = await import('../src/ship-attention.ts');
+  const route = { route: 'w/p', dir: '/w/crew', repos: { crew: {}, other: {} }, resolved: { repoNames: { r1: 'crew', r2: 'other' } } } as any;
+  const stop = repoStopFor([item(baseUnsafeKey('crew'), { kind: 'base_unsafe', message: 'diverged' })], route);
+  assert.equal(stop({ repo_id: 'r1' }), 'diverged');
+  assert.equal(stop({ repo_id: 'r2' }), null);
+  assert.equal(repoStopFor([item('role_parked:qa')], route)({ repo_id: 'r1' }), null);
+});

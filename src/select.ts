@@ -40,6 +40,12 @@ export interface SelectionInput {
    * `ship_id` column) means no ticket is held by another ship.
    */
   ships?: { myShipId: string | null; rows: ShipRow[]; now?: number };
+  /**
+   * Why a ticket's repo is stopped on this ship (CREW-1403), or null. A stopped
+   * repo's tickets are invisible to the building roles (not to QA, which cuts
+   * no worktree from the primary checkout's base).
+   */
+  repoStop?: (t: Ticket) => string | null;
 }
 
 /** QA owns every ticket at `fixed` or `qa`, whichever role built it. */
@@ -112,6 +118,11 @@ export function withHoldCheck<A extends object>(
     : affinity;
 }
 
+function notInStoppedRepo(slice: Ticket[], i: SelectionInput): Ticket[] {
+  const stop = i.repoStop;
+  return stop ? slice.filter((t) => stop(t) === null) : slice;
+}
+
 function notHeldByOtherShip(slice: Ticket[], i: SelectionInput): Ticket[] {
   if (!i.ships) return slice;
   const a = { myShipId: i.ships.myShipId, ships: i.ships.rows, contract: i.contract ?? DEFAULT_CONTRACT, now: i.ships.now };
@@ -133,7 +144,7 @@ export function buildingRoleHasWork(
 ): { hasWork: boolean; reason: string } {
   const me = i.seats[role];
   if (!me) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const mine = notHeldByOtherShip(sliceFor(i.tickets, role), i);
+  const mine = notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i);
 
   const startable = mine.filter(
     (t) =>
@@ -258,7 +269,7 @@ export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
   if (role === 'pair') return [];
   const me = i.seats[role];
   if (!me) return [];
-  return notHeldByOtherShip(sliceFor(i.tickets, role), i).filter(
+  return notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i).filter(
     (t) =>
       (((t.status === 'accepted' || t.status === 'blocked') && !i.blocked.has(t.id)) ||
         (t.status === 'in_progress' && (t.assignee_id === me || !t.assignee_id))) &&

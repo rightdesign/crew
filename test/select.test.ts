@@ -289,3 +289,15 @@ test('rankedCandidates excludes held and blocked tickets, same as roleCandidates
   });
   assert.deepEqual(rankedCandidates('dev', i), []);
 });
+
+test('a ticket in a stopped repo is invisible to the building roles but not to QA (CREW-1403)', () => {
+  const ts = [
+    T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', repo_id: 'r-stopped' }),
+    T({ id: 'q', issue_id: 'ISSUE-2', status: 'fixed', repo_id: 'r-stopped' }),
+  ];
+  const repoStop = (t: Ticket) => (t.repo_id === 'r-stopped' ? 'diverged' : null);
+  assert.equal(roleHasWork('dev', input({ tickets: ts })).hasWork, true);
+  assert.equal(roleHasWork('dev', input({ tickets: ts, repoStop })).hasWork, false);
+  assert.deepEqual(rankedCandidates('dev', input({ tickets: ts, repoStop })), []);
+  assert.equal(roleHasWork('qa', input({ tickets: ts, repoStop })).hasWork, true);
+});

@@ -235,3 +235,18 @@ test('a UI comment from a person not on this ship\'s roster is attributed, not a
   assert.match(out, /Brad Choate \(person\)/);
   assert.doesNotMatch(out, /no identity/);
 });
+
+test('a stopped repo leaves Step 2 and is named, with its reason, under Held repos (CREW-1403)', () => {
+  const out = buildingDigest(input({
+    repoStop: (t) => (t.repo_id === 'r-stuck' ? 'crew: main has diverged' : null),
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', repo_id: 'r-stuck' }),
+      T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted', repo_id: 'r-ok' }),
+    ],
+  }));
+  const step2 = out.slice(out.indexOf('### Step 2'), out.indexOf('### Blocked'));
+  assert.match(step2, /ISSUE-2/);
+  assert.doesNotMatch(step2, /ISSUE-1/);
+  assert.match(out, /### Held repos[\s\S]*\| ISSUE-1 \| crew: main has diverged \|/);
+  assert.doesNotMatch(buildingDigest(input({ tickets: [T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' })] })), /Held repos/);
+});

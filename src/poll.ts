@@ -23,6 +23,7 @@ import { attentionReasons, attentionTransitions, type AttentionReason } from './
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
+import { openShipAttention, recheckBaseStops, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -225,7 +226,13 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
 
   emit.enter('select');
   const watermark = state.watermark();
+  // CREW-1403: clear any base stop that has resolved BEFORE selecting, so a
+  // repo level again is startable this very cycle without an agent run.
+  for (const repo of recheckBaseStops(state, route)) {
+    emit.emit(`${repo}: primary checkout is level again — building lanes resume for that repo`, { step: 'select' });
+  }
   const selectionInput = {
+    repoStop: repoStopFor(openShipAttention(state), route),
     tickets, comments, watermark, blocked,
     holds,
     seats: route.resolved!.seats,
@@ -318,6 +325,7 @@ export function writeDigest(
 
     const input = {
       dirFor,
+      repoStop: repoStopFor(openShipAttention(o.state), o.route),
       branchFor: (t: BranchTicket & { repo_id?: string | null }) => {
         const cfg = repoFor(dirFor(t) ?? o.route.dir);
         const { prefix } = ticketBranchContext(t as Ticket);

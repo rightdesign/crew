@@ -16,11 +16,12 @@
  */
 
 import type { Emitter } from './events.ts';
-import type { Route, Ship } from './config.ts';
+import { repoTargetFor, reposOf, type Route, type Ship } from './config.ts';
 import { notify } from './notify.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import type { State } from './state.ts';
-import { baseBranchUnsafe, describeUnsafeBase, type BaseRefreshOutcome } from './git.ts';
+import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
+import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 
 export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled';
 
@@ -107,6 +108,46 @@ export function baseAttention(
   }
   if (outcome.action === 'level' || outcome.action === 'fast-forwarded') return { clear: baseUnsafeKey(repo) };
   return null;
+}
+
+/**
+ * Why a ticket's repo is stopped on this ship (CREW-1403), or null when it is
+ * not. Reads the persisted `base_unsafe` items, so the building lanes skip a
+ * repo whose primary checkout cannot be cut from — and the digest says why —
+ * instead of each run claiming a ticket and then stopping on it.
+ */
+export function repoStopFor(items: ShipAttentionItem[], route: Route): (t: { repo_id?: string | null }) => string | null {
+  const stops = new Map(items.filter((i) => i.kind === 'base_unsafe').map((i) => [i.key, i.message]));
+  if (stops.size === 0) return () => null;
+  return (t) => {
+    const name = repoTargetFor(route, t.repo_id)?.name;
+    return name ? (stops.get(baseUnsafeKey(name)) ?? null) : null;
+  };
+}
+
+/**
+ * Re-checks every open `base_unsafe` stop against its checkout and clears the
+ * ones that are no longer unsafe (CREW-1403). Run by the poll before it
+ * selects, so a stop resolves itself without anyone running `crew sync` or an
+ * agent run having to notice. Uses a dry-run refresh: it fetches but never
+ * moves a branch. A checkout the check cannot judge (not on a clean base,
+ * fetch failed) keeps its stop — only a positive "level"/"can fast-forward"
+ * answer clears it, the same rule `baseAttention` applies.
+ */
+export function recheckBaseStops(state: State, route: Route): string[] {
+  const open = state.shipAttention().previous().filter((i) => i.kind === 'base_unsafe');
+  const cleared: string[] = [];
+  for (const item of open) {
+    const target = reposOf(route).find((t) => baseUnsafeKey(t.name) === item.key);
+    if (!target) continue;
+    const cfg = resolveRepoConfig(loadRepoConfig(target.dir), undefined, target.dir);
+    const outcome = refreshBaseBranch(target.dir, cfg.branch.remote, cfg.branch.base, true);
+    if (outcome.action === 'level' || outcome.action === 'would-fast-forward') {
+      clearShipAttention(state, item.key);
+      cleared.push(target.name);
+    }
+  }
+  return cleared;
 }
 
 /** Every open item: the persisted ones plus the derived `release_stale`. */
