@@ -1,6 +1,6 @@
 {
   "name": "@tablation/crew",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "A standing team of headless agents that picks work off a Tablation board, does it on a machine you control, and reports back.",
   "type": "module",
   "license": "MIT",
