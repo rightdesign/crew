@@ -17,6 +17,13 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.12.0] — 2026-10-06
+
+- Ship affinity: a ticket held by a dead ship is taken over cleanly, so the returning ship cannot resume it a second time (ISSUE-1386)
+- Ship affinity (CREW-1386): a ticket held by one live ship is off-limits to every other ship's building lanes, the hold lives in its own `held_by_ship_id` column and survives an operator's re-`accepted` and a QA bounce, and it is released by the runner when the ticket reaches `fixed`/`verified`.
+- A ticket claimed by one ship is now off-limits to every other live ship, even if the operator sets it back to accepted, so a QA bounce or hand-back can no longer lead two ships to build the same ticket (CREW-1386)
+- A ticket claimed by one ship is now off-limits to every other live ship, so a QA bounce or hand-back can no longer lead two ships to build the same ticket (CREW-1386)
+
 ## [0.11.0] — 2026-10-06
 
 - A release now refuses to deploy if another ship's release landed on origin meanwhile, cleans up checkouts a crashed release left behind, rebuilds the primary checkout's dist/ after releasing, and names hand commits that make the base unsafe (CREW-1383)
