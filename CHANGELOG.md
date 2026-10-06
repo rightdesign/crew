@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.19.1] — 2026-10-06
+
+- A verified branch another ship already squash-merged and released is now recognised and stamped instead of conflicting and being handed back (CREW-1408)
+
 ## [0.19.0] — 2026-10-06
 
 - Environment stops (a missing hook tool, low disk) are raised and cleared by the poll, and stop the building lanes for the affected repo (ISSUE-1406)
