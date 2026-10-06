@@ -487,6 +487,59 @@ test('fetchDivergedPrompt returns the live text when a workspace admin edited th
   assert.equal(prompt, 'CUSTOM ADMIN PROMPT\n');
 });
 
+test('ISSUE-1382: a row crew wrote on an earlier sync, now stale because the local file moved on, does NOT override the local file', async (t) => {
+  const promptsDir = makePromptsDir({ common: 'COMMON v2\n' });
+  const staleCrewCopy = 'COMMON v1\nLANE-DEV\n';
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: staleCrewCopy, updated_at: '2026-02-01T00:00:00Z' },
+    }),
+    // The history entry crew cached at its last write holds the same text the row still has.
+    'GET /api/data-models/agents-model-1/records/row-dev/history?limit=50': () => ({
+      status: 200,
+      body: [{ history_id: 'hist-dev-1', changed_at: '2026-02-01T00:00:00Z', prompt: staleCrewCopy }],
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute(
+    { dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-02-01T00:00:00Z', historyId: 'hist-dev-1' } },
+    { dev: 'seat-dev' },
+    promptsDir,
+  );
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
+
+  assert.equal(prompt, undefined);
+});
+
+test('ISSUE-1382: a row edited after crew\'s last write still overrides the local file', async (t) => {
+  const promptsDir = makePromptsDir({ common: 'COMMON v2\n' });
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', prompt: 'ADMIN EDIT\n', updated_at: '2026-03-01T00:00:00Z' },
+    }),
+    // crew's last write was the stale copy; the admin has since changed it.
+    'GET /api/data-models/agents-model-1/records/row-dev/history?limit=50': () => ({
+      status: 200,
+      body: [{ history_id: 'hist-dev-1', changed_at: '2026-02-01T00:00:00Z', prompt: 'COMMON v1\nLANE-DEV\n' }],
+    }),
+  });
+  t.after(restore);
+
+  const route = makeRoute(
+    { dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-02-01T00:00:00Z', historyId: 'hist-dev-1' } },
+    { dev: 'seat-dev' },
+    promptsDir,
+  );
+  const prompt = await fetchDivergedPrompt(route, 'dev', {});
+
+  assert.equal(prompt, 'ADMIN EDIT\n');
+});
+
 test('fetchDivergedPrompt falls back to undefined rather than throwing when the tracker is unreachable', async (t) => {
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 404, body: { message: 'not found' } }),

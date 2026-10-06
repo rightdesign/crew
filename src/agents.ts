@@ -158,9 +158,11 @@ export async function fetchDivergedPrompt(
   } as ConstructorParameters<typeof TablationClient>[0]);
 
   let row: AgentRow;
+  let agentsModelId: string;
   try {
     const agentsModel = await client.dataModels.get('agents', route.resolved.workspaceId);
-    row = await client.records.get<AgentRow>(agentsModel.id, agentId);
+    agentsModelId = agentsModel.id;
+    row = await client.records.get<AgentRow>(agentsModelId, agentId);
   } catch {
     // A missing table, a deleted row, an unreachable tracker — none of
     // these should block a run that has always worked without this check;
@@ -169,7 +171,47 @@ export async function fetchDivergedPrompt(
   }
 
   const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
-  return row.prompt !== defaultPrompt ? row.prompt : undefined;
+  if (row.prompt === defaultPrompt) return undefined;
+
+  // ISSUE-1382: a row whose prompt merely differs from the local file is
+  // not necessarily a workspace admin's edit — it may be a copy crew itself
+  // wrote on an earlier sync, now stale because `common.md` /
+  // `lane-<role>.md` moved on since. Apply `syncPersonas`'s own test: the
+  // row only overrides the local file when its prompt no longer matches the
+  // history entry crew cached for its last write. A row that still matches
+  // that entry is crew's own stale copy, and the local file wins.
+  //
+  // With no cached baseline, or when the history lookup fails, nothing
+  // proves crew wrote this row — so it keeps winning, as it always has: an
+  // admin's edit must never be silently dropped.
+  const cached = route.resolved.agentPersonas?.[role];
+  if (cached?.agentId === agentId && cached.historyId) {
+    const lastSynced = await fetchLastSyncedPrompt(route, agentsModelId, agentId, cached.historyId, opts.userAgent);
+    if (lastSynced !== undefined && lastSynced === row.prompt) return undefined;
+  }
+  return row.prompt;
+}
+
+/**
+ * The prompt crew wrote at history entry `historyId` for this row — the
+ * baseline `syncPersonas` and `fetchDivergedPrompt` compare the live
+ * `prompt` against to tell a stale crew write from a real admin edit.
+ * `undefined` when that entry has rolled out of the history window or the
+ * lookup fails; callers treat that as "no baseline" and never overwrite.
+ */
+async function fetchLastSyncedPrompt(
+  route: Route,
+  agentsModelId: string,
+  recordId: string,
+  historyId: string,
+  userAgent: string | undefined,
+): Promise<string | undefined> {
+  try {
+    const entries = await fetchHistoryEntries(route, agentsModelId, recordId, userAgent);
+    return entries.find((e) => e.history_id === historyId)?.prompt;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
