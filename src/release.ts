@@ -11,7 +11,7 @@
  */
 
 import {
-  branchForIssue, commitBodies, countCommits, currentBranch, findKeyInRange, findSquashOfBranch, latestReleaseTag,
+  branchForIssue, commitBodies, countCommits, currentBranch, findKeyInRange, findSquashByBranchTip, findSquashOfBranch, firstReleaseTagContaining, isAncestor, latestReleaseTag,
   resolve, status, tagCommit,
 } from './git.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
@@ -216,16 +216,19 @@ export function planMerge(
     // its branch intact. Recognise that here, before `mergeOne` replays the
     // squash: once any later commit touches the same files the replay
     // conflicts, bouncing a ticket whose work is already live on the base.
-    const squash = findSquashOfBranch(
-      cwd, referenceKeys(ticket), branch, base, lastReleased ? `${lastReleased}..${base}` : base,
-    );
+    //
+    // The WHOLE base is searched, not just `lastReleased..base`: another ship
+    // may have squashed AND released this branch already, leaving the squash
+    // inside a release tag where the bounded range cannot see it (CREW-1408).
+    const squash = findSquashOfBranch(cwd, referenceKeys(ticket), branch, base, base);
     if (squash) {
       // The branch stays on the candidate: external mode asks its closure
       // hook by branch name. The merge loop skips on `mergedSha`.
+      const released = !!lastReleased && isAncestor(cwd, squash, lastReleased);
       return {
         ticket, branch, entries: [], usedFallback: false,
         bump: 'patch', majorRequested: false,
-        skipReason: 'already-merged', mergedSha: squash,
+        skipReason: released ? 'already-released' : 'already-merged', mergedSha: squash,
       };
     }
     // Read the Changelog:/Bump: lines while the branch history is still
@@ -242,6 +245,37 @@ export function planMerge(
       majorRequested,
     };
   });
+}
+
+/** A ticket off `verified` whose branch is exactly a squash that already shipped in `tag`. */
+export interface ReleasedBranch { ticket: Ticket; sha: string; tag: string }
+
+/**
+ * Open tickets that are NOT `verified` but whose branch tip is the one a
+ * release squash recorded (`Branch-tip:`) inside a release tag (CREW-1408).
+ *
+ * This is a ticket another ship released and a second ship then bounced (a
+ * spurious merge-conflict hand-back to `in_progress`, an escalation to
+ * `needs_info`): the work is live and nothing was built since, so it is
+ * stamped rather than left looking stuck. Only the exact trailer match counts
+ * — a branch with any commit after the squashed tip is real new work.
+ */
+export function planReleasedBranches(
+  cwd: string, tickets: Ticket[], contract: Contract,
+  branchFor: (t: Ticket) => string | null, base = 'main', tagPattern = 'v*',
+): ReleasedBranch[] {
+  const eligible = new Set([contract.statuses.building, contract.statuses.needsHuman]);
+  const out: ReleasedBranch[] = [];
+  for (const ticket of tickets) {
+    if (!eligible.has(ticket.status)) continue;
+    const branch = branchFor(ticket);
+    if (!branch) continue;
+    const sha = findSquashByBranchTip(cwd, referenceKeys(ticket), branch, base);
+    if (!sha) continue;
+    const tag = firstReleaseTagContaining(cwd, sha, tagPattern);
+    if (tag) out.push({ ticket, sha, tag });
+  }
+  return out;
 }
 
 /**

@@ -41,7 +41,8 @@ import {
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
-import { describeUnplaceable } from './release.ts';
+import { describeUnplaceable, planReleasedBranches } from './release.ts';
+import { locateBranchForTicket } from './ticket-branch.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { renderEnvironment } from './environment.ts';
@@ -1283,6 +1284,21 @@ async function releasePhase(
       await applyStamp(
         tracker, [{ ticket: m.ticket, reason: `carried by ${tag}`, sha: m.mergedSha }],
         tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir,
+      );
+    }
+
+    // A ticket another ship released and a second ship bounced back to
+    // `in_progress`/`needs_info`: its branch tip is the one a tagged squash
+    // recorded, so nothing new was built — stamp it (CREW-1408).
+    for (const r of planReleasedBranches(
+      target.dir, tickets, tracker.contract,
+      (t) => locateBranchForTicket(target.dir, repo, t)?.branch ?? null,
+      repo.branch.base, repo.release.tagPattern ?? 'v*',
+    )) {
+      remit.enter('reconcile');
+      await applyStamp(
+        tracker, [{ ticket: r.ticket, reason: `branch already released in ${r.tag}`, sha: r.sha }],
+        r.tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir,
       );
     }
 

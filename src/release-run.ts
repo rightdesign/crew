@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, mkdte
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
+  BRANCH_TIP_TRAILER, createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
   isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, recoverStrandedReleaseCheckouts, remoteBranchExists, remoteConfigured, fetchRemote, resolve, tagCommit, tagExists,
   type ClosureCheck,
 } from './git.ts';
@@ -603,7 +603,11 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
 
     // The ticket key goes in the SUBJECT deliberately: it is the only durable
     // link once a forge squashes this again, and closure detection reads it.
-    git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.`]);
+    // `Branch-tip` lets a later cycle on any ship recognise this branch as
+    // already squashed even when replaying it would conflict (CREW-1408).
+    const tip = gitOk(o.cwd, ['rev-parse', '--verify', '-q', `${c.branch}^{commit}`]);
+    const trailer = tip ? `\n\n${BRANCH_TIP_TRAILER}: ${tip}` : '';
+    git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.${trailer}`]);
     const sha = headSha(o.cwd);
     o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
     return { applied: true, sha };

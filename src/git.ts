@@ -375,6 +375,29 @@ function patchIdOf(cwd: string, from: string, to: string): string | null {
   }
 }
 
+/** The trailer the release writes into a squash commit: the tip of the branch it squashed (CREW-1408). */
+export const BRANCH_TIP_TRAILER = 'Branch-tip';
+
+/**
+ * The commit in `range` that names `key` AND records `branch`'s current tip in
+ * its `Branch-tip:` trailer — an exact test that this squash is this branch,
+ * conflict or not. A branch with commits after the recorded tip is a real
+ * rebuild and does not match. Squashes older than the trailer return null and
+ * fall through to the content tests in `findSquashOfBranch`.
+ */
+export function findSquashByBranchTip(
+  cwd: string, key: string | string[], branch: string, range: string,
+): string | null {
+  const tip = gitOk(cwd, ['rev-parse', '--verify', '-q', `${branch}^{commit}`]);
+  if (!tip) return null;
+  const wanted = `${BRANCH_TIP_TRAILER}: ${tip}`;
+  for (const sha of keyCommitsInRange(cwd, key, range)) {
+    const body = gitOk(cwd, ['show', '-s', '--format=%B', sha]) ?? '';
+    if (body.split('\n').some((l) => l.trim() === wanted)) return sha;
+  }
+  return null;
+}
+
 /**
  * The commit in `range` that already carries `branch`'s work, or null.
  *
@@ -391,6 +414,8 @@ function patchIdOf(cwd: string, from: string, to: string): string | null {
 export function findSquashOfBranch(
   cwd: string, key: string | string[], branch: string, base: string, range: string,
 ): string | null {
+  const byTip = findSquashByBranchTip(cwd, key, branch, range);
+  if (byTip) return byTip;
   const candidates = keyCommitsInRange(cwd, key, range);
   if (candidates.length === 0) return null;
   const mb = gitOk(cwd, ['merge-base', base, branch]);

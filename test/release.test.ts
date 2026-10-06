@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   checkGuards, planMerge, requestedBump, renderChangelogSection,
-  insertChangelogSection, decideRelease, renderTag, describeUnplaceable,
+  insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { branchForIssue, firstReleaseTagContaining } from '../src/git.ts';
@@ -366,4 +366,59 @@ test('no branch, no release tag yet, key on the base: already-merged, not never-
   g('commit', '-qm', 'shipped ISSUE-21');
   const [c] = planMerge(dir, [T('ISSUE-21')], DEFAULT_CONTRACT, null);
   assert.equal(c!.skipReason, 'already-merged');
+});
+
+// CREW-1408. Ship A squashes and releases; ship B's next cycle sees the
+// still-verified ticket with its branch on origin. The squash sits inside a
+// release tag, so a `lastReleased..base` search never saw it and the replay
+// conflicted into a spurious hand-back.
+function releasedSquash(g: (...a: string[]) => Buffer, dir: string, withTrailer: boolean) {
+  g('checkout', '-qb', 'issue-30');
+  writeFileSync(join(dir, 'f.txt'), 'v1\n'); g('add', '.');
+  g('commit', '-qm', 'work\n\nChangelog: F');
+  const tip = g('rev-parse', 'HEAD').toString().trim();
+  g('checkout', '-q', 'main');
+  g('merge', '--squash', 'issue-30');
+  g('commit', '-qm', `F (ISSUE-30)\n\nCloses ISSUE-30.${withTrailer ? `\n\nBranch-tip: ${tip}` : ''}`);
+  g('tag', 'v0.2.0');
+  writeFileSync(join(dir, 'f.txt'), 'v2 changed later\n'); g('add', '.');
+  g('commit', '-qm', 'unrelated edit of the same file');
+  g('tag', 'v0.2.1');
+  return tip;
+}
+
+for (const withTrailer of [true, false]) {
+  test(`branch present, squash inside an earlier release tag: already-released (${withTrailer ? 'Branch-tip' : 'content'} match)`, () => {
+    const { dir, g } = repo();
+    releasedSquash(g, dir, withTrailer);
+    const last = g('rev-parse', 'HEAD').toString().trim();
+    const [c] = planMerge(dir, [T('ISSUE-30')], DEFAULT_CONTRACT, last);
+    assert.equal(c!.skipReason, 'already-released');
+    assert.equal(c!.branch, 'issue-30');
+    assert.ok(c!.mergedSha);
+    assert.equal(firstReleaseTagContaining(dir, c!.mergedSha!), 'v0.2.0');
+  });
+}
+
+test('branch with a commit after the squashed tip is a real rebuild, merged normally', () => {
+  const { dir, g } = repo();
+  releasedSquash(g, dir, true);
+  g('checkout', '-q', 'issue-30');
+  writeFileSync(join(dir, 'g.txt'), 'new\n'); g('add', '.');
+  g('commit', '-qm', 'more work\n\nChangelog: More');
+  g('checkout', '-q', 'main');
+  const last = g('rev-parse', 'HEAD').toString().trim();
+  const [c] = planMerge(dir, [T('ISSUE-30')], DEFAULT_CONTRACT, last);
+  assert.equal(c!.skipReason, undefined);
+  assert.equal(c!.branch, 'issue-30');
+});
+
+test('planReleasedBranches stamps an in_progress ticket whose branch tip is a tagged squash', () => {
+  const { dir, g } = repo();
+  releasedSquash(g, dir, true);
+  const t = T('ISSUE-30', { status: 'in_progress' });
+  const [r] = planReleasedBranches(dir, [t], DEFAULT_CONTRACT, () => 'issue-30');
+  assert.equal(r!.tag, 'v0.2.0');
+  // A verified ticket is planMerge's, and a trailer-less squash is not matched here.
+  assert.deepEqual(planReleasedBranches(dir, [T('ISSUE-30')], DEFAULT_CONTRACT, () => 'issue-30'), []);
 });
