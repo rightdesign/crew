@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   labelFor, planUninstall, applyUninstall, programFromPlist, listLaunchdUnits, foreignLaunchdUnits,
-  clearForeignLaunchdUnits, parseLaunchctlList,
+  clearForeignLaunchdUnits, parseLaunchctlList, removeAllLaunchdUnits,
 } from '../src/install.ts';
 import type { InstallLog } from '../src/install.ts';
 
@@ -179,4 +179,30 @@ test('parseLaunchctlList reads PID, last exit and label per row, and skips the h
   assert.deepEqual(jobs.get('com.tablation.crew-passengers.9bcaaea6'), { pid: '-', lastExit: '78' });
   assert.deepEqual(jobs.get('com.tablation.crew.8b10e9df'), { pid: '4321', lastExit: '0' });
   assert.equal(jobs.has('Label'), false);
+});
+
+test('a loaded crew job with no plist is reported as an orphan, and only when loaded labels are passed', () => {
+  const { agents } = setup();
+  const orphan = 'com.tablation.crew.deadbeef';
+  assert.deepEqual(listLaunchdUnits(agents), []);
+  const units = listLaunchdUnits(agents, [orphan, 'com.apple.something']);
+  assert.deepEqual(units.map((u) => [u.label, u.orphan]), [[orphan, true]]);
+});
+
+test('install removes a foreign orphan without --replace and does not treat it as an unknown owner', () => {
+  const { home, agents } = setup();
+  const orphan = 'com.tablation.crew.deadbeef';
+  const log = recorder();
+  assert.equal(clearForeignLaunchdUnits(home, false, true, log, agents, [orphan, labelFor(home, 'run')]), true);
+  assert.ok(log.lines.some((l) => l.includes('plist is gone') && l.includes(orphan)));
+  assert.ok(!log.lines.some((l) => l.includes(labelFor(home, 'run')) && l.includes('removing')), 'own label is not foreign');
+  assert.deepEqual(log.warnings, []);
+});
+
+test('uninstall --all reaches a loaded job with no plist', () => {
+  const { agents } = setup();
+  const orphan = 'com.tablation.crew-passengers.deadbeef';
+  const log = recorder();
+  removeAllLaunchdUnits(true, log, agents, [orphan]);
+  assert.ok(log.lines.some((l) => l.includes(orphan)));
 });

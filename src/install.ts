@@ -672,6 +672,8 @@ export interface LaunchdUnit {
   program: string | null;
   /** Whether `program` still exists. A unit whose program is gone exits 78 on every fire. */
   programExists: boolean;
+  /** Loaded in launchd with no plist on disk: nothing to read or delete, only `launchctl remove` reaches it (CREW-1381). */
+  orphan?: boolean;
 }
 
 const CREW_LAUNCHD_PREFIX = 'com.tablation.crew';
@@ -695,10 +697,22 @@ export function programFromPlist(text: string): string | null {
   return args.find((a) => a.endsWith('/bin/crew')) ?? args[0] ?? null;
 }
 
-/** Every `com.tablation.crew*` launchd unit in `dir`, whichever checkout wrote it. */
-export function listLaunchdUnits(dir: string = launchAgentsDir()): LaunchdUnit[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
+/** The `com.tablation.crew*` labels `launchctl list` reports as registered right now. */
+export function loadedCrewLabels(): string[] {
+  const list = spawnSync('launchctl', ['list'], { encoding: 'utf8' });
+  if (list.status !== 0) return [];
+  return [...parseLaunchctlList(list.stdout ?? '').keys()].filter((l) => l.startsWith(CREW_LAUNCHD_PREFIX));
+}
+
+/**
+ * Every `com.tablation.crew*` launchd unit in `dir`, whichever checkout wrote
+ * it. Pass `loaded` (see `loadedCrewLabels`) to also report jobs launchd still
+ * has registered whose plist is already gone, as `orphan` units — a deleted
+ * plist does not unregister the job, and a foreign hash is otherwise invisible.
+ */
+export function listLaunchdUnits(dir: string = launchAgentsDir(), loaded: Iterable<string> = []): LaunchdUnit[] {
+  const files = existsSync(dir) ? readdirSync(dir) : [];
+  const units: LaunchdUnit[] = files
     .filter((f) => f.startsWith(CREW_LAUNCHD_PREFIX) && f.endsWith('.plist'))
     .sort()
     .map((f) => {
@@ -712,12 +726,18 @@ export function listLaunchdUnits(dir: string = launchAgentsDir()): LaunchdUnit[]
         programExists: program !== null && existsSync(program),
       };
     });
+  const seen = new Set(units.map((u) => u.label));
+  for (const label of [...loaded].sort()) {
+    if (!label.startsWith(CREW_LAUNCHD_PREFIX) || seen.has(label)) continue;
+    units.push({ label, plistPath: join(dir, `${label}.plist`), program: null, programExists: false, orphan: true });
+  }
+  return units;
 }
 
 /** The `com.tablation.crew*` units this checkout does NOT own — a different checkout's, or a stale one from before a move. */
-export function foreignLaunchdUnits(crewHome: string, dir?: string): LaunchdUnit[] {
+export function foreignLaunchdUnits(crewHome: string, dir?: string, loaded?: Iterable<string>): LaunchdUnit[] {
   const own = new Set((['run', 'release', 'passengers'] as const).map((job) => labelFor(crewHome, job)));
-  return listLaunchdUnits(dir).filter((u) => !own.has(u.label));
+  return listLaunchdUnits(dir, loaded).filter((u) => !own.has(u.label));
 }
 
 /**
@@ -742,9 +762,10 @@ export function removeLaunchdUnit(unit: Pick<LaunchdUnit, 'label' | 'plistPath'>
  * before any unit of this checkout is written, so a refusal leaves the machine
  * as it was.
  */
-export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dryRun: boolean, log: InstallLog, dir?: string): boolean {
-  const foreign = foreignLaunchdUnits(crewHome, dir);
-  const blocking = foreign.filter((u) => u.program === null || u.programExists);
+export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dryRun: boolean, log: InstallLog, dir?: string, loaded?: Iterable<string>): boolean {
+  const foreign = foreignLaunchdUnits(crewHome, dir, loaded);
+  // An orphan has no plist, so a null program is not "unknown ownership": nothing can restart it.
+  const blocking = foreign.filter((u) => !u.orphan && (u.program === null || u.programExists));
   if (blocking.length > 0 && !replace) {
     log.warn(
       `two crew installs target this machine: ${blocking.map((u) => `${u.label} runs ${u.program ?? 'an unreadable ProgramArguments'}`).join('; ')}. ` +
@@ -753,7 +774,9 @@ export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dry
     return false;
   }
   for (const unit of foreign) {
-    const why = unit.program === null
+    const why = unit.orphan
+      ? 'removing a loaded job whose plist is gone'
+      : unit.program === null
       ? 'replacing a unit with no readable ProgramArguments'
       : unit.programExists ? 'replacing a live other install' : 'removing a stale unit whose program is gone';
     log.emit(`${why}: ${unit.label}`);
@@ -763,8 +786,8 @@ export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dry
 }
 
 /** `crew uninstall --all`: every `com.tablation.crew*` launchd unit, whichever checkout's hash it carries. */
-export function removeAllLaunchdUnits(dryRun: boolean, log: InstallLog, dir?: string): void {
-  for (const unit of listLaunchdUnits(dir)) removeLaunchdUnit(unit, dryRun, log);
+export function removeAllLaunchdUnits(dryRun: boolean, log: InstallLog, dir?: string, loaded?: Iterable<string>): void {
+  for (const unit of listLaunchdUnits(dir, loaded)) removeLaunchdUnit(unit, dryRun, log);
 }
 
 /** One `launchctl list` row: PID, last exit status (`-` when none), label. */
@@ -790,13 +813,13 @@ export function parseLaunchctlList(text: string): Map<string, LaunchdJobStatus> 
  * whose program is gone is flagged, since it fires on every interval and fails.
  */
 export function describeForeignLaunchdUnits(crewHome: string, dir?: string): string[] {
-  const foreign = foreignLaunchdUnits(crewHome, dir);
-  if (foreign.length === 0) return [];
   const list = spawnSync('launchctl', ['list'], { encoding: 'utf8' });
   const jobs = parseLaunchctlList(list.status === 0 ? (list.stdout ?? '') : '');
+  const foreign = foreignLaunchdUnits(crewHome, dir, jobs.keys());
   return foreign.map((u) => {
     const status = jobs.get(u.label);
     const loaded = status ? `loaded, last exit ${status.lastExit}` : 'not loaded';
+    if (u.orphan) return `  ${u.label}: ${loaded}; plist gone — stale: \`crew install\` removes it`;
     const program = u.program ? `${u.program} (${u.programExists ? 'present' : 'GONE'})` : 'no readable ProgramArguments';
     const stale = status && !u.programExists ? ' — stale: `crew install` removes it' : '';
     return `  ${u.label}: ${loaded}; runs ${program}${stale}`;

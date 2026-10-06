@@ -34,7 +34,7 @@ import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
 } from './connect-wizard.ts';
-import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, describeForeignLaunchdUnits } from './install.ts';
+import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
@@ -838,7 +838,7 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
     const ok = clearForeignLaunchdUnits(CREW_HOME, !!opts.replace, dryRun, {
       emit: (m) => process.stdout.write(`${m}\n`),
       warn: (m) => process.stderr.write(`crew install: ${m}\n`),
-    });
+    }, undefined, loadedCrewLabels());
     if (!ok) return false;
   }
   // Three units, not one: `run` (poll/select/one agent session), `release`
@@ -3235,7 +3235,7 @@ switch (command) {
       removeAllLaunchdUnits(dryRun, {
         emit: (m) => process.stdout.write(`${m}\n`),
         warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
-      });
+      }, undefined, loadedCrewLabels());
     }
     break;
   }
