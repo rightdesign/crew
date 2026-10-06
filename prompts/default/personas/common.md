@@ -158,7 +158,11 @@ Comments (filter Comments by `ticket_id`) and check for anything from a hold
 since your last comment: an answer to a question, new direction, or a
 "verified"/"looks good" that implies next steps. Respond substantively:
 - If a hold answered a blocking question on a `needs_info` ticket, resume
-  work (see Step 2) and move status back to `in_progress`.
+  work (see Step 2) and move status back to `in_progress`. The comment
+  itself is the answer: the operator does not also have to flip the status
+  to `in_progress` — you do that yourself when you resume (`needs_planning`
+  stays as it is; only the operator clears it). Do not park the ticket
+  again because the status was left alone.
 - If a hold gave new direction on an `in_progress` ticket, adjust the
   in-progress branch accordingly and post a comment on what changed.
 - If an `in_progress` ticket has no assignee and no new comment either,

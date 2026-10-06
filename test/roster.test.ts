@@ -76,3 +76,24 @@ test('a Crew row linked to an account resolves from that identity id (CREW-1304)
   assert.equal(memberByIdentity(r, null), undefined);
   assert.equal(memberByIdentity(r, undefined), undefined);
 });
+
+test('a Crew row with a user_id that is not a configured member still resolves, as a person (CREW-1390)', () => {
+  const r = buildRoster(CONFIGURED, [
+    { id: 'dev-1', name: 'Robin' },
+    { id: 'other-op', name: 'Brad Choate', user_id: 'ident-brad' },
+    { id: 'agent-elsewhere', name: 'Dev elsewhere' }, // no user_id: not a person
+  ]);
+  const m = memberByIdentity(r, 'ident-brad');
+  assert.equal(m?.id, 'other-op');
+  assert.equal(crewLabel(m), 'Brad Choate (person)');
+  assert.ok(!isHold(r, 'other-op'), 'a person on another ship is not a hold here');
+  assert.ok(!holdIds(r).includes('other-op'));
+  assert.ok(!r.has('agent-elsewhere'));
+  assert.ok(!rosterMarkdown(r, 'dev-1').includes('Brad Choate'), 'not listed in the roster block');
+});
+
+test('a configured member keeps its classification when its row also carries a user_id', () => {
+  const r = buildRoster(CONFIGURED, [{ id: 'op-1', name: 'Brad C.', user_id: 'ident-brad' }]);
+  assert.equal(r.get('op-1')?.kind, 'hold');
+  assert.equal(memberByIdentity(r, 'ident-brad')?.id, 'op-1');
+});

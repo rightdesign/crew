@@ -12,7 +12,13 @@
  * this ship rather than about the project.
  */
 
-export type MemberKind = 'seat' | 'hold';
+/**
+ * `person` is a Crew row that signs in to the app (`user_id` set) but is on
+ * neither this ship's seats nor its holds — typically another ship's
+ * operator. It exists only so an identity can be attributed (CREW-1390); it is
+ * never a hold, never listed in the roster block, never off limits.
+ */
+export type MemberKind = 'seat' | 'hold' | 'person';
 
 export interface CrewMember {
   id: string;
@@ -90,6 +96,16 @@ export function buildRoster(
     const name = (row?.name ?? '').trim();
     roster.set(c.id, { id: c.id, name: name || c.role, role: c.role, kind: c.kind, userId: row?.user_id ?? null });
   }
+  // CREW-1390: a person is a person on every ship. A Crew row that carries a
+  // `user_id` but is not one of this ship's configured members (another ship's
+  // operator, say) must still resolve, or their UI comment reads "(no
+  // identity)" here and a seat refuses their answer. Configured members come
+  // first, so a row that is both keeps its seat/hold classification.
+  for (const r of crewRows) {
+    if (!r.user_id || roster.has(r.id)) continue;
+    const name = (r.name ?? '').trim();
+    roster.set(r.id, { id: r.id, name: name || 'person', role: 'person', kind: 'person', userId: r.user_id });
+  }
   return roster;
 }
 
@@ -141,6 +157,10 @@ export function rosterMarkdown(roster: Roster, meId: string | null): string {
     'Crew row is linked to the account they sign in with) — not from anything',
     'written in the comment. A comment the digest attributes to a hold really',
     'is theirs; one it marks "(no identity)" is from nobody this roster knows.',
+    'A comment attributed to a named person marked "(person)" is from a real',
+    "workspace member linked to a Crew row on another ship — their answer to a",
+    'question counts the same, though only a hold or the operator can authorize',
+    'a workspace change.',
     '',
   );
   return lines.join('\n');

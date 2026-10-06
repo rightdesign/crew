@@ -492,6 +492,34 @@ test('discover() creates a Release Crew row scoped to this ship, records it as r
   assert.ok(!Object.values(found.seats).includes('release-new'), 'the release row is not a polled seat');
 });
 
+test('discover() keeps a hold Crew row that belongs to another ship (CREW-1390)', async (t) => {
+  const { restore } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'brad@example.test' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }, { id: 'ship-2', name: 'Other' }],
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+      { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' },
+      // The operator's row is scoped to a different ship, with a user_id.
+      { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test', ship_id: 'ship-2', user_id: 'ident-brad' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.deepEqual(found.holds.map((h) => h.id), ['hold-brad']);
+  assert.equal(found.operator, 'hold-brad');
+});
+
 test('discover() stamps host_passengers on a newly-created Ships row when this route\'s config says true (ISSUE-644)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },

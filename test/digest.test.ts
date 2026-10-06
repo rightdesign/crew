@@ -221,3 +221,17 @@ test('a held ticket names its holding ship, never the id; our own ship adds noth
   assert.match(out, /\(held by an unknown ship\)/);
   assert.doesNotMatch(out, /ghost-uuid|ship-A/);
 });
+
+test('a UI comment from a person not on this ship\'s roster is attributed, not anonymous (CREW-1390)', () => {
+  const r = buildRoster(MEMBERS, [...ROWS, { id: 'other-op', name: 'Brad Choate', user_id: 'ident-brad' }]);
+  const out = buildingDigest(input({
+    roster: r,
+    tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', assignee_id: 'dev-1' })],
+    comments: [
+      { ticket_id: 'a', team_member_id: null, created_by_id: 'ident-brad', reporter_name: 'Pair agent',
+        created_at: '2026-08-23T11:00:00.000Z' },
+    ],
+  }));
+  assert.match(out, /Brad Choate \(person\)/);
+  assert.doesNotMatch(out, /no identity/);
+});

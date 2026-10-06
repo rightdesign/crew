@@ -18,7 +18,7 @@ import {
   type Unplaceable, type UnplaceableReason,
   ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat,
 } from './config.ts';
-import { buildRoster, holdIds } from './roster.ts';
+import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
@@ -2817,6 +2817,14 @@ switch (command) {
         const replace = value('mcp') === 'replace';
         process.stderr.write(`${ensureClaudeMcp({ bin: cfg.ship.agent.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun })}\n`);
       }
+      // CREW-1390: name every hold resolved, so a missing operator is visible now
+      // rather than when a comment from them reads as "(no identity)".
+      if (found.holds.length) {
+        process.stderr.write(
+          `\n  Holds resolved (${found.holds.length}): ` +
+          `${found.holds.map((h) => `${h.name || h.id}${h.id === operator ? ' [operator]' : ''}`).join(', ')}\n`,
+        );
+      }
       if (found.provisioning.length) {
         process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);
         for (const p of found.provisioning) process.stderr.write(`    - ${p}\n`);
@@ -3615,6 +3623,35 @@ switch (command) {
             `${declared && declared !== host ? ` — MISMATCH, this host is ${host}` : ''}\n` +
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
+      }
+    }
+
+    // CREW-1390: the operator comments from the app, where a comment carries only
+    // the server-stamped identity — so it is attributed only if the operator's
+    // Crew row links to it (`user_id`). Without that, their answer reads "(no
+    // identity)" and a seat refuses to act on it.
+    {
+      const op = route.resolved?.operator;
+      const row = op ? crewRows.find((c) => c.id === op) : undefined;
+      if (!op) {
+        process.stdout.write('operator identity: no operator on this route — run `crew connect`\n');
+      } else if (!row) {
+        process.stdout.write(`operator identity: ERROR operator ${op} is not a row of the Crew table\n`);
+        process.exitCode = 1;
+      } else if (!row.user_id) {
+        process.stdout.write(
+          `operator identity: ERROR Crew row "${row.name ?? op}" has no user_id — their UI comments will read ` +
+            '"(no identity)"; link it to the account they sign in with\n',
+        );
+        process.exitCode = 1;
+      } else {
+        const resolves = memberByIdentity(buildRoster(configuredMembers(route), crewRows), row.user_id);
+        process.stdout.write(
+          resolves
+            ? `operator identity: comments from ${row.name ?? op} resolve to ${crewLabel(resolves)}\n`
+            : `operator identity: ERROR user_id ${row.user_id} does not resolve through the roster\n`,
+        );
+        if (!resolves) process.exitCode = 1;
       }
     }
 
