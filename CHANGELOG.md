@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.11.0] — 2026-10-06
+
+- A release now refuses to deploy if another ship's release landed on origin meanwhile, cleans up checkouts a crashed release left behind, rebuilds the primary checkout's dist/ after releasing, and names hand commits that make the base unsafe (CREW-1383)
+- The release phase cuts each release in a temporary checkout of the remote base and pushes it fast-forward, so a failed push leaves nothing behind on the primary checkout, and ticket worktrees are cut from the remote base (CREW-1383)
+
 ## [0.10.2] — 2026-10-06
 
 - crew install, uninstall --all and doctor now also find loaded launchd crew jobs whose plist is already gone, whatever checkout hash they carry (CREW-1381)
