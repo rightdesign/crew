@@ -201,7 +201,7 @@ crew release [route]           merge what QA verified, version it, ship it
 crew merge [route]             merge verified branches and stop
 crew deploy [route]            release now, even with nothing new to merge
 crew watch [route]             live view of what the crew is doing
-crew status [route]            paused/running state
+crew status [route]            paused/running state, led by what the operator owes (needs_info assigned to them, needs_planning, ships needing attention)
 crew doctor [route] [--fix]    preflight; --fix enables clean routes, offers crew install
 crew ports [route]             which checkout owns which ports, and what is up
 crew reap [route]              kill servers left behind by removed worktrees

@@ -49,3 +49,29 @@ export function attentionTransitions(
   }
   return out;
 }
+
+/** One ticket the operator owes an answer on (CREW-1402). */
+export interface OperatorTodoItem {
+  ticket: Ticket;
+  reasons: AttentionReason[];
+}
+
+/**
+ * What a person owes, for the top of `crew status` (CREW-1402): tickets at
+ * `needs_info` that are assigned to the operator, plus every ticket carrying
+ * `needs_planning` (a decision gate, whoever holds the assignee). A
+ * `needs_info` ticket assigned to someone else is theirs to answer, not the
+ * operator's, so it is left out; `needs_review` is not listed because it is a
+ * design-lane hand-off the board already surfaces. Pure — the caller supplies
+ * the open tickets. One item per ticket, reasons in `attentionReasons` order.
+ */
+export function operatorTodo(tickets: Ticket[], contract: Contract, operatorId: string): OperatorTodoItem[] {
+  const out: OperatorTodoItem[] = [];
+  for (const ticket of tickets) {
+    const reasons = attentionReasons(ticket, contract).filter(
+      (r) => r === 'needs_planning' || (r === 'needs_info' && ticket.assignee_id === operatorId),
+    );
+    if (reasons.length > 0) out.push({ ticket, reasons });
+  }
+  return out;
+}

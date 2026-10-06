@@ -48,6 +48,7 @@ import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
+import { operatorTodo } from './attention.ts';
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
@@ -3435,6 +3436,12 @@ switch (command) {
     const engagedTickets = engagedTicketIds.length ? await statusTracker.ticketsByIds(engagedTicketIds) : [];
     const issueLabelById = new Map(engagedTickets.map((t) => [t.id, t.issue_id]));
 
+    // What a person owes (CREW-1402). A board that cannot be read leaves the
+    // block out rather than failing `status`, which is also a health check.
+    const todo = await statusTracker.openTickets()
+      .then((open) => operatorTodo(open, statusTracker.contract, route.resolved?.operator ?? ''))
+      .catch(() => []);
+
     if (flag('json')) {
       const repos = await resolvedRepos(route);
       // Per-seat identity (ISSUE-525): crew-macos's menu bar wants the seat's
@@ -3483,6 +3490,8 @@ switch (command) {
           // derived `release_stale`. `version` stays 1.
           attention: openShipAttention(state),
         },
+        // Additive (CREW-1402): what the operator owes. `version` stays 1.
+        todo: todo.map((i) => ({ ticket: displayKey(i.ticket), title: i.ticket.title ?? null, reasons: i.reasons })),
         crew: {
           paused: state.isPaused(),
           // The release timer honors the whole-crew pause too, so this is
@@ -3531,6 +3540,13 @@ switch (command) {
       break;
     }
 
+    const owed = [
+      ...todo.map((i) => `${displayKey(i.ticket)} — ${i.reasons.join(', ')}${i.ticket.title ? ` — ${i.ticket.title}` : ''}`),
+      ...openShipAttention(state).map((i) => `ship ${cfg.ship.name}: ${i.kind} — ${i.message}`),
+      ...shipRows.filter((s) => s.name !== cfg.ship.name)
+        .flatMap((s) => (s.attention ?? []).map((i) => `ship ${s.name}: ${i.kind} — ${i.message}`)),
+    ];
+    if (owed.length) process.stdout.write(`to do (${owed.length}):\n${owed.map((l) => `  ${l}\n`).join('')}\n`);
     process.stdout.write(
       `ship:       ${cfg.ship.name} (${cfg.ship.platform})\n` +
         `route:      ${route.route} -> ${route.dir}\n` +

@@ -81,3 +81,26 @@ test('attentionTransitions: several tickets are diffed independently', () => {
   );
   assert.deepEqual(out, [{ ticketId: 't2', reasons: ['needs_planning'] }]);
 });
+
+test('operatorTodo: needs_info counts only when assigned to the operator', async () => {
+  const { operatorTodo } = await import('../src/attention.ts');
+  const mine = ticket({ id: 'a', status: 'needs_info', assignee_id: 'op' });
+  const theirs = ticket({ id: 'b', status: 'needs_info', assignee_id: 'someone' });
+  const unassigned = ticket({ id: 'c', status: 'needs_info' });
+  assert.deepEqual(
+    operatorTodo([mine, theirs, unassigned], DEFAULT_CONTRACT, 'op').map((i) => i.ticket.id),
+    ['a'],
+  );
+});
+
+test('operatorTodo: needs_planning counts whoever holds the ticket, and merges reasons per ticket', async () => {
+  const { operatorTodo } = await import('../src/attention.ts');
+  const both = ticket({ id: 'a', status: 'needs_info', assignee_id: 'op', needs_planning: true });
+  const planning = ticket({ id: 'b', status: 'accepted', assignee_id: 'agent', needs_planning: true });
+  const review = ticket({ id: 'c', status: 'in_progress', needs_review: true });
+  const items = operatorTodo([both, planning, review], DEFAULT_CONTRACT, 'op');
+  assert.deepEqual(items.map((i) => [i.ticket.id, i.reasons]), [
+    ['a', ['needs_info', 'needs_planning']],
+    ['b', ['needs_planning']],
+  ]);
+});
