@@ -72,6 +72,17 @@ export async function notify(
 }
 
 /**
+ * A failure detail with the failing hook's name and its last output lines
+ * fenced underneath. The headline stays fixed (the failure alert dedupes on
+ * it), so everything that can change between cycles lives here, and a
+ * "Still failing" comment repeats the current tail rather than a static line.
+ */
+function withHookTail(detail: string, f?: { hook: string; label: string; tail: string }): string {
+  if (!f || !f.tail) return detail;
+  return `${detail}\n\nThe \`${f.hook}\` hook (\`${f.label}\`) printed, last lines:\n\n\`\`\`\n${f.tail}\n\`\`\``;
+}
+
+/**
  * What to say about a finished release.
  *
  * Kept apart from sending it so the wording is testable without running
@@ -81,6 +92,7 @@ export function describeRelease(o: {
   deployed?: boolean; confirmed?: boolean; alreadyLive?: boolean; integrated?: boolean;
   version?: string; tag?: string; merged: unknown[]; stopped?: string;
   blockedCycles?: number; blockKind?: 'branch' | 'dirty';
+  hookFailure?: { hook: string; label: string; tail: string };
 }, route: string): Notification | null {
   if (o.integrated) {
     // Worth saying: something shipped, in the only sense this repo ships.
@@ -113,17 +125,24 @@ export function describeRelease(o: {
     return {
       level: 'fail',
       headline: `${route}: release blocked — setup failed`,
-      detail: 'dependencies could not be installed in the release checkout; the target stays on the previous release',
+      detail: withHookTail(
+        'the setup hook failed in the release checkout; the target stays on the previous release',
+        o.hookFailure,
+      ),
     };
   }
   if (o.stopped === 'deploy failed') {
-    return { level: 'fail', headline: `${route}: deploy FAILED`, detail: 'nothing new is live' };
+    return {
+      level: 'fail',
+      headline: `${route}: deploy FAILED`,
+      detail: withHookTail('nothing new is live', o.hookFailure),
+    };
   }
   if (o.stopped === 'build failed') {
     return {
       level: 'fail',
       headline: `${route}: build FAILED`,
-      detail: 'the target stays on the previous release — nothing was deployed',
+      detail: withHookTail('the target stays on the previous release — nothing was deployed', o.hookFailure),
     };
   }
   // A dirty tree or a non-main checkout is normal for one cycle — someone is

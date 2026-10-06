@@ -161,6 +161,12 @@ export interface ReleaseOutcome {
    * is holding back — see gate-red.ts.
    */
   gateRed?: GateRed;
+  /**
+   * Set when the setup, build or deploy hook failed: which hook, and the last
+   * lines of its output. `describeRelease` puts it in the alert so a reader
+   * on another machine can see which command failed without this ship's log.
+   */
+  hookFailure?: { hook: string; label: string; tail: string };
   decision: ReleaseDecision;
   /**
    * Consecutive cycles `decision.block` has refused this release, from
@@ -298,6 +304,13 @@ export function summarizeOutcome(o: ReleaseOutcome, scope: string, hadTestHook: 
     scope, tests, outcome: 'merged',
     detail: `${o.merged.length} merged${o.version ? `, ${o.version}` : ''}${o.tag ? `, tagged ${o.tag}` : ''}`,
   };
+}
+
+/** How many trailing lines of a failed hook's output go into the alert. */
+const HOOK_FAILURE_TAIL_LINES = 15;
+
+function hookFailure(o: ReleaseRunOptions, name: 'setup' | 'build' | 'deploy', output: string): NonNullable<ReleaseOutcome['hookFailure']> {
+  return { hook: name, label: hookLabel(o.repo, name), tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) };
 }
 
 /**
@@ -1046,7 +1059,7 @@ async function mergeAndRelease(
       const r = await hook(o, 'setup');
       if (r && r.code !== 0) {
         o.emit.error(`setup FAILED (exit ${r.code}) — not testing or deploying; the target stays on the previous release`);
-        return { merged, conflicts, unbuildable, deployed: false, stopped: 'setup failed', decision };
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'setup failed', decision, hookFailure: hookFailure(o, 'setup', r.output) };
       }
     }
   }
@@ -1114,7 +1127,7 @@ async function mergeAndRelease(
           git(o.cwd, ['reset', '--hard', preBump]);
           o.emit.warn(`dropped the unreleased version commit for ${version} (reset ${o.repo.branch.base} to ${preBump.slice(0, 8)}) so a retry starts clean`);
         }
-        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision };
+        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision, hookFailure: hookFailure(o, 'build', r.output) };
       }
     }
   }
@@ -1152,7 +1165,7 @@ async function mergeAndRelease(
       if (r && r.code !== 0) {
         o.emit.error(`deploy FAILED (exit ${r.code}) — the target may be partially deployed`);
         o.state?.noteDeployFailed(headSha(o.cwd));
-        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'deploy failed', decision };
+        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'deploy failed', decision, hookFailure: hookFailure(o, 'deploy', r.output) };
       }
       deployed = true;
       o.state?.clearDeployFailed();

@@ -137,6 +137,16 @@ test('a failing hooks.setup stops as "setup failed", not as a test failure (CREW
   assert.equal(summarizeOutcome(out, 'r/x', false).outcome, 'nothing');
 });
 
+test('a failing hooks.setup hands its output tail to the outcome, so the alert can show it (CREW-1396)', async () => {
+  const yaml = LOCAL.replace('hooks:\n', 'hooks:\n  setup: "echo oops-datasource-url >&2; exit 3"\n');
+  const { dir, repo } = project(yaml);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.hookFailure?.hook, 'setup');
+  assert.match(out.hookFailure?.tail ?? '', /oops-datasource-url/);
+});
+
 test('a red test gate stops everything before the version moves', async () => {
   const { dir, repo } = project(LOCAL.replace('test: exit 0', 'test: exit 1'));
   const out = await runRelease({

@@ -88,3 +88,19 @@ test('a dirty tree or wrong-branch checkout stays quiet for one cycle, then esca
   assert.equal(wrongBranch?.level, 'fail');
   assert.equal(wrongBranch?.headline, 'proj: release blocked — checkout is not on the base branch');
 });
+
+test('setup/build/deploy failures carry the hook name and its output tail; the headline stays fixed', () => {
+  const hookFailure = { hook: 'setup', label: 'pnpm run setup', tail: 'Error: The datasource.url property is required' };
+  const setup = describeRelease({ merged: [], stopped: 'setup failed', hookFailure }, 'r');
+  assert.equal(setup?.headline, 'r: release blocked — setup failed');
+  assert.match(setup?.detail ?? '', /setup hook failed/);
+  assert.match(setup?.detail ?? '', /datasource\.url property is required/);
+  assert.match(setup?.detail ?? '', /`pnpm run setup`/);
+  const deploy = describeRelease({ merged: [], stopped: 'deploy failed', hookFailure: { ...hookFailure, hook: 'deploy' } }, 'r');
+  assert.equal(deploy?.headline, 'r: deploy FAILED');
+  assert.match(deploy?.detail ?? '', /datasource\.url/);
+  const build = describeRelease({ merged: [], stopped: 'build failed', hookFailure: { ...hookFailure, hook: 'build' } }, 'r');
+  assert.match(build?.detail ?? '', /datasource\.url/);
+  // No output captured: the plain line, not an empty fence.
+  assert.equal(describeRelease({ merged: [], stopped: 'deploy failed' }, 'r')?.detail, 'nothing new is live');
+});
