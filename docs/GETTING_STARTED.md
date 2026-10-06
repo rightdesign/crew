@@ -16,8 +16,7 @@ There are two halves to this:
 
 - [Part 1 — Get into Tablation](#part-1-get-into-tablation)
   - [1.1 Get invited](#_1-1-get-invited)
-  - [1.2 Confirm you're a workspace admin](#_1-2-confirm-you-re-a-workspace-admin)
-  - [1.3 Your machine's Ships row](#_1-3-your-machine-s-ships-row)
+  - [1.2 Your machine's Ships row](#_1-2-your-machine-s-ships-row)
 - [Part 2 — Install and connect crew](#part-2-install-and-connect-crew)
 - [Part 3 — crew-macos (optional menu bar front end)](#part-3-crew-macos-optional-menu-bar-front-end)
 - [Attaching a checkout to a route](#attaching-a-checkout-to-a-route)
@@ -47,14 +46,7 @@ Open it, set a password, and you're in. If you don't have a link, ask the
 admin to resend one rather than guessing at a signup URL — there's no public
 self-serve signup.
 
-### 1.2 Confirm you're a workspace admin
-
-Connecting a machine — signing in from `crew connect`, adding it to the Ships
-table, seeing the Crew/Issues tables — requires **workspace admin** on the
-workspace you're connecting to, not just membership. If Settings shows no
-"Users" tab, you're a plain member: ask the workspace admin to promote you.
-
-### 1.3 Your machine's Ships row
+### 1.2 Your machine's Ships row
 
 crew identifies "this machine" by a name (`ship.name` in `crew.yaml`).
 `crew connect` (§2.3) provisions this for you the first time it runs — it
@@ -444,7 +436,7 @@ is stored in plaintext there.
   mistyped a field name; check the exact key names in `crew.example.yaml`
   or [the repo spec](/repo-spec).
 - `doctor` says your `ship.name` doesn't match anything → check the Ships
-  table in the workspace (1.3) rather than guessing at the name.
+  table in the workspace (1.2) rather than guessing at the name.
 - Tracker calls fail with something that looks like a bot-blocking page
   rather than JSON → check `userAgent` in `crew.yaml`; the default already
   works around Cloudflare blocking bare tool user agents, so this usually
