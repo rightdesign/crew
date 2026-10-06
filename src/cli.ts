@@ -1217,6 +1217,12 @@ async function releasePhase(
         return { scope, tests: 'skipped', outcome: 'skipped', detail: `release ${why} on the board` };
       }
       boardLock = got;
+      remit.emit(
+        got.exclusion === 'taken'
+          ? `took board lock ${scope}`
+          : `this board has no Locks table — cross-ship exclusion for ${scope} is OFF`,
+        { step: 'release' },
+      );
     }
 
     const all = await tracker.openTickets();

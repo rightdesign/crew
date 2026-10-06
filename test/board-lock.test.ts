@@ -54,6 +54,7 @@ function fakeClient(row: FakeRow) {
 test('no Locks table configured — treated as free, release is a no-op', async () => {
   const got = await acquireBoardLock(emptyClient(), undefined, 'synthesis/crew', 'shipA:1', TTL);
   assert.equal(got.ok, true);
+  if (got.ok) assert.equal(got.exclusion, 'off');   // callers log this (CREW-1399)
   if (got.ok) await got.release();   // must not throw
 });
 

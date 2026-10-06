@@ -46,7 +46,12 @@ export interface LockRecordsClient {
 }
 
 export type BoardLockResult =
-  | { ok: true; release: () => Promise<void> }
+  | {
+    ok: true;
+    release: () => Promise<void>;
+    /** `'off'` means this board has no Locks table, so there is NO cross-ship protection; the caller must say so in its log (CREW-1399). */
+    exclusion: 'taken' | 'off';
+  }
   | { ok: false; heldBy?: string; reason: 'held' | 'contended' | 'missing' };
 
 /** The key a repo's lock row carries — one definition for `crew connect`, the release phase and `crew status`. */
@@ -71,7 +76,7 @@ export function releaseLockScope(route: string, repo: string): string {
 export async function acquireBoardLock(
   client: LockRecordsClient, modelId: string | undefined, scope: string, holderLabel: string, ttlMs: number,
 ): Promise<BoardLockResult> {
-  if (!modelId) return { ok: true, release: async () => {} };
+  if (!modelId) return { ok: true, release: async () => {}, exclusion: 'off' };
 
   const filters = JSON.stringify([{ columnName: 'scope', operator: 'EQ', value: scope }]);
   const rows = await client.list(modelId, { filters, limit: 1 });
@@ -92,6 +97,7 @@ export async function acquireBoardLock(
 
   return {
     ok: true,
+    exclusion: 'taken',
     release: async () => {
       try {
         await client.update(modelId, row.id, { holder: '' }, claimed.updated_at);
