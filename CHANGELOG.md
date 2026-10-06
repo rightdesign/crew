@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.16.0] — 2026-10-06
+
+- The runner now enforces the push at hand-off — a `fixed` ticket whose branch is not on the remote at the worktree's HEAD is sent back to `in_progress`, and the pushed sha is recorded on the ticket for QA to verify against (CREW-1380)
+
 ## [0.15.0] — 2026-10-06
 
 - A stop for a person is now written in data (needs_info plus operator assignee, or a ship attention flag that `crew sync` raises for a diverged base and clears when level), every stop comment names its un-park condition, and a ticket that is yours but has no worktree or branch is a fresh start (CREW-1388)
