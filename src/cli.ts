@@ -1395,8 +1395,9 @@ async function releasePhase(
     // same reasoning as stamping above (ISSUE-346).
     try {
       const terminal = await tracker.terminalTickets();
+      const verifiedNow = (await tracker.openTickets()).filter((t) => t.status === tracker.contract.statuses.verified);
       const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
-      const actions = planWorktreeSweep(target, scoped, tracker.contract);
+      const actions = planWorktreeSweep(target, [...scoped, ...(ticketsByRepo(c, verifiedNow).byRepo.get(target.name) ?? [])], tracker.contract);
       if (actions.length) {
         remit.enter('worktree');
         const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, repo.branch.remote);
@@ -3020,8 +3021,11 @@ switch (command) {
     const tracker = new Tracker(route, cfg.ship);
     const terminal = await tracker.terminalTickets();
     const { byRepo } = ticketsByRepo(route, terminal);
+    const verifiedByRepo = ticketsByRepo(
+      route, (await tracker.openTickets()).filter((t) => t.status === tracker.contract.statuses.verified),
+    ).byRepo;
     for (const r of await resolvedRepos(route)) {
-      const actions = planWorktreeSweep(r, byRepo.get(r.name) ?? [], tracker.contract);
+      const actions = planWorktreeSweep(r, [...(byRepo.get(r.name) ?? []), ...(verifiedByRepo.get(r.name) ?? [])], tracker.contract);
       const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, byRepo.get(r.name) ?? [], tracker.contract);
       if (stale.length) { anything = true; applyRemoteBranchCleanup(r.dir, r.config.branch.remote, stale, dryRun, emit); }
       if (!actions.length) continue;

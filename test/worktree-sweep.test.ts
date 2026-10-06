@@ -79,14 +79,47 @@ test('closed_duplicate behaves the same as wont_fix: branch kept, worktree remov
   assert.ok(branchesOf(dir).includes('issue-11'));
 });
 
-test('verified is excluded — still pre-release, the release phase needs this worktree next', async () => {
+test('verified (CREW-1405): the worktree is planned for removal but the branch is kept and it must be pushed', async () => {
   const { dir, g } = repo();
   const { target, wt } = withWorktree(dir, g, 12);
   const t = ticket({ issue_id: 'ISSUE-12', status: 'verified' });
 
   const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
-  assert.deepEqual(actions, []);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]!.keepBranch, true);
+  assert.equal(actions[0]!.requirePushed, true);
+
+  // No remote configured: nothing it could be missing from.
+  await applyWorktreeSweep(dir, actions, false, silentLog);
+  assert.ok(!existsSync(wt));
+  assert.ok(branchesOf(dir).includes('issue-12'));
+});
+
+test('verified: a worktree with commits missing from the remote is left alone', async () => {
+  const { dir, g } = repo();
+  const bare = mkdtempSync(join(tmpdir(), 'crew-sweep-bare-'));
+  execFileSync('git', ['init', '-q', '--bare', bare]);
+  g('remote', 'add', 'origin', bare);
+  g('push', '-q', 'origin', 'main');
+  const { target, wt } = withWorktree(dir, g, 15);
+  const gw = (...a: string[]) => execFileSync('git', a, { cwd: wt, stdio: 'pipe' });
+  gw('push', '-q', '--set-upstream', 'origin', 'issue-15');
+  const t = ticket({ issue_id: 'ISSUE-15', status: 'verified' });
+
+  writeFileSync(join(wt, 'x.txt'), 'x');
+  gw('add', '.'); gw('-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-qm', 'unpushed');
+  const warnings: string[] = [];
+  const log: SweepLog = { emit: () => {}, warn: (m) => { warnings.push(m); } };
+  let r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, log);
+  assert.equal(r.removed, 0);
   assert.ok(existsSync(wt));
+  assert.match(warnings.join('\n'), /not on origin/);
+
+  gw('push', '-q');
+  r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog);
+  assert.equal(r.removed, 1);
+  assert.ok(!existsSync(wt));
+  assert.ok(branchesOf(dir).includes('issue-15'));
 });
 
 test('an open ticket (fixed, awaiting QA) is left alone', async () => {

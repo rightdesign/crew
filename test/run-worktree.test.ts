@@ -138,3 +138,14 @@ test('a dirty worktree is never removed at the end of a run', async () => {
   assert.equal(o.kind, 'kept-dirty');
   assert.ok(existsSync(path));
 });
+
+test('a worktree holding commits that are not on the remote is never removed (CREW-1405)', async () => {
+  const { dir } = fixture();
+  const path = applyRunWorktree(dir, cfg(dir), planRunWorktree(dir, cfg(dir), ticket(), 'qa'))!;
+  writeFileSync(join(path, 'wip.txt'), 'x');
+  sh(path, 'add', '.');
+  sh(path, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'local only');
+  const o = await finishRunWorktree(dir, cfg(dir), 'crew-9');
+  assert.equal(o.kind, 'kept-unpushed');
+  assert.ok(existsSync(path));
+});

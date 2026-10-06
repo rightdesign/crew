@@ -17,10 +17,13 @@
  *   the branch holds commits that were deliberately never merged, and
  *   deleting it would destroy the only copy.
  *
- * `verified` is deliberately excluded even though the contract counts it as
- * resolved for a *blocker*'s purposes (see tracker.ts `terminalTickets`) — it
- * is still pre-release, and its worktree is exactly what the release phase is
- * about to merge.
+ * `verified` is not terminal — the contract counts it as resolved for a
+ * *blocker*'s purposes (see tracker.ts `terminalTickets`) but the branch is
+ * still unmerged — so a caller must pass those tickets in explicitly. Its
+ * worktree is retired anyway (CREW-1405: a handoff-hook-kept worktree has no
+ * reader once QA has passed it; the release merges from the branch, not from
+ * a worktree), but only when nothing in it is missing from the remote, and the
+ * branch is always kept.
  *
  * Driven by `git worktree list` rather than a filesystem guess: an actual
  * worktree already carries the branch that is checked out in it, so there is
@@ -32,6 +35,7 @@ import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import { worktrees, gitOk, status, remoteConfigured, deleteRemoteBranch } from './git.ts';
 import { pidsInWorktree, killGently } from './ports.ts';
+import { worktreeHoldsUnpushed } from './run-worktree.ts';
 import type { RepoTarget } from './config.ts';
 import type { Contract } from './contract.ts';
 import type { Ticket } from './tracker.ts';
@@ -41,6 +45,11 @@ export interface SweepAction {
   path: string;
   branch: string | null;
   keepBranch: boolean;
+  /**
+   * The ticket is merely `verified` (CREW-1405): its branch is unmerged, so the
+   * worktree is only removed when nothing in it is missing from the remote.
+   */
+  requirePushed?: boolean;
 }
 
 /**
@@ -62,16 +71,20 @@ export function planWorktreeSweep(
   target: RepoTarget, tickets: Ticket[], contract: Contract,
 ): SweepAction[] {
   const terminal = new Set(contract.statuses.resolved.filter((s) => s !== contract.statuses.verified));
+  const verified = contract.statuses.verified;
   const byNumber = new Map(tickets.map((t) => [t.issue_id.replace(/^\D+/, ''), t]));
   const actions: SweepAction[] = [];
   for (const w of worktrees(target.dir)) {
     const m = /(?:^|-)(\d+)$/.exec(basename(w.path));
     if (!m) continue;
     const ticket = byNumber.get(m[1]!);
-    if (!ticket || !terminal.has(ticket.status)) continue;
+    if (!ticket) continue;
+    const isVerified = ticket.status === verified;
+    if (!isVerified && !terminal.has(ticket.status)) continue;
     actions.push({
       ticket, path: w.path, branch: w.branch,
       keepBranch: ticket.status !== contract.statuses.deployed,
+      ...(isVerified ? { requirePushed: true } : {}),
     });
   }
   return actions;
@@ -108,6 +121,14 @@ export async function applyWorktreeSweep(
         );
         continue;
       }
+    }
+    if (!dryRun && a.requirePushed && a.branch && existsSync(a.path)
+      && remoteConfigured(cwd, remote) && worktreeHoldsUnpushed(a.path, remote)) {
+      log.warn(
+        `not removing worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}): ${a.branch} has commits that are not on ${remote}`,
+        { ticket: a.ticket.issue_id, step: 'worktree' },
+      );
+      continue;
     }
     const n = Number(a.ticket.issue_id.replace(/^\D+/, ''));
     const pids = pidsInWorktree(a.path, n);

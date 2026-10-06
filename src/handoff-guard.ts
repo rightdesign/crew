@@ -184,7 +184,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
 export async function guardRunHandoff(
   route: Route, ship: Ship, tracker: Tracker, role: RoleName, workingId: string | null, log: HandoffLog,
 ): Promise<HandoffOutcome | null> {
-  if ((role !== 'dev' && role !== 'design') || !workingId) return null;
+  if (!workingId || (role !== 'dev' && role !== 'design' && role !== 'qa')) return null;
   const seatId = route.resolved?.seats[role];
   if (!seatId) return null;
   try {
@@ -197,6 +197,14 @@ export async function guardRunHandoff(
       labels: { ...route.labels, ...o?.labels },
       branch: { ...route.branch, ...o?.branch },
     }, target.dir);
+    // CREW-1405: QA hands nothing on (it verifies or bounces), and its hard
+    // limits forbid `crew drop`, so the runner retires the worktree a QA run cut
+    // with `crew worktree NNN` once the run ends. Same rules as a hand-off:
+    // a `handoff` hook's worktree stays, a dirty or unpushed one is never removed.
+    if (role === 'qa') {
+      await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
+      return null;
+    }
     const affinity = await tracker.claimAffinity();
     const outcome = await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
@@ -231,6 +239,7 @@ async function retireRunWorktree(
       log.emit(`${t.issue_id}: kept worktree ${o.path} — this repo's handoff hook serves from it`, at);
       await tracker.postEvent(t.id, `worktree kept on ship ${shipName} at \`${o.path}\`: the repo's \`handoff\` hook serves from it. QA on another ship cuts its own from \`${cfg.branch.remote}/${branch}\` instead.`, seatId);
     } else if (o.kind === 'kept-dirty') log.warn(`${t.issue_id}: left worktree ${o.path} — it has uncommitted changes`, at);
+    else if (o.kind === 'kept-unpushed') log.warn(`${t.issue_id}: left worktree ${o.path} — its branch has commits that are not on ${cfg.branch.remote}`, at);
   } catch (e) {
     log.warn(`could not retire the run's worktree: ${(e as Error).message}`, { step: 'handoff' });
   }

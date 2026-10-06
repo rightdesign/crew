@@ -16,6 +16,8 @@
  *     and left strictly alone when it holds anything not on the remote;
  *   - it is REMOVED when the run ends at a verified push, unless the repo
  *     declares a `handoff` hook (which keeps a server up for QA to open).
+ *     A QA run has no push to verify, so it is removed on the same terms
+ *     plus a check that nothing in it is unpushed (CREW-1405).
  *
  * "A missing worktree is never a reason to stop" — every branch of
  * `planRunWorktree` ends in a usable checkout or a named reason it was left.
@@ -157,11 +159,24 @@ export function applyRunWorktree(dir: string, cfg: EffectiveRepoConfig, plan: Ru
   }
 }
 
+/**
+ * Whether the worktree's HEAD is reachable from no ref of the remote, i.e. the
+ * worktree holds work that exists nowhere else (CREW-1405). A QA run ends
+ * without a hand-off push to prove the remote has everything, so removal checks
+ * for itself. A branch with nothing beyond the base counts as pushed.
+ */
+export function worktreeHoldsUnpushed(path: string, remote: string): boolean {
+  const out = gitOk(path, ['for-each-ref', '--contains', 'HEAD', '--count=1', '--format=%(refname)', `refs/remotes/${remote}/`]);
+  return out === null || out.trim() === '';
+}
+
 export type FinishOutcome =
   | { kind: 'removed'; path: string }
   /** The repo's `handoff` hook keeps a server up: the worktree stays for QA to open. */
   | { kind: 'kept-handoff'; path: string }
   | { kind: 'kept-dirty'; path: string }
+  /** Commits not on the remote: the worktree is the only copy (CREW-1405). */
+  | { kind: 'kept-unpushed'; path: string }
   | { kind: 'none' };
 
 /**
@@ -177,6 +192,9 @@ export async function finishRunWorktree(
   if (!wt || !existsSync(wt.path)) return { kind: 'none' };
   if (cfg.hooks.handoff) return { kind: 'kept-handoff', path: wt.path };
   if (status(wt.path).length > 0) return { kind: 'kept-dirty', path: wt.path };
+  if (remoteConfigured(dir, cfg.branch.remote) && worktreeHoldsUnpushed(wt.path, cfg.branch.remote)) {
+    return { kind: 'kept-unpushed', path: wt.path };
+  }
   const n = Number(wt.path.match(/(\d+)$/)?.[1] ?? NaN);
   if (Number.isFinite(n)) {
     const pids = pidsInWorktree(wt.path, n);

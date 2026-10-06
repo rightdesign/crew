@@ -206,6 +206,7 @@ crew doctor [route] [--fix]    preflight; --fix enables clean routes, offers cre
 crew ports [route]             which checkout owns which ports, and what is up
 crew reap [route]              kill servers left behind by removed worktrees
 crew drop [route] NNN          remove a merged ticket's worktree and branch
+crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
 crew sync [route]              fast-forward the checkout and its worktrees from the remote
 crew pause|resume [route] [R|release]  pause everything, one role, or releases only (passengers keep running)
 crew log [route]               tail the log

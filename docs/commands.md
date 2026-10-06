@@ -42,8 +42,9 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | --- | --- |
 | `crew sync [route]` | Fast-forward the checkout and its worktrees from the remote. A base branch that is diverged, ahead of the remote, or cannot fast-forward prints `DO NOT CUT A WORKTREE FROM THIS BASE` and exits 1; `crew status` and `crew doctor` report the same state, and each fetches once per repo to do so. |
 | `crew ports [route]` | Which checkout owns which ports, and what is up. |
-| `crew reap [route]` | Kill orphaned servers, drop worktrees for closed tickets. |
+| `crew reap [route]` | Kill orphaned servers, drop worktrees for closed tickets and for `verified` ones whose branch is fully on the remote. |
 | `crew drop [route] NNN` | Remove a merged ticket's worktree and branch. |
+| `crew worktree [route] NNN [dev\|design\|qa]` | Cut, or refresh, this run's worktree for a ticket from the remote branch (fresh from the base when nothing is pushed yet) and print its path on stdout. A worktree with uncommitted changes or unpushed commits is left alone: nothing is printed and the exit code is 1. The runner removes a run's worktree when the run ends — after a verified push for dev/design, after the run for QA — unless it is dirty, holds unpushed commits, or the repo's `handoff` hook serves from it; `crew reap` and the release phase then remove a kept one once its ticket is `verified` or closed. |
 | `crew unassign [route] NNN` | Hand back a session's ticket: clears the assignee so the next cycle picks it up. |
 
 ## Personas and skills
