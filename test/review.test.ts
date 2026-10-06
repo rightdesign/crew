@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runRelease } from '../src/release-run.ts';
-import { applyReview, parsePrRef, reviewProblems } from '../src/review.ts';
+import { applyReview, parsePrRef, parseReviewVerdict, reviewProblems } from '../src/review.ts';
 import { parseRepoConfig, resolveRepoConfig } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT, type Contract } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
@@ -204,7 +204,7 @@ test('applyReview moves a handed-off ticket to reviewing with its PR, and a move
   };
   await applyReview(tracker, CONTRACT, {
     handoffs: [{ ticket: T(), pushedAs: 'crew/ISSUE-7', head: 'b'.repeat(40), prRef: '#12' }],
-    requeues: [{ ticket: T({ id: 'rec-8', issue_id: 'ISSUE-8' }), verified: 'a'.repeat(40), head: 'c'.repeat(40) }],
+    requeues: [{ ticket: T({ id: 'rec-8', issue_id: 'ISSUE-8' }), verified: 'a'.repeat(40), head: 'c'.repeat(40) }], changeRequests: [],
   }, 'origin', emitter(), 'seat-1', { verifiedSha: true, prRef: true }, false);
   assert.deepEqual(updates[0], { id: 'rec-7', patch: { status: 'in_review', pr_ref: '#12' }, at: '2026-10-06T00:00:00Z' });
   assert.deepEqual(updates[1]?.patch, { status: 'fixed' });
@@ -219,7 +219,83 @@ test('applyReview leaves pr_ref out when the table has no such column', async ()
     postEvent: async () => {},
   };
   await applyReview(tracker, CONTRACT, {
-    handoffs: [{ ticket: T(), pushedAs: 'crew/ISSUE-7', head: 'b'.repeat(40), prRef: '#12' }], requeues: [],
+    handoffs: [{ ticket: T(), pushedAs: 'crew/ISSUE-7', head: 'b'.repeat(40), prRef: '#12' }], requeues: [], changeRequests: [],
   }, 'origin', emitter(), 'seat-1', { verifiedSha: false, prRef: false }, false);
   assert.deepEqual(updates, [{ status: 'in_review' }]);
+});
+
+const inReview = (over: Record<string, unknown> = {}) =>
+  T({ status: 'in_review', verified_sha: 'a'.repeat(40), pr_ref: 'https://forge.example/pr/12', ...over } as Partial<Ticket>);
+
+/** A repo whose review hook prints `verdict`, recording its environment in `envFile`. */
+function reviewProject(verdict: string, envFile = join(tmpdir(), `crew-review-hook-${process.pid}-${Math.random()}`)) {
+  const p = project(YAML(`  review: |
+    echo "$CREW_TICKET|$CREW_BRANCH|$CREW_BASE|$CREW_PR" > ${envFile}
+    echo ${verdict}
+`));
+  p.g('checkout', '-q', 'issue-7'); const head = p.g('rev-parse', 'HEAD'); p.g('checkout', '-q', 'main');
+  return { p, envFile, head };
+}
+
+test('parseReviewVerdict reads the last line, and anything unrecognised is open', () => {
+  assert.equal(parseReviewVerdict('noise\nchanges_requested\n'), 'changes_requested');
+  assert.equal(parseReviewVerdict(' Approved \n'), 'approved');
+  assert.equal(parseReviewVerdict('merged soon'), 'open');
+  assert.equal(parseReviewVerdict(''), 'open');
+});
+
+test('hooks.review changes_requested returns the reviewing ticket to the dev seat, with the hook environment', async () => {
+  const { p, envFile, head } = reviewProject('changes_requested');
+  const out = await run(p, [inReview({ verified_sha: head })]);
+  assert.equal(out.review?.changeRequests.length, 1);
+  assert.equal(out.review?.changeRequests[0]?.pr, 'https://forge.example/pr/12');
+  assert.equal(readFileSync(envFile, 'utf8').trim(), 'ISSUE-7|crew/ISSUE-7|main|https://forge.example/pr/12');
+
+  const updates: Record<string, unknown>[] = [];
+  const events: string[] = [];
+  await applyReview({
+    updateTicket: async (_id: string, patch: Record<string, unknown>) => { updates.push(patch); return {} as Ticket; },
+    postEvent: async (_id: string, body: string) => { events.push(body); },
+  }, CONTRACT, out.review!, 'origin', emitter(), 'seat-1', { verifiedSha: true, prRef: true }, false);
+  // status back to in_progress and unassigned; held_by_ship_id is not touched
+  assert.deepEqual(updates, [{ status: 'in_progress', assignee_id: null }]);
+  assert.match(events[0]!, /^<!-- crew:changes-requested -->/);
+  assert.match(events[0]!, /https:\/\/forge\.example\/pr\/12/);
+});
+
+test('hooks.review open, approved, garbage or a failing hook leave the ticket alone', async () => {
+  for (const verdict of ['open', 'approved', 'whatever', 'exit 0; exit 3']) {
+    const { p, head } = reviewProject(verdict);
+    const out = await run(p, [inReview({ verified_sha: head })]);
+    assert.equal(out.review, undefined, verdict);
+  }
+  const failing = project(YAML('  review: echo changes_requested; exit 3\n'));
+  failing.g('checkout', '-q', 'issue-7'); const head = failing.g('rev-parse', 'HEAD'); failing.g('checkout', '-q', 'main');
+  assert.equal((await run(failing, [inReview({ verified_sha: head })])).review, undefined);
+});
+
+test('hooks.review is not asked for a ticket whose branch moved past verified_sha', async () => {
+  const { p, envFile } = reviewProject('changes_requested');
+  const out = await run(p, [inReview()]);
+  assert.equal(out.review?.requeues.length, 1);
+  assert.equal(out.review?.changeRequests.length, 0);
+  assert.equal(existsSync(envFile), false);
+});
+
+test('hooks.review is skipped without a reviewing status, and for a ticket still at verified', async () => {
+  const a = reviewProject('changes_requested');
+  await run(a.p, [inReview({ verified_sha: a.head })], { contract: DEFAULT_CONTRACT });
+  assert.equal(existsSync(a.envFile), false);
+  const b = reviewProject('changes_requested');
+  const out = await run(b.p, [T({ verified_sha: b.head })]);
+  assert.equal(existsSync(b.envFile), false);
+  assert.equal(out.review?.handoffs.length, 1);
+});
+
+test('a re-verified ticket that already has a pr_ref is pushed and returned to reviewing without re-running hooks.pr', async () => {
+  const marker = join(tmpdir(), `crew-review-pr2-${process.pid}`);
+  const p = project(YAML(`  pr: touch ${marker}\n`));
+  const out = await run(p, [T({ pr_ref: 'https://forge.example/pr/12', verified_sha: p.built } as Partial<Ticket>)]);
+  assert.equal(existsSync(marker), false);
+  assert.equal(out.review?.handoffs[0]?.prRef, 'https://forge.example/pr/12');
 });

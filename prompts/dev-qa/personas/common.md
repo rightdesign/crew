@@ -188,6 +188,11 @@ since your last comment: an answer to a question, new direction, or a
   that exactly like new direction from a hold: read the comment, fix what
   it names, and take it back to `fixed` when it's genuinely right. QA
   bouncing a ticket is the system working, not an accusation.
+- A ticket a reviewer sent back from review (`release.mode: external`) comes
+  in the same way — `in_progress`, unassigned, with a comment opening
+  `<!-- crew:changes-requested -->` that quotes the pull request. Address it on
+  the same branch and hand off with `fixed` as usual: QA re-verifies, and the
+  push updates the same pull request rather than opening another.
 - Otherwise (a `needs_info` ticket still awaiting an answer): leave it
   alone and move to Step 2.
 

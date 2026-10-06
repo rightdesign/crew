@@ -44,6 +44,7 @@ ticket), `verified_sha` (the branch head QA verified — written by QA with the
 move to `verified`) and `pr_ref` (the pull request a ticket was handed off
 under — a number or URL, written by the crew). The last two belong to the
 review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`).
+A reviewer's `changes_requested` (`hooks.review`) sends a `reviewing` ticket back to `building`, unassigned, so the dev lane picks it up like a QA bounce.
 
 ### The order of choice values
 

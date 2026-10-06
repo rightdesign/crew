@@ -193,6 +193,7 @@ release:
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
 | `hooks.pr` | `external` + a `reviewing` status: after the branch is pushed | — | Opens the pull request. Receives `CREW_TICKET`, `CREW_BRANCH` (the pushed name), `CREW_BASE`, `CREW_TITLE`; what it prints (one line, a URL or number) is stored on the ticket's `pr_ref`. Optional — without it the crew pushes and leaves the PR to a person. |
+| `hooks.review` | `external` + a `reviewing` status: each cycle, for every ticket at `reviewing` | — | Where does the pull request stand? Prints one line: `approved`, `changes_requested` or `open` (anything else, or a non-zero exit, reads as `open`). Receives `CREW_TICKET`, `CREW_BRANCH`, `CREW_BASE`, `CREW_PR` (the stored `pr_ref`). Optional. |
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
@@ -301,6 +302,17 @@ branch has not landed:
    not undo the push: the ticket still moves, with a comment saying no PR was
    recorded.
 3. The ticket moves to `reviewing` with a comment saying what was pushed.
+
+If the repo defines `hooks.review`, it is asked each cycle for every ticket at
+`reviewing` whose branch has not landed. `changes_requested` returns the ticket
+to the dev seat: status `building`, no assignee, `held_by_ship_id` left as the
+building ship's, and one comment opening `<!-- crew:changes-requested -->` that
+quotes the PR. The dev seat fixes it on the same branch and hands off with
+`fixed`; QA re-verifies (writing a new `verified_sha`); the release phase pushes
+again (a fast-forward, never forced) and the ticket returns to `reviewing`.
+`hooks.pr` is not re-run, because `pr_ref` is already set. `approved` and `open`
+change nothing — only `hooks.merged` closes a ticket. A ticket whose branch has
+moved past `verified_sha` goes to QA first and is not asked.
 
 `reviewing` is open-but-unresolved and **not a hold**: QA keeps watching. QA
 writes the branch head it tested to `verified_sha` with the move to

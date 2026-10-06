@@ -16,6 +16,12 @@
  * the reviewer left it on the remote) is no longer what `verified_sha` names
  * returns to QA's queue: a reviewer's extra commit changed what was verified.
  *
+ * An optional `hooks.review` is asked each cycle where the PR stands for every
+ * `reviewing` ticket; `changes_requested` returns it to the dev seat as
+ * unassigned `in_progress` work (see `applyReview`). The dev seat's re-hand-off
+ * goes through QA again and the push above updates the same PR (`pr_ref` is
+ * already set, so `hooks.pr` is not re-run).
+ *
  * `reviewing` is deliberately NOT a hold — QA keeps watching it, which is what
  * makes the re-verification above work at all.
  *
@@ -61,9 +67,28 @@ export interface ReviewRequeue {
   head: string;
 }
 
+/** A `reviewing` ticket whose reviewer asked for changes (`hooks.review` printed `changes_requested`). */
+export interface ReviewChangeRequest {
+  ticket: Ticket;
+  /** The ticket's stored `pr_ref`, quoted in the comment when it has one. */
+  pr?: string;
+}
+
 export interface ReviewOutcome {
   handoffs: ReviewHandoff[];
   requeues: ReviewRequeue[];
+  changeRequests: ReviewChangeRequest[];
+}
+
+/** A marker in the return-to-dev note, so the round-trip is recognisable. */
+export const CHANGES_REQUESTED_MARKER = '<!-- crew:changes-requested -->';
+
+export type ReviewVerdict = 'approved' | 'changes_requested' | 'open';
+
+/** What `hooks.review` printed, read from its last non-empty line; anything unrecognised is `open`. */
+export function parseReviewVerdict(output: string): ReviewVerdict {
+  const last = output.split('\n').map((l) => l.trim()).filter(Boolean).pop()?.toLowerCase();
+  return last === 'approved' || last === 'changes_requested' ? last : 'open';
 }
 
 /**
@@ -116,6 +141,8 @@ export interface ReviewRun {
   dryRun?: boolean;
   /** Runs `hooks.pr` with the given environment; null when the repo defines none. */
   runPrHook(env: Record<string, string>): Promise<{ code: number; output: string } | null>;
+  /** Runs `hooks.review` with the given environment; null when the repo defines none. */
+  runReviewHook?(env: Record<string, string>): Promise<{ code: number; output: string } | null>;
 }
 
 /** The value of a ticket column, as a trimmed string ('' when unset). */
@@ -157,12 +184,28 @@ function movedPast(r: ReviewRun, t: Ticket, branch: string, pushedAs: string): R
  * why; it retries next cycle.
  */
 export async function runReview(r: ReviewRun, verified: ReviewItem[], reviewing: ReviewItem[]): Promise<ReviewOutcome> {
-  const out: ReviewOutcome = { handoffs: [], requeues: [] };
+  const out: ReviewOutcome = { handoffs: [], requeues: [], changeRequests: [] };
   const remote = r.repo.branch.remote;
 
   for (const { ticket, branch } of reviewing) {
-    const moved = movedPast(r, ticket, branch, pushedBranchForTicket(r.repo, ticket));
-    if (moved) out.requeues.push(moved);
+    const pushedAs = pushedBranchForTicket(r.repo, ticket);
+    const moved = movedPast(r, ticket, branch, pushedAs);
+    if (moved) { out.requeues.push(moved); continue; }
+    if (!r.runReviewHook) continue;
+    const pr = r.columns.prRef ? columnValue(ticket, r.contract.columns.prRef) : '';
+    const res = await r.runReviewHook({
+      CREW_TICKET: ticket.issue_id, CREW_BRANCH: pushedAs, CREW_BASE: r.repo.branch.base,
+      ...(pr ? { CREW_PR: pr } : {}),
+    });
+    if (!res) continue;
+    // A hook that errors says nothing about the review: leave the ticket be.
+    if (res.code !== 0) {
+      r.emit.warn(`hooks.review exited ${res.code}; treated as open`, { ticket: ticket.issue_id });
+      continue;
+    }
+    const verdict = parseReviewVerdict(res.output);
+    if (verdict === 'changes_requested') out.changeRequests.push({ ticket, ...(pr ? { pr } : {}) });
+    else if (verdict === 'approved') r.emit.emit('review approved, waiting for it to merge', { ticket: ticket.issue_id });
   }
 
   for (const { ticket, branch } of verified) {
@@ -238,6 +281,27 @@ export async function applyReview(
       emit.emit(`moved to ${reviewing}`, { ticket: t.issue_id });
     } catch (e) {
       emit.warn(`could not move to ${reviewing}: ${(e as Error).message}`, { ticket: t.issue_id });
+    }
+  }
+  for (const cr of outcome.changeRequests) {
+    const t = cr.ticket;
+    if (dryRun) {
+      emit.emit('would return to the dev seat — changes requested', { ticket: t.issue_id });
+      continue;
+    }
+    const body =
+      `${CHANGES_REQUESTED_MARKER}\n**Changes requested on review${cr.pr ? ` of ${cr.pr}` : ''}.**\n\n` +
+      'Address them on the same branch and hand off as usual: QA re-verifies, and the push updates the same pull request.';
+    try {
+      // `held_by_ship_id` is left alone: the building ship keeps the branch.
+      await tracker.updateTicket(t.id, {
+        [contract.columns.status]: contract.statuses.building,
+        [contract.columns.assignee]: null,
+      }, t.updated_at);
+      await tracker.postEvent(t.id, body, seat);
+      emit.emit(`returned to ${contract.statuses.building} — changes requested`, { ticket: t.issue_id });
+    } catch (e) {
+      emit.warn(`could not return to ${contract.statuses.building}: ${(e as Error).message}`, { ticket: t.issue_id });
     }
   }
   for (const q of outcome.requeues) {

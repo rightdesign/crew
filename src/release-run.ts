@@ -371,7 +371,7 @@ function looksLikeTransientResolveFailure(output: string): boolean {
   return resolveFailure.test(output) && !realBuildError.test(output);
 }
 
-const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'deploy' | 'bump' | 'released' | 'pr',
+const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'deploy' | 'bump' | 'released' | 'pr' | 'review',
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
   if (!script) return null;
@@ -470,8 +470,12 @@ async function reviewHandoff(
       const r = await hook(o, 'pr', env);
       return r ? { code: r.code, output: r.output } : null;
     },
+    runReviewHook: async (env) => {
+      const r = await hook(o, 'review', env);
+      return r ? { code: r.code, output: r.output } : null;
+    },
   }, verified, reviewing.filter((r) => open.has(r.ticket.id)));
-  return outcome.handoffs.length || outcome.requeues.length ? outcome : undefined;
+  return outcome.handoffs.length || outcome.requeues.length || outcome.changeRequests.length ? outcome : undefined;
 }
 
 /**

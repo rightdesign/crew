@@ -139,6 +139,19 @@ export interface RepoHooks {
    */
   merged?: string;
   /**
+   * `external` + a `reviewing` status: where is the pull request a ticket is
+   * under review on? Prints one line — `approved`, `changes_requested` or
+   * `open`; anything else reads as `open`. Run each release cycle for every
+   * ticket at `reviewing` whose branch has not landed.
+   *
+   * Receives CREW_TICKET, CREW_BRANCH (the pushed branch), CREW_BASE and
+   * CREW_PR (the ticket's stored `pr_ref`, when it has one). `changes_requested`
+   * returns the ticket to the dev seat; the other two leave it where it is.
+   * Optional: without it a ticket stays at `reviewing` until `hooks.merged`
+   * says it landed.
+   */
+  review?: string;
+  /**
    * Prints, on one line, what is live right now — a commit sha or a version.
    *
    * This is how the crew learns the outcome of a release it did not perform,
@@ -307,7 +320,7 @@ export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
   'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff',
-  'version', 'bump', 'pr', 'merged', 'released',
+  'version', 'bump', 'pr', 'merged', 'review', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
