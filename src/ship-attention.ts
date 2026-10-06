@@ -18,12 +18,13 @@
 import type { Emitter } from './events.ts';
 import { repoTargetFor, reposOf, type Route, type Ship } from './config.ts';
 import { notify } from './notify.ts';
-import { INTERVAL_SECONDS } from './install.ts';
+import { INTERVAL_SECONDS, findOnPath, pathFor, dockerPathProblem } from './install.ts';
+import { statfsSync } from 'node:fs';
 import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -110,19 +111,133 @@ export function baseAttention(
   return null;
 }
 
+/** The key of a repo's `disk_low` item. */
+export const diskLowKey = (repo: string): string => `disk_low:${repo}`;
+
+/** Below this much free space beside a repo, a fresh worktree plus its `setup` install is unlikely to fit. */
+export const LOW_DISK_BYTES = 2 * 1024 ** 3;
+
+const gib = (bytes: number): string => (bytes / 1024 ** 3).toFixed(1);
+
+/**
+ * What a free-space reading means for a repo (ISSUE-1406): `raise` below the
+ * threshold, `clear` once there is room again. A worktree cannot be cut and
+ * set up with no disk, and the failure otherwise surfaces mid-`setup` as an
+ * opaque install error.
+ */
+export function diskAttention(
+  repo: string, freeBytes: number, thresholdBytes = LOW_DISK_BYTES, nowIso = new Date().toISOString(),
+): { raise: ShipAttentionItem } | { clear: string } {
+  if (freeBytes >= thresholdBytes) return { clear: diskLowKey(repo) };
+  return {
+    raise: {
+      kind: 'disk_low', key: diskLowKey(repo), since: nowIso,
+      message: `${repo}: only ${gib(freeBytes)} GiB free beside the checkout (need ${gib(thresholdBytes)}) — no worktree can be set up until space is freed. Resumes automatically once there is room`,
+    },
+  };
+}
+
+/** Free bytes on the filesystem holding `dir`, or null when it cannot be read. */
+export function freeBytesAt(dir: string): number | null {
+  try {
+    const s = statfsSync(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads free space beside every repo of `route`, raising or clearing `disk_low`
+ * (ISSUE-1406). Run by the poll each cycle: a statfs is cheap, and checking
+ * here is what lets the stop clear itself with no agent run noticing.
+ */
+export async function checkRepoDisks(
+  o: RaiseOptions & { route: Route },
+  freeAt: (dir: string) => number | null = freeBytesAt,
+  thresholdBytes = LOW_DISK_BYTES,
+): Promise<void> {
+  for (const target of reposOf(o.route)) {
+    const free = freeAt(target.dir);
+    if (free === null) continue;
+    const att = diskAttention(target.name, free, thresholdBytes);
+    if ('raise' in att) await raiseShipAttention(o, att.raise);
+    else clearShipAttention(o.state, att.clear);
+  }
+}
+
+/** `hook_missing:<route>/<repo>/<hook>` split into its repo and hook, or null for another route's or shape. */
+function parseHookMissing(key: string, routeName: string): { repo: string; hook: string } | null {
+  const prefix = `hook_missing:${routeName}/`;
+  if (!key.startsWith(prefix)) return null;
+  const rest = key.slice(prefix.length);
+  const slash = rest.lastIndexOf('/');
+  if (slash <= 0) return null;
+  return { repo: rest.slice(0, slash), hook: rest.slice(slash + 1) };
+}
+
 /**
  * Why a ticket's repo is stopped on this ship (CREW-1403), or null when it is
- * not. Reads the persisted `base_unsafe` items, so the building lanes skip a
- * repo whose primary checkout cannot be cut from — and the digest says why —
- * instead of each run claiming a ticket and then stopping on it.
+ * not. Reads the persisted items that make a worktree impossible to cut or
+ * set up — a diverged base, a missing `setup` tool (ISSUE-1406: the other
+ * hooks only run at release, so they stop nothing here), a full disk — so the
+ * building lanes skip such a repo and the digest says why, instead of each
+ * run claiming a ticket and then stopping on it.
  */
 export function repoStopFor(items: ShipAttentionItem[], route: Route): (t: { repo_id?: string | null }) => string | null {
-  const stops = new Map(items.filter((i) => i.kind === 'base_unsafe').map((i) => [i.key, i.message]));
+  const stops = new Map<string, string>();
+  for (const i of items) {
+    let repo: string | null = null;
+    if (i.kind === 'base_unsafe') repo = i.key.slice('base_unsafe:'.length);
+    else if (i.kind === 'disk_low') repo = i.key.slice('disk_low:'.length);
+    else if (i.kind === 'hook_missing') {
+      const h = parseHookMissing(i.key, route.route);
+      if (h?.hook === 'setup') repo = h.repo;
+    }
+    if (repo && !stops.has(repo)) stops.set(repo, i.message);
+  }
   if (stops.size === 0) return () => null;
   return (t) => {
     const name = repoTargetFor(route, t.repo_id)?.name;
-    return name ? (stops.get(baseUnsafeKey(name)) ?? null) : null;
+    return name ? (stops.get(name) ?? null) : null;
   };
+}
+
+/**
+ * Re-checks the open missing-tool stops (`hook_missing`, `docker_missing`) and
+ * clears those whose command now resolves on the scheduler PATH (ISSUE-1406),
+ * so a stop resolves itself once the operator fixes `ship.extraPath` or
+ * installs the tool, with no `crew doctor` run. A hook whose script no longer
+ * names a command is cleared too — nothing is left to be missing. Only a
+ * positive answer clears; an item it cannot place (another route, an unknown
+ * repo) is left alone.
+ */
+export function recheckEnvironmentStops(
+  state: State, route: Route, ship: Ship,
+  deps: { onPath?: (bin: string, path: string) => string | undefined; dockerProblem?: (ship: Ship) => string | undefined } = {},
+): string[] {
+  const onPath = deps.onPath ?? findOnPath;
+  const dockerProblem = deps.dockerProblem ?? dockerPathProblem;
+  const cleared: string[] = [];
+  for (const item of state.shipAttention().previous()) {
+    if (item.kind === 'docker_missing') {
+      if (!dockerProblem(ship)) { clearShipAttention(state, item.key); cleared.push('docker'); }
+      continue;
+    }
+    if (item.kind !== 'hook_missing') continue;
+    const h = parseHookMissing(item.key, route.route);
+    const target = h && reposOf(route).find((t) => t.name === h.repo);
+    if (!h || !target) continue;
+    let cfg: ReturnType<typeof resolveRepoConfig>;
+    try { cfg = resolveRepoConfig(loadRepoConfig(target.dir), undefined, target.dir); } catch { continue; } // unreadable config: leave the stop, `crew doctor` reports it
+    const script = (cfg.hooks as Record<string, string | undefined>)[h.hook];
+    const cmd = script ? hookCommand(script) : null;
+    if (!cmd || onPath(cmd, pathFor(ship))) {
+      clearShipAttention(state, item.key);
+      cleared.push(`${h.repo}/${h.hook}`);
+    }
+  }
+  return cleared;
 }
 
 /**

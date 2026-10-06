@@ -124,3 +124,70 @@ test('repoStopFor names the stopped repo for its tickets only (CREW-1403)', asyn
   assert.equal(stop({ repo_id: 'r2' }), null);
   assert.equal(repoStopFor([item('role_parked:qa')], route)({ repo_id: 'r1' }), null);
 });
+
+test('diskAttention raises below the threshold and clears at or above it (ISSUE-1406)', async () => {
+  const { diskAttention, diskLowKey, LOW_DISK_BYTES } = await import('../src/ship-attention.ts');
+  const low = diskAttention('crew', 100, LOW_DISK_BYTES);
+  assert.ok('raise' in low);
+  assert.equal(low.raise.kind, 'disk_low');
+  assert.equal(low.raise.key, diskLowKey('crew'));
+  assert.match(low.raise.message, /Resumes automatically/);
+  assert.deepEqual(diskAttention('crew', LOW_DISK_BYTES, LOW_DISK_BYTES), { clear: 'disk_low:crew' });
+});
+
+test('checkRepoDisks raises per repo, clears once there is room, and skips an unreadable dir', async () => {
+  const { checkRepoDisks } = await import('../src/ship-attention.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'crew-shipatt-'));
+  const state = new State(dir);
+  const emit = new Emitter({ route: 'r', eventFile: eventFileFor(dir), console: () => {} });
+  const route = { route: 'w/p', dir: '/w/a', repos: { a: '/w/a', b: '/w/b', c: '/w/c' } } as any;
+  const free: Record<string, number | null> = { '/w/a': 10, '/w/b': 1e12, '/w/c': null };
+  await checkRepoDisks({ state, emit, route }, (d) => free[d]!, 1000);
+  assert.deepEqual(openShipAttention(state).map((i) => i.key), ['disk_low:a']);
+  free['/w/a'] = 1e12;
+  await checkRepoDisks({ state, emit, route }, (d) => free[d]!, 1000);
+  assert.deepEqual(openShipAttention(state), []);
+});
+
+test('repoStopFor also stops on a missing setup tool and low disk, but not a missing test/build/deploy tool', async () => {
+  const { repoStopFor, diskLowKey } = await import('../src/ship-attention.ts');
+  const route = { route: 'w/p', dir: '/w/crew', repos: { crew: {}, other: {} }, resolved: { repoNames: { r1: 'crew', r2: 'other' } } } as any;
+  const stop = repoStopFor([
+    item('hook_missing:w/p/crew/setup', { kind: 'hook_missing', message: 'no pnpm' }),
+    item('hook_missing:w/p/other/test', { kind: 'hook_missing', message: 'no jest' }),
+  ], route);
+  assert.equal(stop({ repo_id: 'r1' }), 'no pnpm');
+  assert.equal(stop({ repo_id: 'r2' }), null);
+  const disk = repoStopFor([item(diskLowKey('other'), { kind: 'disk_low', message: 'full' })], route);
+  assert.equal(disk({ repo_id: 'r2' }), 'full');
+  assert.equal(repoStopFor([item('hook_missing:other/p/crew/setup', { kind: 'hook_missing' })], route)({ repo_id: 'r1' }), null);
+});
+
+test('recheckEnvironmentStops clears a hook_missing whose command now resolves and a docker_missing that is fixed', async () => {
+  const { recheckEnvironmentStops } = await import('../src/ship-attention.ts');
+  const { writeFileSync } = await import('node:fs');
+  const repo = mkdtempSync(join(tmpdir(), 'crew-shipatt-repo-'));
+  writeFileSync(join(repo, '.crew.yaml'), 'version: 1\nhooks:\n  setup: pnpm install\n  test: jest\n  deploy: ship-it\n');
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-shipatt-')));
+  state.shipAttention().persist([
+    item('hook_missing:w/p/crew/setup', { kind: 'hook_missing' }),
+    item('hook_missing:w/p/crew/test', { kind: 'hook_missing' }),
+    item('hook_missing:w/p/gone/test', { kind: 'hook_missing' }),
+    item('hook_missing:x/y/crew/setup', { kind: 'hook_missing' }),
+    item('docker_missing', { kind: 'docker_missing' }),
+    item('role_parked:qa'),
+  ]);
+  const route = { route: 'w/p', dir: repo, repos: { crew: repo } } as any;
+  const ship = { extraPath: [] } as any;
+  // pnpm is findable, jest is not; docker is still broken.
+  let cleared = recheckEnvironmentStops(state, route, ship, {
+    onPath: (bin) => (bin === 'pnpm' ? '/bin/pnpm' : undefined), dockerProblem: () => 'nope',
+  });
+  assert.deepEqual(cleared, ['crew/setup']);
+  assert.deepEqual(openShipAttention(state).map((i) => i.key).sort(),
+    ['docker_missing', 'hook_missing:w/p/crew/test', 'hook_missing:w/p/gone/test', 'hook_missing:x/y/crew/setup', 'role_parked:qa']);
+  cleared = recheckEnvironmentStops(state, route, ship, { onPath: () => '/bin/jest', dockerProblem: () => undefined });
+  assert.deepEqual(cleared.sort(), ['crew/test', 'docker']);
+  assert.deepEqual(openShipAttention(state).map((i) => i.key).sort(),
+    ['hook_missing:w/p/gone/test', 'hook_missing:x/y/crew/setup', 'role_parked:qa']);
+});

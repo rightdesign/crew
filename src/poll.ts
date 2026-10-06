@@ -23,7 +23,7 @@ import { attentionReasons, attentionTransitions, type AttentionReason } from './
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo } from './config.ts';
-import { openShipAttention, recheckBaseStops, repoStopFor } from './ship-attention.ts';
+import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -231,6 +231,12 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   for (const repo of recheckBaseStops(state, route)) {
     emit.emit(`${repo}: primary checkout is level again — building lanes resume for that repo`, { step: 'select' });
   }
+  // ISSUE-1406: the same raise/clear for the other environment stops — a tool
+  // now on the scheduler PATH, and free disk beside each repo.
+  for (const what of recheckEnvironmentStops(state, route, ship)) {
+    emit.emit(`${what}: no longer missing from the scheduler PATH — stop cleared`, { step: 'select' });
+  }
+  await checkRepoDisks({ state, emit, route, ship });
   const selectionInput = {
     repoStop: repoStopFor(openShipAttention(state), route),
     tickets, comments, watermark, blocked,
