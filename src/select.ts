@@ -15,6 +15,8 @@ import { rankScalar, NOTHING_ACTIONABLE } from './priority.ts';
 import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
 import type { Ticket, Comment } from './tracker.ts';
 import type { RoleName } from './config.ts';
+import type { ShipRow } from './tracker.ts';
+import { heldByOtherShip } from './ship-affinity.ts';
 
 export interface SelectionInput {
   tickets: Ticket[];
@@ -31,6 +33,13 @@ export interface SelectionInput {
   paused?: Set<RoleName>;
   /** This workspace's rules. Defaults to the documented default contract. */
   contract?: Contract;
+  /**
+   * Ship affinity (CREW-1386): this ship's own Ships row and every ship's
+   * heartbeat, so a ticket another LIVE ship has claimed is invisible to the
+   * building roles here. Absent (tests, a workspace with no Ships table or no
+   * `ship_id` column) means no ticket is held by another ship.
+   */
+  ships?: { myShipId: string | null; rows: ShipRow[]; now?: number };
 }
 
 /** QA owns every ticket at `fixed` or `qa`, whichever role built it. */
@@ -78,6 +87,33 @@ export function sliceFor(tickets: Ticket[], role: RoleName): Ticket[] {
 const isHeld = (t: Ticket, holds: Set<string>) => !!t.assignee_id && holds.has(t.assignee_id);
 
 /**
+ * `slice` minus whatever another live ship has claimed (CREW-1386). Applied
+ * to the BUILDING roles only: a held ticket is not this ship's to start,
+ * resume, or wake for — not even on a new comment, since the owning ship's
+ * own poll sees that comment and the duplicate build starts with a wake.
+ */
+function affinityContext(i: SelectionInput) {
+  return i.ships ? { myShipId: i.ships.myShipId, ships: i.ships.rows, contract: i.contract ?? DEFAULT_CONTRACT, now: i.ships.now } : null;
+}
+
+/**
+ * The claim's own hold check (CREW-1386): `affinity` with a predicate saying
+ * whether another live ship holds a ticket, read off the same ship snapshot
+ * selection used. Passes `undefined` straight through (no hold column).
+ */
+export function withHoldCheck<A extends object>(affinity: A | undefined, i: SelectionInput): (A & { isHeldElsewhere?: (t: Ticket) => boolean }) | undefined {
+  if (!affinity) return undefined;
+  const a = affinityContext(i);
+  return a ? { ...affinity, isHeldElsewhere: (t: Ticket) => heldByOtherShip(t, a) } : affinity;
+}
+
+function notHeldByOtherShip(slice: Ticket[], i: SelectionInput): Ticket[] {
+  if (!i.ships) return slice;
+  const a = { myShipId: i.ships.myShipId, ships: i.ships.rows, contract: i.contract ?? DEFAULT_CONTRACT, now: i.ships.now };
+  return slice.filter((t) => !heldByOtherShip(t, a));
+}
+
+/**
  * Everything the poll would wake a BUILDING role for.
  *
  * A held ticket is excluded here rather than only in the prompt, so a ticket
@@ -92,7 +128,7 @@ export function buildingRoleHasWork(
 ): { hasWork: boolean; reason: string } {
   const me = i.seats[role];
   if (!me) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const mine = sliceFor(i.tickets, role);
+  const mine = notHeldByOtherShip(sliceFor(i.tickets, role), i);
 
   const startable = mine.filter(
     (t) =>
@@ -217,7 +253,7 @@ export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
   if (role === 'pair') return [];
   const me = i.seats[role];
   if (!me) return [];
-  return sliceFor(i.tickets, role).filter(
+  return notHeldByOtherShip(sliceFor(i.tickets, role), i).filter(
     (t) =>
       (((t.status === 'accepted' || t.status === 'blocked') && !i.blocked.has(t.id)) ||
         (t.status === 'in_progress' && (t.assignee_id === me || !t.assignee_id))) &&

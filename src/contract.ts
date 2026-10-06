@@ -62,6 +62,14 @@ export interface ContractColumns {
    * taken the column.
    */
   ship: string;
+  /**
+   * The Ships row currently HOLDING a ticket (CREW-1386's `held_by_ship_id`,
+   * "Held by ship"). Separate from `ship` on purpose: `ship` means "filed
+   * from" and is stamped on a ticket at `new`/`accepted`, so it cannot also
+   * say "claimed". The claim writes this; hand-backs keep it; the `fixed`
+   * hand-off and `verified` clear it. Optional like `ship`.
+   */
+  heldBy: string;
 }
 
 export interface ContractComments {
@@ -215,6 +223,7 @@ export const DEFAULT_CONTRACT: Contract = {
     epic: 'epic_id',
     author: 'filed_by_id',
     ship: 'ship_id',
+    heldBy: 'held_by_ship_id',
   },
   comments: {
     parent: 'ticket_id',

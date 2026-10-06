@@ -114,7 +114,11 @@ human review, so "probably fine" is not a pass.
      covered.
    - **It doesn't** → `status` = `in_progress`, `assignee_id` = the building
      lane's own Crew row id from the roster above — the dev seat if
-     `needs_design` is false or null, the design seat if true. The comment
+     `needs_design` is false or null, the design seat if true. **Exception:** when the ticket carries a `held_by_ship_id`, leave that column
+     untouched and **clear** `assignee_id` instead of naming a seat — seats are
+     per ship, and the ship that holds the branch resumes an unassigned
+     `in_progress` ticket because it is the holder. Naming this ship's seat
+     would hand the bounce to a ship that never built it. The comment
      must be actionable:
      exactly what you did, what you expected, what happened, with a
      screenshot or the failing output. This includes a red suite, a

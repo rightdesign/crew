@@ -109,7 +109,7 @@ test('authorship bullets name only the columns the workspace has, and this ship\
   const withRepo = [{ ...repo('synthesis', '/w/synthesis', SYN), id: 'repo-1' }];
   const present = renderEnvironment({
     route, userAgent: 'crew/1', repos: withRepo, contract: DEFAULT_CONTRACT,
-    authorship: { issueAuthor: true, issueShip: true, commentShip: true, shipId: 'ship-9' },
+    authorship: { issueAuthor: true, issueShip: true, issueHeld: true, commentShip: true, shipId: 'ship-9' },
   });
   assert.match(present, /`filed_by_id`: your own Crew row id/);
   assert.match(present, /`ship_id`: `ship-9`/);
@@ -119,7 +119,7 @@ test('authorship bullets name only the columns the workspace has, and this ship\
   // an agent write a column the workspace rejects, so nothing is named at all.
   const absent = renderEnvironment({
     route, userAgent: 'crew/1', repos: withRepo, contract: DEFAULT_CONTRACT,
-    authorship: { issueAuthor: false, issueShip: false, commentShip: false, shipId: 'ship-9' },
+    authorship: { issueAuthor: false, issueShip: false, issueHeld: false, commentShip: false, shipId: 'ship-9' },
   });
   assert.doesNotMatch(absent, /filed_by_id/);
   assert.doesNotMatch(absent, /ship-9/);

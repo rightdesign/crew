@@ -27,6 +27,7 @@ import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktre
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { State } from './state.ts';
+import { planHoldReleases, shipIdByName } from './ship-affinity.ts';
 import type { Emitter } from './events.ts';
 
 export interface CycleDecision {
@@ -43,6 +44,8 @@ export interface CycleDecision {
    * here, applied by the caller beside `sweep` — see epics.ts.
    */
   epicSync: EpicStep[];
+  /** Tickets past the building roles that still carry a ship hold (CREW-1386); applied by the caller beside `sweep`. */
+  holdReleases?: Ticket[];
   stranded: Ticket[];
   selection: Selection;
   /** Everything actionable this cycle, pooled across every pending role (ISSUE-382). */
@@ -141,6 +144,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     emit.warn(`ticket(s) blocking themselves, parked permanently: ${diag.selfBlocked.join(', ')}`);
   }
   const sweep = planSweep(tickets, info, blocked);
+  const holdReleases = planHoldReleases(tickets, tracker.contract);
 
   // What a watcher can't otherwise see without `crew status`: the queue
   // behind the winning role. Emitted every cycle, empty or not, since each
@@ -223,11 +227,12 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     seats: route.resolved!.seats,
     paused: state.pausedRoles(['dev', 'design', 'qa']),
     contract: tracker.contract,
+    ships: { myShipId: shipIdByName(ships, ship.name), rows: ships },
   };
   const selection = selectRole(selectionInput);
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, ships, blocked, info, sweep, epicSync, stranded, selection, actionable, watermark,
+    tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stranded, selection, actionable, watermark,
     selectionInput, attention: attentionCurrent,
   };
 

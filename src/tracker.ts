@@ -14,6 +14,7 @@ import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
 import { DEFAULT_CONTRACT, closedStatuses, resolveContract, type Contract } from './contract.ts';
 import type { EpicRow } from './epics.ts';
+import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
 import { acquireBoardLock as claimBoardLock, type BoardLockResult } from './board-lock.ts';
@@ -204,6 +205,8 @@ export interface Authorship {
   issueAuthor: boolean;
   /** Issues has the `contract.columns.ship` column (`ship_id`). */
   issueShip: boolean;
+  /** Issues has the `contract.columns.heldBy` column (`held_by_ship_id`). */
+  issueHeld: boolean;
   /** Comments has the `contract.comments.ship` column (`ship_id`). */
   commentShip: boolean;
   /** This ship's `Ships` row id; null when there is no row for this ship's name. */
@@ -628,6 +631,21 @@ export class Tracker {
   }
 
   /**
+   * Ship affinity for a claim (CREW-1386): stamp this ship's Ships row on the
+   * ticket in the claim's own write, in the `held_by_ship_id` column (not
+   * `ship_id`, which means "filed from"). `undefined` — claim exactly as
+   * before — when the Issues table has no hold column or this ship has no row.
+   */
+  async claimAffinity(): Promise<ClaimAffinity | undefined> {
+    const auth = await this.authorshipProbe();
+    if (!auth.issueHeld || !auth.shipId) return undefined;
+    return {
+      column: this.contract.columns.heldBy,
+      shipId: auth.shipId,
+    };
+  }
+
+  /**
    * The authorship probe (CREW-1371), read once per process: which optional
    * `filed_by_id`/`ship_id` columns exist on Issues and Comments, and this
    * ship's own Ships row id. Memoised as a promise so concurrent first writes
@@ -649,6 +667,7 @@ export class Tracker {
     return {
       issueAuthor: issueFields.has(this.contract.columns.author),
       issueShip: issueFields.has(this.contract.columns.ship),
+      issueHeld: issueFields.has(this.contract.columns.heldBy),
       commentShip: commentFields.has(this.contract.comments.ship),
       shipId: shipRow?.id ?? null,
     };
@@ -672,6 +691,7 @@ export class Tracker {
     const missing: string[] = [];
     if (!auth.issueAuthor) missing.push(`Issues.${this.contract.columns.author}`);
     if (!auth.issueShip) missing.push(`Issues.${this.contract.columns.ship}`);
+    if (!auth.issueHeld) missing.push(`Issues.${this.contract.columns.heldBy}`);
     if (!auth.commentShip) missing.push(`Comments.${this.contract.comments.ship}`);
     return missing;
   }

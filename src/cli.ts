@@ -21,7 +21,8 @@ import {
 import { State } from './state.ts';
 import { Emitter, eventFileFor } from './events.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
-import { rankedCandidates } from './select.ts';
+import { rankedCandidates, withHoldCheck } from './select.ts';
+import { applyHoldReleases, noteReaccepted } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
@@ -1430,6 +1431,13 @@ switch (command) {
         await applyEpicSync(tracker, e.decision.epicSync, tracker.contract, remit);
       }
 
+      // CREW-1386: a ship hold ends when the ticket leaves the building roles.
+      for (const e of fleet.entries) {
+        if (dryRun || e.error || !e.decision?.holdReleases?.length) continue;
+        const tracker = new Tracker(e.route, cfg.ship);
+        await applyHoldReleases(tracker, e.decision.holdReleases, tracker.contract, emit.forRoute(e.route.route));
+      }
+
       for (const e of fleet.entries) {
         if (e.error || !e.decision || !e.decision.sweep.length) continue;
         // Route-scoped (CREW-979): this loop covers every reachable route,
@@ -1547,6 +1555,7 @@ switch (command) {
             contract.statuses.approved,
             contract.statuses.building,
             (t) => dirForRepo(w.route, t.repo_id) !== null,
+            withHoldCheck(await fleetTracker.claimAffinity(), w.decision.selectionInput),
           );
           if (result.contended.length) {
             wemit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
@@ -1559,6 +1568,10 @@ switch (command) {
               { step: 'select', role: w.role },
             );
           }
+          if (result.held.length) {
+            wemit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: w.role });
+          }
+          await noteReaccepted(fleetTracker, result, seat, cfg.ship.name);
           if (!result.ticket) {
             wemit.emit(`${w.role} skipped this cycle — every candidate was already claimed elsewhere`);
             if (!skipInlineRelease) await releaseFleet();
@@ -1678,6 +1691,10 @@ switch (command) {
         await applyEpicSync(tracker, decision.epicSync, tracker.contract, emit);
       }
     }
+    if (!dryRun && decision.holdReleases?.length) {
+      const tracker = new Tracker(route, cfg.ship);
+      await applyHoldReleases(tracker, decision.holdReleases, tracker.contract, emit);
+    }
 
     const role = (value('role') as RoleName | undefined) ?? decision.selection.selected;
     if (command === 'poll') break;
@@ -1752,6 +1769,7 @@ switch (command) {
             contract.statuses.approved,
             contract.statuses.building,
             (t) => dirForRepo(route, t.repo_id) !== null,
+            withHoldCheck(await tracker2.claimAffinity(), decision.selectionInput),
           );
           if (result.contended.length) {
             emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
@@ -1764,6 +1782,10 @@ switch (command) {
               { step: 'select', role: current },
             );
           }
+          if (result.held.length) {
+            emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: current });
+          }
+          await noteReaccepted(tracker2, result, seat, cfg.ship.name);
           if (!result.ticket) {
             emit.emit(`${current} skipped this cycle — every candidate was already claimed elsewhere`);
             dropLock();

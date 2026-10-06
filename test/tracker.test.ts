@@ -368,7 +368,7 @@ test('missingAuthorshipColumns() names each column the workspace lacks, so docto
   });
   const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
 
-  assert.deepEqual(await tracker.missingAuthorshipColumns(), ['Issues.ship_id', 'Comments.ship_id']);
+  assert.deepEqual(await tracker.missingAuthorshipColumns(), ['Issues.ship_id', 'Issues.held_by_ship_id', 'Comments.ship_id']);
 });
 
 test('beatShip() carries the open attention items when the Ships table has the column, omits them when it does not (CREW-1373)', async (t) => {

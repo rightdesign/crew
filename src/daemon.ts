@@ -76,7 +76,8 @@ import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, reso
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
-import { rankedCandidates } from './select.ts';
+import { rankedCandidates, withHoldCheck } from './select.ts';
+import { applyHoldReleases, noteReaccepted } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
@@ -431,6 +432,10 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
       emit.warn(`could not sweep: ${(e as Error).message}`, { step: 'sweep' });
     }
   }
+  if (decision.holdReleases?.length) {
+    const tracker = new Tracker(o.route, o.ship);
+    await applyHoldReleases(tracker, decision.holdReleases, tracker.contract, emit);
+  }
 
   // Most urgent first, same comparator `decideCycle`/`selectRole` already
   // ranked with — a role with no rank (shouldn't happen for a pending role,
@@ -535,6 +540,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
       const result = await resolveTopCandidate(
         tracker, candidates, seat, contract.statuses.approved, contract.statuses.building,
         (t) => dirForRepo(route, t.repo_id) !== null,
+        withHoldCheck(await tracker.claimAffinity(), decision.selectionInput),
       );
       if (result.contended.length) {
         emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
@@ -546,6 +552,10 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
           step: 'select', role,
         });
       }
+      if (result.held.length) {
+        emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: role });
+      }
+      await noteReaccepted(tracker, result, seat, ship.name);
       if (!result.ticket) {
         emit.emit(`${role} skipped this cycle — every candidate was already claimed elsewhere`);
         return;

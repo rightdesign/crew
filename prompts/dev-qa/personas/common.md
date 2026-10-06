@@ -179,7 +179,7 @@ since your last comment: an answer to a question, new direction, or a
   the remote has moved), stop: comment on the ticket with what it printed and
   set `needs_info`; do not merge or rebase it yourself.
 - A ticket QA has bounced back to you comes in as `in_progress`,
-  reassigned to your row, with a comment saying what still fails. Treat
+  reassigned to your row (or unassigned, when your ship holds it), with a comment saying what still fails. Treat
   that exactly like new direction from a hold: read the comment, fix what
   it names, and take it back to `fixed` when it's genuinely right. QA
   bouncing a ticket is the system working, not an accusation.
@@ -514,6 +514,10 @@ if `report_type` is either of those.
    part).
 9. Set the ticket's `status` to `fixed` once you have verified it yourself,
    and **clear `assignee_id`** — that pair is the hand-off to the QA lane.
+   If the Issues table has a `held_by_ship_id` column, clear it in the same
+   write (the hold is for the building roles; QA on any ship may take a `fixed`
+   ticket). A QA bounce or `needs_info` park leaves it set; QA clears it again
+   when it sets `verified`.
    **Push the branch first, in the same step:**
    `git push --set-upstream <remote> <branch>` from the worktree (the remote is
    `origin` unless the repo's `.crew.yaml` says otherwise; a repo with no remote
