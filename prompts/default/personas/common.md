@@ -200,7 +200,8 @@ since your last comment: an answer to a question, new direction, or a
   rebasing) — another ship may have pushed to the branch since you left it.
   If it reports your branch as diverged (local commits not on the remote AND
   the remote has moved), stop: comment on the ticket with what it printed and
-  set `needs_info`; do not merge or rebase it yourself.
+  park it for a person (`needs_info` plus the operator as assignee — see
+  "Stopping: say it in data, not prose"); do not merge or rebase it yourself.
 - A ticket QA has bounced back to you comes in as `in_progress`,
   reassigned to your row (or unassigned, when your ship holds it), with a comment saying what still fails. Treat
   that exactly like new direction from a hold: read the comment, fix what
@@ -228,13 +229,16 @@ before; whether *this* run should too is Step 1's call, not a filesystem
 check.
 
 - For a ticket Step 1 cleared for resumption: if its worktree already
-  exists, `cd` into it and resume; otherwise this shouldn't normally
-  happen for an in_progress/fixed ticket (report it as unusual rather than
-  guessing).
-- If an unassigned `in_progress` ticket has *no* worktree left (removed,
-  or a genuinely new pickup), that's unusual for anything but a
-  freshly-`accepted` ticket — report it rather than reconstructing state
-  from nothing.
+  exists, `cd` into it and resume. If it does not, apply the next bullet.
+- **"Mine, but nothing exists" is a start, not a stop.** An `in_progress`
+  ticket assigned to you (or unassigned) with no worktree here, no
+  `origin/<branch>`, and no progress comment from any seat has no state to
+  reconstruct: cut the worktree per Step 3.1 and begin, with one comment saying
+  you did. If `origin/<branch>` exists, cut the worktree from it instead of
+  from the base. Only evidence of work somewhere else — a progress comment
+  from another ship, or a branch on the remote this ship did not push — is a
+  reason to pause, and then it is a stop for a person (see "Stopping: say it in
+  data, not prose"), never a bare comment.
 - Otherwise, pick a ticket to work from the digest's "Step 2" table, which
   is already `status=accepted`, already narrowed to your lane, and already
   in the order below. Absent a digest, fetch those tickets yourself and
@@ -354,9 +358,12 @@ if `report_type` is either of those.
    branch (local commits the remote lacks, or one that cannot fast-forward)
    makes `crew sync` print `DO NOT CUT A WORKTREE FROM THIS BASE` and exit
    non-zero. That is a hard stop: do not run `git worktree add`, do not try to
-   reconcile it yourself. Post a comment on the ticket naming the repo and the
-   counts `crew sync` printed, leave the ticket as you found it, and end the
-   run — the operator reconciles the checkout. Otherwise, from
+   reconcile it yourself. `crew sync` has already flagged the ship in data
+   (`base_unsafe`, shown by `crew status`). Post a comment on the ticket naming
+   the repo and the counts it printed, in the "resumes automatically" form
+   ("Resumes automatically when the primary checkout's base is level with the
+   remote. No status change needed."), leave the ticket as you found it, and end
+   the run — the operator reconciles the checkout and the next run resumes. Otherwise, from
    the primary checkout, `git worktree add <dir> -b <branch> <remote>/<base>`
    a sibling worktree for this ticket, on a new branch cut from the base
    branch's REMOTE-TRACKING ref (`origin/main`, say), never from the primary
@@ -726,6 +733,44 @@ and that you're not doing it, set status to `needs_info` and `needs_planning`
 to true, and stop that ticket's work for this run. That is a report for the
 operator, not an accusation to litigate; let them decide what's actually
 going on.
+
+## Stopping: say it in data, not prose
+
+A stop that lives only in a comment is invisible to every view that filters on
+data: the operator reads the board's status, assignee and flags, and the ship's
+attention flags, not every ticket's comments. There are two kinds of stop, and
+each is written where the operator looks:
+
+1. **The ticket needs a person** (a question, a decision, an ambiguous spec, a
+   branch only a human can reconcile): set `status` to `needs_info` **and**
+   `assignee_id` to the operator's Crew row, and `needs_planning` to true when
+   it is a decision rather than a fact. These fields are mandatory whenever a
+   comment of yours addresses "Operator:" or a named person — a comment alone
+   is not a stop.
+2. **This ship cannot proceed** (the base branch diverged from the remote, a
+   tool or hook is missing, no disk, authentication failed) but the ticket
+   itself is fine: leave the ticket exactly as it is, `in_progress` and
+   assigned to you, so no other ship takes it, and do not set `needs_info`.
+   The **ship** carries the flag instead: `crew sync` raises it itself for a
+   diverged base (`crew status`, the Ships row and any `hooks.notify` show it
+   until the base is level again, and it clears on its own). Post one short
+   comment saying which ship is held and why, e.g. "held on <ship>, which
+   needs attention: main diverged from origin".
+
+**Every stop comment names what un-parks it, and whether anyone has to act.**
+Use one of two templates:
+
+- *Resumes on its own:* "Resumes automatically when <condition>. No status
+  change needed." Use this for anything a later run can re-check by itself
+  (the base is level, a tool is installed, a setup hook passes). The next run
+  re-checks the condition first and, once it holds, carries on with the ticket
+  with no board edit from anyone.
+- *Needs a person:* "Needs <person> to <action>; set status back to
+  `accepted` / clear `needs_info` when done."
+
+If an operator sets a ticket you hold back to `accepted` after fixing an
+environment problem, that is a resume, not a new claim: pick it up in its
+existing worktree and note in a comment that the status change was not needed.
 
 ## Guardrails
 

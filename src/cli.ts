@@ -90,7 +90,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
-import { openShipAttention, raiseShipAttention, clearShipAttention, hookCommand } from './ship-attention.ts';
+import { openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention } from './ship-attention.ts';
 import { runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker } from './daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
@@ -3235,6 +3235,12 @@ switch (command) {
     // neither is a second repo's own base branch.
     for (const r of await resolvedRepos(route)) {
       const base = refreshBaseBranch(r.dir, r.config.branch.remote, r.config.branch.base, dryRun);
+      // CREW-1388: the stop is also written on the ship (not just this exit
+      // code and the ticket comment), and clears itself the next time the
+      // base checks level — a dry run decides nothing, so it neither raises nor clears.
+      const att = dryRun ? null : baseAttention(r.name, base, r.config.branch.remote, r.config.branch.base);
+      if (att && 'raise' in att) await raiseShipAttention({ state, emit, route, ship: cfg.ship }, att.raise);
+      else if (att) clearShipAttention(state, att.clear);
       if (base.action !== 'not-applicable') {
         baseChecked++;
         if (base.action === 'fetch-failed') emit.warn(base.detail);

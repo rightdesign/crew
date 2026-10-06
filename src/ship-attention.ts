@@ -20,8 +20,9 @@ import type { Route, Ship } from './config.ts';
 import { notify } from './notify.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import type { State } from './state.ts';
+import { baseBranchUnsafe, describeUnsafeBase, type BaseRefreshOutcome } from './git.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -78,6 +79,34 @@ export function staleRelease(
     message: `This ship has not run a release cycle for ${minutes} minute${minutes === 1 ? '' : 's'} — check its release timer`,
     since: new Date(lastRunMs + limitMs).toISOString(),
   };
+}
+
+/** The key of a repo's `base_unsafe` item; one per repo, so two repos' stops do not mask each other. */
+export const baseUnsafeKey = (repo: string): string => `base_unsafe:${repo}`;
+
+/**
+ * What a base-branch check means for the ship (CREW-1388). A diverged base is
+ * the ship's problem, not the ticket's: the ticket is fine and keeps its hold,
+ * so the stop is written on the ship where `crew status`, the Ships row and
+ * the menubar read it, instead of in a comment only a person who opens the
+ * ticket would see. Returns `raise` for an unsafe base, `clear` once the
+ * checkout is level again (so the condition resolves itself the next time
+ * anything checks), and null when the check says nothing either way
+ * (not-applicable, fetch-failed, a dry run's would-fast-forward).
+ */
+export function baseAttention(
+  repo: string, outcome: BaseRefreshOutcome, remote: string, base: string, nowIso = new Date().toISOString(),
+): { raise: ShipAttentionItem } | { clear: string } | null {
+  if (baseBranchUnsafe(outcome)) {
+    return {
+      raise: {
+        kind: 'base_unsafe', key: baseUnsafeKey(repo), since: nowIso,
+        message: `${repo}: no worktree can be cut until the primary checkout's ${base} is reconciled — ${describeUnsafeBase(outcome, remote, base)}. Resumes automatically once it is level with ${remote}/${base}`,
+      },
+    };
+  }
+  if (outcome.action === 'level' || outcome.action === 'fast-forwarded') return { clear: baseUnsafeKey(repo) };
+  return null;
 }
 
 /** Every open item: the persisted ones plus the derived `release_stale`. */

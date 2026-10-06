@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   upsert, clear, transitions, staleRelease, openShipAttention, hookCommand,
-  raiseShipAttention, clearShipAttention, RELEASE_STALE_AFTER_INTERVALS, type ShipAttentionItem,
+  raiseShipAttention, clearShipAttention, baseAttention, baseUnsafeKey, RELEASE_STALE_AFTER_INTERVALS, type ShipAttentionItem,
 } from '../src/ship-attention.ts';
 import { Emitter, eventFileFor } from '../src/events.ts';
 import { State } from '../src/state.ts';
@@ -87,4 +87,31 @@ test('hookCommand: first plain command word, skipping comments and assignments',
   assert.equal(hookCommand('if true; then x; fi'), null);
   assert.equal(hookCommand('./scripts/go.sh'), null);
   assert.equal(hookCommand(''), null);
+});
+
+test('baseAttention (CREW-1388): an unsafe base raises a per-repo item naming the auto-resume; level or fast-forwarded clears it; the rest say nothing', () => {
+  const diverged = { action: 'diverged', ahead: 1, behind: 2, detail: 'main has diverged' } as const;
+  const r = baseAttention('crew', diverged, 'origin', 'main', '2026-10-06T00:00:00.000Z');
+  assert.ok(r && 'raise' in r);
+  assert.equal(r.raise.kind, 'base_unsafe');
+  assert.equal(r.raise.key, baseUnsafeKey('crew'));
+  assert.match(r.raise.message, /Resumes automatically once it is level with origin\/main/);
+  assert.notEqual(baseUnsafeKey('crew'), baseUnsafeKey('tablation'));
+
+  for (const action of ['level', 'fast-forwarded'] as const) {
+    const c = baseAttention('crew', { action, behind: 0, detail: 'ok' } as never, 'origin', 'main');
+    assert.deepEqual(c, { clear: 'base_unsafe:crew' });
+  }
+  for (const o of [
+    { action: 'not-applicable', detail: 'x' }, { action: 'fetch-failed', detail: 'x' },
+    { action: 'would-fast-forward', behind: 1, detail: 'x' },
+  ] as const) assert.equal(baseAttention('crew', o, 'origin', 'main'), null);
+});
+
+test('base_unsafe survives a persist/clear round trip like any other ship-attention item', () => {
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-shipatt-')));
+  state.shipAttention().persist([item(baseUnsafeKey('crew'), { kind: 'base_unsafe' })]);
+  assert.deepEqual(openShipAttention(state).map((i) => i.kind), ['base_unsafe']);
+  clearShipAttention(state, baseUnsafeKey('crew'));
+  assert.deepEqual(openShipAttention(state), []);
 });

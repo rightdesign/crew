@@ -80,3 +80,19 @@ test('every prompt set is complete and names nothing specific to one project, ma
   }
   assert.deepEqual(found, []);
 });
+
+/**
+ * CREW-1388: a stop for a person must be written in data, and every stop
+ * comment names what un-parks it. Both preset copies carry the same rules.
+ */
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} common persona keeps the stop-in-data rules (CREW-1388)`, () => {
+    const text = readFileSync(join(PROMPTS, preset, 'personas', 'common.md'), 'utf8');
+    assert.match(text, /## Stopping: say it in data, not prose/);
+    assert.match(text, /`needs_info` \*\*and\*\*\s+`assignee_id`/, 'a person-stop sets needs_info and the operator assignee');
+    assert.match(text, /Resumes automatically when <condition>\. No status\s+change needed\./);
+    assert.match(text, /"Mine, but nothing exists" is a start, not a stop/);
+    assert.match(text, /that is a resume, not a new claim/);
+    assert.doesNotMatch(text, /report it as unusual rather than\s+guessing/);
+  });
+}
