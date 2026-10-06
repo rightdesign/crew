@@ -35,7 +35,7 @@
 
 import { dirname, join, extname } from 'node:path';
 import { homedir } from 'node:os';
-import { accessSync, constants, existsSync, mkdirSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { Ship } from './config.ts';
@@ -166,6 +166,12 @@ export interface UninstallPlan {
   unitPaths: string[];
   crontabLine: string | null;
   unloadCommands: string[][];
+  /**
+   * launchd only: the job's label, removed with `launchctl remove` after the
+   * unload attempt. `unload <file>` cannot drop a job whose plist is already
+   * gone from disk, which is how a job outlives its own uninstall (CREW-1376).
+   */
+  removeLabel?: string;
 }
 
 /**
@@ -451,6 +457,7 @@ export function planUninstall(
       unitPaths: [unitPath],
       crontabLine: null,
       unloadCommands: [['launchctl', 'unload', unitPath]],
+      removeLabel: label,
     };
   }
   if (hostShip === 'linux' && hasSystemd) {
@@ -615,6 +622,19 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
     }
   }
 
+  if (plan.removeLabel) {
+    if (dryRun) {
+      log.emit(`would run: launchctl remove ${plan.removeLabel}`);
+    } else {
+      // Quiet on purpose: `remove` exits non-zero for a label that was never
+      // loaded, which is the normal case on a clean uninstall. Only a real
+      // removal is reported.
+      if (spawnSync('launchctl', ['remove', plan.removeLabel], { encoding: 'utf8' }).status === 0) {
+        log.emit(`removed loaded job ${plan.removeLabel}`);
+      }
+    }
+  }
+
   for (const path of plan.unitPaths) {
     if (!existsSync(path)) continue;
     if (dryRun) { log.emit(`would remove ${path}`); continue; }
@@ -633,6 +653,154 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
       log.emit('removed crontab entry');
     }
   }
+}
+
+/**
+ * A `com.tablation.crew*` launchd unit found in ~/Library/LaunchAgents — this
+ * checkout's own or another checkout's. `labelFor` hashes the checkout's real
+ * path, so a crew installed from a new location writes a second set of units
+ * the old set never sees (CREW-1376).
+ */
+export interface LaunchdUnit {
+  label: string;
+  plistPath: string;
+  /**
+   * The crew binary the unit runs: the `bin/crew` argument of a checkout, or
+   * argv[0] of a compiled binary. Null when the plist has no readable
+   * ProgramArguments.
+   */
+  program: string | null;
+  /** Whether `program` still exists. A unit whose program is gone exits 78 on every fire. */
+  programExists: boolean;
+}
+
+const CREW_LAUNCHD_PREFIX = 'com.tablation.crew';
+
+function launchAgentsDir(): string {
+  return join(homedir(), 'Library', 'LaunchAgents');
+}
+
+function xmlUnescape(s: string): string {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+/**
+ * The program a plist's ProgramArguments runs, as `planLaunchd` writes it: a
+ * checkout's `…/bin/crew` argument, or argv[0] for a compiled binary.
+ */
+export function programFromPlist(text: string): string | null {
+  const block = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text);
+  if (!block) return null;
+  const args = [...block[1]!.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => xmlUnescape(m[1]!));
+  return args.find((a) => a.endsWith('/bin/crew')) ?? args[0] ?? null;
+}
+
+/** Every `com.tablation.crew*` launchd unit in `dir`, whichever checkout wrote it. */
+export function listLaunchdUnits(dir: string = launchAgentsDir()): LaunchdUnit[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.startsWith(CREW_LAUNCHD_PREFIX) && f.endsWith('.plist'))
+    .sort()
+    .map((f) => {
+      const plistPath = join(dir, f);
+      let program: string | null = null;
+      try { program = programFromPlist(readFileSync(plistPath, 'utf8')); } catch { /* unreadable: no program */ }
+      return {
+        label: f.slice(0, -'.plist'.length),
+        plistPath,
+        program,
+        programExists: program !== null && existsSync(program),
+      };
+    });
+}
+
+/** The `com.tablation.crew*` units this checkout does NOT own — a different checkout's, or a stale one from before a move. */
+export function foreignLaunchdUnits(crewHome: string, dir?: string): LaunchdUnit[] {
+  const own = new Set((['run', 'release', 'passengers'] as const).map((job) => labelFor(crewHome, job)));
+  return listLaunchdUnits(dir).filter((u) => !own.has(u.label));
+}
+
+/**
+ * Unload, drop and delete one launchd unit. `remove <label>` runs even when
+ * `unload <file>` succeeded or the file is already gone, because a job can be
+ * loaded with no file on disk, and only `remove` reaches it then.
+ */
+export function removeLaunchdUnit(unit: Pick<LaunchdUnit, 'label' | 'plistPath'>, dryRun: boolean, log: InstallLog): void {
+  if (dryRun) { log.emit(`would unload and remove ${unit.label}`); return; }
+  if (existsSync(unit.plistPath)) spawnSync('launchctl', ['unload', unit.plistPath], { encoding: 'utf8' });
+  spawnSync('launchctl', ['remove', unit.label], { encoding: 'utf8' });
+  if (existsSync(unit.plistPath)) unlinkSync(unit.plistPath);
+  log.emit(`removed ${unit.label} (${unit.plistPath})`);
+}
+
+/**
+ * `crew install`'s pre-write step on macOS. Units of another checkout whose
+ * program is gone are removed. A unit whose program still exists belongs to a
+ * live different checkout, and a unit with no readable ProgramArguments is of
+ * unknown ownership — a null program is NOT evidence the install is gone. Both
+ * are refused — returns false — unless `replace`, which removes them too. Runs
+ * before any unit of this checkout is written, so a refusal leaves the machine
+ * as it was.
+ */
+export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dryRun: boolean, log: InstallLog, dir?: string): boolean {
+  const foreign = foreignLaunchdUnits(crewHome, dir);
+  const blocking = foreign.filter((u) => u.program === null || u.programExists);
+  if (blocking.length > 0 && !replace) {
+    log.warn(
+      `two crew installs target this machine: ${blocking.map((u) => `${u.label} runs ${u.program ?? 'an unreadable ProgramArguments'}`).join('; ')}. ` +
+        'Run `crew uninstall` from the other one, or pass --replace.',
+    );
+    return false;
+  }
+  for (const unit of foreign) {
+    const why = unit.program === null
+      ? 'replacing a unit with no readable ProgramArguments'
+      : unit.programExists ? 'replacing a live other install' : 'removing a stale unit whose program is gone';
+    log.emit(`${why}: ${unit.label}`);
+    removeLaunchdUnit(unit, dryRun, log);
+  }
+  return true;
+}
+
+/** `crew uninstall --all`: every `com.tablation.crew*` launchd unit, whichever checkout's hash it carries. */
+export function removeAllLaunchdUnits(dryRun: boolean, log: InstallLog, dir?: string): void {
+  for (const unit of listLaunchdUnits(dir)) removeLaunchdUnit(unit, dryRun, log);
+}
+
+/** One `launchctl list` row: PID, last exit status (`-` when none), label. */
+export interface LaunchdJobStatus {
+  pid: string;
+  lastExit: string;
+}
+
+/** Parses `launchctl list` output into label → status. The header row is skipped. */
+export function parseLaunchctlList(text: string): Map<string, LaunchdJobStatus> {
+  const jobs = new Map<string, LaunchdJobStatus>();
+  for (const line of text.split('\n')) {
+    const cols = line.split('\t');
+    if (cols.length !== 3 || cols[2] === 'Label') continue;
+    jobs.set(cols[2]!, { pid: cols[0]!, lastExit: cols[1]! });
+  }
+  return jobs;
+}
+
+/**
+ * `crew doctor`'s report on foreign launchd units: whether each is loaded, its
+ * last exit, and the program it runs. Empty when there are none. A loaded unit
+ * whose program is gone is flagged, since it fires on every interval and fails.
+ */
+export function describeForeignLaunchdUnits(crewHome: string, dir?: string): string[] {
+  const foreign = foreignLaunchdUnits(crewHome, dir);
+  if (foreign.length === 0) return [];
+  const list = spawnSync('launchctl', ['list'], { encoding: 'utf8' });
+  const jobs = parseLaunchctlList(list.status === 0 ? (list.stdout ?? '') : '');
+  return foreign.map((u) => {
+    const status = jobs.get(u.label);
+    const loaded = status ? `loaded, last exit ${status.lastExit}` : 'not loaded';
+    const program = u.program ? `${u.program} (${u.programExists ? 'present' : 'GONE'})` : 'no readable ProgramArguments';
+    const stale = status && !u.programExists ? ' — stale: `crew install` removes it' : '';
+    return `  ${u.label}: ${loaded}; runs ${program}${stale}`;
+  });
 }
 
 function readCrontab(): string {

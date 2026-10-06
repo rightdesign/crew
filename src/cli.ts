@@ -34,7 +34,7 @@ import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
 } from './connect-wizard.ts';
-import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS } from './install.ts';
+import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { describeUnplaceable } from './release.ts';
@@ -825,11 +825,21 @@ async function areaWorktreePrefix(c: typeof route, repoId: string | undefined): 
  * Write and load the scheduler units. Shared by `crew install` and
  * `crew doctor --fix` (CREW-1288), which offers it once a route is enabled.
  */
-async function installScheduler(): Promise<void> {
+async function installScheduler(opts: { replace?: boolean } = {}): Promise<boolean> {
   const host = hostPlatform();
   if (host === 'windows') {
     process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
     process.exit(2);
+  }
+  // launchd units from a different checkout hash (CREW-1376): a stale one
+  // whose program is gone is removed, a live other install is refused before
+  // anything of this checkout is written, unless --replace.
+  if (host === 'macos') {
+    const ok = clearForeignLaunchdUnits(CREW_HOME, !!opts.replace, dryRun, {
+      emit: (m) => process.stdout.write(`${m}\n`),
+      warn: (m) => process.stderr.write(`crew install: ${m}\n`),
+    });
+    if (!ok) return false;
   }
   // Three units, not one: `run` (poll/select/one agent session), `release`
   // (test/build/deploy) and `passengers` (Host Passengers container/tunnel
@@ -892,6 +902,7 @@ async function installScheduler(): Promise<void> {
       }
     }
   }
+  return true;
 }
 
 /**
@@ -964,8 +975,7 @@ async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatf
         // ship whose every route is still off would just poll nothing.
         if (enabledSound.size === 0) continue;
         if (prompter && !(await prompter.confirm('No scheduler is installed for this ship — run `crew install` now?', false))) continue;
-        await installScheduler();
-        changed.push('ran `crew install` (scheduler units written and loaded)');
+        if (await installScheduler()) changed.push('ran `crew install` (scheduler units written and loaded)');
       }
     }
   } finally {
@@ -3182,7 +3192,7 @@ switch (command) {
   }
 
   case 'install': {
-    await installScheduler();
+    if (!(await installScheduler({ replace: flag('replace') }))) process.exit(2);
     break;
   }
 
@@ -3196,6 +3206,15 @@ switch (command) {
       const plan = planUninstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
       process.stdout.write(`uninstalling ${job} ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
       await applyUninstall(plan, CREW_HOME, dryRun, {
+        emit: (m) => process.stdout.write(`${m}\n`),
+        warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
+      });
+    }
+    // --all (CREW-1376): every com.tablation.crew* launchd unit, whichever
+    // checkout's hash it carries — the cleanup for a crew that was moved.
+    if (flag('all') && host === 'macos') {
+      process.stdout.write(`uninstalling every crew launchd unit${dryRun ? ' (dry run)' : ''}\n`);
+      removeAllLaunchdUnits(dryRun, {
         emit: (m) => process.stdout.write(`${m}\n`),
         warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
       });
@@ -3533,6 +3552,16 @@ switch (command) {
     }
     for (const i of openShipAttention(state)) {
       process.stdout.write(`attention:         ${i.kind} — ${i.message} (since ${i.since})\n`);
+    }
+
+    // Foreign launchd units (CREW-1376): another checkout's, or a stale one
+    // from before this checkout moved. Listed with load state and last exit
+    // so a unit firing into a dead path is visible here, not only in launchctl.
+    if (host === 'macos') {
+      const foreign = describeForeignLaunchdUnits(CREW_HOME);
+      if (foreign.length > 0) {
+        process.stdout.write(`foreign launchd units (not this checkout's — \`crew install\` or \`crew uninstall --all\` clears them):\n${foreign.join('\n')}\n`);
+      }
     }
 
     // Host Passengers preflight (ISSUE-553): a route can declare
