@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.10.0] — 2026-10-06
+
+- A release no longer proceeds on a base branch carrying local commits its remote lacks; it stops and says how to reconcile (CREW-1379)
+- A diverged or ahead base branch is a hard stop for cutting ticket worktrees: `crew sync` exits 1, and `crew status`/`crew doctor` report it (CREW-1379)
+
 ## [0.9.0] — 2026-10-06
 
 - CREW-1376 — `crew install` refuses, rather than removes, a foreign launchd unit whose ProgramArguments it cannot read, unless `--replace`
