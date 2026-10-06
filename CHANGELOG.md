@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.19.0] — 2026-10-06
+
+- Environment stops (a missing hook tool, low disk) are raised and cleared by the poll, and stop the building lanes for the affected repo (ISSUE-1406)
+- Missing-tool and low-disk ship attention now clears itself at poll time and skips the affected repo for the building lanes (ISSUE-1406)
+- Building lanes skip a repo whose primary checkout is diverged, say why in the digest, and resume on their own once it is level (CREW-1403)
+
 ## [0.18.0] — 2026-10-06
 
 - Per-run worktrees are cut from the remote branch (`crew worktree NNN`) and removed once the branch is pushed at hand-off, unless a `handoff` hook keeps a server up (CREW-1385)
