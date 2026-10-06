@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.15.0] — 2026-10-06
+
+- A stop for a person is now written in data (needs_info plus operator assignee, or a ship attention flag that `crew sync` raises for a diverged base and clears when level), every stop comment names its un-park condition, and a ticket that is yours but has no worktree or branch is a fresh start (CREW-1388)
+- A release now pushes to the base branch before running the deploy hook, so a ship that loses the race to another never deploys a build the base branch does not carry (CREW-1400)
+
 ## [0.14.1] — 2026-10-06
 
 - A comment posted from the app by a person whose Crew row is on another ship is now attributed to them instead of reading "(no identity)", and `crew doctor` checks the operator's identity link (CREW-1390)
