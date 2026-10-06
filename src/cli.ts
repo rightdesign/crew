@@ -31,6 +31,7 @@ import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
+import { guardRunHandoff } from './handoff-guard.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
@@ -1670,6 +1671,7 @@ switch (command) {
       }
       try {
         await spawnAgent(fleetPlan, wemit);
+        await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit);
       } finally {
         dropLock();
         if (fleetMemberId) {
@@ -1899,6 +1901,7 @@ switch (command) {
       }
       try {
         await spawnAgent(plan, emit);
+        await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit);
       } finally {
         dropLock();
         if (memberId) {

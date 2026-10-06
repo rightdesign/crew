@@ -556,6 +556,12 @@ if `report_type` is either of those.
    `in_progress` and the next `fixed` push again — a plain fast-forward, never
    `--force`; if the push is rejected, someone else moved the branch, so stop
    and say so on the ticket instead of forcing it.
+   The runner checks this when your session ends: if the ticket is at `fixed`
+   and `<remote>/<branch>` is missing or not at your worktree's HEAD, it sets
+   the ticket back to `in_progress` (still yours) with an event saying what it
+   found, and QA never sees it. When it matches, the runner records
+   `pushed <sha> to <remote>/<branch>` on the ticket itself; you still state the
+   sha in your last progress comment.
    Leave the worktree and branch exactly where they are, unmerged: QA boots
    *your worktree* on its derived ports to test the fix, so removing it
    would leave QA nothing to test. Your last progress comment is what QA

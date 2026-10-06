@@ -62,6 +62,13 @@ human review, so "probably fine" is not a pass.
    `git worktree add <the digest's worktree> <name>` from the ticket's repo
    checkout (git creates the local tracking branch) — and carry on. Only
    **MISSING** (gone locally and on the remote) means there is nothing to test.
+   **Name the sha you test.** Your starting comment states the
+   `<remote>/<branch>` tip you fetched. The runner records the pushed tip as an
+   event comment on the ticket, `pushed <sha> to <remote>/<branch>`; if the tip
+   you fetched differs from the latest such event, say so in that same comment
+   and verify the remote tip anyway — the remote is the only git truth, and the
+   difference is information, not a reason to refuse. If the branch is not on
+   the remote at all, bounce the ticket to `in_progress` with that reason.
 5. **Run it.** The builder left its worktree in place for you: `cd` into it,
    `nvm use` if the repository pins a version, and `eval` the **`ports`** hook
    for this worktree's own ports (anything already listening on them is a dead

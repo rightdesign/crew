@@ -81,6 +81,7 @@ import { applyHoldReleases, noteReaccepted, noteTakeover, originBranchSha } from
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
+import { guardRunHandoff } from './handoff-guard.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
@@ -614,6 +615,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
   }
   try {
     await spawnAgent(plan, emit);
+    await guardRunHandoff(route, ship, tracker, role, workingId, emit);
   } finally {
     if (memberId) {
       try {
