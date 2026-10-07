@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.19.5] — 2026-10-07
+
+- CREW-1415 Release phase no longer takes the board lock for repos with nothing verified, and still warns about verified tickets with no repository.
+- Release phase no longer takes the board lock for repos with nothing verified (CREW-1415)
+
 ## [0.19.4] — 2026-10-07
 
 - Two ships serving one repo no longer cut endless zero-merge releases off each other's release commits; release tags are pushed in every mode and fetched by every ship (CREW-1412)
