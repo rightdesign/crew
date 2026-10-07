@@ -80,6 +80,32 @@ export function describeUnplaceable(
   return notes;
 }
 
+/**
+ * Routes whose unplaceable tickets have already been reported this run.
+ *
+ * `releasePhase` runs once per REPOSITORY, and every one of them computes the
+ * same route-wide unplaceable set — so without this the same message is
+ * emitted once per repo, three times over for an area with three checkouts.
+ * A process is one cycle, so a Set that lives as long as it is exactly the
+ * right lifetime.
+ */
+const unplaceableReported = new Set<string>();
+
+/** Emit what `describeUnplaceable` decided, once per route per run. */
+export function reportUnplaceable(
+  routeName: string,
+  unplaceable: Array<{ ticket: Ticket; reason: string; repo?: string }>,
+  verified: string,
+  emit: { emit(message: string, meta?: { step?: string }): unknown; warn(message: string, meta?: { step?: string }): unknown },
+): void {
+  if (unplaceableReported.has(routeName)) return;
+  unplaceableReported.add(routeName);
+  for (const note of describeUnplaceable(unplaceable, verified)) {
+    if (note.level === 'warn') emit.warn(note.message, { step: 'release' });
+    else emit.emit(note.message, { step: 'release' });
+  }
+}
+
 /** A refusal to release, and why. Never an error: refusing is usually correct. */
 export interface ReleaseBlock { kind: 'branch' | 'dirty'; detail: string }
 
@@ -404,6 +430,27 @@ export function decideRelease(
     upToDate: lastReleased === head || (lastReleased !== null && unreleasedWork === 0),
     unseeded: lastTag === null,
   };
+}
+
+/**
+ * The lock-free question the release phase asks before it claims the board
+ * lock (CREW-1415): is there any way this repo could release, merge, bump or
+ * stamp anything? Only a definite "no" skips the lock. The lock still covers
+ * every path that can act — this is a filter in front of it, never a
+ * replacement, so a ticket that reaches `verified` between this read and the
+ * next cycle is simply caught next cycle.
+ *
+ * Anything that is not plainly idle answers "lock": a forced run
+ * (`--force`/`crew deploy`), an `external` repo (it has `reviewing` tickets
+ * to poll), a repo with no release tag yet, unreleased work on the base, or a
+ * branch whose release still needs stamping.
+ */
+export function releaseIdle(i: {
+  tickets: Pick<Ticket, 'status'>[]; verifiedStatus: string; force: boolean;
+  external: boolean; upToDate: boolean; unseeded: boolean; unstamped: number;
+}): boolean {
+  if (i.force || i.external || i.unseeded || !i.upToDate || i.unstamped > 0) return false;
+  return !i.tickets.some((t) => t.status === i.verifiedStatus);
 }
 
 /** "v{version}" -> "v0.58.0". The only substitution is {version}. */

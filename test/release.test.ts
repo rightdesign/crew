@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   checkGuards, planMerge, requestedBump, renderChangelogSection,
-  insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable,
+  insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable, releaseIdle, reportUnplaceable,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { branchForIssue, firstReleaseTagContaining, fetchRemote } from '../src/git.ts';
@@ -455,4 +455,38 @@ test('planReleasedBranches stamps an in_progress ticket whose branch tip is a ta
   assert.equal(r!.tag, 'v0.2.0');
   // A verified ticket is planMerge's, and a trailer-less squash is not matched here.
   assert.deepEqual(planReleasedBranches(dir, [T('ISSUE-30')], DEFAULT_CONTRACT, () => 'issue-30'), []);
+});
+
+test('releaseIdle: skips the board lock only when nothing could possibly release (CREW-1415)', () => {
+  const base = { verifiedStatus: 'verified', force: false, external: false, upToDate: true, unseeded: false, unstamped: 0 };
+  // Nothing verified: no lock.
+  assert.equal(releaseIdle({ ...base, tickets: [{ status: 'accepted' }, { status: 'in_progress' }] }), true);
+  // Verified, but the ticket belongs to another repo: this repo's list has none.
+  assert.equal(releaseIdle({ ...base, tickets: [] }), true);
+  // Verified for this repo: lock.
+  assert.equal(releaseIdle({ ...base, tickets: [{ status: 'verified' }] }), false);
+  // --force / crew deploy: lock.
+  assert.equal(releaseIdle({ ...base, tickets: [], force: true }), false);
+  // Unreleased work, no tag yet, external repo, or an unstamped branch: lock.
+  assert.equal(releaseIdle({ ...base, tickets: [], upToDate: false }), false);
+  assert.equal(releaseIdle({ ...base, tickets: [], unseeded: true }), false);
+  assert.equal(releaseIdle({ ...base, tickets: [], external: true }), false);
+  assert.equal(releaseIdle({ ...base, tickets: [], unstamped: 1 }), false);
+});
+
+// CREW-1415. The lock-free pre-check skips every repo when nothing placeable is
+// verified, which is exactly when a stranded ticket (no repo_id) is the only
+// verified one — its warning must not depend on a repo reaching the lock.
+test('a verified ticket with no repo is still warned about once per route', () => {
+  const got: Array<{ level: string; message: string }> = [];
+  const sink = {
+    emit: (message: string) => got.push({ level: 'info', message }),
+    warn: (message: string) => got.push({ level: 'warn', message }),
+  };
+  const u = [stranded('ISSUE-7', 'no-repo')];
+  reportUnplaceable('crew-1415-route', u, 'verified', sink);
+  reportUnplaceable('crew-1415-route', u, 'verified', sink);
+  assert.equal(got.length, 1);
+  assert.equal(got[0]!.level, 'warn');
+  assert.match(got[0]!.message, /ISSUE-7/);
 });

@@ -41,7 +41,7 @@ import {
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
-import { describeUnplaceable, planReleasedBranches } from './release.ts';
+import { decideRelease, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
@@ -719,6 +719,7 @@ async function releaseFleet(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
   if (releaseRefused()) return;
+  precheckTickets.clear();
   const summaries: RoutedReleaseSummary[] = [];
   // Touched at both ends so a long deploy does not read as a stopped timer
   // (`release_stale`, CREW-1373).
@@ -757,6 +758,7 @@ async function releaseTargets(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
   if (releaseRefused()) return;
+  precheckTickets.clear();
   const only = value('repo');
   const targets = reposOf(route);
   const chosen = only ? targets.filter((t) => t.name === only) : targets;
@@ -1109,32 +1111,6 @@ async function releaserLine(
 }
 
 /**
- * Routes whose unplaceable tickets have already been reported this run.
- *
- * `releasePhase` runs once per REPOSITORY, and every one of them computes the
- * same route-wide unplaceable set — so without this the same message is
- * emitted once per repo, three times over for an area with three checkouts.
- * A process is one cycle, so a Set that lives as long as it is exactly the
- * right lifetime.
- */
-const unplaceableReported = new Set<string>();
-
-/** Emit what `describeUnplaceable` decided, once per route per run. */
-function reportUnplaceable(
-  c: typeof route,
-  unplaceable: Array<Unplaceable<Ticket>>,
-  verified: string,
-  emit: Emitter,
-): void {
-  if (unplaceableReported.has(c.route)) return;
-  unplaceableReported.add(c.route);
-  for (const note of describeUnplaceable(unplaceable, verified)) {
-    if (note.level === 'warn') emit.warn(note.message, { step: 'release' });
-    else emit.emit(note.message, { step: 'release' });
-  }
-}
-
-/**
  * The release phase, callable on its own (`crew release`) or as the tail of a
  * cycle (`crew run`).
  *
@@ -1143,6 +1119,9 @@ function reportUnplaceable(
  * schedule. The two phases take DIFFERENT locks, so a long release never
  * blocks the next poll from starting, and vice versa.
  */
+/** One open-ticket read per route per release cycle, for the lock-free pre-check. */
+const precheckTickets = new Map<string, Promise<Ticket[]>>();
+
 async function releasePhase(
   c: typeof route, target: RepoTarget,
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
@@ -1205,6 +1184,37 @@ async function releasePhase(
     if (!dryRun && !c.enabled) return { scope, tests: 'skipped', outcome: 'skipped', detail: 'route not enabled' };
     const tracker = new Tracker(c, cfg.ship);
 
+    // Lock-free pre-check (CREW-1415): the lock exists to cover a decision to
+    // release, so a repo with nothing verified and a base level with its last
+    // tag never needs it. One ticket read per route per cycle, shared by
+    // every repo on it.
+    if (!dryRun) {
+      const force = command === 'deploy' || flag('force');
+      let seen = precheckTickets.get(c.route);
+      if (!seen) precheckTickets.set(c.route, (seen = tracker.openTickets()));
+      const { byRepo: preByRepo, unplaceable: preUnplaceable } = ticketsByRepo(c, await seen);
+      const pre = preByRepo.get(target.name) ?? [];
+      // A verified ticket with no (or an unknown) repo belongs to no repo's
+      // list, so every repo can read as idle and skip before the report below
+      // — which would leave it stranded in silence. Reporting takes no lock.
+      reportUnplaceable(c.route, preUnplaceable, tracker.contract.statuses.verified, remit);
+      const d = decideRelease(target.dir, pre, tracker.contract, {
+        tagPattern: repo.release.tagPattern ?? 'v*', base: repo.branch.base,
+      });
+      const unstamped = planReleasedBranches(
+        target.dir, pre, tracker.contract,
+        (t) => locateBranchForTicket(target.dir, repo, t)?.branch ?? null,
+        repo.branch.base, repo.release.tagPattern ?? 'v*',
+      ).length;
+      if (releaseIdle({
+        tickets: pre, verifiedStatus: tracker.contract.statuses.verified, force,
+        external: repo.release.mode === 'external', upToDate: d.upToDate, unseeded: d.unseeded, unstamped,
+      })) {
+        remit.emit(`${target.name}: nothing verified — not locking`, { step: 'release' });
+        return { scope, tests: 'skipped', outcome: 'skipped', detail: 'nothing verified — not locking' };
+      }
+    }
+
     if (!dryRun) {
       const holderLabel = `${cfg.ship.name}:${process.pid}`;
       const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS);
@@ -1234,7 +1244,7 @@ async function releasePhase(
     // near-miss (a branch of the same name in two repos) merge the wrong work.
     const { byRepo, unplaceable } = ticketsByRepo(c, all);
     const tickets = byRepo.get(target.name) ?? [];
-    reportUnplaceable(c, unplaceable, tracker.contract.statuses.verified, remit);
+    reportUnplaceable(c.route, unplaceable, tracker.contract.statuses.verified, remit);
 
     const outcome = await runRelease({
       cwd: target.dir, repo, contract: tracker.contract, tickets, emit: remit, scope,
