@@ -9,7 +9,7 @@ import {
   insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
-import { branchForIssue, firstReleaseTagContaining } from '../src/git.ts';
+import { branchForIssue, firstReleaseTagContaining, fetchRemote } from '../src/git.ts';
 import type { Ticket } from '../src/tracker.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
 import { existingBranchForTicket } from '../src/ticket-branch.ts';
@@ -195,6 +195,40 @@ test('the last release comes from a tag — durable and shareable, not a private
   assert.equal(d.unseeded, false);
   assert.equal(d.unreleasedCommits, 1);
   assert.equal(d.upToDate, false);
+});
+
+test("another ship's Release commit is not unreleased work (CREW-1412)", () => {
+  const { dir, g } = repo();
+  writeFileSync(join(dir, 'a.txt'), '1'); g('add', '.'); g('commit', '-qm', 'Release v1.0.0');
+  g('tag', '-a', 'v1.0.0', '-m', 'Release v1.0.0');
+  // The other ship's release: its commit reached us, its tag did not.
+  writeFileSync(join(dir, 'b.txt'), '1'); g('add', '.'); g('commit', '-qm', 'Release v1.0.1');
+
+  const d = decideRelease(dir, [], DEFAULT_CONTRACT);
+  assert.equal(d.lastTag, 'v1.0.0');
+  assert.equal(d.upToDate, true);
+
+  writeFileSync(join(dir, 'c.txt'), '1'); g('add', '.'); g('commit', '-qm', 'real work');
+  assert.equal(decideRelease(dir, [], DEFAULT_CONTRACT).upToDate, false);
+});
+
+test('fetchRemote brings in release tags another ship pushed, without pruning local-only ones (CREW-1412)', () => {
+  const { dir, g } = repo();
+  const remote = mkdtempSync(join(tmpdir(), 'crew-remote-'));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+  g('remote', 'add', 'origin', remote);
+  g('push', '-q', 'origin', 'main');
+  const other = mkdtempSync(join(tmpdir(), 'crew-other-'));
+  execFileSync('git', ['clone', '-q', remote, other]);
+  const og = (...a: string[]) => execFileSync('git', ['-c', 'user.email=o@o', '-c', 'user.name=o', ...a], { cwd: other });
+  og('tag', '-a', 'v9.9.9', '-m', 'Release v9.9.9');
+  og('push', '-q', 'origin', 'v9.9.9');
+  g('tag', 'local-only');
+
+  assert.equal(fetchRemote(dir, 'origin'), true);
+  const tags = execFileSync('git', ['tag'], { cwd: dir, encoding: 'utf8' });
+  assert.match(tags, /v9\.9\.9/);
+  assert.match(tags, /local-only/);
 });
 
 test('an unseeded repo is flagged rather than treated as all-unreleased', () => {

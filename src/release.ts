@@ -11,7 +11,7 @@
  */
 
 import {
-  branchForIssue, commitBodies, countCommits, currentBranch, findKeyInRange, findSquashByBranchTip, findSquashOfBranch, firstReleaseTagContaining, isAncestor, latestReleaseTag,
+  branchForIssue, commitBodies, countCommits, gitOk, currentBranch, findKeyInRange, findSquashByBranchTip, findSquashOfBranch, firstReleaseTagContaining, isAncestor, latestReleaseTag,
   resolve, status, tagCommit,
 } from './git.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
@@ -375,6 +375,9 @@ export interface ReleaseOptions {
   branchFor?: (t: Ticket) => string | null;
 }
 
+/** The subject `runRelease` gives its own version commit: "Release v1.2.3". */
+const RELEASE_COMMIT_SUBJECT = /^Release \S+$/;
+
 export function decideRelease(
   cwd: string, tickets: Ticket[], contract: Contract, opts: ReleaseOptions = {},
 ): ReleaseDecision {
@@ -388,9 +391,17 @@ export function decideRelease(
     ? []
     : planMerge(cwd, tickets, contract, lastReleased, opts.branchFor ?? ((t) => branchForIssue(cwd, t.issue_id)), base);
   const unreleasedCommits = lastReleased ? countCommits(cwd, `${lastReleased}..HEAD`) : 0;
+  // A "Release vX" commit is the crew's own bookkeeping, never work. When a
+  // second ship releases and this ship's last tag is older (the tag has not
+  // reached it), that commit alone would read as unreleased and trigger a
+  // zero-merge release that the other ship then answers in kind (CREW-1412).
+  const unreleasedWork = lastReleased
+    ? (gitOk(cwd, ['log', '--format=%s', `${lastReleased}..HEAD`]) ?? '')
+        .split('\n').filter((l) => l && !RELEASE_COMMIT_SUBJECT.test(l)).length
+    : 0;
   return {
     block, merges, head, lastTag, lastReleased, unreleasedCommits,
-    upToDate: lastReleased === head,
+    upToDate: lastReleased === head || (lastReleased !== null && unreleasedWork === 0),
     unseeded: lastTag === null,
   };
 }

@@ -1298,16 +1298,17 @@ async function mergeAndRelease(
   // For ci_manual/ci_auto the tag push IS the CI trigger, so it has to
   // happen AFTER the version commit but BEFORE the verify wait below starts
   // — otherwise `confirm` polls the whole timeout for a release nobody
-  // asked CI to start. local/integrate/external never reach here with a
-  // release.mode that pushes, so a repo with no remote configured (three on
-  // this ship) is never asked to push and this is never an error for them.
+  // asked CI to start. Every other mode pushes the tag too (CREW-1412), as the
+  // marker other ships read, but only when a remote is configured and a
+  // failure there is a warning. A repo with no remote is never asked to push.
   //
   // This is the first thing in the release phase that reaches the outside
   // world, so it gets the same treatment as the deploy hook: a failed push
   // is a failed release, not a warning — the version commit already landed
   // on the base branch, and something has to say the release did not
   // actually happen.
-  if (tag && (o.repo.release.mode === 'ci_manual' || o.repo.release.mode === 'ci_auto')) {
+  const tagIsCiTrigger = o.repo.release.mode === 'ci_manual' || o.repo.release.mode === 'ci_auto';
+  if (tag && (tagIsCiTrigger || remoteConfigured(o.cwd, o.repo.branch.remote))) {
     if (o.dryRun) {
       o.emit.emit(`would push tag ${tag} to ${o.repo.branch.remote}`);
     } else {
@@ -1315,8 +1316,14 @@ async function mergeAndRelease(
         pushTag(o.cwd, o.repo.branch.remote, tag);
         o.emit.emit(`pushed tag ${tag} to ${o.repo.branch.remote}`);
       } catch (e) {
-        o.emit.error(`failed to push tag ${tag} to ${o.repo.branch.remote} — ${(e as GitError).message}`);
-        return { merged, conflicts, unbuildable, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
+        const msg = `failed to push tag ${tag} to ${o.repo.branch.remote} — ${(e as GitError).message}`;
+        if (tagIsCiTrigger) {
+          o.emit.error(msg);
+          return { merged, conflicts, unbuildable, version, tag, deployed, integrated, decision, stopped: 'tag push failed' };
+        }
+        // Outside ci_* the tag is only the release marker other ships read
+        // (CREW-1412); the release itself has already landed and deployed.
+        o.emit.warn(`${msg}; other ships will not see this release marker`);
       }
     }
   }

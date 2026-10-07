@@ -310,7 +310,15 @@ export interface ClosureCheck {
 
 /** Cheap, and the only network the crew does against a git remote. */
 export function fetchRemote(cwd: string, remote = 'origin'): boolean {
-  return gitOk(cwd, ['fetch', '--prune', '--quiet', remote]) !== null;
+  if (gitOk(cwd, ['fetch', '--prune', '--quiet', remote]) === null) return false;
+  // Release tags are the marker for "what has shipped", so every ship has to
+  // see the ones another ship pushed (CREW-1412). A plain fetch only follows
+  // tags that point into newly downloaded objects, and `--prune --tags` would
+  // delete local-only tags, so ask for them explicitly. The refspec is not
+  // forced: a local tag that differs from the remote's is left alone, and a
+  // refusal here is not a fetch failure.
+  gitOk(cwd, ['fetch', '--quiet', remote, 'refs/tags/*:refs/tags/*']);
+  return true;
 }
 
 /**

@@ -1000,7 +1000,7 @@ test('re-confirm does not poll when no verified ticket was in the last release',
   })();
 });
 
-test('local and integrate modes never push a tag, even with a remote configured', () => {
+test('local mode pushes its release tag when a remote is configured, so other ships see the marker (CREW-1412)', () => {
   return (async () => {
     const bare = bareRemote();
     const { dir, repo } = projectWithRemote(LOCAL, bare);
@@ -1008,8 +1008,8 @@ test('local and integrate modes never push a tag, even with a remote configured'
       cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
     });
     assert.equal(out.tag, 'v1.3.0');
-    assert.equal(execFileSync('git', ['--git-dir', bare, 'tag', '--list'], { encoding: 'utf8' }).trim(), '');
-    assert.ok(!lines.some((l) => /pushed tag/.test(l)));
+    assert.equal(execFileSync('git', ['--git-dir', bare, 'tag', '--list'], { encoding: 'utf8' }).trim(), 'v1.3.0');
+    assert.ok(lines.some((l) => /pushed tag v1\.3\.0/.test(l)));
   })();
 });
 
