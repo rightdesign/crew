@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.19.4] — 2026-10-07
+
+- Two ships serving one repo no longer cut endless zero-merge releases off each other's release commits; release tags are pushed in every mode and fetched by every ship (CREW-1412)
+
 ## [0.19.3] — 2026-10-07
 
 - Daemon passes now persist the per-route attention set, so "needs a person" is announced once per transition instead of every cycle (CREW-1413).
