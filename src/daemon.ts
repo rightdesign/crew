@@ -420,6 +420,13 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
 
   const decision = await decide(ctx);
 
+  // CREW-1413: persist this pass's attention set so the next pass diffs
+  // against it. `decideCycle` only emits transitions relative to
+  // `state.attention(route).previous()`; the one-shot `run` and fleet paths
+  // persist, and without it here every pass saw `{}` and re-announced
+  // "needs a person" for every ticket on every cycle.
+  o.state.attention(o.route.route).persist(decision.attention);
+
   if (decision.sweep.length) {
     const tracker = new Tracker(o.route, o.ship);
     const seat = o.route.resolved?.seats.qa ?? o.route.resolved?.seats.dev ?? '';

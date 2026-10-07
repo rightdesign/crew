@@ -638,3 +638,12 @@ test('runOnePass: a park raises role_parked once with one sweep event; a later s
   assert.deepEqual(state.shipAttention().previous(), []);
   assert.equal(sweepEvents().length, 1, 'clearing announces nothing');
 });
+
+test('runOnePass persists the attention set so the next pass can diff against it (CREW-1413)', async () => {
+  const { state, opts } = rig();
+  const decision = fakeDecision([]);
+  decision.attention = { 't1': [{ kind: 'needs_info' }] } as unknown as CycleDecision['attention'];
+  assert.deepEqual(state.attention(opts.route.route).previous(), {});
+  await runOnePass({ ...opts, decide: async () => decision, spawnRoleAgent: async () => {} });
+  assert.deepEqual(state.attention(opts.route.route).previous(), decision.attention);
+});
