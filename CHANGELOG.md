@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.19.3] — 2026-10-07
+
+- Daemon passes now persist the per-route attention set, so "needs a person" is announced once per transition instead of every cycle (CREW-1413).
+
 ## [0.19.2] — 2026-10-06
 
 - Getting started no longer says connecting requires workspace admin (CREW-1410)
