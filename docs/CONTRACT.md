@@ -26,6 +26,7 @@ to mean exactly this, and needs no configuration at all.
 | priority | `priority` | |
 | severity | `severity` | |
 | slice (the area) | `project_id` | |
+| work mode | `work_mode` | Projects (the area row). `manual` (`manualWorkMode`) means the dev and design lanes consider only that project's tickets assigned to their own seat and never self-assign; QA still flows automatically. Missing column or null reads as automatic. |
 | repo | `repo_id` | |
 | parent | `parent_id` | |
 | blocked by | `blocked_by` | |

@@ -91,6 +91,12 @@ export interface DigestInput {
    * named under "Held repos" with the reason, rather than disappearing.
    */
   repoStop?: (t: DigestTicket) => string | null;
+  /**
+   * Projects in manual work mode (CREW-1445). The caller has already dropped
+   * their unassigned tickets from `tickets`; this only drives the note that
+   * tells the lane why a project's accepted tickets are absent.
+   */
+  manualProjects?: Set<string>;
   tickets: DigestTicket[];
   comments: DigestComment[];
   /** The running seat's Crew row id — what "you" means in every column. */
@@ -291,6 +297,9 @@ export function buildingDigest(i: DigestInput): string {
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
     '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` and `worktree` columns verbatim.** They are that\nrepository\'s own naming convention, rendered for THIS ticket — cut the\nworktree at `<repo>/../<worktree>`, on branch `<branch>`. Do not derive\neither yourself, and prefer these over the Environment section\'s own worked\nexample if the two ever disagree — that example is illustrative only,\nrendered before any ticket is picked.\n',
+    ...(i.manualProjects && i.manualProjects.size > 0
+      ? ['\n**Manual projects.** Some projects on this board are in manual work mode: their tickets appear below only when a person has assigned them to YOU. An unassigned `accepted` ticket in such a project is not yours to claim and is deliberately absent — do not go looking for it.\n']
+      : []),
     '\n### Step 1 — open tickets that may be yours to act on\n',
     '\n`fixed` tickets are deliberately absent: they belong to the QA lane.\n',
     table(step1, i, header, row),

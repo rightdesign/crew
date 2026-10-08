@@ -41,6 +41,12 @@ export interface ContractColumns {
   blockedBy: string;
   updatedAt: string;
   needsDesign: string;
+  /**
+   * On the Projects (area) row: whether the crew consumes that project's
+   * work automatically or only what a human hands a lane (CREW-1445). A
+   * missing column or a null value reads as automatic.
+   */
+  workMode: string;
   /** Carries the ISSUE-354 coordinating marker — a ticket's report/issue type. */
   reportType: string;
   /**
@@ -205,6 +211,8 @@ export interface Contract {
    * `rollUpParents` keys off instead of an absent `columns.repo`.
    */
   coordinatingValue: string;
+  /** The `columns.workMode` value meaning "only tickets assigned to a lane" (CREW-1445). */
+  manualWorkMode: string;
   /**
    * Every `columns.reportType` value that legitimately needs no Repo
    * (ISSUE-387) — what `filingErrors` treats as exempt, kept separate from
@@ -237,6 +245,7 @@ export const DEFAULT_CONTRACT: Contract = {
     blockedBy: 'blocked_by',
     updatedAt: 'updated_at',
     needsDesign: 'needs_design',
+    workMode: 'work_mode',
     reportType: 'report_type',
     epic: 'epic_id',
     author: 'filed_by_id',
@@ -285,6 +294,7 @@ export const DEFAULT_CONTRACT: Contract = {
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
   coordinatingValue: 'coordinating',
+  manualWorkMode: 'manual',
   repoExemptReportTypes: ['coordinating', 'question', 'investigation'],
 };
 
@@ -316,6 +326,7 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
     coordinatingValue: override.coordinatingValue ?? DEFAULT_CONTRACT.coordinatingValue,
+    manualWorkMode: override.manualWorkMode ?? DEFAULT_CONTRACT.manualWorkMode,
     // A workspace overriding `coordinatingValue` alone (renaming the rollup
     // marker) still gets that renamed value exempted here by default,
     // without also having to repeat it — only an explicit

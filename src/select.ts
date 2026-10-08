@@ -16,6 +16,7 @@ import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
 import type { Ticket, Comment } from './tracker.ts';
 import type { RoleName } from './config.ts';
 import type { ShipRow } from './tracker.ts';
+import { withinWorkMode } from './work-mode.ts';
 import { heldByLiveOtherShip, heldByOtherShip } from './ship-affinity.ts';
 
 export interface SelectionInput {
@@ -46,6 +47,12 @@ export interface SelectionInput {
    * no worktree from the primary checkout's base).
    */
   repoStop?: (t: Ticket) => string | null;
+  /**
+   * Projects in `manual` work mode (CREW-1445): the building roles see only
+   * those projects' tickets assigned to their own seat. QA is unaffected.
+   * Absent or empty means every project is automatic.
+   */
+  manualProjects?: Set<string>;
 }
 
 /** QA owns every ticket at `fixed` or `qa`, whichever role built it. */
@@ -144,7 +151,7 @@ export function buildingRoleHasWork(
 ): { hasWork: boolean; reason: string } {
   const me = i.seats[role];
   if (!me) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const mine = notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i);
+  const mine = withinWorkMode(notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i), me, i.manualProjects);
 
   const startable = mine.filter(
     (t) =>
@@ -269,7 +276,7 @@ export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
   if (role === 'pair') return [];
   const me = i.seats[role];
   if (!me) return [];
-  return notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i).filter(
+  return withinWorkMode(notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i), me, i.manualProjects).filter(
     (t) =>
       (((t.status === 'accepted' || t.status === 'blocked') && !i.blocked.has(t.id)) ||
         (t.status === 'in_progress' && (t.assignee_id === me || !t.assignee_id))) &&

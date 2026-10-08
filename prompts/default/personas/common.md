@@ -305,6 +305,11 @@ Never start work on a ticket without first setting `assignee_id` to your
 own id (Step 3.3 already does this) — that claim is itself part of what
 keeps a concurrent interactive session from re-entering the same ticket.
 
+A project in **manual work mode** (its Projects row says so) is never consumed
+automatically: the digest lists its tickets only when a person has assigned them to
+your seat, and status alone never makes one yours. The digest says so when it
+applies; do not go looking for the missing tickets. QA is unaffected.
+
 Never touch a ticket still at `new` — only `accepted` tickets are yours to
 pick up; triage (a separate process) is what promotes `new` → `accepted`/
 `needs_info`.

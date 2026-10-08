@@ -301,3 +301,37 @@ test('a ticket in a stopped repo is invisible to the building roles but not to Q
   assert.deepEqual(rankedCandidates('dev', input({ tickets: ts, repoStop })), []);
   assert.equal(roleHasWork('qa', input({ tickets: ts, repoStop })).hasWork, true);
 });
+
+// CREW-1445: manual work mode
+test('a manual project yields a building lane only tickets assigned to that lane', () => {
+  const manual = new Set(['pm']);
+  const ts = [
+    T({ id: 'u', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'pm' }),
+    T({ id: 'o', issue_id: 'ISSUE-2', status: 'accepted', project_id: 'pm', assignee_id: 'someone-else' }),
+  ];
+  const none = input({ tickets: ts, manualProjects: manual });
+  assert.equal(roleHasWork('dev', none).hasWork, false);
+  assert.deepEqual(rankedCandidates('dev', none), []);
+  assert.equal(selectRole(none).selected, null);
+
+  const assigned = input({
+    tickets: [...ts, T({ id: 'm', issue_id: 'ISSUE-3', status: 'accepted', project_id: 'pm', assignee_id: 'dev-1' })],
+    manualProjects: manual,
+  });
+  assert.equal(selectRole(assigned).selected, 'dev');
+  assert.deepEqual(rankedCandidates('dev', assigned).map((t) => t.id), ['m']);
+});
+
+test('an automatic project, and a manual set that is empty, behave as before', () => {
+  const ts = [T({ id: 'u', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'pa' })];
+  assert.equal(selectRole(input({ tickets: ts, manualProjects: new Set(['pm']) })).selected, 'dev');
+  assert.equal(selectRole(input({ tickets: ts, manualProjects: new Set() })).selected, 'dev');
+});
+
+test('QA still sees a fixed ticket in a manual project', () => {
+  const sel = selectRole(input({
+    tickets: [T({ id: 'f', issue_id: 'ISSUE-1', status: 'fixed', project_id: 'pm' })],
+    manualProjects: new Set(['pm']),
+  }));
+  assert.equal(sel.selected, 'qa');
+});

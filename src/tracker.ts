@@ -17,6 +17,7 @@ import type { EpicRow } from './epics.ts';
 import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
+import { manualProjectIds } from './work-mode.ts';
 import { acquireBoardLock as claimBoardLock, lockRowState, type BoardLockResult, type LockRowState } from './board-lock.ts';
 
 export interface Ticket {
@@ -358,6 +359,23 @@ export class Tracker {
       return await this.client.records.get<{ id: string; issue_prefix?: string | null }>(model, id);
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * Ids of the Projects (area) rows in `manual` work mode (CREW-1445). One
+   * extra read per cycle. A workspace with no Projects table, no `work_mode`
+   * column, a null value or an unreadable table yields the empty set: every
+   * project stays automatic, exactly as before the column existed.
+   */
+  async manualProjectIds(): Promise<Set<string>> {
+    const model = this.route.resolved?.areaModelId;
+    if (!model) return new Set();
+    try {
+      const rows = await this.client.records.list<Record<string, unknown> & { id: string }>(model, { limit: 200 });
+      return manualProjectIds(rows, this.contract);
+    } catch {
+      return new Set();
     }
   }
 
