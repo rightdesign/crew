@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.20.0] — 2026-10-08
+
+- Crew lanes honor Projects.work_mode — manual projects yield only tickets explicitly assigned to the lane (CREW-1445)
+
 ## [0.19.5] — 2026-10-07
 
 - CREW-1415 Release phase no longer takes the board lock for repos with nothing verified, and still warns about verified tickets with no repository.
