@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.20.2] — 2026-10-09
+
+- Host Passengers image workflow logs in to Docker Hub before qemu/buildx setup so release pulls are not rate-limited (CREW-1492)
+
 ## [0.20.0] — 2026-10-08
 
 - Crew lanes honor Projects.work_mode — manual projects yield only tickets explicitly assigned to the lane (CREW-1445)
