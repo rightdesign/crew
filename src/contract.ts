@@ -211,8 +211,10 @@ export interface Contract {
    * `rollUpParents` keys off instead of an absent `columns.repo`.
    */
   coordinatingValue: string;
-  /** The `columns.workMode` value meaning "only tickets assigned to a lane" (CREW-1445). */
+  /** The `columns.workMode` value meaning "no automation at all" (CREW-1445, CREW-1493). */
   manualWorkMode: string;
+  /** The `columns.workMode` value meaning "automation only for tickets assigned to an agent" (CREW-1493). */
+  hybridWorkMode: string;
   /**
    * Every `columns.reportType` value that legitimately needs no Repo
    * (ISSUE-387) — what `filingErrors` treats as exempt, kept separate from
@@ -295,6 +297,7 @@ export const DEFAULT_CONTRACT: Contract = {
   unknownPriorityRank: 2,
   coordinatingValue: 'coordinating',
   manualWorkMode: 'manual',
+  hybridWorkMode: 'hybrid',
   repoExemptReportTypes: ['coordinating', 'question', 'investigation'],
 };
 
@@ -327,6 +330,7 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
     coordinatingValue: override.coordinatingValue ?? DEFAULT_CONTRACT.coordinatingValue,
     manualWorkMode: override.manualWorkMode ?? DEFAULT_CONTRACT.manualWorkMode,
+    hybridWorkMode: override.hybridWorkMode ?? DEFAULT_CONTRACT.hybridWorkMode,
     // A workspace overriding `coordinatingValue` alone (renaming the rollup
     // marker) still gets that renamed value exempted here by default,
     // without also having to repeat it — only an explicit

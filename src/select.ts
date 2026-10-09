@@ -16,7 +16,7 @@ import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
 import type { Ticket, Comment } from './tracker.ts';
 import type { RoleName } from './config.ts';
 import type { ShipRow } from './tracker.ts';
-import { withinWorkMode } from './work-mode.ts';
+import { isAutomatic, withinWorkMode, type WorkModes } from './work-mode.ts';
 import { heldByLiveOtherShip, heldByOtherShip } from './ship-affinity.ts';
 
 export interface SelectionInput {
@@ -48,11 +48,13 @@ export interface SelectionInput {
    */
   repoStop?: (t: Ticket) => string | null;
   /**
-   * Projects in `manual` work mode (CREW-1445): the building roles see only
-   * those projects' tickets assigned to their own seat. QA is unaffected.
-   * Absent or empty means every project is automatic.
+   * Each project's work mode plus the set of agent-assigned Crew rows
+   * (CREW-1445, CREW-1493). Applied to EVERY polled role: manual and
+   * project-less tickets are invisible to all of them, hybrid tickets only
+   * when assigned to an agent, and triage works automatic projects alone.
+   * Absent means every project is automatic.
    */
-  manualProjects?: Set<string>;
+  workModes?: WorkModes;
 }
 
 /** QA owns every ticket at `fixed` or `qa`, whichever role built it. */
@@ -73,9 +75,10 @@ export const buildingSlice = (tickets: Ticket[], role: 'dev' | 'design'): Ticket
 /**
  * Triage owns whatever is ASSIGNED to it.
  *
- * Assignment is the queue, not a side effect: a record-create automation
- * assigns every new report to the triage seat, and triage clears the
- * assignee when it is done. That reuses the hand-off protocol the rest of
+ * Assignment is the queue, not a side effect: a report is assigned to the
+ * triage seat (by a person or by whoever files it; no record-create
+ * automation on the workspace does it), and triage clears the assignee when
+ * it is done. Only tickets in an automatic project qualify (CREW-1493). That reuses the hand-off protocol the rest of
  * the crew already runs on — clearing `assignee_id` means "no longer mine" —
  * and it answers "have I processed this?" without a second marker.
  *
@@ -87,8 +90,8 @@ export const buildingSlice = (tickets: Ticket[], role: 'dev' | 'design'): Ticket
  * Triage never writes `reporter_name` — that belongs to the intake form —
  * and never assigns itself.
  */
-export const triageSlice = (tickets: Ticket[], triageSeat?: string): Ticket[] =>
-  triageSeat ? tickets.filter((t) => t.assignee_id === triageSeat) : [];
+export const triageSlice = (tickets: Ticket[], triageSeat?: string, wm?: WorkModes): Ticket[] =>
+  triageSeat ? tickets.filter((t) => t.assignee_id === triageSeat && isAutomatic(t, wm)) : [];
 
 export function sliceFor(tickets: Ticket[], role: RoleName): Ticket[] {
   if (role === 'qa') return qaSlice(tickets);
@@ -151,7 +154,7 @@ export function buildingRoleHasWork(
 ): { hasWork: boolean; reason: string } {
   const me = i.seats[role];
   if (!me) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const mine = withinWorkMode(notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i), me, i.manualProjects);
+  const mine = withinWorkMode(notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i), i.workModes);
 
   const startable = mine.filter(
     (t) =>
@@ -226,7 +229,7 @@ export function buildingRoleHasWork(
  */
 export function qaRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: string } {
   if (!i.seats.qa) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const n = notHeldByOtherShip(qaSlice(i.tickets), i).filter((t) => !isHeld(t, i.holds)).length;
+  const n = withinWorkMode(notHeldByOtherShip(qaSlice(i.tickets), i), i.workModes).filter((t) => !isHeld(t, i.holds)).length;
   return n > 0
     ? { hasWork: true, reason: `${n} ticket(s) awaiting or in verification` }
     : { hasWork: false, reason: 'nothing awaiting verification' };
@@ -241,7 +244,7 @@ export function qaRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: st
  */
 export function triageRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: string } {
   if (!i.seats.triage) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const n = triageSlice(i.tickets, i.seats.triage).length;
+  const n = triageSlice(i.tickets, i.seats.triage, i.workModes).length;
   return n > 0
     ? { hasWork: true, reason: `${n} report(s) assigned to triage` }
     : { hasWork: false, reason: 'nothing assigned to triage' };
@@ -271,12 +274,12 @@ export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boole
  */
 /** Every ticket `role` could actually start or resume right now. */
 export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
-  if (role === 'qa') return notHeldByOtherShip(qaSlice(i.tickets), i).filter((t) => !isHeld(t, i.holds));
-  if (role === 'triage') return triageSlice(i.tickets, i.seats.triage).filter((t) => !isHeld(t, i.holds));
+  if (role === 'qa') return withinWorkMode(notHeldByOtherShip(qaSlice(i.tickets), i), i.workModes).filter((t) => !isHeld(t, i.holds));
+  if (role === 'triage') return triageSlice(i.tickets, i.seats.triage, i.workModes).filter((t) => !isHeld(t, i.holds));
   if (role === 'pair') return [];
   const me = i.seats[role];
   if (!me) return [];
-  return withinWorkMode(notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i), me, i.manualProjects).filter(
+  return withinWorkMode(notInStoppedRepo(notHeldByOtherShip(sliceFor(i.tickets, role), i), i), i.workModes).filter(
     (t) =>
       (((t.status === 'accepted' || t.status === 'blocked') && !i.blocked.has(t.id)) ||
         (t.status === 'in_progress' && (t.assignee_id === me || !t.assignee_id))) &&

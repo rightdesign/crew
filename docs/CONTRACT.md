@@ -26,7 +26,7 @@ to mean exactly this, and needs no configuration at all.
 | priority | `priority` | |
 | severity | `severity` | |
 | slice (the area) | `project_id` | |
-| work mode | `work_mode` | Projects (the area row). `manual` (`manualWorkMode`) means the dev and design lanes consider only that project's tickets assigned to their own seat and never self-assign; QA still flows automatically. Missing column or null reads as automatic. |
+| work mode | `work_mode` | Projects (the area row). `automatic` (default; missing column or null): every lane works by status. `manual` (`manualWorkMode`): no lane — dev, design, QA or triage — selects or claims the project's tickets. `hybrid` (`hybridWorkMode`): a lane considers a ticket only when its assignee is a Crew row linked to an Agent and not a hold of this ship; dev/design/QA only, triage works automatic projects alone. A ticket with no project is treated as manual. |
 | repo | `repo_id` | |
 | parent | `parent_id` | |
 | blocked by | `blocked_by` | |

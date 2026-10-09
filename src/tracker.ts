@@ -17,7 +17,7 @@ import type { EpicRow } from './epics.ts';
 import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
-import { manualProjectIds } from './work-mode.ts';
+import { projectWorkModes, type WorkMode } from './work-mode.ts';
 import { acquireBoardLock as claimBoardLock, lockRowState, type BoardLockResult, type LockRowState } from './board-lock.ts';
 
 export interface Ticket {
@@ -363,19 +363,19 @@ export class Tracker {
   }
 
   /**
-   * Ids of the Projects (area) rows in `manual` work mode (CREW-1445). One
-   * extra read per cycle. A workspace with no Projects table, no `work_mode`
-   * column, a null value or an unreadable table yields the empty set: every
-   * project stays automatic, exactly as before the column existed.
+   * Every Projects (area) row's work mode (CREW-1445, CREW-1493). One extra
+   * read per cycle. A workspace with no Projects table, no `work_mode` column
+   * or an unreadable table yields the empty map, which the selection reads as
+   * "no filtering"; a null value is `automatic`.
    */
-  async manualProjectIds(): Promise<Set<string>> {
+  async projectWorkModes(): Promise<Map<string, WorkMode>> {
     const model = this.route.resolved?.areaModelId;
-    if (!model) return new Set();
+    if (!model) return new Map();
     try {
       const rows = await this.client.records.list<Record<string, unknown> & { id: string }>(model, { limit: 200 });
-      return manualProjectIds(rows, this.contract);
+      return projectWorkModes(rows, this.contract);
     } catch {
-      return new Set();
+      return new Map();
     }
   }
 

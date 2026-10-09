@@ -15,9 +15,9 @@ import {
   sweepDiagnostics, strandedNeedsInfo, rollUpParents, filingErrors,
   type BlockerInfo, type SweepStep,
 } from './blocked.ts';
-import { withinWorkMode } from './work-mode.ts';
+import { agentAssigneeIds, withinWorkMode, type WorkModes } from './work-mode.ts';
 import {
-  selectRole, sliceFor, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
+  selectRole, sliceFor, triageSlice, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
 } from './select.ts';
 import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } from './epics.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
@@ -94,13 +94,13 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const tracker = new Tracker(route, ship);
   emit.enter('poll');
 
-  const [tickets, comments, crewRows, epicRows, ships, manualProjects] = await Promise.all([
+  const [tickets, comments, crewRows, epicRows, ships, projectModes] = await Promise.all([
     tracker.openTickets(),
     tracker.comments(200),
     tracker.crewRows(),
     tracker.epicRows(),
     tracker.shipRows(),
-    tracker.manualProjectIds(),
+    tracker.projectWorkModes(),
   ]);
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
@@ -144,6 +144,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   emit.enter('sweep');
   const roster = buildRoster(configuredMembers(route), crewRows);
   const holds = new Set(holdIds(roster));
+  const workModes: WorkModes = { modes: projectModes, agentAssignees: agentAssigneeIds(crewRows, (id) => holds.has(id)) };
   const diag = sweepDiagnostics(tickets, info);
   for (const d of diag.dangling) emit.warn(`dangling blocked_by reference, ignored: ${d}`);
   if (diag.selfBlocked.length) {
@@ -241,7 +242,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   await checkRepoDisks({ state, emit, route, ship });
   const selectionInput = {
     repoStop: repoStopFor(openShipAttention(state), route),
-    manualProjects,
+    workModes,
     tickets, comments, watermark, blocked,
     holds,
     seats: route.resolved!.seats,
@@ -365,11 +366,9 @@ export function writeDigest(
         return existingBranchForTicket(dir, repoFor(dir), t, role);
       },
       tickets: role === 'triage'
-        ? d.tickets.filter((t) => t.assignee_id === o.route.resolved?.seats.triage)
-        : role === 'dev' || role === 'design'
-          ? withinWorkMode(sliceFor(d.tickets, role), me, d.selectionInput.manualProjects)
-          : sliceFor(d.tickets, role),
-      manualProjects: d.selectionInput.manualProjects,
+        ? triageSlice(d.tickets, o.route.resolved?.seats.triage, d.selectionInput.workModes)
+        : withinWorkMode(sliceFor(d.tickets, role), d.selectionInput.workModes),
+      workModes: d.selectionInput.workModes,
       comments: d.comments,
       me,
       roster: d.roster,

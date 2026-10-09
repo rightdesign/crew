@@ -302,36 +302,57 @@ test('a ticket in a stopped repo is invisible to the building roles but not to Q
   assert.equal(roleHasWork('qa', input({ tickets: ts, repoStop })).hasWork, true);
 });
 
-// CREW-1445: manual work mode
-test('a manual project yields a building lane only tickets assigned to that lane', () => {
-  const manual = new Set(['pm']);
+// CREW-1493: work modes (manual / hybrid / automatic) across every role
+const WM = (agents: string[] = ['dev-1', 'dev-2', 'qa-1', 'qa-2', 'design-1']) => ({
+  modes: new Map([['pa', 'automatic'], ['pm', 'manual'], ['ph', 'hybrid']] as const),
+  agentAssignees: new Set(agents),
+});
+const mode = (tickets: Ticket[], role: 'dev' | 'qa' | 'triage' | 'design', agents?: string[]) =>
+  input({ tickets, workModes: WM(agents), seats: { dev: 'dev-1', design: 'design-1', qa: 'qa-1', triage: 'triage-1' } });
+
+test('a manual project is invisible to dev, design, QA and triage, whoever it is assigned to', () => {
   const ts = [
-    T({ id: 'u', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'pm' }),
-    T({ id: 'o', issue_id: 'ISSUE-2', status: 'accepted', project_id: 'pm', assignee_id: 'someone-else' }),
+    T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'pm', assignee_id: 'dev-1' }),
+    T({ id: 'f', issue_id: 'ISSUE-2', status: 'fixed', project_id: 'pm', assignee_id: 'qa-1' }),
+    T({ id: 'n', issue_id: 'ISSUE-3', status: 'new', project_id: 'pm', assignee_id: 'triage-1' }),
   ];
-  const none = input({ tickets: ts, manualProjects: manual });
-  assert.equal(roleHasWork('dev', none).hasWork, false);
-  assert.deepEqual(rankedCandidates('dev', none), []);
-  assert.equal(selectRole(none).selected, null);
-
-  const assigned = input({
-    tickets: [...ts, T({ id: 'm', issue_id: 'ISSUE-3', status: 'accepted', project_id: 'pm', assignee_id: 'dev-1' })],
-    manualProjects: manual,
-  });
-  assert.equal(selectRole(assigned).selected, 'dev');
-  assert.deepEqual(rankedCandidates('dev', assigned).map((t) => t.id), ['m']);
+  for (const role of ['dev', 'qa', 'triage'] as const) {
+    assert.equal(roleHasWork(role, mode(ts, role)).hasWork, false, role);
+  }
+  assert.equal(selectRole(mode(ts, 'dev')).selected, null);
 });
 
-test('an automatic project, and a manual set that is empty, behave as before', () => {
+test('a project-less ticket is never selected', () => {
+  const ts = [T({ id: 'u', issue_id: 'ISSUE-1', status: 'accepted' }), T({ id: 'f', issue_id: 'ISSUE-2', status: 'fixed' })];
+  assert.equal(selectRole(mode(ts, 'dev')).selected, null);
+});
+
+test('hybrid: an unassigned accepted ticket is never selected; assigned to any ship\'s agent row it is', () => {
+  const un = T({ id: 'u', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'ph' });
+  assert.equal(selectRole(mode([un], 'dev')).selected, null);
+  const other = T({ ...un, id: 'o', assignee_id: 'dev-2' });
+  assert.equal(selectRole(mode([other], 'dev')).selected, 'dev');
+});
+
+test('hybrid: a person or hold assignee does not qualify', () => {
+  const t = T({ id: 'h', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'ph', assignee_id: 'hold-1' });
+  assert.equal(selectRole(mode([t], 'dev')).selected, null);
+});
+
+test('hybrid: a fixed ticket reaches QA only when assigned to a QA agent row', () => {
+  const f = T({ id: 'f', issue_id: 'ISSUE-1', status: 'fixed', project_id: 'ph' });
+  assert.equal(selectRole(mode([f], 'qa')).selected, null);
+  assert.equal(selectRole(mode([T({ ...f, assignee_id: 'qa-2' })], 'qa')).selected, 'qa');
+});
+
+test('triage works only automatic-project tickets', () => {
+  const mk = (project_id: string) => T({ id: project_id, issue_id: 'ISSUE-1', status: 'new', project_id, assignee_id: 'triage-1' });
+  assert.equal(roleHasWork('triage', mode([mk('pa')], 'triage')).hasWork, true);
+  assert.equal(roleHasWork('triage', mode([mk('ph')], 'triage')).hasWork, false);
+});
+
+test('automatic projects, and no mode map at all, behave as before', () => {
   const ts = [T({ id: 'u', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'pa' })];
-  assert.equal(selectRole(input({ tickets: ts, manualProjects: new Set(['pm']) })).selected, 'dev');
-  assert.equal(selectRole(input({ tickets: ts, manualProjects: new Set() })).selected, 'dev');
-});
-
-test('QA still sees a fixed ticket in a manual project', () => {
-  const sel = selectRole(input({
-    tickets: [T({ id: 'f', issue_id: 'ISSUE-1', status: 'fixed', project_id: 'pm' })],
-    manualProjects: new Set(['pm']),
-  }));
-  assert.equal(sel.selected, 'qa');
+  assert.equal(selectRole(mode(ts, 'dev')).selected, 'dev');
+  assert.equal(selectRole(input({ tickets: [T({ id: 'x', issue_id: 'ISSUE-2', status: 'accepted' })] })).selected, 'dev');
 });
