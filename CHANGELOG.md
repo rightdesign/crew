@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.22.0] — 2026-10-09
+
+- Hybrid-project hand-offs assign the next lane's seat instead of clearing the assignee, and the digest and prompts carry each ticket's project work mode (CREW-1495)
+- Work mode gains `hybrid` and `manual` now means no automation for any lane; hybrid projects are worked only for agent-assigned tickets (CREW-1493)
+
 ## [0.21.0] — 2026-10-09
 
 - Work mode gains `hybrid` and `manual` now means no automation for any lane; hybrid projects are worked only for agent-assigned tickets (CREW-1493)
