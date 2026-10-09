@@ -15,7 +15,7 @@ import {
   sweepDiagnostics, strandedNeedsInfo, rollUpParents, filingErrors,
   type BlockerInfo, type SweepStep,
 } from './blocked.ts';
-import { agentAssigneeIds, withinWorkMode, type WorkModes } from './work-mode.ts';
+import { agentAssigneeIds, skippedByMode, withinWorkMode, type WorkModes } from './work-mode.ts';
 import {
   selectRole, sliceFor, triageSlice, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
 } from './select.ts';
@@ -150,9 +150,15 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   if (diag.selfBlocked.length) {
     emit.warn(`ticket(s) blocking themselves, parked permanently: ${diag.selfBlocked.join(', ')}`);
   }
-  const sweep = planSweep(tickets, info, blocked);
+  const sweep = planSweep(tickets, info, blocked, workModes);
   const holdReleases = planHoldReleases(tickets, tracker.contract);
-  const stalled = planStalled(tickets, comments, ships, tracker.contract, holds);
+  const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes);
+  const skipped = skippedByMode(tickets, workModes);
+  if (skipped.manual || skipped.hybrid) {
+    emit.emit(`sweeps skipped ${skipped.manual} manual/project-less and ${skipped.hybrid} unassigned hybrid ticket(s)`, {
+      data: { sweepSkipped: skipped },
+    });
+  }
 
   // What a watcher can't otherwise see without `crew status`: the queue
   // behind the winning role. Emitted every cycle, empty or not, since each

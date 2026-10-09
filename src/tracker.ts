@@ -386,6 +386,13 @@ export class Tracker {
     return this.client.records.list<{ id: string; name?: string }>(model, { limit: 200 });
   }
 
+  /** Every Projects row with its raw `work_mode`, for `crew status`. */
+  async projectRowsWithModes(): Promise<Array<{ id: string; name?: string; mode: WorkMode }>> {
+    const rows = await this.projectRows();
+    const modes = await this.projectWorkModes();
+    return rows.map((r) => ({ ...r, mode: modes.get(r.id) ?? 'automatic' }));
+  }
+
   /** Create a `Repos` row. Throws when the workspace has no Repos table. */
   async createRepoRow(fields: Record<string, unknown>): Promise<{ id: string }> {
     const model = this.route.resolved?.reposModelId;

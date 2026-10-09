@@ -35,6 +35,7 @@ import { raiseShipAttention, clearShipAttention, type ShipAttentionItem } from '
 import type { Emitter } from './events.ts';
 import type { Route, Ship } from './config.ts';
 import type { State } from './state.ts';
+import { withinWorkMode, type WorkModes } from './work-mode.ts';
 
 /** Cycles of silence before an unengaged ticket counts as stalled. */
 export const STALLED_AFTER_CYCLES = 30;
@@ -75,6 +76,7 @@ export function planStalled(
   contract: Contract,
   holds: Set<string> = new Set(),
   now: number = Date.now(),
+  wm?: WorkModes,
 ): Stalled[] {
   const watched = new Set([contract.statuses.building, contract.statuses.handoff, contract.statuses.verifying]);
   const byTicket = new Map<string, Comment[]>();
@@ -84,7 +86,7 @@ export function planStalled(
     else byTicket.set(c.ticket_id, [c]);
   }
   const out: Stalled[] = [];
-  for (const t of tickets) {
+  for (const t of withinWorkMode(tickets, wm)) {
     if (!watched.has(t.status)) continue;
     if (t.assignee_id && holds.has(t.assignee_id)) continue;
     const mine = byTicket.get(t.id) ?? [];

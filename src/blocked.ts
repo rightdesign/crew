@@ -28,6 +28,7 @@
 import { StaleWriteError } from '@tablation/client';
 import type { Ticket } from './tracker.ts';
 import { RESOLVED_STATUSES } from './tracker.ts';
+import { withinWorkMode, type WorkModes } from './work-mode.ts';
 
 /** {ticketId: {issue_id, issue_tag, status}} — closed blockers included. */
 export type BlockerInfo = Record<string, { issue_id?: string; issue_tag?: string | null; status?: string }>;
@@ -110,10 +111,14 @@ const describeBlockers = (t: Ticket, info: BlockerInfo): string =>
  * alone, including `in_progress` (someone is working it) and `new` (never
  * approved, so parking it would buy nothing and break the sub-state
  * invariant — it waits at `new` for triage).
+ *
+ * Work mode (CREW-1496): manual and project-less tickets are never parked or
+ * restored — those status writes flow back to Jira on a synced project — and
+ * hybrid ones only when assigned to an agent. Absent `wm` filters nothing.
  */
-export function planSweep(tickets: Ticket[], info: BlockerInfo, blocked: Set<string>): SweepStep[] {
+export function planSweep(tickets: Ticket[], info: BlockerInfo, blocked: Set<string>, wm?: WorkModes): SweepStep[] {
   const steps: SweepStep[] = [];
-  for (const t of tickets) {
+  for (const t of withinWorkMode(tickets, wm)) {
     if (t.status === 'accepted' && blocked.has(t.id)) {
       steps.push({ action: 'park', ticket: t, blockers: describeBlockers(t, info), to: 'blocked' });
     } else if (t.status === 'blocked' && !blocked.has(t.id)) {

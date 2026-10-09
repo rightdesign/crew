@@ -82,3 +82,47 @@ export function isAutomatic(t: { project_id?: string | null }, wm: WorkModes | u
   if (!wm || wm.modes.size === 0) return true;
   return modeOf(t, wm) === 'automatic';
 }
+
+/**
+ * Tickets the sweeps (blocked, stalled) must leave alone, counted by why
+ * (CREW-1496): `manual` includes project-less tickets, `hybrid` is those not
+ * assigned to an agent. Feeds the sweep's run summary so the omission is visible.
+ */
+export function skippedByMode(
+  tickets: Array<{ project_id?: string | null; assignee_id?: string | null }>,
+  wm: WorkModes | undefined,
+): { manual: number; hybrid: number } {
+  const out = { manual: 0, hybrid: 0 };
+  if (!wm || wm.modes.size === 0) return out;
+  const kept = new Set(withinWorkMode(tickets, wm));
+  for (const t of tickets) {
+    if (kept.has(t)) continue;
+    out[modeOf(t, wm) === 'manual' ? 'manual' : 'hybrid']++;
+  }
+  return out;
+}
+
+/**
+ * `tickets` minus `verified` ones in a manual (or project-less) project: the
+ * release phase never merges, counts or warns about them (CREW-1496).
+ * Hybrid is deliberately NOT filtered — a verified hybrid ticket releases
+ * exactly like an automatic one. Every other status passes through untouched.
+ */
+export function withoutManualVerified<T extends { status: string; project_id?: string | null }>(
+  tickets: T[],
+  verifiedStatus: string,
+  wm: WorkModes | undefined,
+): T[] {
+  if (!wm || wm.modes.size === 0) return tickets;
+  return tickets.filter((t) => t.status !== verifiedStatus || modeOf(t, wm) !== 'manual');
+}
+
+/** `Name (mode)` per project, for `crew status`. */
+export function projectModeLabels(
+  rows: Array<{ id: string; name?: string; mode: WorkMode }>,
+): Array<{ id: string; name: string; mode: WorkMode; label: string }> {
+  return rows.map((r) => {
+    const name = r.name ?? r.id;
+    return { id: r.id, name, mode: r.mode, label: `${name} (${r.mode})` };
+  });
+}

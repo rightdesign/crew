@@ -49,6 +49,7 @@ import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
+import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
@@ -1193,7 +1194,10 @@ async function releasePhase(
       let seen = precheckTickets.get(c.route);
       if (!seen) precheckTickets.set(c.route, (seen = tracker.openTickets()));
       const { byRepo: preByRepo, unplaceable: preUnplaceable } = ticketsByRepo(c, await seen);
-      const pre = preByRepo.get(target.name) ?? [];
+      const preModes = { modes: await tracker.projectWorkModes(), agentAssignees: new Set<string>() };
+      const pre = withoutManualVerified(
+        preByRepo.get(target.name) ?? [], tracker.contract.statuses.verified, preModes,
+      );
       // A verified ticket with no (or an unknown) repo belongs to no repo's
       // list, so every repo can read as idle and skip before the report below
       // — which would leave it stranded in silence. Reporting takes no lock.
@@ -1243,7 +1247,10 @@ async function releasePhase(
     // release would look for their branches in the wrong checkout — and on a
     // near-miss (a branch of the same name in two repos) merge the wrong work.
     const { byRepo, unplaceable } = ticketsByRepo(c, all);
-    const tickets = byRepo.get(target.name) ?? [];
+    const releaseModes = { modes: await tracker.projectWorkModes(), agentAssignees: new Set<string>() };
+    const tickets = withoutManualVerified(
+      byRepo.get(target.name) ?? [], tracker.contract.statuses.verified, releaseModes,
+    );
     reportUnplaceable(c.route, unplaceable, tracker.contract.statuses.verified, remit);
 
     const outcome = await runRelease({
@@ -3472,6 +3479,7 @@ switch (command) {
       .then((open) => operatorTodo(open, statusTracker.contract, route.resolved?.operator ?? ''))
       .catch(() => []);
 
+    const projects = projectModeLabels(await statusTracker.projectRowsWithModes().catch(() => []));
     if (flag('json')) {
       const repos = await resolvedRepos(route);
       // Per-seat identity (ISSUE-525): crew-macos's menu bar wants the seat's
@@ -3533,6 +3541,8 @@ switch (command) {
         watermark: state.watermark(),
         route: {
           name: route.route,
+          // Additive (CREW-1496): each project and its work mode. `version` stays 1.
+          projects: projects.map((p) => ({ id: p.id, name: p.name, workMode: p.mode })),
           dir: route.dir,
           enabled: route.enabled,
           area: route.area ?? null,
@@ -3588,6 +3598,7 @@ switch (command) {
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
       if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);
     }
+    if (projects.length) process.stdout.write(`projects:   ${projects.map((p) => p.label).join(', ')}\n`);
     for (const i of openShipAttention(state)) {
       process.stdout.write(`attention:  ${i.kind} — ${i.message}\n`);
     }
