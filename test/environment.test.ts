@@ -135,3 +135,19 @@ test('the brief names this ship so comments can say "Brads-Mac-mini", not a uuid
   assert.match(out, /\*\*Brads-Mac-mini\*\*/);
   assert.doesNotMatch(render([repo('synthesis', '/w/synthesis', SYN)]), /## Ships/);
 });
+
+// CREW-1495. A hybrid hand-off assigns the next lane's seat verbatim, so the
+// Environment section lists this ship's seat ids by role.
+test('lists this ship\'s seat ids by role for hybrid hand-offs', () => {
+  const r = {
+    ...route,
+    resolved: {
+      models: { issues: 'i', comments: 'c', crew: 'w' },
+      seats: { dev: 'dev-row', qa: 'qa-row' }, operator: 'op', holds: [],
+    },
+  } as unknown as Route;
+  const out = renderEnvironment({ route: r, userAgent: 'crew/1', repos: [repo('synthesis', '/w/synthesis', SYN)], contract: DEFAULT_CONTRACT });
+  assert.match(out, /## Seats on this ship/);
+  assert.match(out, /- dev: `dev-row`/);
+  assert.match(out, /- qa: `qa-row`/);
+});

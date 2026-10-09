@@ -98,6 +98,11 @@ stopping for this run, do the following instead:
     it) — revise the comp against what they said and post again. This cycle
     repeats as many times as the operator wants.
 
+  In a `hybrid` project (the digest's `mode` column), where the operator
+  leaves the hand-off to you, assign this ship's Developer seat when
+  `needs_design` is cleared rather than leaving the assignee blank, so the dev lane
+  still sees the ticket; in an `automatic` project nothing changes.
+
   Never implement past the comp to "just finish it" because the fix looks
   small, and never set `needs_design`, `accepted`, or clear
   `needs_planning`/`needs_review` yourself — all of that is the operator's

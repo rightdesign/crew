@@ -124,8 +124,8 @@ test('the QA digest places a ticket in its own repo, and finds its branch there'
     existingBranchFor: (t) => (t.id === 'b' ? 'bc/issue-21-add-widget' : null),
   });
   const out = qaDigest(i);
-  assert.match(out, /\| ISSUE-20 \| \/w\/api \| fixed \|/);
-  assert.match(out, /\| ISSUE-21 \| \/w\/cli \| fixed \|/);
+  assert.match(out, /\| ISSUE-20 \| \/w\/api \| — \| fixed \|/);
+  assert.match(out, /\| ISSUE-21 \| \/w\/cli \| — \| fixed \|/);
   // The branch is reported as the repo actually names it, not re-derived.
   assert.match(out, /\| bc\/issue-21-add-widget \|/);
   // Same repo, no branch left: there is genuinely nothing to verify.
@@ -249,4 +249,21 @@ test('a stopped repo leaves Step 2 and is named, with its reason, under Held rep
   assert.doesNotMatch(step2, /ISSUE-1/);
   assert.match(out, /### Held repos[\s\S]*\| ISSUE-1 \| crew: main has diverged \|/);
   assert.doesNotMatch(buildingDigest(input({ tickets: [T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' })] })), /Held repos/);
+});
+
+// CREW-1495. Each ticket row names its project's work mode, so a lane knows
+// whether a hand-off assigns the next seat (hybrid) or clears (automatic).
+test('ticket rows carry their project work mode', () => {
+  const modes = new Map([['p-auto', 'automatic' as const], ['p-hyb', 'hybrid' as const]]);
+  const workModes = { modes, agentAssignees: new Set(['dev-1']) };
+  const tickets = [
+    T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', project_id: 'p-auto' }),
+    T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted', project_id: 'p-hyb', assignee_id: 'dev-1' }),
+  ] as DigestInput['tickets'];
+  const out = buildingDigest(input({ tickets, workModes }));
+  assert.match(out, /\| mode \| status \|/);
+  assert.match(out, /\| ISSUE-1 \|[^\n]*\| automatic \| accepted \|/);
+  assert.match(out, /\| ISSUE-2 \|[^\n]*\| hybrid \| accepted \|/);
+  const qa = qaDigest(input({ tickets: [{ ...tickets[1]!, status: 'fixed' }], workModes }));
+  assert.match(qa, /\| ISSUE-2 \|[^\n]*\| hybrid \| fixed \|/);
 });

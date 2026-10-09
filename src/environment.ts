@@ -310,6 +310,19 @@ export function renderEnvironment(i: EnvironmentInput): string {
     );
   }
 
+  const seatIds = Object.entries(route.resolved?.seats ?? {}).filter(([, id]) => !!id);
+  if (seatIds.length > 0) {
+    lines.push(
+      '',
+      '## Seats on this ship',
+      '',
+      'The Crew row id of each role\'s seat on this ship, to write verbatim where a hand-off',
+      'assigns the next lane (a ticket whose digest `mode` is `hybrid`):',
+      '',
+      ...seatIds.map(([role, id]) => `- ${role}: \`${id}\``),
+    );
+  }
+
   lines.push(
     '',
     '## What the columns are called here',

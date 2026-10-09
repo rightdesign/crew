@@ -96,3 +96,15 @@ for (const preset of ['default', 'dev-qa']) {
     assert.doesNotMatch(text, /report it as unusual rather than\s+guessing/);
   });
 }
+
+// CREW-1495. A hand-off that clears the assignee makes a hybrid ticket off
+// limits, so every hand-off sentence has to name the mode condition.
+test('every prompt set states the hybrid vs automatic hand-off rule', () => {
+  for (const dir of presetDirs()) {
+    const personas = join(dir, 'personas');
+    const common = readFileSync(join(personas, 'common.md'), 'utf8');
+    assert.match(common, /`hybrid` project[^]*assigning that lane's seat/, `${dir}: common.md lacks the hybrid hand-off rule`);
+    assert.match(common, /`automatic` project \*\*clear `assignee_id`\*\*/, `${dir}: step 3.9 lacks the mode condition`);
+    assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /Person-built hybrid ticket/, `${dir}: lane-qa.md lacks the person-built case`);
+  }
+});

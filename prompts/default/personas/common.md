@@ -305,10 +305,18 @@ Never start work on a ticket without first setting `assignee_id` to your
 own id (Step 3.3 already does this) — that claim is itself part of what
 keeps a concurrent interactive session from re-entering the same ticket.
 
-A project in **manual work mode** (its Projects row says so) is never consumed
-automatically: the digest lists its tickets only when a person has assigned them to
-your seat, and status alone never makes one yours. The digest says so when it
-applies; do not go looking for the missing tickets. QA is unaffected.
+Every ticket's project has a **work mode**, shown in the digest's `mode`
+column: `automatic` (lanes work tickets by status), `hybrid` (a lane considers a
+ticket only when it is assigned to an agent — a Crew row backed by an Agent, not a
+hold), or `manual` (no automation touches it; a ticket with no project counts as
+manual). The digest says so when a project is not automatic; do not go looking for
+a ticket it leaves out. **One hand-off rule:** in a `hybrid` project, hand a ticket
+to the next lane by *assigning that lane's seat on this ship* (ids under "Seats on
+this ship" in the Environment section, else the roster); in an `automatic` project,
+clear `assignee_id` as before. If there is no seat for the target role, assign any
+Crew row with that role's Agent; if there is none, clear it and say so in the
+hand-off comment. Parks (`needs_info`, `needs_planning` → the operator) are the
+same in every mode.
 
 Never touch a ticket still at `new` — only `accepted` tickets are yours to
 pick up; triage (a separate process) is what promotes `new` → `accepted`/
@@ -558,7 +566,9 @@ if `report_type` is either of those.
    this is your own isolated worktree, no special permission needed for this
    part).
 9. Set the ticket's `status` to `fixed` once you have verified it yourself,
-   and **clear `assignee_id`** — that pair is the hand-off to the QA lane.
+   and hand the ticket to the QA lane: in an `automatic` project **clear `assignee_id`**; in a
+   `hybrid` project **set `assignee_id` to this ship's QA seat** instead (the digest's `mode`
+   column says which). That pair is the hand-off to the QA lane.
    If the Issues table has a `held_by_ship_id` column, clear it in the same
    write (the hold is for the building roles; QA on any ship may take a `fixed`
    ticket). A QA bounce or `needs_info` park leaves it set; QA clears it again

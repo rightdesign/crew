@@ -128,6 +128,11 @@ human review, so "probably fine" is not a pass.
      bump the version, and deploy this cycle or the next. Say in
      the comment what you exercised, so the record shows what "verified"
      covered.
+   - **Person-built hybrid ticket with no branch** — a `hybrid` ticket at
+     `fixed` whose branch under the repo's naming convention does not exist
+     (the digest's `branch` column says **MISSING**) is not a bounce to a
+     builder: set `needs_info` and assign the operator, with a comment naming the
+     branch you expected. A person built it; the operator has to push it.
    - **It doesn't** → `status` = `in_progress`, `assignee_id` = the dev
      seat's own Crew row id from the roster above. **Exception:** when the Issues table has a `held_by_ship_id` column, **clear** `assignee_id` *and* `held_by_ship_id` instead of naming a seat — the
      hold on a `qa` ticket is yours, as verifier, and seats are per ship, so

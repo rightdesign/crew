@@ -12,7 +12,7 @@
  * fetches the full record of the one ticket it actually picks up.
  */
 
-import type { WorkModes } from './work-mode.ts';
+import { modeOf, type WorkModes } from './work-mode.ts';
 import { compareRank, effectivePriority, type Rankable } from './priority.ts';
 import { crewLabel, isHold, memberByIdentity, type Roster } from './roster.ts';
 
@@ -22,6 +22,8 @@ export interface DigestTicket extends Rankable {
   issue_tag?: string | null;
   status: string;
   assignee_id?: string | null;
+  /** The Projects row, for the work-mode column (CREW-1495). */
+  project_id?: string | null;
   needs_design?: boolean | null;
   blocked_by?: string[] | null;
   repo_id?: string | null;
@@ -246,6 +248,11 @@ function blockers(t: DigestTicket, i: DigestInput): string {
   return list.length === 0 ? '—' : list.join(', ');
 }
 
+/** The ticket's project work mode (CREW-1495), or `—` when the digest was built without modes. */
+function modeCell(t: DigestTicket, i: DigestInput): string {
+  return i.workModes && i.workModes.modes.size > 0 ? modeOf(t, i.workModes) : '—';
+}
+
 const sorted = (ts: DigestTicket[]) => [...ts].sort(compareRank);
 
 /**
@@ -264,15 +271,15 @@ function table(ts: DigestTicket[], i: DigestInput, header: string, row: (t: Dige
 /** The digest for a building role — dev or design. */
 export function buildingDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | branch | worktree | status | assignee | filed by | sev | pri | eff | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | branch | worktree | mode | status | assignee | filed by | sev | pri | eff | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
     const branch = i.branchFor ? i.branchFor(t) : '';
     const worktree = i.worktreeFor ? i.worktreeFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -318,8 +325,8 @@ export function buildingDigest(i: DigestInput): string {
 /** The digest for the QA role. */
 export function qaDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | status | built by | assignee | filed by | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | mode | status | built by | assignee | filed by | sev | pri | eff | branch | worktree | updated | last comment | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   /**
    * The branch to verify, or a mark that there is none.
    *
@@ -349,7 +356,7 @@ export function qaDigest(i: DigestInput): string {
     const n = newFromOthers(i, t.id);
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${modeCell(t, i)} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   return stream([
     '## Current queue — built for you by the poll\n',
