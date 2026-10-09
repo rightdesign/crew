@@ -13,7 +13,8 @@
 # version that has already been released.
 #
 # Auth: the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets. The
-# tablation namespace must already exist on Docker Hub.
+# login runs first so it also covers the qemu and buildkit image pulls, not
+# just the push. The tablation namespace must already exist on Docker Hub.
 name: Publish Host Passengers image
 
 on:
@@ -44,16 +45,18 @@ jobs:
             exit 1
           fi
 
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
+      # Before qemu and buildx: both pull from Docker Hub (tonistiigi/binfmt,
+      # moby/buildkit), and anonymous pulls hit the per-IP limit on GitHub's
+      # shared runner IPs. Logging in pushes nothing, so manual runs log in too.
       - name: Log in to Docker Hub
-        if: github.ref_type == 'tag'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
         uses: docker/build-push-action@v6
