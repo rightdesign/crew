@@ -148,7 +148,7 @@ human review, so "probably fine" is not a pass.
      branch you expected. A person built it; the operator has to push it.
    - **It doesn't** → `status` = `in_progress`, `assignee_id` = the building
      lane's own Crew row id from the roster above — the dev seat if
-     `needs_design` is false or null, the design seat if true. **Exception:** when the Issues table has a `held_by_ship_id` column, **clear** `assignee_id` *and* `held_by_ship_id` instead of naming a seat — the
+     `needs_design` is false or null, the design seat if true. **Exceptions:** in a `hybrid` project (the digest's `mode` column) an unassigned ticket is off limits to every lane, so clearing the assignee would strand the bounce: assign the building seat on this ship (ids under "Seats on this ship" in the Environment section, else the roster) and, if the Issues table has a `held_by_ship_id` column, still clear that. In an `automatic` project, when the Issues table has a `held_by_ship_id` column, **clear** `assignee_id` *and* `held_by_ship_id` instead of naming a seat — the
      hold on a `qa` ticket is yours, as verifier, and seats are per ship, so
      naming this ship's seat would hand the bounce to a ship that never built
      it. An unassigned, unheld `in_progress` ticket is picked up by whichever
