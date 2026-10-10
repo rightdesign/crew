@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.32.0] — 2026-10-10
+
+- A toolchain with `launcher: ori` now records `provider: openrouter`, accepts an optional `launcherBin`, and `crew doctor` flags that Ori's headless auth under the scheduler is unverified (CREW-1522)
+
 ## [0.31.0] — 2026-10-10
 
 - `crew disconnect` no longer removes a Pair `tablation` MCP server crew did not install (CREW-1517)
