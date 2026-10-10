@@ -83,6 +83,13 @@ ticket blocked by one is still genuinely blocked. A contract that called it
 resolved would have the crew build on unverified work. No naming convention
 conveys that; it has to be stated.
 
+**Parking on a dependency.** When a ticket needs work in another repository,
+its lane files that work as its own ticket, adds it to the waiting ticket's
+`blocked_by`, comments, and returns the ticket to `accepted` (keeping its
+branch and worktree). The poll's sweep parks it at `blocked` and restores it
+once every blocker is in a resolved status. QA bounces a hand-off that names
+needed work no ticket covers.
+
 `approved` matters for the opposite reason: the runner must know which status
 it may **never** set, because that is the one where a person authorises work.
 

@@ -82,6 +82,12 @@ stopping for this run, do the following instead:
     is actually blocked on the operator's input, not as a substitute for
     the ordinary ending above.
 
+  Before you post, check the comment: it must not name needed-but-unfiled
+  work. A design that depends on a change in another repository files that
+  ticket and links it in your ticket's `blocked_by` (see "Work your ticket
+  needs in another repository"), rather than listing it as a loose
+  follow-up.
+
   Either way, stop this ticket's work for this run once the flag is set and
   the comment posted. The operator reviews what you posted and takes it
   from there:

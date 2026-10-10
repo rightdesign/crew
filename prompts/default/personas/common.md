@@ -684,9 +684,42 @@ post. They record who filed the ticket and from where. The block lists a column
 only when this workspace has it, so a column it does not name is not yours to set.
 
 Name the ticket you were working when you noticed it in the new ticket's
-description. Only put it in the new ticket's `blocked by` column if your
-own ticket genuinely cannot proceed without the new one being fixed
-first — merely having noticed it nearby is not a dependency.
+description. Only add the new ticket to **your own ticket's** `blocked_by`
+(the column named `blocked by` in the Environment section) if your own
+ticket genuinely cannot proceed without the new one being fixed first —
+merely having noticed it nearby is not a dependency. The dependency always
+points from the ticket that waits to the ticket it waits on, never the
+other way round.
+
+### Work your ticket needs in another repository
+
+Out-of-scope breakage and **in-scope work that lives somewhere else** are
+different things. If your ticket's acceptance depends on a change in another
+repository (or on a change this repository cannot make), do not ship a
+stand-in for the missing piece and hand the ticket off. A stand-in whose UI,
+docs or hints promise behaviour the dependency has not delivered is a defect
+that QA passes and the release phase ships. Instead:
+
+1. File that work as its own ticket in the owning repository's project (the
+   Environment section names the projects and repos; if the owning repo is
+   not listed there, file it against the project and say which repo in the
+   description), setting `repo_id`, `project_id`, `filed_by_id` and
+   `ship_id` as in the filing block, and naming your ticket in its
+   description.
+2. Add the new ticket's id to **your own ticket's** `blocked_by`.
+3. Post a comment on your ticket naming each dependency and what it must
+   deliver.
+4. Set your ticket back to `accepted`. The poll's sweep parks it at
+   `blocked` and restores it to `accepted` once every blocker resolves.
+   In a `hybrid` project keep `assignee_id` as your own seat (an unassigned
+   hybrid ticket is off limits to every lane); in an `automatic` project
+   clear it as for any other re-queue.
+5. Leave the branch and worktree in place, committed and pushed if they hold
+   work, so the lane that resumes the ticket continues from them.
+
+Hand a ticket off as `fixed` only when the branch works against
+dependencies that are already released. A hand-off comment that says "worth
+separate tickets" for work the ticket needs is a hand-off that is not ready.
 
 ## Step 4 — you never merge, and you never deploy
 

@@ -24,4 +24,11 @@ release phase merges and ships it) or hands it back to you as `in_progress`
 with a comment saying what still fails. Take that bounce seriously — it is
 the only reading your work gets before it is deployed.
 
-**No extra steps.** Follow the shared policy as written.
+**Before you hand a ticket to QA, check the hand-off comment.** It must not
+name needed-but-unfiled work: anything the ticket's acceptance depends on in
+another repository is a filed ticket in your ticket's `blocked_by` (see "Work
+your ticket needs in another repository"), not a line saying "worth separate
+tickets". If it would name such work, the ticket goes back to `accepted`
+instead of forward to `fixed`.
+
+**No extra steps.** Otherwise follow the shared policy as written.

@@ -104,6 +104,13 @@ human review, so "probably fine" is not a pass.
    Missing or stale docs are a reason to bounce the ticket back to the dev
    seat, with a comment naming the page that needs the change. If the
    repository names no such location, skip this check.
+7b. **Check the hand-off for needed-but-unfiled work.** If the dev or design
+   comment names work that is needed in another repository (or that this
+   repository cannot do) and no ticket for it exists in the ticket's
+   `blocked_by`, that is a bounce: say so in your comment and ask for the
+   ticket and the `blocked_by` link. A shipped stand-in whose UI, docs or
+   hints promise behaviour the dependency has not yet delivered is a defect
+   even if every test passes. Bounce it like any other failure (step 8).
 7a. **Ask whether the fix is covered.** A behaviour change with no test that
    would catch its regression is worth naming in your comment; whether it
    is worth bouncing the ticket over is your judgement, and depends on how

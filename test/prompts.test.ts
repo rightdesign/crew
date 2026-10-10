@@ -110,3 +110,26 @@ test('every prompt set states the hybrid vs automatic hand-off rule', () => {
     assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /`hybrid` project[^]*clearing the assignee would strand the bounce[^]*assign the building seat/, `${dir}: lane-qa.md bounce path lacks the hybrid exception`);
   }
 });
+
+// CREW-1505. Work a ticket needs in another repo is a dependency: file it, link
+// it in the waiting ticket's own `blocked_by`, return to `accepted`; QA bounces
+// hand-offs that name needed work with no ticket.
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} prompts park a ticket on cross-repo dependencies (CREW-1505)`, () => {
+    const personas = join(PROMPTS, preset, 'personas');
+    const common = readFileSync(join(personas, 'common.md'), 'utf8');
+    assert.match(common, /### Work your ticket needs in another repository/);
+    assert.match(common, /Add the new ticket's id to \*\*your own ticket's\*\* `blocked_by`/);
+    assert.match(common, /Set your ticket back to `accepted`/);
+    assert.match(common, /`hybrid` project keep `assignee_id` as your own seat/);
+    assert.match(common, /add the new ticket to \*\*your own ticket's\*\* `blocked_by`/);
+    assert.doesNotMatch(common, /in the new ticket's `blocked by` column/, 'the dependency points from the waiting ticket');
+    assert.match(readFileSync(join(personas, 'lane-dev.md'), 'utf8'), /must not\s+name needed-but-unfiled work/);
+    assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /needed-but-unfiled work[^]*that is a bounce[^]*stand-in/);
+  });
+}
+
+test('the default design lane checks its hand-off for unfiled needed work (CREW-1505)', () => {
+  const design = readFileSync(join(PROMPTS, 'default', 'personas', 'lane-design.md'), 'utf8');
+  assert.match(design, /must not name needed-but-unfiled\s+work/);
+});
