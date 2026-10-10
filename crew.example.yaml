@@ -27,6 +27,22 @@ ship:
     # to disable (less latency/cost, no cycles reported).
     # maxThinkingTokens: 4096
 
+  # Optional (CREW-1511): named toolchains — a harness adapter plus the binary
+  # and model to run it with. The `agent:` block above keeps working and
+  # defines an implicit toolchain named `claude`. Only the `claude` harness
+  # exists today. See docs/toolchains.md.
+  # toolchain: claude              # the ship's default; a route may override it
+  # toolchains:
+  #   claude-wrapped:
+  #     harness: claude
+  #     bin: claude                # bare names are found on PATH
+  #     launcher: /opt/bin/sandbox # spawned instead, with `bin` as its first argument
+  #     model: claude-sonnet-5-5
+  #     tiers:                     # light | standard | deep; defaults per harness
+  #       deep: { model: claude-opus-5-5 }
+  #     args: []                   # appended to the harness argv
+  #     env: {}                    # added to the session environment
+
   # shell: bash                      # defaults per platform
   extraPath: "/opt/homebrew/bin"     # prepended for hooks
   useNvm: true                       # source the repo's .nvmrc before hooks

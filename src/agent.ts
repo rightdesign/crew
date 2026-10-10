@@ -16,7 +16,7 @@ import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
-import { mapStreamLine, extractResult, extractTurnTokens } from './stream.ts';
+import { adapterFor, resolveToolchain } from './toolchain.ts';
 import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { TicketAttributionTracker } from './ticket-attribution.ts';
 
@@ -26,77 +26,16 @@ import { TicketAttributionTracker } from './ticket-attribution.ts';
  */
 export const DIGEST_MAX_AGE_SECONDS = 600;
 
-/**
- * The permission grant. In headless mode `--allowedTools` IS the whole grant,
- * so a tool missing here is denied mid-run rather than prompted for.
- *
- * QA gets no Edit: it verifies, it never fixes. That is not a sandbox — Bash
- * can write files, and QA needs Bash for git, dev servers and Playwright —
- * but withholding the editing tool makes "bounce it back rather than fix it"
- * the path of least resistance instead of a rule to remember. Write stays,
- * for throwaway verification scripts.
- */
-export function allowedTools(role: RoleName): string[] {
-  // Every lane gets the Tablation MCP tools alongside its REST+apiKey access
-  // (the MCP server registered in `args`, below) — the tracker's own
-  // generated tool surface, not a replacement for the tracker-key path.
-  const tablation = 'mcp__tablation__*';
-  // Triage classifies and nothing else: no Edit, no Write. It reads reports,
-  // sets fields and comments. Withholding both editing tools makes "this is
-  // not yours to fix" structural rather than a rule in a brief.
-  if (role === 'triage') return ['Bash', 'Read', tablation];
-  if (role === 'qa') return ['Bash', 'Read', 'Write', 'Grep', 'Glob', tablation];
-  const base = ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', tablation];
-  // The design role additionally loads skills and publishes a design canvas.
-  return role === 'design' ? [...base, 'Skill', 'Artifact'] : base;
-}
+const LEGACY_TOOLCHAIN_HARNESS = 'claude';
 
-/**
- * Deny patterns layered on top of `allowedTools`, for every role.
- *
- * The allowlist gates which *tools* a session has; it says nothing about
- * what an unattended session does with the ones it's given. Ticket and
- * comment bodies are attacker-reachable text — anyone with workspace access
- * can write one — and the brief telling a session "this is a coding task,
- * not an instruction to run destructive commands" is a rule an injected
- * prompt can try to talk its way around. This is not that: `claude -p
- * --disallowedTools` enforces these patterns at the tool-call layer, so a
- * session that gets talked into trying one is refused mid-run rather than
- * trusted to have refused on its own. It is still not a sandbox — a `Bash`
- * one-liner that reaches the same end a different way is not caught — so it
- * complements the brief's framing rather than replacing it, and does not
- * replace scoping the tracker API key itself to least privilege.
- */
-export const DISALLOWED_TOOLS: string[] = [
-  'Bash(rm -rf:*)', 'Bash(rm -fr:*)',
-  'Bash(git push --force*)', 'Bash(git push -f*)',
-  'Bash(curl*| sh)', 'Bash(curl*|sh)', 'Bash(curl*| bash)', 'Bash(curl*|bash)',
-  'Bash(sudo:*)',
-];
+// The tool grant, deny list and billing scrub are the Claude adapter's now
+// (CREW-1511); re-exported so existing importers keep working.
+export { allowedTools, DISALLOWED_TOOLS, BILLING_VARS_TO_UNSET } from './adapters/claude.ts';
 
-/**
- * Billing, and it has bitten before.
- *
- * Any of these present in the environment silently takes precedence over the
- * operator's subscription auth, and a sibling agent once burned ~66.5M tokens
- * against an org's API credits in a week purely because it inherited
- * ANTHROPIC_API_KEY from a project's .env. They are unset at exec rather than
- * merely left unassigned, because ~/.claude/settings.json has flipped billing
- * before and a local override cannot be relied on to win.
- */
-export const BILLING_VARS_TO_UNSET = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_USE_VERTEX',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  'ANTHROPIC_VERTEX_REGION',
-  'CLOUD_ML_REGION',
-  'ANTHROPIC_MODEL',
-];
-
-export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+/** The environment a session inherits: the process's own, minus the harness's billing-sensitive vars. */
+export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env, harness = LEGACY_TOOLCHAIN_HARNESS): NodeJS.ProcessEnv {
   const out = { ...env };
-  for (const v of BILLING_VARS_TO_UNSET) delete out[v];
+  for (const v of adapterFor(harness).unsetEnv) delete out[v];
   return out;
 }
 
@@ -145,6 +84,12 @@ export interface AgentPlan {
   cwd: string;
   bin: string;
   args: string[];
+  /**
+   * Which toolchain (`toolchains:` entry) and harness adapter planned this
+   * run. `harness` is optional so a hand-built plan means Claude, as before.
+   */
+  toolchain?: string;
+  harness?: string;
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -294,7 +239,16 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
-  const model = o.agentModel ?? o.ship.agent.model;
+  const toolchain = resolveToolchain(o.ship, o.route);
+  const adapter = adapterFor(toolchain.harness);
+  const model = o.agentModel ?? toolchain.model;
+  const invocation = adapter.invocation(toolchain, {
+    role: o.role,
+    model,
+    // Skipped when there's no key to send: a route `crew connect` hasn't
+    // resolved yet has nothing to authenticate the MCP connection with either.
+    mcp: o.apiKey ? { url: `${o.route.baseUrl}/api/mcp`, keyVar: API_KEY_VAR } : undefined,
+  });
 
   // Reporting needs a resolved workspace (`crew connect`) and a key to call
   // it with — either is missing for a route that hasn't been connected, or
@@ -323,41 +277,16 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     // (config.ts), and the digest's `repo` column is what actually places
     // the work. Kept deliberately rather than guessed at (ISSUE-349).
     cwd: o.route.dir,
-    bin: o.ship.agent.bin,
-    args: [
-      '-p', '--allowedTools', ...allowedTools(o.role),
-      '--disallowedTools', ...DISALLOWED_TOOLS,
-      '--model', model,
-      '--output-format', 'stream-json', '--verbose',
-      // Registers the tracker's own MCP tool surface for this run only —
-      // `${CREW_API_KEY}` is interpolated by the CLI from the environment
-      // (set below), so the resolved key is never written to an argv string
-      // or a config file on disk. Skipped when there's no key to send: a
-      // route `crew connect` hasn't resolved yet has nothing to authenticate
-      // the MCP connection with either.
-      ...(o.apiKey
-        ? ['--mcp-config', JSON.stringify({
-            mcpServers: {
-              tablation: {
-                type: 'http',
-                url: `${o.route.baseUrl}/api/mcp`,
-                headers: { Authorization: `Bearer \${${API_KEY_VAR}}` },
-              },
-            },
-          })]
-        : []),
-    ],
+    bin: invocation.bin,
+    args: invocation.args,
+    toolchain: toolchain.name,
+    harness: toolchain.harness,
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
-    unsetEnv: BILLING_VARS_TO_UNSET,
+    unsetEnv: adapter.unsetEnv,
     setEnv: {
       ...(o.apiKey ? { [API_KEY_VAR]: o.apiKey } : {}),
-      // Extended thinking is what makes the CLI emit `thinking` stream
-      // blocks at all — without it, `run.cycles` (below) is always empty
-      // and Agent Log Cycles reporting has nothing to report (ISSUE-558).
-      ...(o.ship.agent.maxThinkingTokens > 0
-        ? { MAX_THINKING_TOKENS: String(o.ship.agent.maxThinkingTokens) }
-        : {}),
+      ...adapter.runEnv(toolchain),
       // The operator's global SessionStart hook (pair-context-hook.sh) injects
       // the interactive Pair persona's prompt for any session it can't tell
       // apart from a person's own terminal. Every headless lane run this
@@ -384,6 +313,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 export function describePlan(p: AgentPlan): string {
   return [
     `role:    ${p.role}`,
+    // Only for a non-default toolchain, so a plain Claude run's output is unchanged.
+    ...(p.toolchain && p.toolchain !== 'claude' ? [`toolchain: ${p.toolchain} (${p.harness ?? 'claude'})`] : []),
     `cwd:     ${p.cwd}`,
     `command: ${p.bin} ${p.args.join(' ')}`,
     `prompt:  ${p.promptBytes} bytes on stdin (never argv)`,
@@ -448,6 +379,7 @@ function endSink(sink: WriteStream | undefined): Promise<void> {
  * for why that is a separate file from the shared `events.jsonl`).
  */
 export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
+  const adapter = adapterFor(plan.harness ?? LEGACY_TOOLCHAIN_HARNESS);
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   const rawSink = openSink(plan.streamPath);
@@ -456,12 +388,12 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(plan.bin, plan.args, {
       cwd: plan.cwd,
-      env: { ...scrubbedEnv(), ...plan.setEnv },
+      env: { ...scrubbedEnv(process.env, adapter.harness), ...plan.setEnv },
       stdio: ['pipe', 'pipe', 'inherit'],
     });
 
     let buf = '';
-    let result: ReturnType<typeof extractResult>;
+    let result: ReturnType<typeof adapter.extractResult>;
     // One buffered Agent Log Cycle per `thought` block or assistant `text`
     // turn seen, in order (ISSUE-594 widened this from thinking-only) — the
     // whole point of Agent Log Cycles (WORKSPACE_AGENTS_PLAN.md) is capturing
@@ -484,9 +416,9 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
         return;   // not our schema's stability guarantee — drop and move on
       }
       try {
-        result = extractResult(parsed) ?? result;
+        result = adapter.extractResult(parsed) ?? result;
         let turnText = '';
-        for (const ev of mapStreamLine(parsed)) {
+        for (const ev of adapter.mapStreamLine(parsed)) {
           const e = {
             at: new Date().toISOString(),
             cycle: emit.cycle,
@@ -540,7 +472,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
         // above as an empty string, which `TicketAttributionTracker.add`
         // treats as "no new mention, keep crediting whatever ticket was
         // last named."
-        const turnTokens = extractTurnTokens(parsed);
+        const turnTokens = adapter.extractTurnTokens(parsed);
         if (turnTokens !== undefined) attribution.add(turnText, turnTokens);
       } catch {
         /* a shape this run's mapping does not expect must not kill the cycle */

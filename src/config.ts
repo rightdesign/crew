@@ -26,6 +26,7 @@ import { resolve, dirname, isAbsolute, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { parse } from 'yaml';
 import { DEFAULT_EVENTS_ROTATE_BYTES } from './events.ts';
+import { TIERS, HARNESS_NAMES, LEGACY_TOOLCHAIN, adapterFor, isHarness, type ToolchainSpec, type ToolchainTier, type Tier } from './toolchain.ts';
 import { getSessionStore, hostFromUrl, type SessionStore } from '@tablation/client';
 import {
   hostPlatform, isShipPlatform,
@@ -346,6 +347,12 @@ export interface Route {
    * hosting is opt-in per route, not implied by connecting.
    */
   hostPassengers?: boolean;
+  /**
+   * Which `ship.toolchains` entry runs this route's agent sessions,
+   * overriding `ship.toolchain` (CREW-1511, EPIC-035 §3). Deliberately a
+   * route-level key and nothing finer: there is no per-repo toolchain.
+   */
+  toolchain?: string;
 }
 
 export interface Ship {
@@ -361,6 +368,15 @@ export interface Ship {
    * latency/cost.
    */
   agent: { bin: string; model: string; maxThinkingTokens: number };
+  /**
+   * The explicit `toolchains:` map from crew.yaml (CREW-1511), in file order.
+   * The legacy `agent:` block above additionally defines an implicit entry
+   * named `claude` — resolved by `shipToolchains` (toolchain.ts), so a
+   * hand-built `Ship` carrying only `agent` keeps working.
+   */
+  toolchains?: ToolchainSpec[];
+  /** Name of the default toolchain; absent means `claude`. */
+  toolchain?: string;
   shell?: string;
   extraPath?: string;
   useNvm: boolean;
@@ -459,14 +475,14 @@ export interface CrewConfig {
 export class ConfigError extends Error {}
 
 const SHIP_KEYS = new Set([
-  'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
+  'name', 'platform', 'agent', 'toolchains', 'toolchain', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
-  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'toolchain',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 /** A route repo's `worktreeName`, validated like `worktrees.name` in a repo's own `.crew.yaml`. */
@@ -880,6 +896,12 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(maxThinkingTokens) || maxThinkingTokens < 0) {
     missing.add(`ship.agent.maxThinkingTokens must be a non-negative integer (got "${shipRaw.agent?.maxThinkingTokens}")`);
   }
+  const toolchains = parseToolchains(shipRaw.toolchains, base, missing, file);
+  const toolchainNames = new Set([LEGACY_TOOLCHAIN, ...toolchains.map((x) => x.name)]);
+  const shipToolchain = shipRaw.toolchain === undefined ? undefined : String(shipRaw.toolchain);
+  if (shipToolchain !== undefined && !toolchainNames.has(shipToolchain)) {
+    missing.add(`ship.toolchain "${shipToolchain}" is not defined (have: ${[...toolchainNames].join(', ')})`);
+  }
   // Relative to the CONFIG's directory, not the checkout: config and state
   // belong to the machine and should travel together. Computed here, ahead
   // of the ship object below, because the routes loop needs it too — each
@@ -900,7 +922,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
     const where = `routes[${i}]`;
     const routeMissing = new Missing();
     try {
-      return [parseOneRoute(c, where, file, base, stateDir, raw, routeMissing, crewHome)];
+      return [parseOneRoute(c, where, file, base, stateDir, raw, routeMissing, crewHome, toolchainNames)];
     } catch (e) {
       const label = typeof c?.route === 'string' && c.route ? `"${c.route}"` : where;
       routeWarnings.push(`route ${label} dropped — ${(e as Error).message}`);
@@ -931,6 +953,8 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
         model: shipRaw.agent?.model ?? 'claude-sonnet-5',
         maxThinkingTokens,
       },
+      ...(toolchains.length > 0 ? { toolchains } : {}),
+      ...(shipToolchain !== undefined ? { toolchain: shipToolchain } : {}),
       shell: shipRaw.shell,
       extraPath: shipRaw.extraPath,
       useNvm: shipRaw.useNvm !== false,
@@ -955,11 +979,81 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   };
 }
 
+/** A bare command name stays bare, so PATH finds it; anything path-like is expanded like other paths. */
+function expandCommand(cmd: string, base: string): string {
+  return cmd.includes('/') || cmd.startsWith('~') ? expand(cmd, base) : cmd;
+}
+
+const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens']);
+
+/**
+ * Parses the ship's `toolchains:` map (CREW-1511). Every problem is reported
+ * against `ship.toolchains.<name>` so a typo points at its own entry; the
+ * defaults for `bin`, `model` and `tiers` come from the entry's harness.
+ */
+function parseToolchains(raw: unknown, base: string, missing: Missing, file: string): ToolchainSpec[] {
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    missing.add('ship.toolchains must be a mapping of name → toolchain');
+    return [];
+  }
+  const out: ToolchainSpec[] = [];
+  for (const [name, entryRaw] of Object.entries(raw as Record<string, any>)) {
+    const where = `ship.toolchains.${name}`;
+    if (!entryRaw || typeof entryRaw !== 'object' || Array.isArray(entryRaw)) {
+      missing.add(`${where} must be a mapping`);
+      continue;
+    }
+    rejectUnknownKeys(entryRaw, TOOLCHAIN_KEYS, where, file);
+    const harness = String(entryRaw.harness ?? '');
+    if (!isHarness(harness)) {
+      missing.add(`${where}.harness must be one of ${HARNESS_NAMES.join('|')} (got "${harness}")`);
+      continue;
+    }
+    const adapter = adapterFor(harness);
+    const tiers: Partial<Record<Tier, ToolchainTier>> = { ...adapter.defaultTiers };
+    for (const [tier, v] of Object.entries((entryRaw.tiers ?? {}) as Record<string, any>)) {
+      if (!(TIERS as readonly string[]).includes(tier)) {
+        missing.add(`${where}.tiers.${tier} is not a tier (have: ${TIERS.join(', ')})`);
+        continue;
+      }
+      if (!v || typeof v.model !== 'string' || !v.model) {
+        missing.add(`${where}.tiers.${tier}.model is required`);
+        continue;
+      }
+      tiers[tier as Tier] = { model: v.model, ...(v.reasoning !== undefined ? { reasoning: String(v.reasoning) } : {}) };
+    }
+    const args = entryRaw.args ?? [];
+    if (!Array.isArray(args)) missing.add(`${where}.args must be a list of strings`);
+    const env = entryRaw.env ?? {};
+    if (typeof env !== 'object' || Array.isArray(env)) missing.add(`${where}.env must be a mapping of name → value`);
+    const maxThinkingTokens = entryRaw.maxThinkingTokens === undefined ? DEFAULT_MAX_THINKING_TOKENS : Number(entryRaw.maxThinkingTokens);
+    if (!Number.isInteger(maxThinkingTokens) || maxThinkingTokens < 0) {
+      missing.add(`${where}.maxThinkingTokens must be a non-negative integer (got "${entryRaw.maxThinkingTokens}")`);
+    }
+    out.push({
+      name, harness,
+      bin: expandCommand(String(entryRaw.bin ?? adapter.defaultBin), base),
+      ...(entryRaw.launcher ? { launcher: expandCommand(String(entryRaw.launcher), base) } : {}),
+      model: String(entryRaw.model ?? tiers.standard?.model ?? adapter.defaultModel),
+      tiers,
+      args: Array.isArray(args) ? args.map(String) : [],
+      env: Object.fromEntries(Object.entries(env as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
+      maxThinkingTokens,
+    });
+  }
+  return out;
+}
+
 function parseOneRoute(
   c: any, where: string, file: string, base: string, stateDir: string, raw: Record<string, any>,
-  missing: Missing, crewHome: string,
+  missing: Missing, crewHome: string, toolchainNames: Set<string>,
 ): Route {
   rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
+  const toolchain = c?.toolchain === undefined ? undefined : String(c.toolchain);
+  if (toolchain !== undefined && !toolchainNames.has(toolchain)) {
+    missing.add(`${where}.toolchain "${toolchain}" is not defined in ship.toolchains (have: ${[...toolchainNames].join(', ')})`);
+  }
   const route = missing.req(c?.route, `${where}.route`) as string;
   const routeParts = route ? route.split('/') : [];
   const routeWellFormed = routeParts.length === 2 && routeParts.every(Boolean);
@@ -1017,6 +1111,7 @@ function parseOneRoute(
     reposBasePath: expand(String(c?.reposBasePath ?? raw.ship?.reposBasePath ?? DEFAULT_REPOS_BASE_PATH), base),
     repoOverrides,
     worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
+    ...(toolchain !== undefined ? { toolchain } : {}),
     promptsDir: resolvePromptsDir(c?.promptSet ? String(c.promptSet) : undefined, crewHome, base),
     weight,
     baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),

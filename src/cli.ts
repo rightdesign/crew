@@ -72,7 +72,8 @@ import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, f
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
-import { ensureClaudeMcp, inspectClaudeMcp, mcpUrlFor } from './claude-mcp.ts';
+import { mcpUrlFor } from './claude-mcp.ts';
+import { adapterFor, resolveToolchain, shipToolchains } from './toolchain.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -2883,7 +2884,15 @@ switch (command) {
       // CREW-1378: give interactive Claude Code sessions the tablation MCP tools.
       if (!flag('no-mcp') && apiKey) {
         const replace = value('mcp') === 'replace';
-        process.stderr.write(`${ensureClaudeMcp({ bin: cfg.ship.agent.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun })}\n`);
+        // CREW-1511: every configured toolchain, not just Claude. Toolchains
+        // that share a harness and binary are registered once.
+        const seen = new Set<string>();
+        for (const tc of shipToolchains(cfg.ship)) {
+          const id = `${tc.harness}\0${tc.bin}`;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          process.stderr.write(`${adapterFor(tc.harness).ensureMcp({ bin: tc.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun })}\n`);
+        }
       }
       // CREW-1390: name every hold resolved, so a missing operator is visible now
       // rather than when a comment from them reads as "(no identity)".
@@ -3560,6 +3569,12 @@ switch (command) {
           name: cfg.ship.name,
           platform: cfg.ship.platform,
           agent: { bin: cfg.ship.agent.bin, model: cfg.ship.agent.model },
+          // Additive (CREW-1511): the configured toolchains and the ship's
+          // default. `agent` above stays for older crew-macos builds.
+          toolchain: resolveToolchain(cfg.ship).name,
+          toolchains: shipToolchains(cfg.ship).map((x) => ({
+            name: x.name, harness: x.harness, bin: x.bin, launcher: x.launcher ?? null, model: x.model,
+          })),
           stateDir: cfg.ship.stateDir,
           logFile: cfg.ship.logFile,
           eventFile: eventFileFor(cfg.ship.stateDir),
@@ -3585,6 +3600,8 @@ switch (command) {
           dir: route.dir,
           enabled: route.enabled,
           area: route.area ?? null,
+          // Additive (CREW-1511): the toolchain this route's sessions run on.
+          toolchain: resolveToolchain(cfg.ship, route).name,
           baseUrl: route.baseUrl,
           repos: repos.map((r) => ({
             name: r.name,
@@ -3849,29 +3866,48 @@ switch (command) {
     // shell's PATH, so the agent binary and git are checked against that PATH.
     // A miss here is the CREW-1365 failure mode: every spawn ENOENTs.
     const schedulerPath = pathFor(cfg.ship);
-    const agentBinPath = findOnPath(cfg.ship.agent.bin, schedulerPath);
     const gitPath = findOnPath('git', schedulerPath);
-    process.stdout.write(
-      `agent binary:      ${cfg.ship.agent.bin} — ${agentBinPath ? `OK (${agentBinPath})` : 'NOT FOUND on the scheduler PATH'}\n` +
-        `git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`,
-    );
-    if (!agentBinPath || !gitPath) {
+    // CREW-1511: every configured toolchain gets its binary checked, its
+    // tracker-MCP registration inspected and its capability limits printed.
+    // The first line keeps the pre-toolchain wording for the default one.
+    const defaultToolchain = resolveToolchain(cfg.ship).name;
+    let allBinsFound = true;
+    for (const tc of shipToolchains(cfg.ship)) {
+      const adapter = adapterFor(tc.harness);
+      const binPath = findOnPath(tc.launcher ?? tc.bin, schedulerPath);
+      if (!binPath) allBinsFound = false;
+      const label = tc.name === defaultToolchain ? 'agent binary:     ' : `toolchain ${tc.name}:`.padEnd(18);
+      process.stdout.write(
+        `${label} ${tc.launcher ?? tc.bin} — ${binPath ? `OK (${binPath})` : 'NOT FOUND on the scheduler PATH'}` +
+          `${tc.name === defaultToolchain ? '' : ` [${adapter.displayName}]`}\n`,
+      );
+      for (const limit of adapter.limitations) process.stdout.write(`                   cannot enforce: ${limit}\n`);
+    }
+    process.stdout.write(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
+    if (!allBinsFound || !gitPath) {
       process.stdout.write(
         `                   scheduler PATH is ${schedulerPath} — ` +
           'add the directory holding the missing binary to ship.extraPath in crew.yaml, then re-run `crew doctor`.\n',
       );
     }
 
-    // CREW-1378: is the Tablation MCP server registered with Claude Code for this route?
+    // CREW-1378: is the Tablation MCP server registered with each toolchain for this route?
     if (route.apiKey) {
       const mcpUrl = mcpUrlFor(route.baseUrl);
-      const m = inspectClaudeMcp({ bin: cfg.ship.agent.bin, url: mcpUrl, key: route.apiKey });
-      process.stdout.write(
-        m.state === 'registered' ? `mcp:               tablation registered (user scope) → ${m.url}\n`
-          : m.state === 'no-claude' ? `mcp:               claude not found — Claude Code was not checked\n`
-          : m.state === 'different' ? `mcp:               tablation registered but not for this route — ${m.detail}\n`
-          : `mcp:               not registered — run crew connect\n`,
-      );
+      const seenMcp = new Set<string>();
+      for (const tc of shipToolchains(cfg.ship)) {
+        const id = `${tc.harness}\0${tc.bin}`;
+        if (seenMcp.has(id)) continue;
+        seenMcp.add(id);
+        const adapter = adapterFor(tc.harness);
+        const m = adapter.inspectMcp({ bin: tc.bin, url: mcpUrl, key: route.apiKey });
+        process.stdout.write(
+          m.state === 'registered' ? `mcp:               tablation registered (user scope) → ${m.url}\n`
+            : m.state === 'no-binary' ? `mcp:               ${tc.bin} not found — ${adapter.displayName} was not checked\n`
+            : m.state === 'different' ? `mcp:               tablation registered but not for this route — ${m.detail}\n`
+            : `mcp:               not registered — run crew connect\n`,
+        );
+      }
     }
 
     // Repo hook commands against the same scheduler PATH (CREW-1373): a hook
