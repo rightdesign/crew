@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.30.1] — 2026-10-10
+
+- Persona prompts no longer assume Claude Code: wording is harness-neutral, and the design lane's Skill/canvas steps apply only where the harness provides them, with an edit-profile fallback (CREW-1526)
+
 ## [0.30.0] — 2026-10-10
 
 - Run identity: harness, provider and toolchain are recorded in the sidecar, finished event and Agent Log, and shown by `crew logbook` (CREW-1516)
