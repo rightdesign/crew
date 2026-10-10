@@ -17,7 +17,7 @@ import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
 import type { Authorship } from './tracker.ts';
-import { renderBranchName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
+import { renderBranchName, renderWorktreeName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
 
 /** The environment variable the crew hands the session its tracker key in. */
 export const API_KEY_VAR = 'CREW_API_KEY';
@@ -180,10 +180,16 @@ function repoSection(r: EnvironmentRepo, key: string, heading: string): string[]
   const repo = r.config;
   const branchTemplate = effectiveBranchTemplate(repo, repoPrefix(repo));
   const branchName = branchExample(repo, key);
-  const worktreeName = effectiveWorktreeDirName(repo, r.dir, branchName, key.replace(/^\D+/, ''));
-  const worktreePattern = repo.provenance['worktrees.prefix'] !== 'default'
-    ? `${repo.worktrees.prefix}<number>`
-    : `${basename(r.dir.replace(/[/\\]+$/, ''))}-<branch>`;
+  const checkoutName = basename(r.dir.replace(/[/\\]+$/, ''));
+  const worktreeName = effectiveWorktreeDirName(
+    repo, r.dir, branchName, key.replace(/^\D+/, ''),
+    // The example ticket has no tag of its own, so `{issue}` is the key.
+    (template) => renderWorktreeName(template, { dir: checkoutName, key, title: 'Fix the widget', role: 'dev', prefix: repoPrefix(repo) }),
+  );
+  const worktreePattern = repo.worktrees.name
+    ?? (repo.provenance['worktrees.prefix'] !== 'default'
+      ? `${repo.worktrees.prefix}<number>`
+      : `${checkoutName}-<branch>`);
   const lines: string[] = [
     '',
     heading,

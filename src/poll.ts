@@ -23,7 +23,7 @@ import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } fr
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
 import { buildingDigest, qaDigest } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
-import { dirForRepo } from './config.ts';
+import { dirForRepo, reposOf } from './config.ts';
 import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
@@ -325,7 +325,9 @@ export function writeDigest(
     const repoFor = (dir: string) => {
       const hit = repoCache.get(dir);
       if (hit) return hit;
-      const cfg = resolveRepoConfig(loadRepoConfig(dir), undefined, dir);
+      const target = reposOf(o.route).find((r) => r.dir === dir);
+      const nameOverride = target ? o.route.repoOverrides[target.name]?.worktreeName : undefined;
+      const cfg = resolveRepoConfig(loadRepoConfig(dir), nameOverride ? { worktrees: { nameOverride } } : undefined, dir);
       repoCache.set(dir, cfg);
       return cfg;
     };

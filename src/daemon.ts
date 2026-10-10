@@ -676,6 +676,7 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
         hooks: { ...route.hooks, ...o?.hooks },
         labels: { ...route.labels, ...o?.labels },
         branch: { ...route.branch, ...o?.branch },
+        worktrees: { nameOverride: o?.worktreeName },
       }, t.dir),
     };
   });

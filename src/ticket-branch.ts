@@ -10,11 +10,12 @@
  * person (ISSUE-977). Both now come through here so they cannot disagree
  * about where a ticket's work is again.
  */
+import { basename } from 'node:path';
 import {
   branchForIssue, remoteBranchForIssue, remoteConfigured, fetchRemote, materializeRemoteBranch,
 } from './git.ts';
 import {
-  effectiveBranchTemplate, effectiveWorktreeDirName, renderBranchName, type EffectiveRepoConfig,
+  effectiveBranchTemplate, effectiveWorktreeDirName, renderBranchName, renderWorktreeName, type EffectiveRepoConfig,
 } from './repo-config.ts';
 import { ticketBranchContext, type Ticket } from './tracker.ts';
 
@@ -39,7 +40,10 @@ export function worktreeForTicket(dir: string, cfg: EffectiveRepoConfig, t: Bran
   const { prefix } = ticketBranchContext(t as Ticket);
   const branchName = branchRenderer(t, role)(effectiveBranchTemplate(cfg, prefix));
   const number = t.issue_id.replace(/^\D+/, '');
-  return effectiveWorktreeDirName(cfg, dir, branchName, number);
+  const { tag } = ticketBranchContext(t as Ticket);
+  return effectiveWorktreeDirName(cfg, dir, branchName, number, (template) => renderWorktreeName(template, {
+    dir: basename(dir.replace(/[/\\]+$/, '')), key: t.issue_id, title: t.title ?? undefined, role, tag, prefix,
+  }));
 }
 
 function branchTemplates(cfg: EffectiveRepoConfig, t: BranchLookupTicket) {

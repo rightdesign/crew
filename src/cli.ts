@@ -1042,7 +1042,7 @@ async function resolvedRepos(c: typeof route) {
         // that declares its own `worktrees.prefix` shadows either, and
         // `doctor` reports that the way it reports every other shadowed
         // setting.
-        worktrees: { prefix: shipWorktreePrefixFor(c) ?? await areaWorktreePrefix(c, id) },
+        worktrees: { prefix: shipWorktreePrefixFor(c) ?? await areaWorktreePrefix(c, id), nameOverride: o?.worktreeName },
       }, t.dir),
     };
   }));
@@ -1159,7 +1159,7 @@ async function releasePhase(
       hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
       release: mergeRouteRelease(c.release, o?.release),
       branch: { ...c.branch, ...o?.branch },
-      worktrees: { prefix: shipWorktreePrefixFor(c) },
+      worktrees: { prefix: shipWorktreePrefixFor(c), nameOverride: o?.worktreeName },
     }, target.dir);
     const problems = validateEffective(repo);
     for (const p of problems) remit.warn(`${scope}: ${p}`);
@@ -3584,9 +3584,10 @@ switch (command) {
             // `synthesis-tabl-123`. `worktreePrefix` above is kept for
             // config-provenance display; this is the field that actually
             // describes where a worktree lands by default.
-            worktreeDirPattern: r.config.provenance['worktrees.prefix'] !== 'default'
-              ? `${r.config.worktrees.prefix}<number>`
-              : `${basename(r.dir.replace(/[/\\]+$/, ''))}-<branch>`,
+            worktreeDirPattern: r.config.worktrees.name
+              ?? (r.config.provenance['worktrees.prefix'] !== 'default'
+                ? `${r.config.worktrees.prefix}<number>`
+                : `${basename(r.dir.replace(/[/\\]+$/, ''))}-<branch>`),
             worktreeParent: resolvePath(r.dir, '..'),
           })),
           waiting: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : null,
@@ -3696,13 +3697,14 @@ switch (command) {
       // derived per ticket from its own branch name rather than a repo-wide
       // prefix — an explicit `worktrees.prefix` (repo or ship) still wins and
       // keeps the older `<prefix><number>` form.
-      const worktreePattern = config.provenance['worktrees.prefix'] !== 'default'
-        ? `${config.worktrees.prefix}<number>`
-        : `${basename(r.dir.replace(/[/\\]+$/, ''))}-${effectiveBranchTemplate(config, undefined)}`;
+      const worktreePattern = config.worktrees.name
+        ?? (config.provenance['worktrees.prefix'] !== 'default'
+          ? `${config.worktrees.prefix}<number>`
+          : `${basename(r.dir.replace(/[/\\]+$/, ''))}-${effectiveBranchTemplate(config, undefined)}`);
       process.stdout.write(
         `${`repo ${r.name}:`.padEnd(19)}${r.dir}\n` +
           `                   worktrees at ../${worktreePattern} ` +
-          `(${config.provenance['worktrees.prefix'] ?? 'default'}), ` +
+          `(${config.provenance['worktrees.name'] ?? config.provenance['worktrees.prefix'] ?? 'default'}), ` +
           `branch ${config.branch.name}\n` +
           `                   requires ${config.platform} — ${satisfies(host, config.platform) ? 'OK' : 'MISMATCH'}\n`,
       );

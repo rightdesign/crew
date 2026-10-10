@@ -238,6 +238,13 @@ export interface Worktrees {
    * `worktreePrefix` still overrides that default, and this overrides both.
    */
   prefix: string;
+  /**
+   * A template for the whole worktree DIRECTORY name (CREW-1504), rendered
+   * beside the checkout: `{dir}` (the checkout's directory name), `{issue}`
+   * (the ticket's tag, lower-cased — `cmac-1501`), plus every `branch.name`
+   * placeholder. Wins over `prefix`; absent means "not declared here".
+   */
+  name?: string;
 }
 
 /**
@@ -317,6 +324,35 @@ const TOP_LEVEL = new Set([
 ]);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
 const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag)\}/g;
+/** What a `worktrees.name` template may use: the branch placeholders plus the two that only make sense for a directory. */
+export const WORKTREE_PLACEHOLDERS = ['dir', 'issue', 'number', 'key', 'slug', 'role', 'prefix', 'tag'] as const;
+
+/**
+ * Why `template` is not a usable worktree-name template, or null when it is.
+ * Run at config load (repo `.crew.yaml` and a route's `worktreeName`) so a
+ * typo fails loudly instead of cutting `crew-{bogus}` directories.
+ */
+export function worktreeNameProblem(template: string): string | null {
+  const valid = `Valid placeholders: ${WORKTREE_PLACEHOLDERS.map((p) => `{${p}}`).join(' ')}.`;
+  if (template.trim() === '') return `must be a non-empty string. ${valid}`;
+  if (/[/\\]/.test(template)) {
+    return 'must not contain a path separator — a worktree is cut beside the checkout, not inside a directory of its own';
+  }
+  const stripped = template.replace(/\{([^{}]*)\}/g, (_m, name: string) => {
+    if (!(WORKTREE_PLACEHOLDERS as readonly string[]).includes(name)) return '\u0000';
+    return '';
+  });
+  if (stripped.includes('\u0000')) {
+    const bad = [...template.matchAll(/\{([^{}]*)\}/g)]
+      .map((m) => m[1] ?? '').filter((n) => !(WORKTREE_PLACEHOLDERS as readonly string[]).includes(n));
+    return `names unknown placeholder ${bad.map((b) => `{${b}}`).join(', ')}. ${valid}`;
+  }
+  if (/[{}]/.test(stripped)) return `has an unbalanced brace. ${valid}`;
+  if (!/\{(issue|number|key|slug|tag)\}/.test(template)) {
+    return 'names no per-ticket placeholder — every ticket would get the same worktree. Use at least one of {issue} {number} {key} {slug} {tag}.';
+  }
+  return null;
+}
 const RELEASE_KEYS = new Set([
   'mode', 'ship', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
@@ -369,7 +405,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file);
   rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file);
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
-  rejectUnknown(raw.worktrees, new Set(['copy', 'prefix']), 'worktrees', file);
+  rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
@@ -413,7 +449,13 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
         'a worktree is cut beside the checkout, not inside a directory of its own',
     );
   }
+  const nameRaw = raw.worktrees?.name;
+  if (nameRaw !== undefined) {
+    const problem = typeof nameRaw === 'string' ? worktreeNameProblem(nameRaw) : 'must be a string';
+    if (problem) throw new RepoConfigError(`${file}: worktrees.name ("${String(nameRaw)}") ${problem}`);
+  }
   const worktrees: Worktrees = {
+    ...(nameRaw !== undefined ? { name: String(nameRaw) } : {}),
     copy: (copyRaw ?? []).map((c: unknown) => String(c)),
     // Empty means "not declared" here; the effective config fills it in, since
     // only that layer knows the ship's setting and the checkout's directory.
@@ -665,6 +707,12 @@ export function renderBranchName(template: string, ctx: BranchContext): string {
   });
 }
 
+/** Renders a `worktrees.name` template: `{dir}`/`{issue}` here, everything else as a branch name. */
+export function renderWorktreeName(template: string, ctx: BranchContext & { dir: string }): string {
+  const issue = (ctx.tag ?? ctx.key).toLowerCase();
+  return renderBranchName(template.replace(/\{dir\}/g, ctx.dir).replace(/\{issue\}/g, issue), ctx);
+}
+
 // ---------------------------------------------------------------------------
 // Effective config: the repo contract, or the ship's own settings for a repo
 // that has not adopted one.
@@ -679,7 +727,15 @@ export function renderBranchName(template: string, ctx: BranchContext): string {
 export interface ShipRepoSettings {
   branch?: Partial<BranchNaming>;
   /** The route's `worktreePrefix`, if it declares one (ISSUE-350). */
-  worktrees?: { prefix?: string };
+  worktrees?: {
+    prefix?: string;
+    /**
+     * A route's per-repo `worktreeName` (CREW-1504). Unlike every other ship
+     * setting this OUTRANKS the repo's own `worktrees.name`: it is the one
+     * place a ship can say "on this machine, name this repo's worktrees so".
+     */
+    nameOverride?: string;
+  };
   shell?: string;
   hooks?: RepoHooks;
   labels?: Partial<Record<keyof RepoHooks, string>>;
@@ -770,6 +826,11 @@ export function resolveRepoConfig(
     return fallback;
   };
 
+  if (ship?.worktrees?.nameOverride) {
+    if (repo?.worktrees.name) shadowed.push('worktrees.name');
+    provenance['worktrees.name'] = 'ship';
+  } else if (repo?.worktrees.name) provenance['worktrees.name'] = 'repo';
+
   const hooks: RepoHooks = {};
   const labels: RepoConfig['labels'] = {};
   for (const h of HOOK_NAMES) {
@@ -805,6 +866,9 @@ export function resolveRepoConfig(
       // convention already in use.
       prefix: pick('worktrees.prefix', repo?.worktrees.prefix || undefined,
         ship?.worktrees?.prefix, defaultWorktreePrefix(dir)),
+      ...(ship?.worktrees?.nameOverride || repo?.worktrees.name
+        ? { name: ship?.worktrees?.nameOverride || repo?.worktrees.name }
+        : {}),
     },
     docs: repo?.docs ?? {},
     branch: {
@@ -920,7 +984,14 @@ export function effectiveWorktreePrefix(cfg: EffectiveRepoConfig, prefix: string
  */
 export function effectiveWorktreeDirName(
   cfg: EffectiveRepoConfig, dir: string, branchName: string, number: string,
+  renderName?: (template: string) => string,
 ): string {
+  // CREW-1504 precedence: route-repo `worktreeName` -> repo `worktrees.name`
+  // (already merged into `cfg.worktrees.name`) -> explicit prefix (legacy,
+  // `<prefix><number>`) -> default `<checkout dir>-<branch>`. The default is
+  // the `{dir}-{issue}` the template docs describe whenever the branch is
+  // named for the ticket tag, which is every repo that has not set `branch.name`.
+  if (cfg.worktrees.name && renderName) return renderName(cfg.worktrees.name);
   if (cfg.provenance['worktrees.prefix'] !== 'default') return `${cfg.worktrees.prefix}${number}`;
   return `${basename(dir.replace(/[/\\]+$/, ''))}-${branchName}`;
 }

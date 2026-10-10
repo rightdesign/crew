@@ -196,6 +196,7 @@ export async function guardRunHandoff(
       hooks: { ...route.hooks, ...o?.hooks },
       labels: { ...route.labels, ...o?.labels },
       branch: { ...route.branch, ...o?.branch },
+      worktrees: { nameOverride: o?.worktreeName },
     }, target.dir);
     // CREW-1405: QA hands nothing on (it verifies or bounces), and its hard
     // limits forbid `crew drop`, so the runner retires the worktree a QA run cut

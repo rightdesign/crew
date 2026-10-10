@@ -32,7 +32,7 @@ import {
 } from './platform.ts';
 import {
   MODES as RELEASE_MODES, PROVIDERS as CI_PROVIDERS, MATCHES as VERIFY_MATCHES, VERSIONINGS,
-  type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning, type BranchNaming,
+  worktreeNameProblem, type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning, type BranchNaming,
 } from './repo-config.ts';
 
 /**
@@ -294,6 +294,11 @@ export interface Route {
     release?: Route['release'];
     branch?: Partial<BranchNaming>;
     /**
+     * A `worktrees.name` template for THIS repo on THIS ship (CREW-1504).
+     * Outranks the repo's own `.crew.yaml` `worktrees.name`.
+     */
+    worktreeName?: string;
+    /**
      * Per-connection opt-OUT of Host Passengers (ISSUE-553), when this
      * route's own `hostPassengers: true` would otherwise include every repo
      * it serves in that workspace's container. Absent (the common case)
@@ -457,7 +462,14 @@ const ROUTE_KEYS = new Set([
   'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
-const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch', 'hostPassengers']);
+/** A route repo's `worktreeName`, validated like `worktrees.name` in a repo's own `.crew.yaml`. */
+function parseWorktreeName(v: unknown, where: string, file: string): string {
+  const problem = typeof v === 'string' ? worktreeNameProblem(v) : 'must be a string';
+  if (problem) throw new ConfigError(`${file}: ${where}.worktreeName ("${String(v)}") ${problem}`);
+  return String(v);
+}
+
+const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch', 'hostPassengers', 'worktreeName']);
 const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
 // `versionFile` (singular) is a ship-level-only alias for a one-entry
 // `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
@@ -953,7 +965,7 @@ function parseOneRoute(
         const e = entry as Record<string, any>;
         rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
         repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
-        if (e.hooks || e.labels || e.release || e.branch || e.hostPassengers !== undefined) {
+        if (e.hooks || e.labels || e.release || e.branch || e.hostPassengers !== undefined || e.worktreeName !== undefined) {
           repoOverrides[name] = {
             hooks: e.hooks, labels: e.labels,
             release: e.release ? parseReleaseOverride(e.release, `${where}.repos.${name}`, file) : undefined,
@@ -963,6 +975,7 @@ function parseOneRoute(
             // compare this literally.
             ...(e.branch ? { branch: parseBranchOverride(e.branch, `${where}.repos.${name}`, file) } : {}),
             ...(e.hostPassengers !== undefined ? { hostPassengers: e.hostPassengers === true } : {}),
+            ...(e.worktreeName !== undefined ? { worktreeName: parseWorktreeName(e.worktreeName, `${where}.repos.${name}`, file) } : {}),
           };
         }
       } else {

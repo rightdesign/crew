@@ -76,6 +76,12 @@ routes:
 
     worktreePrefix: "myproject-issue-"
 
+    # A repo may also be written as an object to name its worktree directory
+    # for this ship only (CREW-1504) — a template over {dir} {issue} {number}
+    # {key} {slug} {tag} {prefix} {role}. Outranks the repo's own
+    # `worktrees.name`, which outranks worktreePrefix; see docs/REPO_SPEC.md.
+    #   My Product: { dir: "/home/me/src/my-product", worktreeName: "{dir}-{issue}" }
+
     # Opt this route's ship into Host Passengers for this route's workspace
     # (ISSUE-644): `crew connect` syncs this onto that workspace's own Ships
     # row. Config-truth lives here, on the machine — never edit a Ships row
