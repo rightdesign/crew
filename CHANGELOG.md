@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.31.0] — 2026-10-10
+
+- `crew disconnect` no longer removes a Pair `tablation` MCP server crew did not install (CREW-1517)
+- Pair now installs for Codex and Gemini CLI via `ship.pair` (a managed instructions block plus a key-by-env-var MCP entry in their user-level files), with `crew connect`/`doctor` support and a new `crew disconnect` (CREW-1517)
+
 ## [0.30.1] — 2026-10-10
 
 - Persona prompts no longer assume Claude Code: wording is harness-neutral, and the design lane's Skill/canvas steps apply only where the harness provides them, with an edit-profile fallback (CREW-1526)
