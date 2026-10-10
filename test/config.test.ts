@@ -934,3 +934,12 @@ test('ship.eventsRotateBytes defaults to 64 MB and rejects a non-positive value 
   const ok = withConfig(ONE.replace('ship:\n', 'ship:\n  eventsRotateBytes: 1000\n'));
   assert.equal(loadConfig(ok.dir, ok.file).ship.eventsRotateBytes, 1000);
 });
+
+test('ship.pair defaults to claude, accepts known harnesses, rejects unknown ones (CREW-1517)', () => {
+  const dflt = loadConfig(withConfig(ONE).dir, withConfig(ONE).file);
+  assert.equal(dflt.ship.pair, undefined);
+  const w = withConfig(ONE.replace('ship:\n', 'ship:\n  pair: [claude, codex, gemini, codex]\n'));
+  assert.deepEqual(loadConfig(w.dir, w.file).ship.pair, ['claude', 'codex', 'gemini']);
+  const bad = withConfig(ONE.replace('ship:\n', 'ship:\n  pair: [vim]\n'));
+  assert.throws(() => loadConfig(bad.dir, bad.file), /ship\.pair "vim"/);
+});

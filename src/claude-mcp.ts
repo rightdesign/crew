@@ -100,3 +100,15 @@ export function ensureClaudeMcp(o: McpOpts & { replace?: boolean; dryRun?: boole
   }
   return `mcp: registered the ${MCP_SERVER_NAME} MCP server with Claude Code → ${o.url} (user scope, ~/.claude.json)`;
 }
+
+/** Remove the user-scope `tablation` registration (`crew disconnect`). Leaves other scopes alone. */
+export function removeClaudeMcp(o: { bin: string; dryRun?: boolean }): string {
+  const got = runClaude(o.bin, ['mcp', 'get', MCP_SERVER_NAME]);
+  if (got.missing) return `mcp: \`${o.bin}\` not found, so Claude Code was not touched`;
+  if (got.status !== 0) return `mcp: no ${MCP_SERVER_NAME} server registered with Claude Code`;
+  if (o.dryRun) return `(dry run) would remove the ${MCP_SERVER_NAME} MCP server from Claude Code (user scope)`;
+  const rm = runClaude(o.bin, ['mcp', 'remove', MCP_SERVER_NAME, '--scope', 'user']);
+  return rm.status === 0
+    ? `mcp: removed the ${MCP_SERVER_NAME} MCP server from Claude Code (user scope)`
+    : `mcp: \`claude mcp remove\` failed (${rm.stderr.trim() || `exit ${rm.status}`})`;
+}

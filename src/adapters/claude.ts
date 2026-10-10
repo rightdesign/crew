@@ -7,7 +7,8 @@
 
 import type { RoleName } from '../config.ts';
 import { mapStreamLine, extractResult, extractTurnTokens } from '../stream.ts';
-import { ensureClaudeMcp, inspectClaudeMcp } from '../claude-mcp.ts';
+import { ensureClaudeMcp, inspectClaudeMcp, removeClaudeMcp } from '../claude-mcp.ts';
+import type { PairInstaller } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
 import { profileFor, type CapabilityProfile } from '../capability.ts';
 
@@ -76,6 +77,24 @@ export function claudeToolsFor(p: CapabilityProfile): string[] {
 export function allowedTools(role: RoleName): string[] {
   return claudeToolsFor(profileFor(role));
 }
+
+/**
+ * Claude's Pair install is today's path, unchanged: the operator's session-start
+ * hook runs `crew agents prompt pair`, and the only thing crew installs is the
+ * user-scope `claude mcp add` registration.
+ */
+export const claudePair: PairInstaller = {
+  harness: 'claude',
+  displayName: 'Claude Code',
+  installPair: (o) => ensureClaudeMcp({ bin: o.bin ?? 'claude', url: o.url, key: o.key ?? '', home: o.home, replace: o.replace, dryRun: o.dryRun }),
+  verifyPair(o) {
+    const s = inspectClaudeMcp({ bin: o.bin ?? 'claude', url: o.url, key: o.key ?? '', home: o.home });
+    return s.state === 'registered' ? { ok: true, detail: s.url }
+      : s.state === 'different' ? { ok: false, detail: s.detail }
+      : { ok: false, detail: s.state === 'no-claude' ? 'claude binary not found' : 'tablation MCP server not registered' };
+  },
+  removePair: (o) => removeClaudeMcp({ bin: o.bin ?? 'claude', dryRun: o.dryRun }),
+};
 
 export const claudeAdapter: HarnessAdapter = {
   harness: 'claude',

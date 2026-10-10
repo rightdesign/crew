@@ -26,6 +26,7 @@ import { resolve, dirname, isAbsolute, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { parse } from 'yaml';
 import { DEFAULT_EVENTS_ROTATE_BYTES } from './events.ts';
+import { PAIR_HARNESS_NAMES, DEFAULT_PAIR, isPairHarness } from './pair-install.ts';
 import { TIERS, HARNESS_NAMES, LEGACY_TOOLCHAIN, adapterFor, isHarness, type ToolchainSpec, type ToolchainTier, type Tier } from './toolchain.ts';
 import { getSessionStore, hostFromUrl, type SessionStore } from '@tablation/client';
 import {
@@ -377,6 +378,12 @@ export interface Ship {
   toolchains?: ToolchainSpec[];
   /** Name of the default toolchain; absent means `claude`. */
   toolchain?: string;
+  /**
+   * Harnesses `crew connect` installs Pair for (CREW-1517, EPIC-035 §8):
+   * the Claude session-start hook's counterpart for CLIs without one. Absent
+   * means `[claude]`, which is what a ship always had.
+   */
+  pair?: string[];
   shell?: string;
   extraPath?: string;
   useNvm: boolean;
@@ -475,7 +482,7 @@ export interface CrewConfig {
 export class ConfigError extends Error {}
 
 const SHIP_KEYS = new Set([
-  'name', 'platform', 'agent', 'toolchains', 'toolchain', 'shell', 'extraPath', 'useNvm', 'nvmSh',
+  'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage',
 ]);
@@ -898,6 +905,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   }
   const toolchains = parseToolchains(shipRaw.toolchains, base, missing, file);
   const toolchainNames = new Set([LEGACY_TOOLCHAIN, ...toolchains.map((x) => x.name)]);
+  const pair = parsePair(shipRaw.pair, missing);
   const shipToolchain = shipRaw.toolchain === undefined ? undefined : String(shipRaw.toolchain);
   if (shipToolchain !== undefined && !toolchainNames.has(shipToolchain)) {
     missing.add(`ship.toolchain "${shipToolchain}" is not defined (have: ${[...toolchainNames].join(', ')})`);
@@ -955,6 +963,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       },
       ...(toolchains.length > 0 ? { toolchains } : {}),
       ...(shipToolchain !== undefined ? { toolchain: shipToolchain } : {}),
+      ...(pair ? { pair } : {}),
       shell: shipRaw.shell,
       extraPath: shipRaw.extraPath,
       useNvm: shipRaw.useNvm !== false,
@@ -985,6 +994,26 @@ function expandCommand(cmd: string, base: string): string {
 }
 
 const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens']);
+
+/** `ship.pair`: a list of harness names (CREW-1517). Undefined when absent. */
+function parsePair(raw: unknown, missing: Missing): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    missing.add('ship.pair must be a list of harness names');
+    return undefined;
+  }
+  const out: string[] = [];
+  for (const h of raw.map(String)) {
+    if (!isPairHarness(h)) missing.add(`ship.pair "${h}" is not a harness Pair can be installed for (have: ${PAIR_HARNESS_NAMES.join(', ')})`);
+    else if (!out.includes(h)) out.push(h);
+  }
+  return out;
+}
+
+/** The harnesses Pair is installed for on this ship. */
+export function shipPair(ship: Ship): string[] {
+  return ship.pair ?? DEFAULT_PAIR;
+}
 
 /**
  * Parses the ship's `toolchains:` map (CREW-1511). Every problem is reported

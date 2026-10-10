@@ -16,7 +16,7 @@ import {
   ticketsByRepo, configuredMembers,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
-  ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat,
+  ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat, shipPair,
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
@@ -73,6 +73,7 @@ import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.t
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
+import { pairInstallerFor, harnessPromptNote } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor } from './toolchain.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
@@ -292,8 +293,9 @@ function usage(): never {
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block (--no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
+  crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
   crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)
-  crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook)
+  crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
@@ -362,7 +364,7 @@ if (!command) usage();
  * break the one legitimate `crew` call a session is actually supposed to
  * make.
  */
-const STATE_WRITING_COMMANDS = new Set(['connect', 'install', 'uninstall', 'release', 'merge', 'deploy']);
+const STATE_WRITING_COMMANDS = new Set(['connect', 'disconnect', 'install', 'uninstall', 'release', 'merge', 'deploy']);
 const STATE_WRITING_SUBCOMMANDS: Partial<Record<string, Set<string>>> = {
   agents: new Set(['sync']),
   skills: new Set(['sync']),
@@ -478,7 +480,7 @@ const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? ''
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || releaseFleetWide ||
   command === 'pause' || command === 'resume' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
@@ -2200,7 +2202,7 @@ switch (command) {
       }
       try {
         const prompt = await currentPersonaPrompt(promptTarget, role, { userAgent: cfg.ship.userAgent });
-        process.stdout.write(prompt);
+        process.stdout.write(prompt + (role === 'pair' ? harnessPromptNote(value('harness')) : ''));
       } catch (e) {
         if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents prompt: ${e.message}\n`); process.exit(2); }
         throw e;
@@ -2895,6 +2897,11 @@ switch (command) {
           seen.add(id);
           process.stderr.write(`${adapterFor(tc.harness).ensureMcp({ bin: tc.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun })}\n`);
         }
+        // CREW-1517: Pair for the other harnesses `ship.pair` lists. Claude's is
+        // the registration just done above, so it is not repeated here.
+        for (const h of shipPair(cfg.ship).filter((x) => x !== 'claude')) {
+          process.stderr.write(`${pairInstallerFor(h).installPair({ url: mcpUrlFor(baseUrl), replace, dryRun })}\n`);
+        }
       }
       // CREW-1390: name every hold resolved, so a missing operator is visible now
       // rather than when a comment from them reads as "(no identity)".
@@ -3423,6 +3430,17 @@ switch (command) {
     break;
   }
 
+  case 'disconnect': {
+    // CREW-1517: the inverse of `connect`'s harness installs — removes the Tablation
+    // MCP server from Claude Code and Pair's block and MCP entry from every other
+    // harness `ship.pair` lists. crew.yaml and the tracker are left alone.
+    const url = mcpUrlFor(value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL);
+    for (const h of shipPair(cfg.ship)) {
+      process.stderr.write(`${pairInstallerFor(h).removePair({ url, bin: cfg.ship.agent.bin, dryRun })}\n`);
+    }
+    break;
+  }
+
   case 'install': {
     if (!(await installScheduler({ replace: flag('replace') }))) process.exit(2);
     break;
@@ -3910,6 +3928,13 @@ switch (command) {
             : `mcp:               not registered — run crew connect\n`,
         );
       }
+    }
+
+    // CREW-1517: is Pair installed for each non-Claude harness `ship.pair` lists?
+    for (const h of shipPair(cfg.ship).filter((x) => x !== 'claude')) {
+      const inst = pairInstallerFor(h);
+      const v = inst.verifyPair({ url: mcpUrlFor(route.baseUrl) });
+      process.stdout.write(`pair ${h}:`.padEnd(19) + (v.ok ? ` installed (${v.detail})\n` : ` NOT installed — ${v.detail}; run crew connect\n`));
     }
 
     // CREW-1515: a seat whose persona names a vendor no toolchain on this ship
