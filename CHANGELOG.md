@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.26.0] — 2026-10-10
+
+- Worktree directory names are configurable with a `worktrees.name` template (`{dir}`, `{issue}`, `{number}`, `{key}`, `{slug}`), overridable per route repo via `worktreeName` (CREW-1504)
+
 ## [0.25.0] — 2026-10-10
 
 - Routes with no configured API key now fall back to the CREW_API_KEY environment variable, and the missing-key error names every source checked (CREW-1503)
