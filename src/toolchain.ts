@@ -9,14 +9,14 @@
  * the legacy `agent:` block defines) says which binary, model and extras to use.
  *
  * Everything that used to be Claude-shaped in `agent.ts`/`cli.ts` goes through
- * `HarnessAdapter` now. Only the `claude` adapter exists; adding a second
- * harness means writing another file under `adapters/` and registering it here.
+ * `HarnessAdapter` now. Adding another harness means writing another file under `adapters/` and registering it here.
  */
 
 import { basename } from 'node:path';
 import type { Route, RoleName, Ship } from './config.ts';
 import type { StreamKindEvent, StreamResult } from './stream.ts';
 import { claudeAdapter } from './adapters/claude.ts';
+import { geminiAdapter } from './adapters/gemini.ts';
 import type { CapabilityProfile } from './capability.ts';
 
 /** Model-size tiers a toolchain can map to concrete models (EPIC-035 §2). */
@@ -106,6 +106,13 @@ export interface HarnessAdapter {
   /** Variables removed from the inherited environment before exec. */
   unsetEnv: string[];
   mapStreamLine(parsed: unknown): StreamKindEvent[];
+  /**
+   * A per-run stream mapper, for a harness whose events do not line up with
+   * one assistant turn per line (Gemini streams text in fragments). The runner
+   * calls `map` per line and `flush` once at end of stream; when absent it uses
+   * the stateless `mapStreamLine`.
+   */
+  createStreamMapper?(): { map(parsed: unknown): StreamKindEvent[]; flush(): StreamKindEvent[] };
   extractResult(parsed: unknown): StreamResult | undefined;
   extractTurnTokens(parsed: unknown): number | undefined;
   inspectMcp(o: McpRegistrationOpts): McpRegistration;
@@ -115,6 +122,7 @@ export interface HarnessAdapter {
 
 const ADAPTERS: Record<string, HarnessAdapter> = {
   [claudeAdapter.harness]: claudeAdapter,
+  [geminiAdapter.harness]: geminiAdapter,
 };
 
 export const HARNESS_NAMES = Object.keys(ADAPTERS);

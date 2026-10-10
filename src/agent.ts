@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, type WriteStream } from 'node:fs';
 import { finished } from 'node:stream/promises';
+import type { StreamKindEvent } from './stream.ts';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Route, RoleName, Ship } from './config.ts';
@@ -426,6 +427,8 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     // module doc for why the two can diverge.
     const attribution = new TicketAttributionTracker();
 
+    const mapper = adapter.createStreamMapper?.() ?? { map: (p: unknown) => adapter.mapStreamLine(p), flush: () => [] };
+
     const handleLine = (line: string) => {
       if (!line) return;
       try { rawSink?.write(`${line}\n`); } catch { /* a lost stream copy must not stop the run */ }
@@ -436,9 +439,21 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
         return;   // not our schema's stability guarantee — drop and move on
       }
       try {
-        result = adapter.extractResult(parsed) ?? result;
+        const extracted = adapter.extractResult(parsed);
+        if (extracted) result = { ...result, ...extracted };
+        consume(parsed, mapper.map(parsed));
+      } catch {
+        /* a shape this run's mapping does not expect must not kill the cycle */
+      }
+    };
+
+    // Turns mapped events (and, when there is a source line, its token usage)
+    // into sink writes and buffered cycles. `parsed` is undefined for events
+    // the mapper flushes at end of stream, which have no line of their own.
+    const consume = (parsed: unknown, events: StreamKindEvent[]) => {
+      {
         let turnText = '';
-        for (const ev of adapter.mapStreamLine(parsed)) {
+        for (const ev of events) {
           const e = {
             at: new Date().toISOString(),
             cycle: emit.cycle,
@@ -492,10 +507,8 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
         // above as an empty string, which `TicketAttributionTracker.add`
         // treats as "no new mention, keep crediting whatever ticket was
         // last named."
-        const turnTokens = adapter.extractTurnTokens(parsed);
+        const turnTokens = parsed === undefined ? undefined : adapter.extractTurnTokens(parsed);
         if (turnTokens !== undefined) attribution.add(turnText, turnTokens);
-      } catch {
-        /* a shape this run's mapping does not expect must not kill the cycle */
       }
     };
 
@@ -516,6 +529,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     });
     child.on('close', async (code) => {
       if (buf) handleLine(buf);
+      try { consume(undefined, mapper.flush()); } catch { /* ditto */ }
       await Promise.all([endSink(rawSink), endSink(eventsSink)]);
       if (spawnFailed) return;
       // The ticket the transcript actually spent the most tokens on, falling

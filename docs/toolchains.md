@@ -3,7 +3,7 @@
 A **toolchain** is the CLI crew launches for an agent session. Each one is a
 named instance of a **harness adapter** — the code that knows how one vendor's
 CLI is invoked, how it is granted tools, how the tracker MCP is registered with
-it, and how its output stream is read. Only the `claude` harness exists today.
+it, and how its output stream is read. Two harnesses exist: `claude` and `gemini`.
 
 ## Configuring
 
@@ -29,6 +29,30 @@ The legacy `ship.agent: {bin, model, maxThinkingTokens}` block still works and
 defines an implicit toolchain named `claude`. A `toolchains:` entry named
 `claude` replaces it. Unknown toolchain names, harnesses and tiers fail at load
 time (a bad route override drops only that route, with a warning).
+
+## Gemini CLI
+
+```yaml
+ship:
+  toolchains:
+    gemini:
+      harness: gemini
+      bin: gemini
+      model: gemini-2.5-pro     # tiers default to flash (light) / pro (standard, deep)
+```
+
+Runs `gemini -p '' --model <model> --output-format stream-json` (the prompt goes on stdin; `-p ''` only selects non-interactive mode), billed as
+`provider: google`. Run `crew connect` first: Gemini has no per-run MCP flag, so
+the tracker server is read from `~/.gemini/settings.json` (the same
+`mcpServers.tablation` entry `ship.pair: [gemini]` writes, key by `$CREW_API_KEY`
+only). Capabilities map to `--approval-mode` / `--allowed-tools`; `crew doctor`
+prints what that cannot enforce (no deny list, unrestricted shell, no design
+tools, no thinking blocks, no cost or turn count). Gemini billing variables
+(`GEMINI_API_KEY`, `GOOGLE_API_KEY`, Vertex settings) are unset at exec so the
+operator's Google login is what pays. A tier's `reasoning` is ignored.
+
+The stream mapping was written from Gemini CLI's documented schema; the fixture
+is hand-built, not recorded. One real headless run is still owed.
 
 ## Running a harness through OpenRouter's Ori
 

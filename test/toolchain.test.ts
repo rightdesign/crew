@@ -106,7 +106,7 @@ routes:${ROUTE()}`);
 
 test('unknown toolchain names, harnesses and tiers fail at load time', () => {
   assert.throws(() => cfgFrom(`ship:\n  toolchain: nope\nroutes:${ROUTE()}`), (e) => e instanceof ConfigError && /ship\.toolchain "nope"/.test(e.message));
-  assert.throws(() => cfgFrom(`ship:\n  toolchains:\n    x: { harness: gemini }\nroutes:${ROUTE()}`), /ship\.toolchains\.x\.harness/);
+  assert.throws(() => cfgFrom(`ship:\n  toolchains:\n    x: { harness: nonesuch }\nroutes:${ROUTE()}`), /ship\.toolchains\.x\.harness/);
   assert.throws(() => cfgFrom(`ship:\n  toolchains:\n    x: { harness: claude, tiers: { huge: { model: m } } }\nroutes:${ROUTE()}`), /not a tier/);
   assert.throws(() => cfgFrom(`ship:\n  toolchains:\n    x: { harness: claude, color: red }\nroutes:${ROUTE()}`), /color/);
   // A bad route override drops that route (with a warning) instead of the whole ship.

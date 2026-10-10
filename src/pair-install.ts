@@ -313,6 +313,35 @@ function geminiMcpState(s: GeminiSettings, url: string): McpFileState {
   return { state: 'registered' };
 }
 
+/**
+ * The `tablation` entry in Gemini CLI's user settings, without the Pair block —
+ * what the headless adapter needs (Gemini has no per-run `--mcp-config`, so the
+ * entry must already be in `~/.gemini/settings.json`). `installPair` writes the
+ * same entry through this shape.
+ */
+export function inspectGeminiMcp(o: { url: string; home?: string }): { state: 'missing' } | { state: 'registered'; url: string } | { state: 'different'; detail: string } {
+  const p = geminiPaths(o.home ?? homedir());
+  const settings = readGeminiSettings(p.config);
+  if (!settings) return { state: 'different', detail: `${p.config} is not a JSON object` };
+  const st = geminiMcpState(settings, o.url);
+  return st.state === 'registered' ? { state: 'registered', url: o.url } : st;
+}
+
+export function ensureGeminiMcp(o: { url: string; home?: string; replace?: boolean; dryRun?: boolean }): string {
+  const p = geminiPaths(o.home ?? homedir());
+  const settings = readGeminiSettings(p.config);
+  if (!settings) return `gemini: ${p.config} is not a JSON object — fix it by hand; nothing was written`;
+  const st = geminiMcpState(settings, o.url);
+  if (st.state === 'registered') return `gemini: ${SERVER} MCP server already registered in ${p.config}`;
+  if (st.state === 'different' && !o.replace) {
+    return `gemini: left ${p.config} alone — a "${SERVER}" server exists and ${st.detail}. Re-run with --mcp replace to overwrite it.`;
+  }
+  if (!o.dryRun) {
+    writeFileMkdir(p.config, `${JSON.stringify({ ...settings, mcpServers: { ...settings.mcpServers, [SERVER]: geminiEntry(o.url) } }, null, 2)}\n`);
+  }
+  return `gemini: ${o.dryRun ? '(dry run) would register' : 'registered'} ${SERVER} in ${p.config} (key read from $${PAIR_KEY_VAR})`;
+}
+
 export const geminiPair: PairInstaller = {
   harness: 'gemini',
   displayName: 'Gemini CLI',
