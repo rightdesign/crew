@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.25.0] — 2026-10-10
+
+- Routes with no configured API key now fall back to the CREW_API_KEY environment variable, and the missing-key error names every source checked (CREW-1503)
+- Lane prompts treat work needed in another repo as a filed, linked dependency and QA bounces hand-offs that list unfiled needed work (CREW-1505)
+- blocked_by now holds past accepted — QA skips blocked fixed/qa tickets and the release phase holds blocked verified ones, reported once and shown in crew status (CREW-1506)
+
 ## [0.24.0] — 2026-10-10
 
 - `crew projects [--route R] [--json]` lists the Projects rows each route can read (id, name, issue prefix, work mode, current area) for the macOS Project popup (CREW-1502)
