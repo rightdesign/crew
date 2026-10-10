@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   syncPersonas, personaDefaultPrompt, currentPersonaPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError,
-  fetchHistoryEntries, fetchDivergedPrompt, fetchSeatAgentModel,
+  fetchHistoryEntries, fetchDivergedPrompt, fetchSeatAgentModel, fetchSeatPersona,
 } from '../src/agents.ts';
 import type { Route } from '../src/config.ts';
 
@@ -640,6 +640,31 @@ test('fetchSeatAgentModel returns undefined when the linked Agent row has no mod
   const model = await fetchSeatAgentModel(route, 'dev', {});
 
   assert.equal(model, undefined);
+});
+
+test('fetchSeatPersona reads tier and vendor beside model; unknown tiers and blank vendors read as absent (CREW-1515)', async (t) => {
+  const row = (extra: Record<string, unknown>) => () => ({
+    status: 200,
+    body: { id: 'row-dev', name: 'Developer', prompt: 'X', updated_at: '2026-02-01T00:00:00Z', ...extra },
+  });
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  const cases: Array<[Record<string, unknown>, unknown]> = [
+    [{ model: 'claude-opus-5', tier: 'deep', vendor: 'anthropic' }, { model: 'claude-opus-5', tier: 'deep', vendor: 'anthropic' }],
+    [{ tier: 'Light', vendor: null }, { tier: 'light' }],
+    [{ tier: 'huge', vendor: '' }, undefined],
+    [{ tier: null }, undefined],
+  ];
+  for (const [fields, want] of cases) {
+    const { restore } = mockFetch({
+      'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+      'GET /api/data-models/agents-model-1/records/row-dev': row(fields),
+    });
+    try {
+      assert.deepEqual(await fetchSeatPersona(route, 'dev', {}), want);
+    } finally {
+      restore();
+    }
+  }
 });
 
 test('currentPersonaPrompt falls back to the local default when there is nothing to compare against yet', async (t) => {

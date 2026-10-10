@@ -13,6 +13,7 @@
  * harness means writing another file under `adapters/` and registering it here.
  */
 
+import { basename } from 'node:path';
 import type { Route, RoleName, Ship } from './config.ts';
 import type { StreamKindEvent, StreamResult } from './stream.ts';
 import { claudeAdapter } from './adapters/claude.ts';
@@ -71,6 +72,16 @@ export type McpRegistration =
 export interface HarnessAdapter {
   harness: string;
   displayName: string;
+  /** The vendor whose models this harness runs natively (`anthropic`, `openai`, ...). */
+  vendor: string;
+  /** Whether `model` is one of `vendor`'s own model ids (a persona's explicit `model` must pass). */
+  ownsModel(model: string): boolean;
+  /**
+   * The spec to run with once a tier's `reasoning` value is known (Claude: the
+   * thinking budget; Codex: the effort level). Absent = the harness has no
+   * such knob, so the value is ignored.
+   */
+  applyReasoning?(spec: ToolchainSpec, reasoning: string): ToolchainSpec;
   defaultBin: string;
   defaultModel: string;
   defaultTiers: Partial<Record<Tier, ToolchainTier>>;
@@ -141,4 +152,94 @@ export function resolveToolchain(ship: Ship, route?: Pick<Route, 'toolchain'>): 
   const found = shipToolchains(ship).find((t) => t.name === name);
   if (!found) throw new Error(`toolchain "${name}" is not defined (have: ${shipToolchains(ship).map((t) => t.name).join(', ')})`);
   return found;
+}
+
+/** The vendor serving a toolchain's models: `openrouter` behind the `ori` launcher, else the harness's own. */
+export function toolchainVendor(spec: Pick<ToolchainSpec, 'harness' | 'launcher'>): string {
+  if (spec.launcher && basename(spec.launcher) === 'ori') return 'openrouter';
+  return adapterFor(spec.harness).vendor;
+}
+
+/** What a seat's persona asks for; every field optional (older workspaces have none). */
+export interface PersonaChoice {
+  model?: string;
+  tier?: Tier;
+  vendor?: string;
+}
+
+export interface SeatResolution {
+  /** The toolchain to run, with the tier's reasoning setting already applied. */
+  toolchain: ToolchainSpec;
+  model: string;
+  /** Why this toolchain / model, for `--dry-run`. */
+  toolchainWhy: string;
+  modelWhy: string;
+  /** One line each, to be emitted as `warn` events at the start of the run. */
+  warnings: string[];
+}
+
+/**
+ * Picks the toolchain and the concrete model for one seat (EPIC-035 §4).
+ *
+ * Toolchain: the route's, else the ship's default — unless the persona names a
+ * `vendor` the default does not serve, in which case the first ship toolchain
+ * of that vendor wins. None → the default runs anyway, with a warning.
+ *
+ * Model, inside that toolchain: the persona's explicit `model` when it belongs
+ * to the toolchain's vendor (a mismatch is ignored with a warning, never passed
+ * through); else the persona's `light`/`deep` tier through the toolchain's
+ * `tiers:` map; else the toolchain's own `model`, which IS its standard entry —
+ * so a persona with nothing set (or `standard`) runs exactly what the ship
+ * configured, as before tiers existed.
+ */
+export function resolveSeat(
+  ship: Ship,
+  route: Pick<Route, 'toolchain'> | undefined,
+  role: RoleName,
+  persona: PersonaChoice = {},
+): SeatResolution {
+  const warnings: string[] = [];
+  const base = resolveToolchain(ship, route);
+  const baseVendor = toolchainVendor(base);
+  const baseWhy = route?.toolchain ? `route toolchain ${base.name}` : ship.toolchain ? `ship default ${base.name}` : `default ${base.name}`;
+
+  let chosen = base;
+  let toolchainWhy = baseWhy;
+  if (persona.vendor && persona.vendor !== baseVendor) {
+    const match = shipToolchains(ship).find((t) => toolchainVendor(t) === persona.vendor);
+    if (match) {
+      chosen = match;
+      toolchainWhy = `persona vendor ${persona.vendor} → ${match.name}`;
+    } else {
+      warnings.push(`seat ${role}: persona vendor "${persona.vendor}" has no toolchain on this ship; running ${base.name} (${baseVendor}) instead`);
+      toolchainWhy = `${baseWhy} (persona vendor ${persona.vendor} has no toolchain)`;
+    }
+  } else if (persona.vendor) {
+    toolchainWhy = `${baseWhy} (serves persona vendor ${persona.vendor})`;
+  }
+
+  const vendor = toolchainVendor(chosen);
+  const adapter = adapterFor(chosen.harness);
+  let model = chosen.model;
+  let modelWhy = `toolchain ${chosen.name} model`;
+  let reasoning = chosen.tiers.standard?.reasoning;
+
+  const explicit = persona.model;
+  const explicitOk = explicit !== undefined && (vendor === 'openrouter' || adapter.ownsModel(explicit));
+  if (explicit !== undefined && !explicitOk) {
+    warnings.push(`seat ${role}: persona model "${explicit}" does not belong to vendor "${vendor}" (toolchain ${chosen.name}); ignored`);
+  }
+  if (explicit !== undefined && explicitOk) {
+    model = explicit;
+    modelWhy = 'persona model';
+    reasoning = undefined;
+  } else if (persona.tier && persona.tier !== 'standard' && chosen.tiers[persona.tier]) {
+    const t = chosen.tiers[persona.tier]!;
+    model = t.model;
+    reasoning = t.reasoning;
+    modelWhy = `persona tier ${persona.tier} via ${chosen.name}`;
+  }
+
+  const toolchain = reasoning !== undefined && adapter.applyReasoning ? adapter.applyReasoning(chosen, reasoning) : chosen;
+  return { toolchain, model, toolchainWhy, modelWhy, warnings };
 }

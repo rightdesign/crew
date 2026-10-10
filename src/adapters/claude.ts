@@ -80,12 +80,22 @@ export function allowedTools(role: RoleName): string[] {
 export const claudeAdapter: HarnessAdapter = {
   harness: 'claude',
   displayName: 'Claude Code',
+  vendor: 'anthropic',
+  ownsModel: (model) => model.startsWith('claude-'),
+  // The tier's reasoning is the extended-thinking budget; it supersedes the
+  // toolchain's `maxThinkingTokens` (0 disables). A non-numeric value is ignored.
+  applyReasoning(spec, reasoning) {
+    const n = Number(reasoning);
+    return Number.isInteger(n) && n >= 0 ? { ...spec, maxThinkingTokens: n } : spec;
+  },
   defaultBin: 'claude',
   defaultModel: 'claude-sonnet-5',
   defaultTiers: {
-    light: { model: 'claude-haiku-4-5-20251001' },
+    // `standard` carries no reasoning: it defers to the toolchain's own
+    // `maxThinkingTokens`, which is what a persona with no tier gets today.
+    light: { model: 'claude-haiku-4-5-20251001', reasoning: '2048' },
     standard: { model: 'claude-sonnet-5-5' },
-    deep: { model: 'claude-opus-5-5' },
+    deep: { model: 'claude-opus-5-5', reasoning: '16384' },
   },
   limitations: [
     'Bash is not sandboxed: the deny list refuses known destructive patterns, but a one-liner reaching the same end another way is not caught',

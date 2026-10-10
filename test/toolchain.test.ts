@@ -7,7 +7,7 @@ import { loadConfig, ConfigError } from '../src/config.ts';
 import { planAgentRun, describePlan } from '../src/agent.ts';
 import { profileFor } from '../src/capability.ts';
 import { claudeToolsFor } from '../src/adapters/claude.ts';
-import { resolveToolchain, shipToolchains, adapterFor } from '../src/toolchain.ts';
+import { resolveToolchain, shipToolchains, adapterFor, resolveSeat, toolchainVendor } from '../src/toolchain.ts';
 
 function cfgFrom(yaml: string) {
   const dir = mkdtempSync(join(tmpdir(), 'crew-tc-'));
@@ -118,4 +118,116 @@ test('unknown toolchain names, harnesses and tiers fail at load time', () => {
 
 test('every adapter declares capability limitations for doctor to print', () => {
   assert.ok(adapterFor('claude').limitations.length > 0);
+});
+
+// CREW-1515: seat resolution — persona vendor / tier / model pick the toolchain and model.
+
+const TWO = `ship:
+  agent: { bin: /bin/true, model: claude-sonnet-5 }
+  toolchains:
+    routed:
+      harness: claude
+      bin: /bin/true
+      launcher: /opt/bin/ori
+      model: anthropic/claude-sonnet-5-5
+      tiers:
+        deep: { model: openai/gpt-5, reasoning: '9000' }
+routes:${ROUTE()}`;
+
+test('toolchainVendor: native vendor, or openrouter behind the ori launcher', () => {
+  const cfg = cfgFrom(TWO);
+  const [legacy, routed] = shipToolchains(cfg.ship);
+  assert.equal(toolchainVendor(legacy!), 'anthropic');
+  assert.equal(toolchainVendor(routed!), 'openrouter');
+});
+
+test('resolveSeat: no persona choice runs the default exactly as before', () => {
+  const cfg = cfgFrom(`ship:\n  agent: { bin: /bin/true, model: m-1, maxThinkingTokens: 777 }\nroutes:${ROUTE()}`);
+  for (const persona of [{}, { tier: 'standard' as const }]) {
+    const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', persona);
+    assert.equal(r.toolchain.name, 'claude');
+    assert.equal(r.model, 'm-1');
+    assert.equal(r.toolchain.maxThinkingTokens, 777);
+    assert.deepEqual(r.warnings, []);
+  }
+});
+
+test('resolveSeat: a persona vendor the default serves keeps the default', () => {
+  const cfg = cfgFrom(TWO);
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { vendor: 'anthropic' });
+  assert.equal(r.toolchain.name, 'claude');
+  assert.deepEqual(r.warnings, []);
+});
+
+test('resolveSeat: a persona vendor matching a non-default entry selects it', () => {
+  const cfg = cfgFrom(TWO);
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { vendor: 'openrouter' });
+  assert.equal(r.toolchain.name, 'routed');
+  assert.equal(r.model, 'anthropic/claude-sonnet-5-5');
+  assert.match(r.toolchainWhy, /persona vendor openrouter/);
+  assert.deepEqual(r.warnings, []);
+});
+
+test('resolveSeat: a vendor nothing serves runs the default with a warning naming seat, vendor and toolchain', () => {
+  const cfg = cfgFrom(TWO);
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'qa', { vendor: 'openai' });
+  assert.equal(r.toolchain.name, 'claude');
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0]!, /qa/);
+  assert.match(r.warnings[0]!, /openai/);
+  assert.match(r.warnings[0]!, /claude/);
+});
+
+test('resolveSeat: an explicit model of the toolchain\'s vendor wins over the tier', () => {
+  const cfg = cfgFrom(TWO);
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { model: 'claude-opus-5-5', tier: 'light' });
+  assert.equal(r.model, 'claude-opus-5-5');
+  assert.equal(r.modelWhy, 'persona model');
+  assert.deepEqual(r.warnings, []);
+});
+
+test('resolveSeat: an explicit model of another vendor is ignored with a warning, never passed through', () => {
+  const cfg = cfgFrom(TWO);
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { model: 'gpt-5' });
+  assert.equal(r.model, 'claude-sonnet-5');
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0]!, /gpt-5/);
+});
+
+test('resolveSeat: tiers map through the toolchain, bringing the reasoning knob (Claude thinking budget)', () => {
+  const cfg = cfgFrom(`ship:\n  agent: { bin: /bin/true, model: m-1, maxThinkingTokens: 777 }\nroutes:${ROUTE()}`);
+  const light = resolveSeat(cfg.ship, cfg.routes[0], 'triage', { tier: 'light' });
+  assert.equal(light.model, 'claude-haiku-4-5-20251001');
+  assert.equal(light.toolchain.maxThinkingTokens, 2048);
+  const deep = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { tier: 'deep' });
+  assert.equal(deep.model, 'claude-opus-5-5');
+  assert.equal(deep.toolchain.maxThinkingTokens, 16384);
+});
+
+test('resolveSeat: an entry\'s own tier override beats the harness default, and an ori entry accepts any explicit model', () => {
+  const cfg = cfgFrom(TWO);
+  const deep = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { vendor: 'openrouter', tier: 'deep' });
+  assert.equal(deep.model, 'openai/gpt-5');
+  assert.equal(deep.toolchain.maxThinkingTokens, 9000);
+  const explicit = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { vendor: 'openrouter', model: 'google/gemini-3' });
+  assert.equal(explicit.model, 'google/gemini-3');
+  assert.deepEqual(explicit.warnings, []);
+});
+
+test('planAgentRun carries the resolution: chosen toolchain, model, warnings and --dry-run lines', () => {
+  const cfg = cfgFrom(TWO);
+  const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
+  mkdirSync(join(home, 'personas'), { recursive: true });
+  writeFileSync(join(home, 'personas', 'common.md'), 'C\n');
+  writeFileSync(join(home, 'personas', 'lane-dev.md'), 'D\n');
+  const p = planAgentRun({
+    role: 'dev', route: { ...cfg.routes[0]!, promptsDir: home }, ship: cfg.ship,
+    stateDir: mkdtempSync(join(tmpdir(), 'crew-st-')), roster: 'R', environment: 'E', cycle: 'c1',
+    agentPersona: { vendor: 'google' },
+  });
+  assert.equal(p.toolchain, 'claude');
+  assert.equal(p.warnings?.length, 1);
+  const text = describePlan(p);
+  assert.match(text, /resolved: toolchain claude/);
+  assert.match(text, /warning: .*google/);
 });

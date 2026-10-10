@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/client';
 import type { Route, RoleName } from './config.ts';
 import { ROLE_NAMES, resolveApiKey } from './config.ts';
+import { TIERS, type Tier } from './toolchain.ts';
 
 // The SDK's own `FieldType` is deliberately trimmed to what the client
 // package has needed so far (id/name/kind/baseType/isSystem) — augmenting
@@ -84,6 +85,10 @@ interface AgentRow {
   name: string;
   prompt: string;
   model?: string | null;
+  /** `light` | `standard` | `deep`; null on a workspace that predates TABL-1512. */
+  tier?: unknown;
+  /** `anthropic` | `openai` | `google` | `openrouter`; null = inherit. */
+  vendor?: unknown;
   updated_at: string;
 }
 
@@ -214,22 +219,39 @@ async function fetchLastSyncedPrompt(
   }
 }
 
+/** What a seat's linked Agents row says about the model it wants (EPIC-035 §4). */
+export interface SeatPersona {
+  /** Exact model id, honored only when it belongs to the resolved toolchain's vendor. */
+  model?: string;
+  tier?: Tier;
+  vendor?: string;
+}
+
+/** A choice column reads back as its key, or (tolerantly) as `{value|key}`. */
+function choiceValue(v: unknown): string | undefined {
+  const raw = typeof v === 'string' ? v : v && typeof v === 'object' ? ((v as Record<string, unknown>).value ?? (v as Record<string, unknown>).key) : undefined;
+  return typeof raw === 'string' && raw.trim() ? raw.trim().toLowerCase() : undefined;
+}
+
 /**
- * The model `role`'s linked Agent row asks for, straight from the tracker —
+ * What `role`'s linked Agent row asks for, straight from the tracker —
  * ISSUE-611's other half of "use its prompt/model fields directly at
- * runtime". Unlike the prompt, a per-Agent model has no local template to
- * diverge from: it is a first-class piece of that row's own config, so it
- * is returned whenever the linked row has one set, whichever of
- * `resolveAgentId`'s two paths found the row. `undefined` (not synced yet,
- * no seat, no `agent_id` on the seat, no `model` on the row, or an
- * unreachable tracker) leaves the caller's own `ship.agent.model` default
- * untouched.
+ * runtime", widened by CREW-1515 to the `tier` and `vendor` columns
+ * (TABL-1512). Unlike the prompt, none of these has a local template to
+ * diverge from: they are first-class pieces of that row's own config, so
+ * they are returned whenever the linked row has them set, whichever of
+ * `resolveAgentId`'s two paths found the row. Each field is `undefined` when
+ * unset, and the whole result is `undefined` (not synced yet, no seat, no
+ * `agent_id` on the seat, an unreachable tracker) when there is nothing to
+ * apply, which leaves the ship's own toolchain defaults untouched. A
+ * workspace that predates the `tier`/`vendor` columns reads as `standard` /
+ * inherit, i.e. both absent. An unrecognised tier is treated as absent.
  */
-export async function fetchSeatAgentModel(
+export async function fetchSeatPersona(
   route: Route,
   role: RoleName,
   opts: { userAgent?: string },
-): Promise<string | undefined> {
+): Promise<SeatPersona | undefined> {
   const agentId = await resolveAgentId(route, role, opts);
   if (!agentId || !route.resolved) return undefined;
 
@@ -242,10 +264,26 @@ export async function fetchSeatAgentModel(
   try {
     const agentsModel = await client.dataModels.get('agents', route.resolved.workspaceId);
     const row = await client.records.get<AgentRow>(agentsModel.id, agentId);
-    return row.model ?? undefined;
+    const tier = choiceValue(row.tier);
+    const vendor = choiceValue(row.vendor);
+    const persona: SeatPersona = {
+      ...(row.model ? { model: row.model } : {}),
+      ...(tier && (TIERS as readonly string[]).includes(tier) ? { tier: tier as Tier } : {}),
+      ...(vendor ? { vendor } : {}),
+    };
+    return Object.keys(persona).length > 0 ? persona : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** The model alone — the pre-CREW-1515 shape, kept for callers that only want it. */
+export async function fetchSeatAgentModel(
+  route: Route,
+  role: RoleName,
+  opts: { userAgent?: string },
+): Promise<string | undefined> {
+  return (await fetchSeatPersona(route, role, opts))?.model;
 }
 
 /**

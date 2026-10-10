@@ -68,12 +68,12 @@ import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
-import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatAgentModel, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
-import { adapterFor, resolveToolchain, shipToolchains } from './toolchain.ts';
+import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor } from './toolchain.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -1623,7 +1623,7 @@ switch (command) {
           apiKey: resolveApiKey(w.route),
           cycle: wemit.cycle, ticket: w.decision.actionable.top?.issue_id,
           divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
-          agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+          agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         });
         process.stdout.write(`${describePlan(fleetPlan)}\n`);
@@ -1716,7 +1716,7 @@ switch (command) {
         apiKey: resolveApiKey(w.route),
         cycle: wemit.cycle, ticket: fleetTicketHint,
         divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
-        agentModel: await fetchSeatAgentModel(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+        agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
       });
       wemit.enter('agent', w.role);
@@ -1941,7 +1941,7 @@ switch (command) {
         apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint,
         divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
-        agentModel: await fetchSeatAgentModel(route, current, { userAgent: cfg.ship.userAgent }),
+        agentPersona: await fetchSeatPersona(route, current, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(route, current, { userAgent: cfg.ship.userAgent }),
       });
       if (dryRun) {
@@ -3908,6 +3908,21 @@ switch (command) {
             : `mcp:               not registered — run crew connect\n`,
         );
       }
+    }
+
+    // CREW-1515: a seat whose persona names a vendor no toolchain on this ship
+    // serves runs the default toolchain with a warning; say so here, up front.
+    const shipVendors = new Set(shipToolchains(cfg.ship).map(toolchainVendor));
+    if (route.apiKey && route.resolved) {
+      let flagged = 0;
+      for (const role of ROLE_NAMES) {
+        const persona = await fetchSeatPersona(route, role, { userAgent: cfg.ship.userAgent });
+        if (persona?.vendor && !shipVendors.has(persona.vendor)) {
+          flagged++;
+          process.stdout.write(`seat vendor:       ${role} persona wants "${persona.vendor}" — no toolchain on this ship serves it (have: ${[...shipVendors].join(', ')}); it will run ${resolveSeat(cfg.ship, route, role).toolchain.name} with a warning\n`);
+        }
+      }
+      if (flagged === 0) process.stdout.write('seat vendor:       OK (every persona vendor has a toolchain on this ship)\n');
     }
 
     // Repo hook commands against the same scheduler PATH (CREW-1373): a hook

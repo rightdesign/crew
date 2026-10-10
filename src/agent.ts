@@ -16,7 +16,7 @@ import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
-import { adapterFor, resolveToolchain } from './toolchain.ts';
+import { adapterFor, resolveSeat, type PersonaChoice } from './toolchain.ts';
 import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { TicketAttributionTracker } from './ticket-attribution.ts';
 
@@ -90,6 +90,10 @@ export interface AgentPlan {
    */
   toolchain?: string;
   harness?: string;
+  /** Why that toolchain and model (`--dry-run`'s resolution chain). */
+  resolution?: { toolchain: string; model: string };
+  /** Seat-resolution fallbacks, emitted as `warn` events when the run starts. */
+  warnings?: string[];
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -171,6 +175,13 @@ export interface PlanOptions {
    */
   agentModel?: string;
   /**
+   * The linked Agent row's `model`, `tier` and `vendor` together
+   * (`agents.ts` `fetchSeatPersona`, CREW-1515), resolved against the ship's
+   * toolchains by `resolveSeat`. Supersedes `agentModel`, which stays for
+   * callers that only know a model. Undefined keeps the route/ship default.
+   */
+  agentPersona?: PersonaChoice;
+  /**
    * `role`'s linked Agent row id, straight from `agents.ts`'s
    * `resolveAgentId` (ISSUE-670) — the same cache-then-seat-fallback
    * resolution `fetchDivergedPrompt`/`fetchSeatAgentModel` already use, so
@@ -239,9 +250,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
-  const toolchain = resolveToolchain(o.ship, o.route);
+  const seat = resolveSeat(o.ship, o.route, o.role, o.agentPersona ?? (o.agentModel ? { model: o.agentModel } : {}));
+  const { toolchain, model } = seat;
   const adapter = adapterFor(toolchain.harness);
-  const model = o.agentModel ?? toolchain.model;
   const invocation = adapter.invocation(toolchain, {
     role: o.role,
     model,
@@ -281,6 +292,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     args: invocation.args,
     toolchain: toolchain.name,
     harness: toolchain.harness,
+    resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
+    warnings: seat.warnings,
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
     unsetEnv: adapter.unsetEnv,
@@ -313,6 +326,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 export function describePlan(p: AgentPlan): string {
   return [
     `role:    ${p.role}`,
+    ...(p.resolution ? [`resolved: toolchain ${p.toolchain} ← ${p.resolution.toolchain}; model ${p.model} ← ${p.resolution.model}`] : []),
+    ...(p.warnings ?? []).map((w) => `warning: ${w}`),
     // Only for a non-default toolchain, so a plain Claude run's output is unchanged.
     ...(p.toolchain && p.toolchain !== 'claude' ? [`toolchain: ${p.toolchain} (${p.harness ?? 'claude'})`] : []),
     `cwd:     ${p.cwd}`,
@@ -382,6 +397,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
   const adapter = adapterFor(plan.harness ?? LEGACY_TOOLCHAIN_HARNESS);
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
+  for (const w of plan.warnings ?? []) emit.warn(w, { step: 'agent', role: plan.role });
   const rawSink = openSink(plan.streamPath);
   const eventsSink = openSink(plan.eventsPath);
 
