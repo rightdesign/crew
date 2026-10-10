@@ -198,21 +198,22 @@ Notes:
 - The server is plain HTTP, not HTTPS, when the backend is running on
   `localhost` — swap in whatever host you're actually pointed at.
 
-### 2.7 Pair on Codex and Gemini CLI
+### 2.7 Pair on Codex, Gemini CLI and Copilot (VS Code)
 
 Claude Code gets Pair from a session-start hook that runs `crew agents prompt
-pair`. Codex and Gemini CLI have no such hook, so `crew connect` installs the
+pair`. Codex, Gemini CLI and Copilot have no such hook, so `crew connect` installs the
 same two things into their **user-level** files instead (never into a repo):
 
 ```yaml
 ship:
-  pair: [claude, codex, gemini]   # default: [claude]
+  pair: [claude, codex, gemini, copilot]   # default: [claude]
 ```
 
 | harness | instructions block | MCP entry |
 | --- | --- | --- |
 | Codex | `~/.codex/AGENTS.md` | `[mcp_servers.tablation]` in `~/.codex/config.toml` (`bearer_token_env_var = "CREW_API_KEY"`) |
 | Gemini CLI | `~/.gemini/GEMINI.md` | `mcpServers.tablation` in `~/.gemini/settings.json` (`Authorization: Bearer $CREW_API_KEY`) |
+| Copilot (VS Code) | `prompts/crew-pair.instructions.md` (`applyTo: "**"`) in VS Code's user directory | `servers.tablation` in `mcp.json` in the same directory (`Authorization: Bearer ${env:CREW_API_KEY}`) |
 
 The block sits between `<!-- crew:pair start -->` and `<!-- crew:pair end -->`
 and tells the agent to run `crew agents prompt pair --harness <name>` first and
@@ -223,6 +224,17 @@ operator's other content and servers are kept. A different `tablation` server
 is left alone unless `--mcp replace`. `crew doctor` verifies each listed
 harness and `crew disconnect` removes exactly what was added (and the files, if
 they would be left empty).
+
+**Copilot specifics.** VS Code's user directory is `~/Library/Application
+Support/Code/User` on macOS, `~/.config/Code/User` on Linux and
+`%APPDATA%\Code\User` on Windows; `Code - Insiders` is installed too when its
+directory exists. The instructions file goes in the default profile's `prompts/`
+folder (what `Chat: New Instructions File` ▸ User offers); other profiles are not
+touched. An `mcp.json` that contains comments is not rewritten — `crew connect`
+says so and leaves it. VS Code started from the Dock does not inherit a shell's
+`CREW_API_KEY`: start it from a terminal (`code .`), or run `launchctl setenv
+CREW_API_KEY <key>` once per login. `crew doctor` warns on macOS when the key is
+absent from the login environment.
 
 ### 2.7 Run the preflight
 

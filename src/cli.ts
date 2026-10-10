@@ -3941,6 +3941,8 @@ switch (command) {
       const inst = pairInstallerFor(h);
       const v = inst.verifyPair({ url: mcpUrlFor(route.baseUrl) });
       process.stdout.write(`pair ${h}:`.padEnd(19) + (v.ok ? ` installed (${v.detail})\n` : ` NOT installed — ${v.detail}; run crew connect\n`));
+      const envWarn = inst.envWarning?.({ url: mcpUrlFor(route.baseUrl) });
+      if (envWarn) process.stdout.write(`pair ${h} env:`.padEnd(19) + ` WARN — ${envWarn}\n`);
     }
 
     // CREW-1515: a seat whose persona names a vendor no toolchain on this ship

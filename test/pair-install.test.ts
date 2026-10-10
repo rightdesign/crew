@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   pairBlock, upsertPairBlock, removePairBlock, hasPairBlock, pairBlockIsBroken, upsertTomlTable, removeTomlTable, codexTable,
-  codexPair, geminiPair, isPairHarness, harnessPromptNote, PAIR_BLOCK_START,
+  codexPair, geminiPair, copilotPair, isPairHarness, harnessPromptNote, PAIR_BLOCK_START,
 } from '../src/pair-install.ts';
 
 const URL = 'https://app.example.test/api/mcp';
@@ -131,7 +131,7 @@ test('gemini: a first install on an empty home, then disconnect, leaves nothing 
 
 test('registry and prompt note', () => {
   assert.ok(isPairHarness('claude') && isPairHarness('codex') && isPairHarness('gemini'));
-  assert.ok(!isPairHarness('copilot'));
+  assert.ok(isPairHarness('copilot') && !isPairHarness('nope'));
   assert.match(harnessPromptNote('codex'), /Codex/);
   assert.equal(harnessPromptNote('nope'), '');
   assert.equal(harnessPromptNote(undefined), '');
@@ -166,4 +166,93 @@ test('gemini: disconnect leaves a tablation server it did not add', () => {
   assert.match(msg, /left the existing tablation server alone/);
   assert.equal(read(h, '.gemini/settings.json'), foreign);
   assert.ok(!existsSync(join(h, '.gemini/GEMINI.md')));
+});
+
+// ── Copilot (VS Code) ───────────────────────────────────────────────────────
+
+const MAC = 'Library/Application Support/Code/User';
+const INSIDERS = 'Library/Application Support/Code - Insiders/User';
+const copilotOpts = (h: string) => ({ home: h, url: URL, platform: 'darwin' as const });
+
+test('copilot: install is idempotent, keeps other servers and inputs, never writes the key', () => {
+  const h = home();
+  put(h, `${MAC}/mcp.json`, JSON.stringify({ inputs: [{ id: 'x' }], servers: { other: { type: 'stdio', command: 'x' } } }));
+  const first = copilotPair.installPair({ ...copilotOpts(h), key: 'sk_secret' });
+  assert.match(first, /installed the Pair instructions/);
+  const mcp = JSON.parse(read(h, `${MAC}/mcp.json`));
+  assert.deepEqual(mcp.servers.tablation, { type: 'http', url: URL, headers: { Authorization: 'Bearer ${env:CREW_API_KEY}' } });
+  assert.deepEqual(mcp.inputs, [{ id: 'x' }]);
+  assert.ok(mcp.servers.other);
+  assert.ok(!read(h, `${MAC}/mcp.json`).includes('sk_secret'));
+  const instr = read(h, `${MAC}/prompts/crew-pair.instructions.md`);
+  assert.ok(instr.startsWith('---\napplyTo: "**"\n---'));
+  assert.ok(instr.includes('crew agents prompt pair --harness copilot'));
+  const snapshot = [read(h, `${MAC}/mcp.json`), instr];
+  assert.match(copilotPair.installPair(copilotOpts(h)), /already installed/);
+  assert.deepEqual([read(h, `${MAC}/mcp.json`), read(h, `${MAC}/prompts/crew-pair.instructions.md`)], snapshot);
+  assert.equal(Object.keys(JSON.parse(read(h, `${MAC}/mcp.json`)).servers).length, 2);
+  assert.deepEqual(copilotPair.verifyPair(copilotOpts(h)).ok, true);
+});
+
+test('copilot: remove takes out exactly what install added', () => {
+  const h = home();
+  put(h, `${MAC}/mcp.json`, JSON.stringify({ servers: { other: { type: 'stdio', command: 'x' } } }));
+  copilotPair.installPair(copilotOpts(h));
+  assert.match(copilotPair.removePair(copilotOpts(h)), /removed the Pair instructions and tablation server/);
+  assert.deepEqual(JSON.parse(read(h, `${MAC}/mcp.json`)), { servers: { other: { type: 'stdio', command: 'x' } } });
+  assert.ok(!existsSync(join(h, MAC, 'prompts', 'crew-pair.instructions.md')));
+  assert.equal(copilotPair.verifyPair(copilotOpts(h)).ok, false);
+  assert.match(copilotPair.removePair(copilotOpts(h)), /nothing to remove/);
+});
+
+test('copilot: removing from a fresh install deletes both files; operator text in the instructions file survives', () => {
+  const h = home();
+  copilotPair.installPair(copilotOpts(h));
+  copilotPair.removePair(copilotOpts(h));
+  assert.ok(!existsSync(join(h, MAC, 'mcp.json')));
+  assert.ok(!existsSync(join(h, MAC, 'prompts', 'crew-pair.instructions.md')));
+  const h2 = home();
+  const p = put(h2, `${MAC}/prompts/crew-pair.instructions.md`, '---\napplyTo: "**"\n---\n\nMy own rule.\n');
+  copilotPair.installPair(copilotOpts(h2));
+  copilotPair.removePair(copilotOpts(h2));
+  assert.equal(readFileSync(p, 'utf8'), '---\napplyTo: "**"\n---\n\nMy own rule.\n');
+});
+
+test('copilot: a different tablation server is left alone unless replace; comments in mcp.json block the write', () => {
+  const h = home();
+  const other = JSON.stringify({ servers: { tablation: { type: 'http', url: 'https://elsewhere/api/mcp' } } });
+  put(h, `${MAC}/mcp.json`, other);
+  assert.match(copilotPair.installPair(copilotOpts(h)), /left .* alone/);
+  assert.equal(read(h, `${MAC}/mcp.json`), other);
+  assert.match(copilotPair.removePair(copilotOpts(h)), /left the existing tablation server alone/);
+  assert.equal(read(h, `${MAC}/mcp.json`), other);
+  copilotPair.installPair({ ...copilotOpts(h), replace: true });
+  assert.equal(JSON.parse(read(h, `${MAC}/mcp.json`)).servers.tablation.url, URL);
+  const h2 = home();
+  const jsonc = '// mine\n{ "servers": {} }\n';
+  put(h2, `${MAC}/mcp.json`, jsonc);
+  assert.match(copilotPair.installPair(copilotOpts(h2)), /not a plain JSON object/);
+  assert.equal(read(h2, `${MAC}/mcp.json`), jsonc);
+});
+
+test('copilot: Insiders is installed too when present; Linux and dry-run paths', () => {
+  const h = home();
+  mkdirSync(join(h, MAC), { recursive: true });
+  mkdirSync(join(h, INSIDERS), { recursive: true });
+  copilotPair.installPair(copilotOpts(h));
+  assert.ok(existsSync(join(h, INSIDERS, 'mcp.json')));
+  assert.ok(existsSync(join(h, MAC, 'prompts', 'crew-pair.instructions.md')));
+  const h2 = home();
+  assert.match(copilotPair.installPair({ home: h2, url: URL, platform: 'linux', dryRun: true }), /dry run/);
+  assert.ok(!existsSync(join(h2, '.config')));
+  copilotPair.installPair({ home: h2, url: URL, platform: 'linux' });
+  assert.ok(existsSync(join(h2, '.config/Code/User/mcp.json')));
+});
+
+test('copilot: warns on macOS when the login environment lacks the key', () => {
+  const base = { url: URL, platform: 'darwin' as const };
+  assert.match(copilotPair.envWarning!({ ...base, loginEnv: () => undefined })!, /launchctl setenv CREW_API_KEY/);
+  assert.equal(copilotPair.envWarning!({ ...base, loginEnv: () => 'sk_x' }), undefined);
+  assert.equal(copilotPair.envWarning!({ url: URL, platform: 'linux' }), undefined);
+  assert.ok(isPairHarness('copilot'));
 });

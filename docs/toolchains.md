@@ -114,7 +114,7 @@ for every configured toolchain, next to its binary check and MCP registration.
 - `crew connect` registers the tracker MCP server in each configured
   toolchain's user-level config.
 - `ship.pair` lists the harnesses Pair is installed for (`claude`, `codex`,
-  `gemini`); `crew connect` / `crew doctor` / `crew disconnect` act on each. See
+  `gemini`, `copilot`); `crew connect` / `crew doctor` / `crew disconnect` act on each. See
   GETTING_STARTED §2.7.
 
 ## Run identity
