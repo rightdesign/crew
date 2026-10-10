@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.27.0] — 2026-10-10
+
+- Run `crew reap` (not a nonexistent `crew clean`) once to rotate an existing oversized events.jsonl (CREW-1509)
+- The shared events.jsonl now rotates by size (`ship.eventsRotateBytes`, default 64 MB) and rotated files are swept by `streamRetentionDays`; run `crew clean` once to rotate an existing oversized log, and `crew doctor` warns when rotation isn't running (CREW-1509)
+
 ## [0.26.0] — 2026-10-10
 
 - Worktree directory names are configurable with a `worktrees.name` template (`{dir}`, `{issue}`, `{number}`, `{key}`, `{slug}`), overridable per route repo via `worktreeName` (CREW-1504)
