@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.34.0] — 2026-10-10
+
+- Gemini CLI harness adapter: headless runs, capability mapping, MCP registration and stream mapping, with assistant text fragments coalesced into one Agent Log cycle per turn (CREW-1521)
+- Gemini CLI is now a toolchain harness (`harness: gemini`): headless runs with capability mapping, tracker MCP registration, Google env scrub and stream mapping (CREW-1521)
+
 ## [0.33.0] — 2026-10-10
 
 - `crew connect` can install Pair for GitHub Copilot in VS Code (`ship.pair: [copilot]`): the tracker MCP in the user-profile `mcp.json` and a managed user-level instructions file; `crew doctor` warns when VS Code would not see `CREW_API_KEY` (CREW-1527)
