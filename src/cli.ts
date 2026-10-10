@@ -49,6 +49,7 @@ import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
+import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
 import { StaleWriteError } from '@tablation/client';
@@ -276,6 +277,7 @@ function usage(): never {
   crew deploy [route]            release now, even with nothing new to merge
   crew watch [route]             live view of what the crew is doing
   crew status [route] [--json]   paused/running state; --json for a machine reader
+  crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
   crew doctor [route] [--fix]    preflight; --fix enables clean routes and offers crew install
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
@@ -475,7 +477,7 @@ const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? ''
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || releaseFleetWide ||
   command === 'pause' || command === 'resume' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
@@ -3438,6 +3440,25 @@ switch (command) {
     } catch {
       process.stdout.write(`no log yet at ${cfg.ship.logFile}\n`);
     }
+    break;
+  }
+
+  case 'projects': {
+    // CREW-1502: the Projects rows each route's connection can read. Works
+    // across every route unless one is named (`--route R` or positionally).
+    const only = value('route') ?? positional[1];
+    const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
+    if (only && wanted.length === 0) {
+      process.stderr.write(`crew projects: no route "${only}" (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
+      process.exit(2);
+    }
+    const report = await buildProjectsReport(
+      wanted.map((r) => ({ route: r.route, areaId: r.resolved?.areaId })),
+      (name) => new Tracker(wanted.find((r) => r.route === name)!, cfg.ship),
+    );
+    process.stdout.write(flag('json') ? `${JSON.stringify({ routes: report }, null, 2)}\n` : formatProjectsReport(report));
+    // Non-zero only when every route failed.
+    if (report.length > 0 && report.every((r) => 'error' in r)) process.exitCode = 1;
     break;
   }
 

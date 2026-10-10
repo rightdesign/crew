@@ -380,14 +380,14 @@ export class Tracker {
   }
 
   /** Every `Projects` (area) row — what `crew repos add` offers when a new Repos row needs one. */
-  async projectRows(): Promise<Array<{ id: string; name?: string }>> {
+  async projectRows(): Promise<Array<{ id: string; name?: string; issue_prefix?: string | null }>> {
     const model = this.route.resolved?.areaModelId;
     if (!model) return [];
-    return this.client.records.list<{ id: string; name?: string }>(model, { limit: 200 });
+    return this.client.records.list<{ id: string; name?: string; issue_prefix?: string | null }>(model, { limit: 200 });
   }
 
   /** Every Projects row with its raw `work_mode`, for `crew status`. */
-  async projectRowsWithModes(): Promise<Array<{ id: string; name?: string; mode: WorkMode }>> {
+  async projectRowsWithModes(): Promise<Array<{ id: string; name?: string; issue_prefix?: string | null; mode: WorkMode }>> {
     const rows = await this.projectRows();
     const modes = await this.projectWorkModes();
     return rows.map((r) => ({ ...r, mode: modes.get(r.id) ?? 'automatic' }));
