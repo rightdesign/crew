@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.24.0] — 2026-10-10
+
+- `crew projects [--route R] [--json]` lists the Projects rows each route can read (id, name, issue prefix, work mode, current area) for the macOS Project popup (CREW-1502)
+
 ## [0.23.1] — 2026-10-09
 
 - QA bounces in a `hybrid` project assign the building seat rather than clearing the assignee, so the bounced ticket stays workable (ISSUE-1498)
