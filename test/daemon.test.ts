@@ -15,6 +15,10 @@ import {
 import { AgentSpawnError } from '../src/agent.ts';
 import type { SessionStore, StoredSession } from '@tablation/client';
 
+// resolveApiKey falls back to CREW_API_KEY (CREW-1503); keychain-hydration tests
+// need a route with no other key source, so an ambient value must not leak in.
+delete process.env.CREW_API_KEY;
+
 /**
  * `runOnePass` re-hydrates its route's API key from the OS keychain every
  * cycle (ISSUE-966) via `getSessionStore` — a test must never let that reach

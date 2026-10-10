@@ -100,6 +100,9 @@ routes:
     # Only needed for a self-hosted tracker.
     # baseUrl: "https://app.tablation.com"
     apiKey: "REPLACE_ME"             # or omit if `ship.apiKey` covers this workspace too
+    # With no apiKey (and no apiKeyFile/apiKeyVar) crew reads CREW_API_KEY from
+    # its process environment. Under launchd that must be set in the job's own
+    # environment, not exported from an interactive shell.
 
     # Where release state should be SHOWN is a fact about this machine and the
     # person watching it, not about the code — so unlike every other hook,

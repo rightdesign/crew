@@ -252,6 +252,13 @@ This picks the right mechanism itself — a launchd user agent on macOS, a
 systemd user timer on Linux (crontab as a fallback) — and never fires
 immediately; the first poll happens one interval after `install` runs.
 
+**API key from the environment.** A route with no `apiKey` and no
+`apiKeyFile`/`apiKeyVar` falls back to the `CREW_API_KEY` environment
+variable (explicit config always wins). The scheduled job does not inherit
+your interactive shell, so the variable must be in the job's own environment
+(for launchd, an `EnvironmentVariables` entry in the plist), not just
+exported in your shell profile.
+
 Useful day-to-day commands once it's running:
 
 ```sh

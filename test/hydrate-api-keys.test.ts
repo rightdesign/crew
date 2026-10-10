@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os';
 import type { SessionStore, StoredSession } from '@tablation/client';
 import { hydrateApiKeys, resolveApiKey, apiKeyPathFor, type Route } from '../src/config.ts';
 
+// resolveApiKey falls back to CREW_API_KEY (CREW-1503); these tests assert the
+// no-key paths, so an ambient value (an agent's own key) must not leak in.
+delete process.env.CREW_API_KEY;
+
 /**
  * `hydrateApiKeys` reads the real OS keychain by default (`getSessionStore`
  * from `@tablation/client` — macOS Keychain/`security`, Linux

@@ -1104,7 +1104,15 @@ export function repoIdForName(r: Route, name: string): string | undefined {
   return undefined;
 }
 
-/** The API key for one route. Never logged. */
+/**
+ * The API key for one route. Never logged. Resolution order: explicit
+ * `apiKey`, then the `apiKeyVar` line inside `apiKeyFile`, then the
+ * `CREW_API_KEY` process environment variable (one documented name, no
+ * per-route variants — a ship with routes on different keys keeps using
+ * per-route config). Under launchd the variable must be in the job's own
+ * environment, not an interactive shell's. The OS keychain is filled into
+ * `route.apiKey` ahead of this by `hydrateApiKeys`.
+ */
 export function resolveApiKey(r: Route): string {
   if (r.apiKey) return r.apiKey;
   if (r.apiKeyFile && r.apiKeyVar && existsSync(r.apiKeyFile)) {
@@ -1113,8 +1121,10 @@ export function resolveApiKey(r: Route): string {
       if (m) return (m[1] ?? '').trim().replace(/^["']|["']$/g, '');
     }
   }
+  const fromEnv = process.env.CREW_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
   throw new ConfigError(
-    `route "${r.route}": no API key (apiKey, or ${r.apiKeyVar ?? 'VAR'} in ${r.apiKeyFile ?? '<unset>'})`,
+    `route "${r.route}": no API key (looked for, in order: apiKey; ${r.apiKeyVar ?? 'VAR'} in ${r.apiKeyFile ?? '<unset>'}; CREW_API_KEY in the environment)`,
   );
 }
 
