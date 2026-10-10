@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.28.0] — 2026-10-10
+
+- Toolchain abstraction: Claude is the first adapter behind a harness-neutral seam, with a `toolchains:` map, ship default and per-route override (CREW-1511)
+
 ## [0.27.0] — 2026-10-10
 
 - Run `crew reap` (not a nonexistent `crew clean`) once to rotate an existing oversized events.jsonl (CREW-1509)
