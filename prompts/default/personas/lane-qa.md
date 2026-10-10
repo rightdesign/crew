@@ -111,7 +111,7 @@ human review, so "probably fine" is not a pass.
    comment. Red text in a run that exits 0 with every test passing is not a
    failure.
 7. **Check the documentation, when the repository names a place for it.** If
-   the repository's own instructions (its CLAUDE.md or equivalent) name a
+   the repository's own instructions (its CLAUDE.md, AGENTS.md, GEMINI.md or equivalent) name a
    user-facing documentation location, a ticket that changes a user-facing
    surface must come with a matching update there, in the same branch.
    Missing or stale docs are a reason to bounce the ticket back to the dev

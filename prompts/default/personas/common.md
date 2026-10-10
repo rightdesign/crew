@@ -131,7 +131,7 @@ Don't reopen it, don't re-verify it, don't merge it.
 **A ticket assigned to any row the roster lists as a hold is an active
 hold: skip it entirely, do not read its worktree, do not `cd` into it, do
 not touch its branch.** That is a person, directly or through an
-interactive Claude session, actively iterating on it right now; assignee_id
+interactive session, actively iterating on it right now; assignee_id
 is the live hand-off signal, checked *before* anything else in this step.
 This is not the same thing as "nothing new to act on" below — an
 actively-held ticket isn't yours to evaluate at all this run. **A held
@@ -483,7 +483,7 @@ if `report_type` is either of those.
    See `CHANGELOG.md`'s own "How this file is maintained" header for the
    full mechanics of how the release phase turns these into the entry.
    **User-facing documentation.** If the repository's own instructions (its
-   CLAUDE.md or equivalent) name a user-facing documentation location, a
+   CLAUDE.md, AGENTS.md, GEMINI.md or equivalent) name a user-facing documentation location, a
    change to a user-facing surface updates the relevant documentation there
    **in the same commit as the change**. If the repository names no such
    location, this rule is a no-op — never invent a docs location of your own.

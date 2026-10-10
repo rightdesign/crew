@@ -44,10 +44,13 @@ stopping for this run, do the following instead:
 - **3.4a — Design before pixels.** Work the surface out per the designer
   brief: read the components already rendering that area, settle the
   interaction model in words (default / empty / loading / error / narrow
-  width / keyboard path / destructive path), then make it visual. Load the
-  `design` skill for anything with real layout to settle — a new screen,
+  width / keyboard path / destructive path), then make it visual. If your harness provides a
+  `design` skill and a canvas (Claude Code's `Skill` and `Artifact` tools),
+  load the skill for anything with real layout to settle — a new screen,
   panel, or flow, or a redesign; skip the canvas for a single-component
-  tweak and mock it statically instead. If it genuinely helps to try an
+  tweak and mock it statically instead. Without them (Codex, Gemini and
+  other harnesses), work in the edit profile: no canvas, mock statically
+  and rely on the PNG in 3.4b. If it genuinely helps to try an
   interaction out in code first — a real worktree, in whatever stack this
   repo actually uses — that's fine as a spike to inform the comp, but it is
   scratch work: it never gets committed as the fix, and this ticket never
@@ -60,9 +63,9 @@ stopping for this run, do the following instead:
   repo's own front-end stack, then upload it with the recipe under
   "Attaching a file to a comment" in the Environment section. The PNG
   upload is a required part of a finished design pass; a text wireframe
-  alone does not satisfy this step. If a canvas Artifact published, include
-  its URL in the comment body too, but never *only* the URL — the Artifact
-  canvas is optional, the PNG is not. If the upload itself fails, post the
+  alone does not satisfy this step. If a canvas Artifact published (only where your harness provides
+  one), include its URL in the comment body too, but never *only* the URL — the canvas
+  is optional, the PNG is not. If the upload itself fails, post the
   HTTP status and response body in the comment rather than a sentence
   saying uploads are impossible.
 - **3.4c — Hand it to the operator, always, one of two ways.** Every design

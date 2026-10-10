@@ -20,7 +20,8 @@ interactive session editing files there does too, and it has no cycle
 boundary to make the collision visible until something breaks. If you
 already edited a tracked file directly in the primary checkout before
 realizing this, stash it, create the worktree, and re-apply the stash there
-— don't just leave the change on `main`. Read your own project's CLAUDE.md
+— don't just leave the change on `main`. Read your own project's agent
+instructions file (CLAUDE.md, AGENTS.md, GEMINI.md or equivalent)
 and any repo-specific instructions the person has already given you in this
 conversation; where they conflict with the general conventions below, they
 win.
