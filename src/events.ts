@@ -16,7 +16,9 @@
  * No view is built yet.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import {
+  appendFileSync, mkdirSync, readFileSync, existsSync, statSync, renameSync, openSync, closeSync, rmSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 
 /** Where a cycle is. Ordered as they occur, which is what a view renders as progress. */
@@ -61,6 +63,62 @@ export interface EmitterOptions {
   /** Injected so cycle ids and timestamps are testable. */
   now?: () => Date;
   cycleId?: string;
+  /**
+   * Rotate `eventFile` once it exceeds this many bytes (CREW-1509). Unset
+   * means never rotate (tests, one-off emitters).
+   */
+  rotateBytes?: number;
+}
+
+/** Default `ship.eventsRotateBytes`: 64 MB. */
+export const DEFAULT_EVENTS_ROTATE_BYTES = 64 * 1024 * 1024;
+
+/** `events.<UTC stamp>.jsonl`, the name a rotated live file is renamed to. */
+export const ROTATED_EVENTS_RE = /^events\.\d{8}T\d{6}Z(?:-\d+)?\.jsonl$/;
+
+const ROTATE_LOCK_STALE_MS = 60_000;
+
+/**
+ * Rename `file` to `events.<UTC timestamp>.jsonl` beside it when it is larger
+ * than `maxBytes`, so the next append starts a fresh live file. Returns the
+ * rotated path, or undefined when nothing was rotated.
+ *
+ * Rename, never truncate in place: a reader holding an offset sees the live
+ * file shrink and re-seeds, and no line is torn. Every process on the ship
+ * (daemon, `crew release --fleet`, a manual `crew run`) appends to the same
+ * file, so rotation takes an exclusive lock file and re-checks the size under
+ * it — a loser of the race finds a small file and leaves it alone rather than
+ * renaming the fresh one the winner just started.
+ */
+export function rotateEventsFile(file: string, maxBytes: number, now: Date = new Date()): string | undefined {
+  try {
+    if (!existsSync(file) || statSync(file).size <= maxBytes) return undefined;
+  } catch { return undefined; }
+  const lock = `${file}.rotate.lock`;
+  try {
+    try {
+      closeSync(openSync(lock, 'wx'));
+    } catch {
+      // Held by another process — or left behind by one that died mid-rotate.
+      try {
+        if (Date.now() - statSync(lock).mtimeMs < ROTATE_LOCK_STALE_MS) return undefined;
+        rmSync(lock, { force: true });
+        closeSync(openSync(lock, 'wx'));
+      } catch { return undefined; }
+    }
+    try {
+      if (statSync(file).size <= maxBytes) return undefined;
+      const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+      let dest = join(dirname(file), `events.${stamp}.jsonl`);
+      for (let n = 1; existsSync(dest); n++) dest = join(dirname(file), `events.${stamp}-${n}.jsonl`);
+      renameSync(file, dest);
+      return dest;
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  } catch {
+    return undefined;
+  }
 }
 
 export class Emitter {
@@ -103,6 +161,9 @@ export class Emitter {
     const line = render(e);
     // A sink that cannot be written must never take the cycle down with it:
     // losing observability is bad, losing the run is worse.
+    try {
+      if (this.opts.eventFile && this.opts.rotateBytes) rotateEventsFile(this.opts.eventFile, this.opts.rotateBytes, this.now());
+    } catch { /* ignore */ }
     try { if (this.opts.eventFile) appendFileSync(this.opts.eventFile, `${JSON.stringify(e)}\n`); } catch { /* ignore */ }
     try { if (this.opts.logFile) appendFileSync(this.opts.logFile, `${line}\n`); } catch { /* ignore */ }
     try { (this.opts.console ?? ((l: string) => process.stderr.write(`${l}\n`)))(line); } catch { /* ignore */ }

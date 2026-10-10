@@ -925,3 +925,12 @@ test('apiKeyPathFor mirrors resolvedPathFor\'s <workspace>/<project> shape, unde
     join(stateDir, 'keys', 'issues', 'dev-crew.env'),
   );
 });
+
+test('ship.eventsRotateBytes defaults to 64 MB and rejects a non-positive value (CREW-1509)', () => {
+  const { dir, file } = withConfig(ONE);
+  assert.equal(loadConfig(dir, file).ship.eventsRotateBytes, 64 * 1024 * 1024);
+  const bad = withConfig(ONE.replace('ship:\n', 'ship:\n  eventsRotateBytes: 0\n'));
+  assert.throws(() => loadConfig(bad.dir, bad.file), /eventsRotateBytes/);
+  const ok = withConfig(ONE.replace('ship:\n', 'ship:\n  eventsRotateBytes: 1000\n'));
+  assert.equal(loadConfig(ok.dir, ok.file).ship.eventsRotateBytes, 1000);
+});

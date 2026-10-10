@@ -16,6 +16,7 @@ const ship = (over: Partial<Ship> = {}): Ship => ({
   userAgent: 'Mozilla/5.0 CrewAgent/1.0',
   maxConcurrentAgents: 2,
   streamRetentionDays: 7,
+  eventsRotateBytes: 64 * 1024 * 1024,
   relayPort: 2222, relayHttpPort: 443,
   ...over,
 });

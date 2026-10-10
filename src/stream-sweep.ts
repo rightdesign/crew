@@ -12,6 +12,7 @@
 
 import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { ROTATED_EVENTS_RE } from './events.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -50,4 +51,20 @@ export function applyStreamSweep(paths: string[], dryRun: boolean, log: SweepLog
     }
   }
   return removed;
+}
+
+/**
+ * Rotated shared event logs (`events.<stamp>.jsonl`, CREW-1509) older than
+ * `retentionDays`, oldest first. The live `events.jsonl` never matches.
+ */
+export function planEventsSweep(stateDir: string, retentionDays: number, now: number = Date.now()): string[] {
+  if (!existsSync(stateDir)) return [];
+  const cutoff = now - retentionDays * DAY_MS;
+  return readdirSync(stateDir)
+    .filter((name) => ROTATED_EVENTS_RE.test(name))
+    .map((name) => join(stateDir, name))
+    .filter((path) => {
+      try { return statSync(path).mtimeMs < cutoff; } catch { return false; }
+    })
+    .sort();
 }

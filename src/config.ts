@@ -25,6 +25,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, isAbsolute, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { parse } from 'yaml';
+import { DEFAULT_EVENTS_ROTATE_BYTES } from './events.ts';
 import { getSessionStore, hostFromUrl, type SessionStore } from '@tablation/client';
 import {
   hostPlatform, isShipPlatform,
@@ -387,6 +388,12 @@ export interface Ship {
    */
   streamRetentionDays: number;
   /**
+   * Rotate the shared `<stateDir>/events.jsonl` to `events.<stamp>.jsonl`
+   * once it passes this many bytes (CREW-1509). Default 64 MB. Rotated files
+   * are swept with the same `streamRetentionDays` rule as `streams/`.
+   */
+  eventsRotateBytes: number;
+  /**
    * The Host Passengers relay this ship dials out to (`ssh -R
    * <bindAddr>:0:127.0.0.1:<port> <relayHost>`) — README.md in the
    * crew-relay repo, e.g. `crewd@ships.tablation.dev`. Ship-level, not
@@ -453,7 +460,7 @@ export class ConfigError extends Error {}
 
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'shell', 'extraPath', 'useNvm', 'nvmSh',
-  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage',
 ]);
 const ROUTE_KEYS = new Set([
@@ -863,6 +870,10 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
     missing.add(`ship.streamRetentionDays must be a positive integer (got "${shipRaw.streamRetentionDays}")`);
   }
+  const eventsRotateBytes = shipRaw.eventsRotateBytes === undefined ? DEFAULT_EVENTS_ROTATE_BYTES : Number(shipRaw.eventsRotateBytes);
+  if (!Number.isInteger(eventsRotateBytes) || eventsRotateBytes < 1) {
+    missing.add(`ship.eventsRotateBytes must be a positive integer (got "${shipRaw.eventsRotateBytes}")`);
+  }
   const maxThinkingTokens = shipRaw.agent?.maxThinkingTokens === undefined
     ? DEFAULT_MAX_THINKING_TOKENS
     : Number(shipRaw.agent.maxThinkingTokens);
@@ -929,6 +940,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       userAgent: shipRaw.userAgent ?? `Mozilla/5.0 CrewAgent/${crewVersion(crewHome)}`,
       maxConcurrentAgents,
       streamRetentionDays,
+      eventsRotateBytes,
       relayHost: shipRaw.relayHost ? String(shipRaw.relayHost) : undefined,
       // 2222 matches the relay's own RELAY_SSH_PORT default (crew-relay README).
       relayPort: shipRaw.relayPort !== undefined ? Number(shipRaw.relayPort) : 2222,

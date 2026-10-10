@@ -20,7 +20,7 @@ import {
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
-import { Emitter, eventFileFor } from './events.ts';
+import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
@@ -80,8 +80,8 @@ import {
   ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup } from './worktree-sweep.ts';
-import { planStreamSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync } from 'node:fs';
+import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
@@ -529,6 +529,7 @@ const EXCLUSIVE: Record<string, string> = { passengers: 'passengers' };
 const emit = new Emitter({
   route: route?.route ?? '',
   eventFile: dryRun ? undefined : eventFileFor(cfg.ship.stateDir),
+  rotateBytes: cfg.ship.eventsRotateBytes,
   logFile: dryRun ? undefined : cfg.ship.logFile,
   console: (l) => process.stderr.write(`${l}\n`),
 });
@@ -781,7 +782,10 @@ async function releaseTargets(
   // Ship-wide, not per-repo — one sweep per release cycle, alongside the
   // worktree sweep each repo just ran above (ISSUE-401).
   try {
-    const paths = planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays);
+    const paths = [
+      ...planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
+      ...planEventsSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
+    ];
     if (paths.length) {
       emit.enter('worktree');
       const removed = applyStreamSweep(paths, dryRun, emit);
@@ -2112,6 +2116,7 @@ switch (command) {
         newEmitter: () => new Emitter({
           route: route.route,
           eventFile: eventFileFor(cfg.ship.stateDir),
+          rotateBytes: cfg.ship.eventsRotateBytes,
           logFile: cfg.ship.logFile,
           console: (l) => process.stderr.write(`${l}\n`),
         }),
@@ -3077,7 +3082,17 @@ switch (command) {
 
     // Same retention rule the release phase applies on its own (ISSUE-401),
     // available by hand here for the same reason the worktree sweep is.
-    const streamPaths = planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays);
+    // CREW-1509: a live events.jsonl already past the threshold (the writer
+    // only checks on append) is rotated now, so the one-time recovery of an
+    // oversized file is `crew reap`. The rotated file ages out below.
+    if (!dryRun) {
+      const rotated = rotateEventsFile(eventFileFor(cfg.ship.stateDir), cfg.ship.eventsRotateBytes);
+      if (rotated) { anything = true; emit.emit(`rotated oversized event log to ${rotated}`, { step: 'worktree' }); }
+    }
+    const streamPaths = [
+      ...planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
+      ...planEventsSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
+    ];
     if (streamPaths.length) {
       anything = true;
       const removed = applyStreamSweep(streamPaths, dryRun, emit);
@@ -3671,6 +3686,18 @@ switch (command) {
       `ship:              ${cfg.ship.name} (${host})\n` +
         `routes:            ${cfg.routes.map((c) => c.route).join(', ')}\n`,
     );
+
+    // CREW-1509: rotation runs on append, so a live file far past the
+    // threshold means nothing is rotating it.
+    try {
+      const evFile = eventFileFor(cfg.ship.stateDir);
+      const evSize = existsSync(evFile) ? statSync(evFile).size : 0;
+      process.stdout.write(
+        evSize > cfg.ship.eventsRotateBytes * 4
+          ? `events log:        WARN ${evFile} is ${Math.round(evSize / 1048576)} MB (> 4x eventsRotateBytes); run \`crew reap\` to rotate it\n`
+          : 'events log:        ok\n',
+      );
+    } catch { /* an unreadable state dir is reported elsewhere */ }
 
     // Does this machine have a row on the board, and which seats are its own?
     // Matched by name, per Brad's call: it is what an operator recognises.
