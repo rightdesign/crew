@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.30.0] — 2026-10-10
+
+- Run identity: harness, provider and toolchain are recorded in the sidecar, finished event and Agent Log, and shown by `crew logbook` (CREW-1516)
+- Each agent run now records which harness, provider and toolchain served it (sidecar, finished event, Agent Log), `crew logbook` shows harness and provider beside the model, and an Agent Log report no longer fails against a server that predates the new fields (CREW-1516)
+
 ## [0.29.0] — 2026-10-10
 
 - Seat resolution reads each persona's vendor, tier and model: the vendor picks the ship toolchain that serves it (default plus a warning when none does), the tier picks the model and reasoning setting through the toolchain's tiers map, an explicit model is honored only for the toolchain's vendor, `--dry-run` prints the resolution chain and `crew doctor` lists seats whose vendor has no toolchain (CREW-1515)
