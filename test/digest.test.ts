@@ -267,3 +267,21 @@ test('ticket rows carry their project work mode', () => {
   const qa = qaDigest(input({ tickets: [{ ...tickets[1]!, status: 'fixed' }], workModes }));
   assert.match(qa, /\| ISSUE-2 \|[^\n]*\| hybrid \| fixed \|/);
 });
+
+test('the QA digest lists a blocked fixed ticket under "Waiting on blockers", not as takeable (CREW-1506)', () => {
+  const i = input({
+    me: 'qa-1',
+    tickets: [
+      T({ id: 'a', issue_id: 'ISSUE-30', status: 'fixed', blocked_by: ['z'] }),
+      T({ id: 'b', issue_id: 'ISSUE-31', status: 'fixed' }),
+      T({ id: 'z', issue_id: 'ISSUE-99', status: 'accepted' }),
+    ],
+    blocked: new Set(['a']),
+    blockerInfo: { z: { id: 'z', issue_id: 'ISSUE-99', status: 'accepted' } } as DigestInput['blockerInfo'],
+  });
+  const out = qaDigest(i);
+  const [awaiting, waiting] = out.split('### Waiting on blockers');
+  assert.match(awaiting!, /\| ISSUE-31 \|/);
+  assert.doesNotMatch(awaiting!, /\| ISSUE-30 \|/);
+  assert.match(waiting!, /\| ISSUE-30 \| fixed \| ISSUE-99 \(accepted\) \|/);
+});

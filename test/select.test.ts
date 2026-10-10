@@ -356,3 +356,20 @@ test('automatic projects, and no mode map at all, behave as before', () => {
   assert.equal(selectRole(mode(ts, 'dev')).selected, 'dev');
   assert.equal(selectRole(input({ tickets: [T({ id: 'x', issue_id: 'ISSUE-2', status: 'accepted' })] })).selected, 'dev');
 });
+
+test('a fixed or qa ticket with an unresolved blocker is not a QA candidate; it returns once the blocker resolves (CREW-1506)', () => {
+  const ts = [
+    T({ id: 'f', issue_id: 'ISSUE-1', status: 'fixed', blocked_by: ['x'] }),
+    T({ id: 'q', issue_id: 'ISSUE-2', status: 'qa', blocked_by: ['x'] }),
+    T({ id: 'ok', issue_id: 'ISSUE-3', status: 'fixed' }),
+  ];
+  const held = input({ tickets: ts, blocked: new Set(['f', 'q']) });
+  assert.deepEqual(rankedCandidates('qa', held).map((t) => t.id), ['ok']);
+  assert.equal(roleHasWork('qa', held).hasWork, true);
+  const onlyBlocked = input({ tickets: ts.slice(0, 2), blocked: new Set(['f', 'q']) });
+  assert.equal(roleHasWork('qa', onlyBlocked).hasWork, false);
+  assert.deepEqual(rankedCandidates('qa', onlyBlocked), []);
+  // Blocker closed: the sweep's set no longer names them.
+  const cleared = input({ tickets: ts.slice(0, 2), blocked: new Set() });
+  assert.deepEqual(rankedCandidates('qa', cleared).map((t) => t.id).sort(), ['f', 'q']);
+});

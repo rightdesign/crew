@@ -25,7 +25,7 @@ import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
-import { applySweep } from './blocked.ts';
+import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
@@ -41,7 +41,7 @@ import {
 import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
-import { decideRelease, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
+import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
@@ -1254,9 +1254,12 @@ async function releasePhase(
       byRepo.get(target.name) ?? [], tracker.contract.statuses.verified, releaseModes,
     );
     reportUnplaceable(c.route, unplaceable, tracker.contract.statuses.verified, remit);
+    // Blocker statuses for the verified tickets only (CREW-1506): `all` is open
+    // tickets, and a blocker already closed is not in it, so fetch the rest.
+    const blockerInfo = blockerInfoMap(all, await tracker.ticketsByIds(missingBlockerIds(all)));
 
     const outcome = await runRelease({
-      cwd: target.dir, repo, contract: tracker.contract, tickets, emit: remit, scope,
+      cwd: target.dir, repo, contract: tracker.contract, tickets, blockerInfo, emit: remit, scope,
       state: state.release(scope),
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
@@ -3628,6 +3631,16 @@ switch (command) {
       if (bh.unsafe) process.stdout.write(`base:       ${r.name} — UNSAFE, no worktree cuts or releases: ${bh.detail}\n`);
       process.stdout.write(`releaser:   ${r.name} — ${await releaserLine(statusTracker, route.route, r.name, r.config.release)}\n`);
     }
+    // Verified tickets the release is holding back on an unresolved blocker
+    // (CREW-1506), so "why hasn't this shipped" is answerable from here.
+    try {
+      const open = await statusTracker.openTickets();
+      const held = heldByBlockers(
+        open, statusTracker.contract.statuses.verified,
+        blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open))),
+      );
+      for (const line of describeHeld(held)) process.stdout.write(`release:    ${line}\n`);
+    } catch { /* a tracker blip must not break `status` */ }
     if (waiting) {
       process.stdout.write(
         `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +

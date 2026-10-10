@@ -61,14 +61,29 @@ export function blockerInfoMap(tickets: Ticket[], extra: Ticket[] = []): Blocker
  */
 export function computeBlockedIds(tickets: Ticket[], info: BlockerInfo): Set<string> {
   const blocked = new Set<string>();
-  for (const t of tickets) {
-    const unresolved = (t.blocked_by ?? []).some((id) => {
-      const status = info[id]?.status;
-      return status !== undefined && !RESOLVED_STATUSES.has(status);
-    });
-    if (unresolved) blocked.add(t.id);
-  }
+  for (const t of tickets) if (unresolvedBlockers(t, info).length > 0) blocked.add(t.id);
   return blocked;
+}
+
+/**
+ * The ids in `t.blocked_by` that still hold it back (CREW-1506): known to
+ * `info` and not at a resolved status. The one predicate `computeBlockedIds`
+ * (the `accepted` sweep), QA selection and the release phase all share, so
+ * "blocked" cannot mean something different at `fixed` than at `accepted`.
+ * A dangling id (absent from `info`) never blocks, as above.
+ */
+export function unresolvedBlockers(t: Pick<Ticket, 'blocked_by'>, info: BlockerInfo): string[] {
+  return (t.blocked_by ?? []).filter((id) => {
+    const status = info[id]?.status;
+    return status !== undefined && !RESOLVED_STATUSES.has(status);
+  });
+}
+
+/** "CREW-1234 (accepted), CREW-9 (fixed)" — only the blockers still unresolved. */
+export function describeUnresolved(t: Pick<Ticket, 'blocked_by'>, info: BlockerInfo): string {
+  return unresolvedBlockers(t, info)
+    .map((id) => `${info[id]?.issue_tag ?? info[id]?.issue_id ?? '?'} (${info[id]?.status ?? 'unknown'})`)
+    .join(', ');
 }
 
 export interface SweepDiagnostics {

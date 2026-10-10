@@ -223,13 +223,27 @@ export function buildingRoleHasWork(
 }
 
 /**
+ * What QA could take: its slice minus whatever another ship holds, a person
+ * drives, or an unresolved `blocked_by` still gates (CREW-1506). `blocked` is
+ * computed over every open ticket, so a `fixed` ticket whose dependency was
+ * filed after it left `accepted` is in it too — approval-time parking alone
+ * never covered that, and a build needing an unreleased change elsewhere
+ * could be verified and shipped. The digest still lists these, under
+ * "Waiting on blockers".
+ */
+export function qaCandidates(i: SelectionInput): Ticket[] {
+  return withinWorkMode(notHeldByOtherShip(qaSlice(i.tickets), i), i.workModes)
+    .filter((t) => !isHeld(t, i.holds) && !i.blocked.has(t.id));
+}
+
+/**
  * QA's version, and deliberately much simpler: every ticket in QA's slice IS
  * work by definition — `fixed` means nobody has checked it, `qa` means a check
  * is half-done — so there is no watermark or assignee dance to evaluate.
  */
 export function qaRoleHasWork(i: SelectionInput): { hasWork: boolean; reason: string } {
   if (!i.seats.qa) return { hasWork: false, reason: 'this ship does not crew that role' };
-  const n = withinWorkMode(notHeldByOtherShip(qaSlice(i.tickets), i), i.workModes).filter((t) => !isHeld(t, i.holds)).length;
+  const n = qaCandidates(i).length;
   return n > 0
     ? { hasWork: true, reason: `${n} ticket(s) awaiting or in verification` }
     : { hasWork: false, reason: 'nothing awaiting verification' };
@@ -274,7 +288,7 @@ export function roleHasWork(role: RoleName, i: SelectionInput): { hasWork: boole
  */
 /** Every ticket `role` could actually start or resume right now. */
 export function roleCandidates(role: RoleName, i: SelectionInput): Ticket[] {
-  if (role === 'qa') return withinWorkMode(notHeldByOtherShip(qaSlice(i.tickets), i), i.workModes).filter((t) => !isHeld(t, i.holds));
+  if (role === 'qa') return qaCandidates(i);
   if (role === 'triage') return triageSlice(i.tickets, i.seats.triage, i.workModes).filter((t) => !isHeld(t, i.holds));
   if (role === 'pair') return [];
   const me = i.seats[role];

@@ -4,6 +4,7 @@ import { StaleWriteError } from '@tablation/client';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, sweepDiagnostics,
   planSweep, strandedNeedsInfo, rollUpParents, filingErrors, applySweep, sweepComment,
+  unresolvedBlockers, describeUnresolved,
 } from '../src/blocked.ts';
 import type { Ticket } from '../src/tracker.ts';
 

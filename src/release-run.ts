@@ -18,9 +18,10 @@ import {
   isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, recoverStrandedReleaseCheckouts, remoteBranchExists, remoteConfigured, fetchRemote, resolve, tagCommit, tagExists,
   type ClosureCheck,
 } from './git.ts';
+import type { BlockerInfo } from './blocked.ts';
 import {
   decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
-  type MergeCandidate, type ReleaseBlock, type ReleaseDecision,
+  type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { hookLabel } from './repo-config.ts';
@@ -56,6 +57,11 @@ export interface ReleaseRunOptions {
     clearTestGateFailed?(): void;
     testGateReported?(sha: string): boolean;
     noteTestGateReported?(sha: string): void;
+    // The held-by-blockers signature last reported (CREW-1506), so a held
+    // ticket is said once per change of blocker state, not every cycle.
+    heldReported?(): string | null;
+    noteHeldReported?(signature: string): void;
+    clearHeldReported?(): void;
   };
   /**
    * Ship-level attention (CREW-1373): a hook that exits 127 had a command
@@ -71,6 +77,8 @@ export interface ReleaseRunOptions {
   repo: EffectiveRepoConfig;
   contract: Contract;
   tickets: Ticket[];
+  /** Status of every blocker `tickets` name; a verified ticket one still gates is held, not merged (CREW-1506). */
+  blockerInfo?: BlockerInfo;
   /**
    * Which of the optional review columns (`verified_sha`, `pr_ref`) the Issues
    * table carries. Unset reads as neither: no re-verification, no PR reference
@@ -862,6 +870,21 @@ function openReleaseCheckout(o: ReleaseRunOptions): ReleaseCheckout {
   return { dir, branch, close };
 }
 
+/**
+ * Say which verified tickets are held by an unresolved blocker, once per change
+ * of that set (CREW-1506). The signature is persisted because one process is
+ * one cycle; clearing it when nothing is held means a ticket held again later
+ * is reported again.
+ */
+export function reportHeld(o: Pick<ReleaseRunOptions, 'emit' | 'state' | 'dryRun'>, held: HeldTicket[]): void {
+  if (held.length === 0) { o.state?.clearHeldReported?.(); return; }
+  const lines = describeHeld(held);
+  const signature = lines.join('\n');
+  if (o.dryRun || o.state?.heldReported?.() === signature) return;
+  for (const line of lines) o.emit.emit(line, { step: 'release' });
+  o.state?.noteHeldReported?.(signature);
+}
+
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
   const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
@@ -873,7 +896,7 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   const fresh = refreshBase(o);
 
   const decision = decideRelease(o.cwd, o.tickets, o.contract, {
-    tagPattern, base: o.repo.branch.base,
+    tagPattern, base: o.repo.branch.base, blockerInfo: o.blockerInfo,
     // CREW-1364: a branch another ship built and pushed at `fixed` exists
     // here only on the remote. Materialize it so the squash below has a ref.
     // A dry run only looks.
@@ -881,6 +904,8 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       ? (locateBranchForTicket(o.cwd, o.repo, t)?.branch ?? null)
       : materializeBranchForTicket(o.cwd, o.repo, t),
   });
+
+  reportHeld(o, decision.held);
 
   if (!fresh.ok) {
     // Deliberately not `--force`-able: `crew deploy` exists to retry a deploy

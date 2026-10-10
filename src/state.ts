@@ -211,6 +211,7 @@ export class State {
     const failed = `.deploy-failed-sha-${suffix}`;
     const gateFailed = `.test-gate-failed-${suffix}`;
     const gateReported = `.test-gate-reported-${suffix}`;
+    const heldReported = `.release-held-${suffix}`;
     const read = (f: string): string | null => {
       try { return readFileSync(this.path(f), 'utf8').trim() || null; } catch { return null; }
     };
@@ -248,6 +249,11 @@ export class State {
       },
       clearTestGateFailed: (): void => { rmSync(this.path(gateFailed), { force: true }); },
       /** Whether the board was already told about this head's red gate. */
+      heldReported: (): string | null => {
+        try { return readFileSync(this.path(heldReported), 'utf8').replace(/\n$/, '') || null; } catch { return null; }
+      },
+      noteHeldReported: (signature: string): void => { writeFileSync(this.path(heldReported), `${signature}\n`); },
+      clearHeldReported: (): void => { rmSync(this.path(heldReported), { force: true }); },
       testGateReported: (sha: string): boolean => read(gateReported) === sha,
       noteTestGateReported: (sha: string): void => { writeFileSync(this.path(gateReported), `${sha}\n`); },
     };

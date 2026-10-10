@@ -16,6 +16,7 @@ import {
 } from './git.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
+import { describeUnresolved, unresolvedBlockers, type BlockerInfo } from './blocked.ts';
 
 /**
  * What to say about tickets the release could not place in any checkout.
@@ -173,6 +174,28 @@ export interface MergeCandidate {
   sha?: string;
 }
 
+/** A verified ticket the release will not merge because `blocked_by` still gates it. */
+export interface HeldTicket { ticket: Ticket; blockers: string }
+
+/**
+ * Verified tickets with an unresolved `blocked_by` (CREW-1506). The sweep only
+ * parks `accepted` tickets, so a dependency filed after approval has no
+ * effect without this: a build needing an unreleased change elsewhere would be
+ * merged and shipped. Held tickets stay `verified` and merge on the first
+ * pass after the last blocker resolves — every ship re-reads `blocked_by`
+ * each cycle, so no signalling is needed across ships or repos.
+ */
+export function heldByBlockers(tickets: Ticket[], verifiedStatus: string, info: BlockerInfo | undefined): HeldTicket[] {
+  if (!info) return [];
+  return tickets
+    .filter((t) => t.status === verifiedStatus && unresolvedBlockers(t, info).length > 0)
+    .map((ticket) => ({ ticket, blockers: describeUnresolved(ticket, info) }));
+}
+
+/** One line per held ticket: `CREW-9 held: blocked by CREW-1234 (accepted), …`. */
+export const describeHeld = (held: HeldTicket[]): string[] =>
+  held.map((h) => `${h.ticket.issue_tag ?? h.ticket.issue_id} held: blocked by ${h.blockers}`);
+
 export type BumpSize = 'major' | 'minor' | 'patch';
 
 const CHANGELOG_LINE = /^Changelog:[ \t]*(.*)$/gm;
@@ -193,9 +216,11 @@ export function planMerge(
   cwd: string, tickets: Ticket[], contract: Contract, lastReleased: string | null,
   branchFor: (t: Ticket) => string | null = (t) => branchForIssue(cwd, t.issue_id),
   base = 'main',
+  blockerInfo?: BlockerInfo,
 ): MergeCandidate[] {
+  const held = new Set(heldByBlockers(tickets, contract.statuses.verified, blockerInfo).map((h) => h.ticket.id));
   const verified = tickets
-    .filter((t) => t.status === contract.statuses.verified)
+    .filter((t) => t.status === contract.statuses.verified && !held.has(t.id))
     .sort((a, b) => Number.parseInt(a.issue_id.replace(/^\D+/, ''), 10) - Number.parseInt(b.issue_id.replace(/^\D+/, ''), 10));
 
   return verified.map((ticket) => {
@@ -372,6 +397,8 @@ export function insertChangelogSection(existing: string, section: string): strin
 export interface ReleaseDecision {
   block: ReleaseBlock | null;
   merges: MergeCandidate[];
+  /** Verified tickets not merged because an unresolved blocker still gates them (CREW-1506). */
+  held: HeldTicket[];
   head: string;
   /** The tag naming the last release, e.g. "v0.57.7". */
   lastTag: string | null;
@@ -392,6 +419,8 @@ export interface ReleaseOptions {
   tagPattern?: string;
   /** The integration branch. Not assumed to be `main`. */
   base?: string;
+  /** Status of every blocker named by `tickets` (see `heldByBlockers`); absent holds nothing. */
+  blockerInfo?: BlockerInfo;
   /**
    * How to find a ticket's branch. `runRelease` passes the repo's own
    * ticket-aware lookup (`existingBranchForTicket`); the bare default only
@@ -415,7 +444,7 @@ export function decideRelease(
   const head = resolve(cwd, 'HEAD') ?? '';
   const merges = block
     ? []
-    : planMerge(cwd, tickets, contract, lastReleased, opts.branchFor ?? ((t) => branchForIssue(cwd, t.issue_id)), base);
+    : planMerge(cwd, tickets, contract, lastReleased, opts.branchFor ?? ((t) => branchForIssue(cwd, t.issue_id)), base, opts.blockerInfo);
   const unreleasedCommits = lastReleased ? countCommits(cwd, `${lastReleased}..HEAD`) : 0;
   // A "Release vX" commit is the crew's own bookkeeping, never work. When a
   // second ship releases and this ship's last tag is older (the tag has not
@@ -426,7 +455,7 @@ export function decideRelease(
         .split('\n').filter((l) => l && !RELEASE_COMMIT_SUBJECT.test(l)).length
     : 0;
   return {
-    block, merges, head, lastTag, lastReleased, unreleasedCommits,
+    block, merges, held: heldByBlockers(tickets, contract.statuses.verified, opts.blockerInfo), head, lastTag, lastReleased, unreleasedCommits,
     upToDate: lastReleased === head || (lastReleased !== null && unreleasedWork === 0),
     unseeded: lastTag === null,
   };

@@ -6,9 +6,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   checkGuards, planMerge, requestedBump, renderChangelogSection,
-  insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable, releaseIdle, reportUnplaceable,
+  insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable, releaseIdle, reportUnplaceable, describeHeld,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
+import { blockerInfoMap } from '../src/blocked.ts';
+import { reportHeld } from '../src/release-run.ts';
 import { branchForIssue, firstReleaseTagContaining, fetchRemote } from '../src/git.ts';
 import type { Ticket } from '../src/tracker.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
@@ -489,4 +491,47 @@ test('a verified ticket with no repo is still warned about once per route', () =
   assert.equal(got.length, 1);
   assert.equal(got[0]!.level, 'warn');
   assert.match(got[0]!.message, /ISSUE-7/);
+});
+
+test('a verified ticket with an unresolved blocker is held, not merged; it merges once the blocker resolves (CREW-1506)', () => {
+  const { dir, g } = repo();
+  g('checkout', '-qb', 'issue-40');
+  writeFileSync(join(dir, 'h.txt'), '1');
+  g('add', '.');
+  g('commit', '-qm', 'work\n\nChangelog: Held thing');
+  g('checkout', '-q', 'main');
+  const t = T('ISSUE-40', { id: 'a', blocked_by: ['b'] });
+  const dep = (status: string) => blockerInfoMap([t, { id: 'b', issue_id: 'ISSUE-41', status } as Ticket]);
+
+  assert.deepEqual(planMerge(dir, [t], DEFAULT_CONTRACT, null, undefined, 'main', dep('accepted')), []);
+  const d = decideRelease(dir, [t], DEFAULT_CONTRACT, { blockerInfo: dep('accepted') });
+  assert.deepEqual(d.merges, []);
+  assert.deepEqual(describeHeld(d.held), ['ISSUE-40 held: blocked by ISSUE-41 (accepted)']);
+
+  // `fixed` is still unmerged work, so it still holds; `verified` releases the hold.
+  assert.equal(planMerge(dir, [t], DEFAULT_CONTRACT, null, undefined, 'main', dep('fixed')).length, 0);
+  const [c] = planMerge(dir, [t], DEFAULT_CONTRACT, null, undefined, 'main', dep('verified'));
+  assert.equal(c!.branch, 'issue-40');
+  assert.deepEqual(decideRelease(dir, [t], DEFAULT_CONTRACT, { blockerInfo: dep('verified') }).held, []);
+});
+
+test('reportHeld says a held ticket once per change of blocker state, and again after it clears (CREW-1506)', () => {
+  const said: string[] = [];
+  let stored: string | null = null;
+  const o = {
+    dryRun: false,
+    emit: { emit: (m: string) => { said.push(m); } },
+    state: {
+      heldReported: () => stored, noteHeldReported: (s: string) => { stored = s; }, clearHeldReported: () => { stored = null; },
+    },
+  } as unknown as Parameters<typeof reportHeld>[0];
+  const held = (blockers: string) => [{ ticket: T('ISSUE-40'), blockers }];
+  reportHeld(o, held('ISSUE-41 (accepted)'));
+  reportHeld(o, held('ISSUE-41 (accepted)'));
+  assert.equal(said.length, 1);
+  reportHeld(o, held('ISSUE-41 (in_progress)'));
+  assert.equal(said.length, 2);
+  reportHeld(o, []);
+  reportHeld(o, held('ISSUE-41 (in_progress)'));
+  assert.equal(said.length, 3);
 });

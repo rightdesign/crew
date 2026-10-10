@@ -358,14 +358,20 @@ export function qaDigest(i: DigestInput): string {
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
     return `| ${displayKey(t)} | ${repo} | ${modeCell(t, i)} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
+  const waiting = i.tickets.filter((t) => (t.status === 'qa' || t.status === 'fixed') && i.blocked.has(t.id));
+  const takeable = (status: string) => i.tickets.filter((t) => t.status === status && !i.blocked.has(t.id));
+  const waitingTable = waiting.length === 0
+    ? ''
+    : `\n### Waiting on blockers — not yours to verify yet\n\nA \`fixed\` or \`qa\` ticket whose \`Blocked by\` names something not yet resolved\n(\`verified\`, \`closed_deployed\`, \`closed_wont_fix\` or \`closed_duplicate\`) is held out of\nverification: its change needs the blocker released first. It becomes yours on\nthe first poll after the last blocker resolves. No one needs to change the ticket.\n\n| ticket | status | blocked by |\n|---|---|---|\n${waiting.map((t) => `| ${displayKey(t)} | ${t.status} | ${blockers(t, i)} |`).join('\n')}\n`;
   return stream([
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane: every ticket at `qa` ("Verification" —\nyours, unfinished) or `fixed` (nobody has checked it yet), from both\nbuilding lanes. Ticket bodies are deliberately omitted: fetch the full\nrecord and the comments of the one ticket you actually pick up. **Do not\nre-fetch the whole tracker.** This digest comes from the same API call the\npoll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
     '\n**`repo` is the checkout the ticket\'s work happens in** — an area spans\nseveral repositories, so the worktree you verify in sits beside THAT\ndirectory, not beside whichever one this session started in. A ticket\nmarked **NO CHECKOUT** is not yours: this ship has no clone of its\nrepository, and another ship may serve it.\n\n**`branch` is that repository\'s own branch for the ticket**, found there\nrather than derived. **`<name> (on origin only)`** means another ship built it\nand pushed it: it is testable — cut a worktree from the remote branch\n(`git worktree add <worktree> <name>`). **MISSING** means the branch is gone\nlocally AND on the remote, so there is nothing left to verify — say so on the ticket. A `—` means the branch\ncould not be looked for at all, because the repo has no checkout here.\n\n**`worktree` is where that branch should be checked out**, `<repo>/../<worktree>`\n— rendered the same way the dev/design digest computes it, so you land in\nthe same directory the building lane used.\n',
     '\n### Still in verification — yours, unfinished (take these first)\n',
-    table(i.tickets.filter((t) => t.status === 'qa'), i, header, row),
+    table(takeable('qa'), i, header, row),
     '\n### Awaiting verification, in pick order\n',
-    table(i.tickets.filter((t) => t.status === 'fixed'), i, header, row),
+    table(takeable('fixed'), i, header, row),
+    ...(waitingTable ? [waitingTable] : []),
   ]);
 }
