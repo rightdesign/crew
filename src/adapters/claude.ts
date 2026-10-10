@@ -142,6 +142,8 @@ export const claudeAdapter: HarnessAdapter = {
     };
   },
 
+  provider: () => 'anthropic',
+
   unsetEnv: BILLING_VARS_TO_UNSET,
   mapStreamLine,
   extractResult,

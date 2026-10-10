@@ -59,6 +59,13 @@ export interface AgentRunReport {
   cacheWriteTokens?: number;
   costUsd?: number;
   /**
+   * Who ran and who served the model (CREW-1516, EPIC-035 §13; the server's
+   * DTO fields from TABL-1513). Dropped and retried once when the server
+   * rejects them as unknown (an older build), so they never fail a report.
+   */
+  harness?: string;
+  provider?: string;
+  /**
    * ISSUE-377/529: the Agents row's history-entry id current as of the
    * `crew agents sync` that last established this role's persona
    * (`route.resolved.agentPersonas[role].historyId`) — lets
@@ -74,6 +81,14 @@ export interface AgentRunReport {
   promptSha?: string;
 }
 
+class AgentLogHttpError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
   const url = `${target.baseUrl.replace(/\/+$/, '')}/api/workspaces/${target.workspaceId}${path}`;
   const res = await fetch(url, {
@@ -86,7 +101,7 @@ async function post<T>(target: AgentLogTarget, path: string, body: unknown): Pro
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
+  if (!res.ok) throw new AgentLogHttpError(`${path}: ${res.status} ${res.statusText}`, res.status);
   return (await res.json()) as T;
 }
 
@@ -100,7 +115,7 @@ export async function reportAgentRun(
   target: AgentLogTarget,
   run: AgentRunReport,
 ): Promise<{ agentLogId: string }> {
-  const entry = await post<{ id: string }>(target, '/agents/log', {
+  const body = {
     agentId: target.agentId,
     ticketReference: run.ticketReference,
     outcome: run.outcome,
@@ -116,7 +131,16 @@ export async function reportAgentRun(
     costUsd: run.costUsd,
     promptVersion: run.promptVersion,
     promptSha: run.promptSha,
-  });
+  };
+  let entry: { id: string };
+  try {
+    entry = await post<{ id: string }>(target, '/agents/log', { ...body, harness: run.harness, provider: run.provider });
+  } catch (e) {
+    // A server that predates the identity fields validates them away as
+    // unknown properties with a 400; the run still deserves its row.
+    if (!(e instanceof AgentLogHttpError) || e.status !== 400 || (!run.harness && !run.provider)) throw e;
+    entry = await post<{ id: string }>(target, '/agents/log', body);
+  }
   for (const cycle of run.cycles) {
     await post(target, `/agents/log/${entry.id}/cycles`, {
       cycleIndex: cycle.cycleIndex,

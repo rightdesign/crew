@@ -64,9 +64,9 @@ test('a line with no recognizable shape yields no events, not a throw', () => {
 test('the final result line surfaces cost, turns and session id', () => {
   const line = { type: 'result', subtype: 'success', total_cost_usd: 0.0123, num_turns: 4, session_id: 'abc-123' };
   assert.deepEqual(extractResult(line), {
-    sessionId: 'abc-123', numTurns: 4, totalCostUsd: 0.0123,
+    sessionId: 'abc-123', numTurns: 4, costUsd: 0.0123,
     inputTokens: undefined, outputTokens: undefined,
-    cacheReadTokens: undefined, cacheCreationTokens: undefined,
+    cacheReadTokens: undefined, cacheWriteTokens: undefined,
   });
 });
 
@@ -79,8 +79,8 @@ test('the final result line surfaces the token usage breakdown when present (ISS
     },
   };
   assert.deepEqual(extractResult(line), {
-    sessionId: 'abc-123', numTurns: 4, totalCostUsd: 0.0123,
-    inputTokens: 1000, outputTokens: 200, cacheReadTokens: 50, cacheCreationTokens: 10,
+    sessionId: 'abc-123', numTurns: 4, costUsd: 0.0123,
+    inputTokens: 1000, outputTokens: 200, cacheReadTokens: 50, cacheWriteTokens: 10,
   });
 });
 

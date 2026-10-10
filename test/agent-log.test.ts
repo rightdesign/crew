@@ -105,3 +105,32 @@ test('a non-ok response throws, naming the path and status', async (t) => {
     /\/agents\/log: 404/,
   );
 });
+
+test('a 400 on the identity fields retries the row without them, so an older server still gets the run (CREW-1516)', async (t) => {
+  const original = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const body = JSON.parse(init!.body as string) as Record<string, unknown>;
+    bodies.push(body);
+    if ('harness' in body || 'provider' in body) {
+      return new Response(JSON.stringify({ message: 'property harness should not exist' }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ id: 'log-9' }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+
+  const { agentLogId } = await reportAgentRun(target, {
+    outcome: 'success', startedAt: 'a', finishedAt: 'b', cycles: [], harness: 'claude', provider: 'anthropic',
+  });
+  assert.equal(agentLogId, 'log-9');
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0]!.harness, 'claude');
+  assert.equal(bodies[0]!.provider, 'anthropic');
+  assert.ok(!('harness' in bodies[1]!) && !('provider' in bodies[1]!));
+});
+
+test('a 400 with no identity fields sent is not retried', async (t) => {
+  const { restore } = mockFetch({});
+  t.after(restore);
+  await assert.rejects(() => reportAgentRun(target, { outcome: 'success', startedAt: 'a', finishedAt: 'b', cycles: [] }), /404/);
+});

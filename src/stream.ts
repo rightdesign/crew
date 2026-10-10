@@ -21,7 +21,8 @@ export interface StreamKindEvent {
 export interface StreamResult {
   sessionId?: string;
   numTurns?: number;
-  totalCostUsd?: number;
+  /** Only when the harness reports a cost itself; crew carries no price tables, so otherwise absent (null in the sidecar). */
+  costUsd?: number;
   /**
    * From the result line's own `usage` block — present on every
    * `claude --output-format stream-json` result event, not just when
@@ -32,7 +33,8 @@ export interface StreamResult {
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
-  cacheCreationTokens?: number;
+  /** Cache writes are Anthropic's usage schema; other harnesses leave this absent. */
+  cacheWriteTokens?: number;
 }
 
 interface ContentBlock {
@@ -122,10 +124,10 @@ export function extractResult(line: unknown): StreamResult | undefined {
   return {
     sessionId: obj.session_id,
     numTurns: obj.num_turns,
-    totalCostUsd: obj.total_cost_usd,
+    costUsd: obj.total_cost_usd,
     inputTokens: obj.usage?.input_tokens,
     outputTokens: obj.usage?.output_tokens,
     cacheReadTokens: obj.usage?.cache_read_input_tokens,
-    cacheCreationTokens: obj.usage?.cache_creation_input_tokens,
+    cacheWriteTokens: obj.usage?.cache_creation_input_tokens,
   };
 }

@@ -27,6 +27,7 @@ import { TicketAttributionTracker } from './ticket-attribution.ts';
 export const DIGEST_MAX_AGE_SECONDS = 600;
 
 const LEGACY_TOOLCHAIN_HARNESS = 'claude';
+const LEGACY_TOOLCHAIN_PROVIDER = 'anthropic';
 
 // The tool grant, deny list and billing scrub are the Claude adapter's now
 // (CREW-1511); re-exported so existing importers keep working.
@@ -90,6 +91,8 @@ export interface AgentPlan {
    */
   toolchain?: string;
   harness?: string;
+  /** Who serves/bills the model (`adapter.provider`); a hand-built plan means Anthropic. */
+  provider?: string;
   /** Why that toolchain and model (`--dry-run`'s resolution chain). */
   resolution?: { toolchain: string; model: string };
   /** Seat-resolution fallbacks, emitted as `warn` events when the run starts. */
@@ -292,6 +295,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     args: invocation.args,
     toolchain: toolchain.name,
     harness: toolchain.harness,
+    provider: adapter.provider(toolchain),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
     warnings: seat.warnings,
     prompt,
@@ -518,22 +522,32 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       // back to the pre-run poll hint when the visible text never named one
       // (e.g. an administrative run with nothing ticket-specific to say).
       const attributedTicket = attribution.winner(plan.ticket);
+      // Which toolchain, harness and provider produced this run (CREW-1516),
+      // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
+      // the sidecar and the event only — the Agent Log carries harness+provider.
+      const identity = {
+        toolchain: plan.toolchain ?? LEGACY_TOOLCHAIN_HARNESS,
+        harness: adapter.harness,
+        provider: plan.provider ?? LEGACY_TOOLCHAIN_PROVIDER,
+      };
       try {
         writeFileSync(`${plan.streamPath}.meta.json`, JSON.stringify({
           route: plan.route, role: plan.role, ticket: plan.ticket ?? null,
           attributedTicket: attributedTicket ?? null,
           startedAt, exitCode: code ?? 1, model: plan.model,
+          ...identity,
           sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
-          totalCostUsd: result?.totalCostUsd ?? null,
+          totalCostUsd: result?.costUsd ?? null,
         }));
       } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
       const ms = Date.now() - started;
       emit.emit(`agent run finished (exit ${code ?? 1})`, {
         data: {
           ms, code: code ?? 1,
+          ...identity,
           ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
           ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
-          ...(result?.totalCostUsd !== undefined ? { totalCostUsd: result.totalCostUsd } : {}),
+          ...(result?.costUsd !== undefined ? { totalCostUsd: result.costUsd } : {}),
         },
       });
       if (plan.agentLog) {
@@ -548,8 +562,10 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
             tokensIn: result?.inputTokens,
             tokensOut: result?.outputTokens,
             cacheReadTokens: result?.cacheReadTokens,
-            cacheWriteTokens: result?.cacheCreationTokens,
-            costUsd: result?.totalCostUsd,
+            cacheWriteTokens: result?.cacheWriteTokens,
+            costUsd: result?.costUsd,
+            harness: identity.harness,
+            provider: identity.provider,
             promptVersion: plan.promptVersion,
             promptSha: plan.promptSha,
           });

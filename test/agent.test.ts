@@ -13,6 +13,7 @@ import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
 const FAKE_CLAUDE_MULTITICKET = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-multiticket.mjs');
+const FAKE_CLAUDE_PLAIN = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-plain.mjs');
 const FAKE_CLAUDE_LARGE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-large.mjs');
 
 function rig() {
@@ -326,10 +327,48 @@ test('spawnAgent saves the raw stream verbatim, maps blocks onto their own sink,
   assert.equal(meta.exitCode, 0);
   assert.equal(meta.sessionId, 'sess-1');
   assert.equal(meta.numTurns, 2);
+  // Run identity (CREW-1516): the crew.yaml entry, the harness and who served the model.
+  assert.equal(meta.toolchain, 'claude');
+  assert.equal(meta.harness, 'claude');
+  assert.equal(meta.provider, 'anthropic');
 
   // The one shared, low-volume event this run does write carries the result.
   const finish = lines.find((l) => l.includes('agent run finished'));
   assert.ok(finish);
+});
+
+test('a run with no reasoning text and no reported cost yields visible-text cycles, token counts and a null cost (CREW-1516)', async (t) => {
+  const { home, state } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1' },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-7',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_PLAIN];
+  plan.cwd = state;
+  const { restore, calls } = mockFetch({
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { id: 'cycle-1' },
+  });
+  t.after(restore);
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  assert.equal((await spawnAgent(plan, emit)).code, 0);
+
+  const body = calls[0]!.body as Record<string, unknown>;
+  assert.equal(body.tokensIn, 22);
+  assert.equal(body.tokensOut, 8);
+  assert.equal(body.costUsd, undefined);
+  assert.equal(body.harness, 'claude');
+  assert.equal(body.provider, 'anthropic');
+  assert.deepEqual(calls.slice(1).map((c) => (c.body as { thinking: string }).thinking), ['Looking at ISSUE-7.', 'Done.']);
+  const meta = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
+  assert.equal(meta.totalCostUsd, null);
 });
 
 test('spawnAgent waits for both sinks to actually flush before resolving (CREW-985)', async () => {
@@ -427,6 +466,7 @@ test('spawnAgent reports the run as one Agent Log row, its thinking block and it
     agentId: 'agent-9', ticketReference: 'ISSUE-401', outcome: 'success',
     startedAt: (logCall.body as any).startedAt, finishedAt: (logCall.body as any).finishedAt,
     source: 'client', client: 'crew', model: 'claude-sonnet-5', costUsd: 0.0042,
+    harness: 'claude', provider: 'anthropic',
     // No `agentPersonas.dev.historyId` in this fixture's route (crew agents
     // sync hasn't run), so promptVersion is undefined and dropped by
     // JSON.stringify — only promptSha (always computable from the local

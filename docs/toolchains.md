@@ -81,3 +81,14 @@ for every configured toolchain, next to its binary check and MCP registration.
   stays for older crew-macos builds.
 - `crew connect` registers the tracker MCP server in each configured
   toolchain's user-level config.
+
+## Run identity
+
+Every run records which toolchain, harness and provider produced it, beside `model`:
+
+- the `.meta.json` sidecar and the `agent run finished` event carry `toolchain` (the `crew.yaml` entry name), `harness` and `provider`;
+- the Agent Log row carries `harness` and `provider` (not `toolchain`, which is a local config name). A server that predates these fields rejects them with a 400; crew then retries the row without them, so reporting never fails the run;
+- `provider` is who serves and bills the model (`anthropic` for the Claude adapter); an adapter defines it via `provider(spec)`;
+- `crew logbook list` / `show` print harness and provider beside the model.
+
+Cost is recorded only when the harness reports one (null otherwise; crew carries no price tables), and cache-write tokens only where the harness's usage schema has them (Anthropic's).

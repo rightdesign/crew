@@ -2465,7 +2465,7 @@ switch (command) {
         for (const e of entries) {
           process.stdout.write(
             `${e.id}  ${e.started_at ?? '?'}  ${e.outcome ?? '?'}` +
-              `${e.ticket_reference ? `  ${e.ticket_reference}` : ''}${e.model ? `  ${e.model}` : ''}\n`,
+              `${e.ticket_reference ? `  ${e.ticket_reference}` : ''}${e.model ? `  ${e.model}` : ''}${e.harness || e.provider ? `  (${[e.harness, e.provider].filter(Boolean).join(' · ')})` : ''}\n`,
           );
         }
       } else {
@@ -2479,7 +2479,9 @@ switch (command) {
           `finished:   ${entry.finished_at ?? '?'}\n` +
           `outcome:    ${entry.outcome ?? '?'}\n` +
           `ticket:     ${entry.ticket_reference ?? '(none)'}\n` +
-          `model:      ${entry.model ?? '?'}\n`,
+          `model:      ${entry.model ?? '?'}\n` +
+          `harness:    ${entry.harness ?? '?'}\n` +
+          `provider:   ${entry.provider ?? '?'}\n`,
         );
         if (flag('prompt')) {
           process.stdout.write(`\nprompt reconstruction: ${reconstruction.status}` +

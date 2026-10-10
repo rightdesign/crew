@@ -83,6 +83,12 @@ export interface HarnessAdapter {
    */
   applyReasoning?(spec: ToolchainSpec, reasoning: string): ToolchainSpec;
   defaultBin: string;
+  /**
+   * Who serves and bills the model for a run of `spec` (`anthropic`, `openrouter`,
+   * ...) — distinct from the harness, since one harness can front several vendors.
+   * Recorded beside `model` in the sidecar, the finished event and the Agent Log.
+   */
+  provider(spec: ToolchainSpec): string;
   defaultModel: string;
   defaultTiers: Partial<Record<Tier, ToolchainTier>>;
   /**

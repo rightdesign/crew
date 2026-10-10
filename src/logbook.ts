@@ -28,6 +28,8 @@ export interface AgentLogEntry {
   started_at?: string | null;
   finished_at?: string | null;
   model?: string | null;
+  harness?: string | null;
+  provider?: string | null;
   prompt_version?: string | null;
   prompt_sha?: string | null;
   [column: string]: unknown;
