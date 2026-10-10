@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.33.0] — 2026-10-10
+
+- `crew connect` can install Pair for GitHub Copilot in VS Code (`ship.pair: [copilot]`): the tracker MCP in the user-profile `mcp.json` and a managed user-level instructions file; `crew doctor` warns when VS Code would not see `CREW_API_KEY` (CREW-1527)
+
 ## [0.32.0] — 2026-10-10
 
 - A toolchain with `launcher: ori` now records `provider: openrouter`, accepts an optional `launcherBin`, and `crew doctor` flags that Ori's headless auth under the scheduler is unverified (CREW-1522)
