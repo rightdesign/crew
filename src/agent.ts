@@ -16,7 +16,7 @@ import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
-import { adapterFor, resolveSeat, type PersonaChoice } from './toolchain.ts';
+import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
 import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { TicketAttributionTracker } from './ticket-attribution.ts';
 
@@ -295,7 +295,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     args: invocation.args,
     toolchain: toolchain.name,
     harness: toolchain.harness,
-    provider: adapter.provider(toolchain),
+    provider: toolchainProvider(toolchain),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
     warnings: seat.warnings,
     prompt,

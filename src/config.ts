@@ -993,7 +993,7 @@ function expandCommand(cmd: string, base: string): string {
   return cmd.includes('/') || cmd.startsWith('~') ? expand(cmd, base) : cmd;
 }
 
-const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens']);
+const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'launcherBin', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens']);
 
 /** `ship.pair`: a list of harness names (CREW-1517). Undefined when absent. */
 function parsePair(raw: unknown, missing: Missing): string[] | undefined {
@@ -1064,6 +1064,7 @@ function parseToolchains(raw: unknown, base: string, missing: Missing, file: str
       name, harness,
       bin: expandCommand(String(entryRaw.bin ?? adapter.defaultBin), base),
       ...(entryRaw.launcher ? { launcher: expandCommand(String(entryRaw.launcher), base) } : {}),
+      ...(entryRaw.launcher && entryRaw.launcherBin ? { launcherBin: expandCommand(String(entryRaw.launcherBin), base) } : {}),
       model: String(entryRaw.model ?? tiers.standard?.model ?? adapter.defaultModel),
       tiers,
       args: Array.isArray(args) ? args.map(String) : [],

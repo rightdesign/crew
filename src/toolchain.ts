@@ -39,6 +39,8 @@ export interface ToolchainSpec {
   bin: string;
   /** A wrapper command: it is spawned, with `bin` as its first argument. */
   launcher?: string;
+  /** Where the launcher binary lives when it is not on PATH; `launcher` keeps naming it (`ori`) for identity. */
+  launcherBin?: string;
   model: string;
   tiers: Partial<Record<Tier, ToolchainTier>>;
   /** Extra argv appended after the adapter's own. */
@@ -162,8 +164,18 @@ export function resolveToolchain(ship: Ship, route?: Pick<Route, 'toolchain'>): 
 
 /** The vendor serving a toolchain's models: `openrouter` behind the `ori` launcher, else the harness's own. */
 export function toolchainVendor(spec: Pick<ToolchainSpec, 'harness' | 'launcher'>): string {
-  if (spec.launcher && basename(spec.launcher) === 'ori') return 'openrouter';
+  if (isOriLauncher(spec)) return 'openrouter';
   return adapterFor(spec.harness).vendor;
+}
+
+/** OpenRouter's Ori runs the harness (`ori claude …`) against OpenRouter's catalog (CREW-1522). */
+export function isOriLauncher(spec: Pick<ToolchainSpec, 'launcher'>): boolean {
+  return !!spec.launcher && basename(spec.launcher) === 'ori';
+}
+
+/** Who serves and bills a run of `spec`: `openrouter` behind Ori, else whatever the adapter says. */
+export function toolchainProvider(spec: ToolchainSpec): string {
+  return isOriLauncher(spec) ? 'openrouter' : adapterFor(spec.harness).provider(spec);
 }
 
 /** What a seat's persona asks for; every field optional (older workspaces have none). */

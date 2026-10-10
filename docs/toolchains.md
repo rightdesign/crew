@@ -30,6 +30,38 @@ defines an implicit toolchain named `claude`. A `toolchains:` entry named
 `claude` replaces it. Unknown toolchain names, harnesses and tiers fail at load
 time (a bad route override drops only that route, with a warning).
 
+## Running a harness through OpenRouter's Ori
+
+`launcher: ori` runs the harness behind OpenRouter's Ori (`ori claude …`), which
+serves the harness against OpenRouter's catalog. Ori is a launcher, not a
+harness: the harness's own flags pass through unchanged and `bin` names the
+harness as Ori expects it.
+
+```yaml
+ship:
+  toolchains:
+    claude-ori:
+      harness: claude
+      bin: claude                  # becomes `ori claude -p …`
+      launcher: ori
+      launcherBin: /opt/homebrew/bin/ori   # optional: Ori is not on the scheduler PATH
+      model: anthropic/claude-sonnet-5-5   # OpenRouter catalog id, passed to --model as is
+      tiers:
+        deep: { model: anthropic/claude-opus-5-5 }
+```
+
+- Models are OpenRouter `vendor/model` ids; a persona's explicit `model` is
+  accepted as-is behind Ori.
+- A run records `provider: openrouter` with the harness (`claude`) and the
+  catalog model id. Cost is null unless the harness reports it.
+- `crew doctor` checks the Ori binary (`launcherBin`, else `launcher`) against the
+  scheduler PATH and prints a caveat line: Ori signs in with an interactive OAuth
+  login, and **whether that login is visible to a launchd/systemd job is not yet
+  verified**. Run `ori login` as the user the scheduler runs as, then confirm one
+  headless run lands in the Agent Log with `provider: openrouter`. If it cannot
+  authenticate headlessly, treat Ori as interactive-only. Only the `claude`
+  harness exists today, so Ori over Codex arrives with the Codex adapter.
+
 ## Seat resolution: persona vendor, tier and model
 
 A seat's Agents row can carry `vendor`, `tier` and `model` (all optional; a

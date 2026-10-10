@@ -231,3 +231,38 @@ test('planAgentRun carries the resolution: chosen toolchain, model, warnings and
   assert.match(text, /resolved: toolchain claude/);
   assert.match(text, /warning: .*google/);
 });
+
+// CREW-1522: Ori launcher — argv prefixing, provider derivation, model pass-through.
+
+const ORI = `ship:
+  agent: { bin: /bin/true }
+  toolchains:
+    viaori:
+      harness: claude
+      bin: claude
+      launcher: ori
+      launcherBin: /opt/homebrew/bin/ori
+      model: anthropic/claude-sonnet-5-5
+    plain:
+      harness: claude
+      bin: /bin/true
+routes:${ROUTE('    toolchain: viaori\n')}`;
+
+test('ori launcher: argv is `ori claude <harness flags>`, spawned from launcherBin, provider openrouter', () => {
+  const cfg = cfgFrom(ORI);
+  const p = plan(cfg, 0);
+  assert.equal(p.bin, '/opt/homebrew/bin/ori');
+  assert.equal(p.args[0], 'claude');
+  assert.equal(p.args[1], '-p');
+  assert.equal(p.provider, 'openrouter');
+  assert.equal(p.harness, 'claude');
+  // The catalog id passes through the harness's normal model flag untouched.
+  assert.equal(p.args[p.args.indexOf('--model') + 1], 'anthropic/claude-sonnet-5-5');
+});
+
+test('ori launcher: launcherBin is optional, and a toolchain without ori keeps the harness provider', () => {
+  const cfg = cfgFrom(ORI.replace('      launcherBin: /opt/homebrew/bin/ori\n', ''));
+  assert.equal(plan(cfg, 0).bin, 'ori');
+  const plain = cfgFrom(ORI.replace("toolchain: viaori", 'toolchain: plain'));
+  assert.equal(plan(plain, 0).provider, 'anthropic');
+});

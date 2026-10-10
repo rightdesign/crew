@@ -74,7 +74,7 @@ import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote } from './pair-install.ts';
-import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor } from './toolchain.ts';
+import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher } from './toolchain.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -3894,14 +3894,20 @@ switch (command) {
     let allBinsFound = true;
     for (const tc of shipToolchains(cfg.ship)) {
       const adapter = adapterFor(tc.harness);
-      const binPath = findOnPath(tc.launcher ?? tc.bin, schedulerPath);
+      const binPath = findOnPath(tc.launcherBin ?? tc.launcher ?? tc.bin, schedulerPath);
       if (!binPath) allBinsFound = false;
       const label = tc.name === defaultToolchain ? 'agent binary:     ' : `toolchain ${tc.name}:`.padEnd(18);
       process.stdout.write(
-        `${label} ${tc.launcher ?? tc.bin} — ${binPath ? `OK (${binPath})` : 'NOT FOUND on the scheduler PATH'}` +
+        `${label} ${tc.launcherBin ?? tc.launcher ?? tc.bin} — ${binPath ? `OK (${binPath})` : 'NOT FOUND on the scheduler PATH'}` +
           `${tc.name === defaultToolchain ? '' : ` [${adapter.displayName}]`}\n`,
       );
       for (const limit of adapter.limitations) process.stdout.write(`                   cannot enforce: ${limit}\n`);
+      // CREW-1522: Ori authenticates with an interactive OAuth login; whether that
+      // login is visible to a launchd/systemd job is unverified, so say so rather
+      // than imply a PATH hit means a headless run will authenticate.
+      if (isOriLauncher(tc)) {
+        process.stdout.write(`                   ori: headless auth under the scheduler is unverified — run \`ori login\` as the scheduler user, then confirm a run records provider openrouter (see docs/toolchains.md)\n`);
+      }
     }
     process.stdout.write(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
     if (!allBinsFound || !gitPath) {

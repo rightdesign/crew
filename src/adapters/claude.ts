@@ -147,7 +147,7 @@ export const claudeAdapter: HarnessAdapter = {
       ...spec.args,
     ];
     return spec.launcher
-      ? { bin: spec.launcher, args: [spec.bin, ...args] }
+      ? { bin: spec.launcherBin ?? spec.launcher, args: [spec.bin, ...args] }
       : { bin: spec.bin, args };
   },
 
