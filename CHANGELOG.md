@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.38.0] — 2026-10-11
+
+- The building lanes' situational procedures (worktree setup, running the suite, question/investigation tickets, filing a ticket, ticket attachments, workspace-change authorization, the design pass) ship as Agent Skills that a run fetches only when the step applies, cutting the assembled dev/QA/design prompts roughly in half (CREW-1533)
+- Triage and pair persona prompts are self-contained — common.md is prefixed only to the dev, design and QA briefs — and every persona prompt is shorter, generic across projects, toolchains and harnesses, with the incident history behind each rule moved to docs/prompt-rationale.md (CREW-1533)
+
 ## [0.37.0] — 2026-10-11
 
 - `crew reload` and automatic daemon relaunch when crew.yaml changes (CREW-1532)
