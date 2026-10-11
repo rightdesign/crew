@@ -11,6 +11,7 @@ import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { positionalArgs } from './argv.ts';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers,
@@ -336,9 +337,22 @@ const value = (name: string) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : undefined;
 };
-const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'));
+const positional = positionalArgs(argv);
 const command = positional[0];
 if (!command) usage();
+
+/**
+ * Route for `agents sync` / `skills sync`, which write to a workspace. Unlike
+ * `findRoute`, an unnamed route is only accepted on a one-route ship: falling
+ * back to "the single enabled route" on a multi-route ship let a mistyped
+ * invocation silently sync the wrong workspace (CREW-1539).
+ */
+function findSyncRoute(c: Parameters<typeof findRoute>[0], name: string | undefined): ReturnType<typeof findRoute> {
+  if (!name && c.routes.length > 1) {
+    throw new ConfigError(`this ship has ${c.routes.length} routes — name one: ${c.routes.map((r) => r.route).join(', ')}`);
+  }
+  return findRoute(c, name);
+}
 
 /** crew.yaml plus every route's apiKeyFile: the files a daemon reads once, at startup (CREW-1532). */
 function daemonConfigPaths(c: { configFile: string; routes: Array<{ apiKeyFile?: string }> }): string[] {
@@ -2244,7 +2258,7 @@ switch (command) {
     }
     let target: Route;
     try {
-      target = findRoute(cfg, positional[2]);
+      target = findSyncRoute(cfg, positional[2]);
     } catch (e) {
       if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
       throw e;
@@ -2260,6 +2274,7 @@ switch (command) {
       if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;
     }
+    process.stdout.write(`route: ${target.route}\n`);
     for (const o of personaResult.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
     for (const o of personaResult.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
     // CREW-1534: a brief's `{{skill: Name}}` include of a skill this preset
@@ -2318,7 +2333,7 @@ switch (command) {
     }
     let target: Route;
     try {
-      target = findRoute(cfg, positional[2]);
+      target = findSyncRoute(cfg, positional[2]);
     } catch (e) {
       if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
       throw e;
@@ -2334,6 +2349,7 @@ switch (command) {
       if (e instanceof SkillSyncError) { process.stderr.write(`crew skills sync: ${e.message}\n`); process.exit(2); }
       throw e;
     }
+    process.stdout.write(`route: ${target.route}\n`);
     for (const o of result.outcomes) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
     if (!dryRun) {
       // Same merge-not-clobber shape `case 'agents'` uses for its own
