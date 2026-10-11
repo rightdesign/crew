@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.42.0] — 2026-10-11
+
+- ISSUE-1552 Optional `columns.position` contract column: a manual order that breaks ties inside an effective-priority band, never across bands, and shows in the digest.
+
 ## [0.41.0] — 2026-10-11
 
 - CREW-1549 A same-repo blocker now counts as resolved only once merged, so dependent tickets are no longer restored early and stacked on unmerged branches
