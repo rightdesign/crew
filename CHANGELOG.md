@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.43.4] — 2026-10-11
+
+- ISSUE-1577 The Grill-Me skill now sets the Epic to `planned` when its Map goes active.
+
 ## [0.43.3] — 2026-10-11
 
 - CREW-1560 The digest's last-comment cell no longer shows a status-change event, so an operator's reply from the app is attributed to them instead of "(no identity)".
