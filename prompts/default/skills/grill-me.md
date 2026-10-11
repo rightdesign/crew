@@ -116,6 +116,10 @@ Map go active now, or stay a draft?**
      - Any `draft` Issue tied to this Epic that this session's ticket
        set does NOT include (i.e. dropped by this revision) → flip to
        `status: closed_obsolete`.
+  5. Set the Epic itself to `status: planned` (Epics table) if it is
+     still `new`. An active Map is the planning decision for the Epic;
+     leave an Epic that has already moved on (`in_progress`, `done`,
+     `cancelled`) alone.
 
 Do all of this yourself via direct MCP writes. There is no automation
 watching for this — if you don't do it, it doesn't happen.
