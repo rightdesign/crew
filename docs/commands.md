@@ -53,7 +53,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew agents sync [route] [--force]` | Push personas and skill files into the workspace's Agents and Agent Skills tables (`--force` overwrites a diverged persona). |
+| `crew agents sync [route] [--force]` | Push personas and skill files into the workspace's Agents and Agent Skills tables (`--force` overwrites a diverged persona). A row with "Customize prompt" on is never synced, with or without `--force`; the command reports it as an override and still exits 0. |
 | `crew agents prompt ROLE [route]` | Print one persona's current prompt (e.g. `pair`, for a SessionStart hook). |
 | `crew skills sync [route]` | Push only the skill files. |
 

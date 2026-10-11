@@ -704,3 +704,91 @@ test('currentPersonaPrompt returns a workspace admin\'s live edit over the local
 
   assert.equal(prompt, 'CUSTOM PAIR PROMPT\n');
 });
+
+// ---- TABL-1540 / CREW-1544: Customize prompt lock and source/baseline columns ----
+
+const AGENTS_MODEL_WITH_BASELINE = { ...AGENTS_MODEL, fields: [{ columnName: 'prompt' }, { columnName: 'prompt_baseline' }, { columnName: 'prompt_source' }] };
+
+function rowsWithDevCustomized(promptsDir: string) {
+  return ['Developer', 'Design', 'QA', 'Triage', 'Pair'].map((name) => ({
+    id: `row-${name}`, name, updated_at: '2026-01-01T00:00:00Z',
+    prompt: name === 'Developer' ? 'MY CUSTOM PROMPT' : 'STALE',
+    prompt_customized: name === 'Developer',
+  }));
+}
+
+for (const force of [false, true]) {
+  test(`a row with prompt_customized is reported overridden and never written${force ? ' even with --force' : ''}`, async (t) => {
+    const promptsDir = makePromptsDir({ dev: 'NEW DEV BRIEF\n' });
+    const patched: string[] = [];
+    const handlers: Record<string, (b: any) => { status: number; body: unknown }> = {
+      'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+      'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: rowsWithDevCustomized(promptsDir) }),
+    };
+    for (const n of ['Developer', 'Design', 'QA', 'Triage', 'Pair']) {
+      handlers[`PATCH /api/data-models/agents-model-1/records/row-${n}`] = () => { patched.push(n); return { status: 200, body: { id: `row-${n}`, updated_at: '2026-02-01T00:00:00Z' } }; };
+      handlers[`GET /api/data-models/agents-model-1/records/row-${n}/history?limit=1`] = () => ({ status: 200, body: [] });
+    }
+    const { restore } = mockFetch(handlers);
+    t.after(restore);
+
+    const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), { force });
+    const dev = result.outcomes.find((o) => o.role === 'dev')!;
+    assert.equal(dev.action, 'overridden');
+    assert.ok(!patched.includes('Developer'));
+    // Without --force the other rows have no cached baseline, so they diverge; with it, all four are rewritten.
+    assert.equal(patched.length, force ? 4 : 0);
+    // An overridden persona is still a valid persona for Crew-seat linking.
+    assert.equal(result.agentPersonas.dev?.agentId, 'row-Developer');
+    assert.match(describeSyncOutcome(dev), /override in place/);
+    if (force) assert.ok(!result.outcomes.some((o) => o.action === 'diverged'));
+  });
+}
+
+test('against a server with prompt_baseline, create and update carry prompt_source crew and a baseline equal to the prompt; without the column the body is unchanged', async (t) => {
+  for (const [model, expectSource] of [[AGENTS_MODEL_WITH_BASELINE, true], [AGENTS_MODEL, false]] as const) {
+    const promptsDir = makePromptsDir({ dev: 'DEV\n' });
+    const created: any[] = [];
+    const { restore } = mockFetch({
+      'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: model }),
+      'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+      'POST /api/data-models/agents-model-1/records': (body: any) => {
+        created.push(body);
+        return { status: 200, body: { id: `row-${body.name}`, name: body.name, prompt: body.prompt, updated_at: '2026-08-28T00:00:00Z' } };
+      },
+    });
+    try {
+      await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
+    } finally { restore(); }
+    const dev = created.find((c) => c.name === 'Developer');
+    if (expectSource) {
+      assert.equal(dev.prompt_source, 'crew');
+      assert.equal(dev.prompt_baseline, dev.prompt);
+    } else {
+      assert.deepEqual(Object.keys(dev).sort(), ['name', 'prompt']);
+    }
+  }
+  void t;
+});
+
+test('a 422 from the prompt gate on update is reported overridden, not thrown', async (t) => {
+  const promptsDir = makePromptsDir({ dev: 'NEW DEV BRIEF\n' });
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL_WITH_BASELINE }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({
+      status: 200,
+      body: [
+        { id: 'row-Developer', name: 'Developer', prompt: 'COMMON\nOLD DEV BRIEF\n', updated_at: '2026-01-01T00:00:00Z' },
+        ...['Design', 'QA', 'Triage', 'Pair'].map((n, i) => ({ id: `row-${n}`, name: n, prompt: personaDefaultPrompt(promptsDir, (['design', 'qa', 'triage', 'pair'] as const)[i]!), updated_at: '2026-01-01T00:00:00Z' })),
+      ],
+    }),
+    'GET /api/data-models/agents-model-1/records/row-Developer/history?limit=50': () => ({
+      status: 200, body: [{ history_id: 'hist-1', changed_at: '2026-01-01T00:00:00Z', prompt: 'COMMON\nOLD DEV BRIEF\n' }],
+    }),
+    'PATCH /api/data-models/agents-model-1/records/row-Developer': () => ({ status: 422, body: { message: 'prompt is customized' } }),
+  });
+  t.after(restore);
+  const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z', historyId: 'hist-1' } } as any, {}, promptsDir);
+  const result = await syncPersonas(route, {});
+  assert.equal(result.outcomes.find((o) => o.role === 'dev')!.action, 'overridden');
+});

@@ -202,3 +202,51 @@ test('a stale-write 409 (someone edited between the list and the patch) is repor
   // The cache stays untouched — the caller must not persist a "synced" state that never happened.
   assert.equal(result.agentSkills['Grill-Me']?.lastSyncedUpdatedAt, '2026-01-01T00:00:00Z');
 });
+
+// ---- TABL-1540 / CREW-1544 ----
+
+const SKILLS_MODEL_WITH_BASELINE = { ...SKILLS_MODEL, fields: [{ columnName: 'prompt_baseline' }] };
+
+test('a skill row with prompt_customized is reported overridden and never written', async (t) => {
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: SKILLS_MODEL_WITH_BASELINE }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({
+      status: 200,
+      body: [{ id: 'row-gm', name: 'Grill-Me', description: 'Interview an Epic.', prompt: 'MINE', prompt_customized: true, updated_at: '2026-01-01T00:00:00Z' }],
+    }),
+  });
+  t.after(restore);
+  const result = await syncSkills(makeRoute({ 'Grill-Me': { skillId: 'row-gm', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }), {});
+  assert.equal(result.outcomes[0]!.action, 'overridden');
+  assert.match(describeSkillSyncOutcome(result.outcomes[0]!), /override in place/);
+  assert.equal(calls.filter((c) => c.key.startsWith('PATCH')).length, 0);
+});
+
+test('skill create and update write prompt_source/prompt_baseline only when the column exists; a 422 maps to overridden', async (t) => {
+  const patches: any[] = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: SKILLS_MODEL_WITH_BASELINE }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({
+      status: 200,
+      body: [{ id: 'row-gm', name: 'Grill-Me', description: 'Interview an Epic.', prompt: 'OLD', updated_at: '2026-01-01T00:00:00Z' }],
+    }),
+    'PATCH /api/data-models/skills-model-1/records/row-gm': (b) => { patches.push(b); return { status: 422, body: { message: 'customized' } }; },
+  });
+  t.after(restore);
+  const result = await syncSkills(makeRoute({ 'Grill-Me': { skillId: 'row-gm', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }), {});
+  assert.equal(patches[0].prompt_source, 'crew');
+  assert.equal(patches[0].prompt_baseline, patches[0].prompt);
+  assert.equal(result.outcomes[0]!.action, 'overridden');
+});
+
+test('skill create against a server without prompt_baseline sends the body unchanged', async (t) => {
+  const created: any[] = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: SKILLS_MODEL }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'POST /api/data-models/skills-model-1/records': (b) => { created.push(b); return { status: 200, body: { id: 'r', updated_at: 'x' } }; },
+  });
+  t.after(restore);
+  await syncSkills(makeRoute(), {});
+  assert.deepEqual(Object.keys(created[0]).sort(), ['description', 'name', 'prompt']);
+});

@@ -27,6 +27,7 @@ import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/
 import type { Route } from './config.ts';
 import { resolveApiKey } from './config.ts';
 import { skillMarkerNames } from './skill-include.ts';
+import { promptSourceFields, isPromptGateRejection } from './agents.ts';
 
 export class SkillSyncError extends Error {}
 
@@ -73,9 +74,11 @@ interface SkillRow {
   description: string;
   prompt: string;
   updated_at: string;
+  /** TABL-1540: true = an operator locked this prompt; crew never writes it. Absent on an older server. */
+  prompt_customized?: boolean | null;
 }
 
-export type SkillSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged';
+export type SkillSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'overridden';
 
 export interface SkillSyncOutcome {
   name: string;
@@ -140,6 +143,7 @@ export async function syncSkills(
       if (opts.dryRun) { outcomes.push({ name: skill.name, action: 'created', skillId: '(dry run)' }); continue; }
       const created = await client.records.create<SkillRow>(skillsModel.id, {
         name: skill.name, description: skill.description, prompt: skill.prompt,
+        ...promptSourceFields(skillsModel, skill.prompt),
       });
       agentSkills[skill.name] = { skillId: created.id, lastSyncedUpdatedAt: created.updated_at };
       outcomes.push({ name: skill.name, action: 'created', skillId: created.id });
@@ -152,6 +156,13 @@ export async function syncSkills(
       // a later sync's compare-and-swap has the right baseline.
       agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: row.updated_at };
       outcomes.push({ name: skill.name, action: 'unchanged', skillId: row.id });
+      continue;
+    }
+
+    if (row.prompt_customized === true) {
+      // TABL-1540: the operator's explicit lock — never written, not a failure.
+      agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: row.updated_at };
+      outcomes.push({ name: skill.name, action: 'overridden', skillId: row.id });
       continue;
     }
 
@@ -173,7 +184,7 @@ export async function syncSkills(
 
     try {
       const updated = await client.records.update<SkillRow>(
-        skillsModel.id, row.id, { description: skill.description, prompt: skill.prompt }, knownBaseline,
+        skillsModel.id, row.id, { description: skill.description, prompt: skill.prompt, ...promptSourceFields(skillsModel, skill.prompt) }, knownBaseline,
       );
       agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: updated.updated_at };
       outcomes.push({ name: skill.name, action: 'updated', skillId: row.id });
@@ -184,6 +195,11 @@ export async function syncSkills(
         // persona sync. Leave the cache exactly as it was; the caller
         // surfaces this as a warning.
         outcomes.push({ name: skill.name, action: 'diverged', skillId: row.id });
+        continue;
+      }
+      if (isPromptGateRejection(e)) {
+        // Flagged "Customize prompt" between the list and this write.
+        outcomes.push({ name: skill.name, action: 'overridden', skillId: row.id });
         continue;
       }
       throw e;
@@ -199,6 +215,7 @@ export function describeSkillSyncOutcome(o: SkillSyncOutcome): string {
     case 'created': return `${o.name}: created (${o.skillId})`;
     case 'updated': return `${o.name}: prompt updated from crew's local file`;
     case 'unchanged': return `${o.name}: already in sync`;
+    case 'overridden': return `${o.name}: override in place — prompt not synced (clear "Customize prompt" on the Agent Skills row to resume)`;
     case 'diverged': return `${o.name}: HAS LOCAL EDITS — crew's default is newer but was NOT applied; review ${o.skillId} in the app before syncing again`;
   }
 }

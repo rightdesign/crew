@@ -89,6 +89,8 @@ interface AgentRow {
   /** `anthropic` | `openai` | `google` | `openrouter`; null = inherit. */
   vendor?: unknown;
   updated_at: string;
+  /** TABL-1540: true = an operator locked this prompt; crew never writes it. Absent on an older server. */
+  prompt_customized?: boolean | null;
 }
 
 /**
@@ -380,7 +382,28 @@ interface FieldTypeSummary {
   isMultiple?: boolean;
 }
 
-export type PersonaSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'forced';
+export type PersonaSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'forced' | 'overridden';
+
+/**
+ * TABL-1540: the columns a source writes alongside a prompt so the server's
+ * write gate accepts it (a PATCH that changes `prompt` on a sourced,
+ * non-customized row must also write `prompt_baseline` equal to it). Only
+ * sent when the table has the column — a pre-TABL-1540 server gets exactly
+ * the body it always did.
+ */
+export function promptSourceFields(
+  model: { fields?: ReadonlyArray<{ columnName: string }> },
+  prompt: string,
+): { prompt_source?: string; prompt_baseline?: string } {
+  return model.fields?.some((f) => f.columnName === 'prompt_baseline')
+    ? { prompt_source: 'crew', prompt_baseline: prompt }
+    : {};
+}
+
+/** The server's prompt write gate (TABL-1540) answers 422 when a row was customized after crew listed it. */
+export function isPromptGateRejection(e: unknown): boolean {
+  return e instanceof TablationApiError && e.status === 422;
+}
 
 export interface PersonaSyncOutcome {
   role: RoleName;
@@ -462,7 +485,7 @@ export async function syncPersonas(
 
     if (!row) {
       if (opts.dryRun) { outcomes.push({ role, action: 'created', agentId: '(dry run)' }); continue; }
-      const created = await client.records.create<AgentRow>(agentsModel.id, { name, prompt: defaultPrompt });
+      const created = await client.records.create<AgentRow>(agentsModel.id, { name, prompt: defaultPrompt, ...promptSourceFields(agentsModel, defaultPrompt) });
       const historyId = await fetchLatestHistoryId(route, agentsModel.id, created.id, opts.userAgent);
       agentPersonas[role] = { agentId: created.id, lastSyncedUpdatedAt: created.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'created', agentId: created.id });
@@ -479,6 +502,17 @@ export async function syncPersonas(
       continue;
     }
 
+    if (row.prompt_customized === true) {
+      // TABL-1540: "Customize prompt" is the operator's explicit lock, so
+      // unlike `diverged` (a surprise) not even `--force` bypasses it. Not a
+      // failure, and still a valid persona: cache the row so its Crew seat
+      // links, keeping any history anchor crew already had for it.
+      const prior = cache[role]?.agentId === row.id ? cache[role] : undefined;
+      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, ...(prior?.historyId ? { historyId: prior.historyId } : {}) };
+      outcomes.push({ role, action: 'overridden', agentId: row.id });
+      continue;
+    }
+
     if (opts.force) {
       // `--force` (CREW-1055) skips the divergence check entirely — the
       // operator has already decided any local edit here is meant to be
@@ -487,7 +521,15 @@ export async function syncPersonas(
       // unlucky race with a concurrent edit is an acceptable risk here,
       // unlike every other path in this loop.
       if (opts.dryRun) { outcomes.push({ role, action: 'forced', agentId: row.id, previousPrompt: row.prompt }); continue; }
-      const updated = await client.records.update<AgentRow>(agentsModel.id, row.id, { prompt: defaultPrompt });
+      let updated: AgentRow;
+      try {
+        updated = await client.records.update<AgentRow>(agentsModel.id, row.id, { prompt: defaultPrompt, ...promptSourceFields(agentsModel, defaultPrompt) });
+      } catch (e) {
+        if (!isPromptGateRejection(e)) throw e;
+        outcomes.push({ role, action: 'overridden', agentId: row.id });
+        agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, ...(cache[role]?.agentId === row.id && cache[role]?.historyId ? { historyId: cache[role]!.historyId } : {}) };
+        continue;
+      }
       const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
       agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: updated.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'forced', agentId: row.id, previousPrompt: row.prompt });
@@ -540,7 +582,7 @@ export async function syncPersonas(
       // safe, and a non-prompt column change since the last sync must not
       // itself trip the compare-and-swap.
       const updated = await client.records.update<AgentRow>(
-        agentsModel.id, row.id, { prompt: defaultPrompt }, row.updated_at,
+        agentsModel.id, row.id, { prompt: defaultPrompt, ...promptSourceFields(agentsModel, defaultPrompt) }, row.updated_at,
       );
       const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
       agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: updated.updated_at, ...(historyId ? { historyId } : {}) };
@@ -553,6 +595,12 @@ export async function syncPersonas(
         // decision. Leave the cache exactly as it was; the caller surfaces
         // this as a warning.
         outcomes.push({ role, action: 'diverged', agentId: row.id });
+        continue;
+      }
+      if (isPromptGateRejection(e)) {
+        // Flagged "Customize prompt" between the list and this write.
+        agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, historyId: cached.historyId };
+        outcomes.push({ role, action: 'overridden', agentId: row.id });
         continue;
       }
       throw e;
@@ -670,6 +718,7 @@ export function describeSyncOutcome(o: PersonaSyncOutcome): string {
     case 'updated': return `${label}: prompt updated from crew's local default`;
     case 'unchanged': return `${label}: already in sync`;
     case 'diverged': return `${label}: HAS LOCAL EDITS — crew's default is newer but was NOT applied; review ${o.agentId} in the app before syncing again`;
+    case 'overridden': return `${label}: override in place — prompt not synced (clear "Customize prompt" on the Agents row to resume)`;
     case 'forced': return `${label}: --force overwrote local edits (previous prompt was: ${JSON.stringify(o.previousPrompt ?? '')})`;
   }
 }
