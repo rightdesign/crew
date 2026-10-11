@@ -167,3 +167,16 @@ skills are control-plane records, and `[[Skills:…]]` would collide with a
 workspace table of that name. The recursion, depth and size caps exist because a
 skill row is admin-editable, so a cycle or a huge include must not be able to
 hang or bloat a run.
+
+## A pushed branch is merged into, never rewritten (CREW-1550)
+
+The adapter denies `git push --force*` / `-f*` on purpose (CREW-1380), so a
+rebased pushed branch can never be published: the dev lane rebased, could not
+push, and parked the ticket for the operator (CREW-1376, TABL-1500, TABL-1542).
+The remedy is the one the release's conflict path already uses
+(`refreshBranch` in `src/conflict.ts`): merge `<remote>/<base>` into the ticket
+branch and push fast-forward. That keeps every ship's copy of the branch an
+ancestor of the new tip, and the squash-merge still ships only the ticket's own
+diff. The lane skill therefore states the rule (Step 4.4) and says that "never
+merge" means never merge INTO the base; QA's hard limits forbid asking a builder
+to rewrite a pushed branch.

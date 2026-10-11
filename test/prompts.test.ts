@@ -183,3 +183,13 @@ for (const preset of ['default', 'dev-qa']) {
     }
   });
 }
+
+test('lane skill and QA brief never prescribe rewriting a pushed branch (CREW-1550)', () => {
+  for (const preset of readdirSync(PROMPTS)) {
+    for (const file of ['skills/crew-lane-agent.md', 'personas/lane-qa.md']) {
+      const text = readFileSync(join(PROMPTS, preset, file), 'utf8');
+      assert.match(text, /merge `<remote>\/<base>` into/, `${preset}/${file} lacks the merge-the-base rule`);
+      assert.equal(text.match(/rebase/gi)?.length ?? 0, 1, `${preset}/${file}: "rebase" only in the forbidding sentence`);
+    }
+  }
+});

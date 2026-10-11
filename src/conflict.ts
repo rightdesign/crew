@@ -148,7 +148,7 @@ export function handBackComment(b: ConflictBounce, merged: boolean): string {
 \`${b.branch}\` was verified, but squash-merging it into \`${b.base}\` conflicts in ${list}. Work that landed on \`${b.base}\` after this branch was cut has changed the same lines.
 
 ${merged
-    ? `\`${b.base}\` has been merged into \`${b.branch}\` in its worktree and the conflict is left in place, so \`git status\` there shows exactly what disagrees. Resolve it, commit, and hand back to QA as usual — \`git merge --abort\` backs the merge out if you would rather start differently.`
+    ? `\`${b.base}\` has been merged into \`${b.branch}\` in its worktree and the conflict is left in place, so \`git status\` there shows exactly what disagrees. Resolve it, commit, push as a plain fast-forward (the branch is pushed, so rebasing it is not an option) and hand back to QA as usual — \`git merge --abort\` backs the merge out if you would rather start differently.`
     : `This ship has no worktree for \`${b.branch}\`, so nothing has been merged for you. Merge \`${b.base}\` into the branch wherever it lives, resolve the conflict, and commit.`}
 
 Nothing was written to \`${b.base}\`: the failed merge was rewound, and the rest of the release shipped without this ticket. Re-verifying is what puts it back in the merge queue.`;
@@ -160,7 +160,7 @@ export function escalateComment(b: ConflictBounce): string {
 
 \`${b.branch}\` was handed back once for a merge conflict, verified again, and conflicts against \`${b.base}\` a second time${b.paths.length ? ` (${b.paths.map((p) => `\`${p}\``).join(', ')})` : ''}.
 
-Either \`${b.base}\` is moving faster than this branch can be rebased onto it, or this ticket overlaps work that has already shipped and needs rethinking rather than merging. That is a call for a person, not another lap through the lanes.`;
+Either \`${b.base}\` is moving faster than this branch can absorb it, or this ticket overlaps work that has already shipped and needs rethinking rather than merging. That is a call for a person, not another lap through the lanes.`;
 }
 
 export interface ConflictWriter {

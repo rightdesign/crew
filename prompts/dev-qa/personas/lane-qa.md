@@ -152,6 +152,11 @@ pass.
   base branch or the primary checkout.** The release phase merges verified
   branches and removes their worktrees; a merge may be in flight while you
   run.
+- **You never ask a builder to rewrite a pushed branch.** If you check
+  mergeability (`git merge-tree`) and the branch conflicts with or trails the
+  base, the bounce says to merge `<remote>/<base>` into the branch, resolve and
+  push fast-forward; a rebase would need a force push the builder cannot make.
+  Or pass the ticket and let the release's conflict path do the merge.
 - **You only ever enter the worktree of the ticket you are verifying.**
 - Throwaway verification scripts go in a scratch directory outside the
   repository — not the worktree root either.

@@ -33,7 +33,7 @@ person says so. **A missing worktree is never a reason to stop.**
 1. From the primary checkout, run `crew sync` (name the route if this ship
    serves more than one). It fetches the remote and fast-forwards the primary
    checkout's base branch, and every worktree branch that tracks a remote,
-   never merging or rebasing. It is quiet about a checkout that is not cleanly
+   doing nothing else to them. It is quiet about a checkout that is not cleanly
    on the base — something else may be mid-edit there; that is expected.
 2. If it prints `DO NOT CUT A WORKTREE FROM THIS BASE` and exits non-zero, the
    base has diverged from the remote: **hard stop.** Do not `git worktree
@@ -50,7 +50,9 @@ person says so. **A missing worktree is never a reason to stop.**
 When resuming an existing worktree, run `crew sync` first; if it reports your
 branch as diverged (local commits not on the remote *and* the remote has
 moved), stop, comment with what it printed, and park the ticket for a person
-(`needs_info`, operator as assignee). Never merge or rebase it yourself.
+(`needs_info`, operator as assignee). A branch that is only stale or conflicts
+with the base is a different case: merge `<remote>/<base>` into it, per the lane
+policy, and push fast-forward.
 
 ## Making the worktree runnable
 

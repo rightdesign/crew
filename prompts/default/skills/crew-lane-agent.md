@@ -149,10 +149,11 @@ Then:
   has posted a new comment since your last one — the comment clears you to
   act, never the flag. Clearing either flag is always the operator's move.
 - **Before resuming in an existing worktree, run `crew sync`** (fetches and
-  fast-forwards every worktree branch that tracks a remote; never merges or
-  rebases). If it reports your branch as diverged, stop: comment with what it
-  printed and park the ticket for a person (see "Stopping"); never merge or
-  rebase it yourself.
+  fast-forwards every worktree branch that tracks a remote and does nothing
+  else to it). If it reports your branch as diverged, stop: comment with what
+  it printed and park the ticket for a person (see "Stopping"); do not try to
+  reconcile it yourself. A branch that is merely stale or conflicts with the
+  base is not this case: Step 4.4 says how to fix it.
 - A ticket QA bounced back arrives as `in_progress`, reassigned to your row
   (or unassigned, when your ship holds it), with a comment saying what still
   fails. Treat it as new direction: fix what it names and take it back to
@@ -336,7 +337,8 @@ before going further, and never change a ticket's `report_type` yourself.
    first**: `git push --set-upstream <remote> <branch>` from the worktree
    (the remote is `origin` unless the repository's configuration says
    otherwise; a repository with no remote has nothing to push to — say so and
-   skip it). Push as a plain fast-forward, never `--force`; a rejected push
+   skip it). Push as a plain fast-forward, never `--force` (Step 4.4 covers a stale
+   branch); a rejected push
    means someone else moved the branch, so stop and say so on the ticket.
    Then, in one write, set `status` to `fixed` and hand the ticket to QA: in
    an `automatic` project **clear `assignee_id`**; in a `hybrid` project set
@@ -376,8 +378,18 @@ worktree, runs the test gate and deploys. Three consequences:
    reads the diff later to fill them in.
 3. **A branch that no longer squash-merges cleanly comes back to you** at
    `in_progress`, reassigned to your lane, with a comment naming the
-   conflict. Fix it in the same worktree and take it to `fixed` again; never
-   merge by hand to "help".
+   conflict. Fix it in the same worktree and take it to `fixed` again. "Never
+   merge" above means never merge INTO the base; merging the base INTO your
+   own ticket branch is the expected fix (rule 4), and it is not "by hand to
+   help".
+4. **A pushed branch is never rewritten; merge `<remote>/<base>` into it.**
+   Never rebase, reset or amend a branch you have pushed: that needs a force
+   push, which this ship denies, and it strands every other ship's copy. When
+   the branch is stale or conflicts with `<base>`, run `git fetch <remote>`
+   then `git merge <remote>/<base>` in the ticket's worktree, resolve any
+   conflict, commit, run the suite, and `git push` as a plain fast-forward.
+   The merge commit disappears when the release squash-merges, so the ticket's
+   own diff is all that ships.
 
 Never set `verified` yourself — that is QA's call (or the operator's), and
 setting it is what queues a branch for merge. The deployed status is set by
