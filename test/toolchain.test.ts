@@ -266,3 +266,57 @@ test('ori launcher: launcherBin is optional, and a toolchain without ori keeps t
   const plain = cfgFrom(ORI.replace("toolchain: viaori", 'toolchain: plain'));
   assert.equal(plan(plain, 0).provider, 'anthropic');
 });
+
+const REPO_YAML = (repoToolchain: string) => `
+ship:
+  toolchain: fast
+  toolchains:
+    fast: { harness: claude, bin: /opt/fast }
+    other: { harness: claude, bin: /opt/other }
+    wrapped: { harness: claude, bin: /opt/wrapped }
+routes:
+  - route: issues/dev-crew
+    baseUrl: https://example.test/
+    toolchain: wrapped
+    repos:
+      alpha: { dir: /tmp/alpha, toolchain: ${repoToolchain} }
+      beta: /tmp/beta
+`;
+
+test('repos.<name>.toolchain: repo beats route beats ship; no repo keeps the route', () => {
+  const cfg = cfgFrom(REPO_YAML('other'));
+  const route = cfg.routes[0]!;
+  assert.equal(route.repoOverrides.alpha?.toolchain, 'other');
+  assert.equal(resolveSeat(cfg.ship, route, 'dev', {}, 'alpha').toolchain.name, 'other');
+  assert.equal(resolveSeat(cfg.ship, route, 'dev', {}, 'alpha').toolchainWhy, 'repo alpha toolchain other');
+  assert.equal(resolveSeat(cfg.ship, route, 'dev', {}, 'beta').toolchain.name, 'wrapped');
+  assert.equal(resolveSeat(cfg.ship, route, 'dev').toolchain.name, 'wrapped');
+  assert.equal(resolveToolchain(cfg.ship, route, 'alpha').name, 'other');
+});
+
+test('repos.<name>.toolchain: persona vendor still re-targets on top of the repo base', () => {
+  const cfg = cfgFrom(REPO_YAML('other'));
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { vendor: 'openai' }, 'alpha');
+  assert.equal(r.toolchain.name, 'other');
+  assert.match(r.toolchainWhy, /repo alpha toolchain other \(persona vendor openai has no toolchain\)/);
+});
+
+test('repos.<name>.toolchain: an unknown name drops the route, naming the path', () => {
+  assert.throws(() => cfgFrom(REPO_YAML('nope')), /routes\[0\]\.repos\.alpha\.toolchain "nope"|repos\.alpha\.toolchain "nope"/);
+});
+
+test('planAgentRun forwards the selected ticket\'s repo to resolveSeat', () => {
+  const cfg = cfgFrom(REPO_YAML('other'));
+  const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
+  mkdirSync(join(home, 'personas'), { recursive: true });
+  writeFileSync(join(home, 'personas', 'common.md'), 'C\n');
+  writeFileSync(join(home, 'personas', 'lane-dev.md'), 'D\n');
+  const route = { ...cfg.routes[0]!, promptsDir: home };
+  const run = (repo?: string) => planAgentRun({
+    role: 'dev', route, ship: cfg.ship, stateDir: mkdtempSync(join(tmpdir(), 'crew-st-')),
+    roster: 'R', environment: 'E', cycle: 'c1', repo,
+  });
+  assert.equal(run('alpha').toolchain, 'other');
+  assert.equal(run('beta').toolchain, 'wrapped');
+  assert.equal(run().toolchain, 'wrapped');
+});

@@ -555,6 +555,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
   const { route, ship, emit } = ctx;
   const tracker = new Tracker(route, ship);
   let ticketHint = decision.actionable.top?.issue_id;
+  let ticketRepo = repoTargetFor(route, decision.actionable.top?.repo_id)?.name;
   let workingId = decision.actionable.top?.id ?? null;
 
   if (role === 'dev' || role === 'design' || role === 'qa') {
@@ -598,6 +599,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
       workingId = result.ticket.id;
 
       const target = repoTargetFor(route, result.ticket.repo_id);
+      ticketRepo = target?.name;
       try {
         if (target && ensureRepoCheckout(target.dir, target.remote)) {
           emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role });
@@ -616,7 +618,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
     role, route, ship, stateDir: ship.stateDir, roster: rosterFor(decision, route, role),
     environment: await buildEnvironment(route, ship, ticketHint),
     apiKey: resolveApiKey(route),
-    cycle: emit.cycle, ticket: ticketHint,
+    cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
     divergedPrompt: await fetchDivergedPrompt(route, role, { userAgent: ship.userAgent }),
     agentPersona: await fetchSeatPersona(route, role, { userAgent: ship.userAgent }),
     resolvedAgentId: await resolveAgentId(route, role, { userAgent: ship.userAgent }),

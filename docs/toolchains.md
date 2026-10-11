@@ -22,8 +22,23 @@ ship:
       env: {}                # added to the session environment
 routes:
   - route: ws/proj
-    toolchain: claude-wrapped   # per-route override; there is no per-repo key
+    toolchain: claude-wrapped   # per-route override
+    repos:
+      sandbox-project:
+        dir: /Users/me/src/sandbox-project
+        toolchain: codex        # per-repo override (CREW-1529)
+      crew: /Users/me/src/crew  # no override: the route's toolchain
 ```
+
+A repo's `toolchain:` applies to any run that selected a ticket in that repo and
+outranks the route's and the ship's default. Precedence: repo, then route, then
+`ship.toolchain`, then `claude`. A persona `vendor` still re-targets on top of
+whichever base won. Runs with no ticket (triage, nothing to pick) have no repo
+and use the route/ship base. The key lives in your `crew.yaml`, never the repo's
+own `.crew.yaml`: the vendor is an operator/billing decision, not a property of
+the code. `crew run --dry-run` shows the reason (`repo <name> toolchain <x>`),
+`crew status --json` reports `route.repos[].toolchain`, and `crew doctor` lists
+each repo override.
 
 The legacy `ship.agent: {bin, model, maxThinkingTokens}` block still works and
 defines an implicit toolchain named `claude`. A `toolchains:` entry named

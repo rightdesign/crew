@@ -302,6 +302,13 @@ export interface Route {
      */
     worktreeName?: string;
     /**
+     * Which `ship.toolchains` entry runs agent sessions working a ticket in
+     * THIS repo (CREW-1529). Outranks the route's `toolchain` and the ship
+     * default; lives in the operator's crew.yaml, never the repo's own
+     * `.crew.yaml`, because the vendor is an operator/billing decision.
+     */
+    toolchain?: string;
+    /**
      * Per-connection opt-OUT of Host Passengers (ISSUE-553), when this
      * route's own `hostPassengers: true` would otherwise include every repo
      * it serves in that workspace's container. Absent (the common case)
@@ -350,8 +357,9 @@ export interface Route {
   hostPassengers?: boolean;
   /**
    * Which `ship.toolchains` entry runs this route's agent sessions,
-   * overriding `ship.toolchain` (CREW-1511, EPIC-035 §3). Deliberately a
-   * route-level key and nothing finer: there is no per-repo toolchain.
+   * overriding `ship.toolchain` (CREW-1511, EPIC-035 §3). A single repo may
+   * override it again with `repos.<name>.toolchain` (CREW-1529), see
+   * `repoOverrides`.
    */
   toolchain?: string;
 }
@@ -499,7 +507,7 @@ function parseWorktreeName(v: unknown, where: string, file: string): string {
   return String(v);
 }
 
-const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch', 'hostPassengers', 'worktreeName']);
+const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch', 'hostPassengers', 'worktreeName', 'toolchain']);
 const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
 // `versionFile` (singular) is a ship-level-only alias for a one-entry
 // `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
@@ -1101,7 +1109,11 @@ function parseOneRoute(
         const e = entry as Record<string, any>;
         rejectUnknownKeys(e, REPO_ENTRY_KEYS, `${where}.repos.${name}`, file);
         repoDirs[name] = expand(String(missing.req(e.dir, `${where}.repos.${name}.dir`) || ''), base);
-        if (e.hooks || e.labels || e.release || e.branch || e.hostPassengers !== undefined || e.worktreeName !== undefined) {
+        const repoToolchain = e.toolchain === undefined ? undefined : String(e.toolchain);
+        if (repoToolchain !== undefined && !toolchainNames.has(repoToolchain)) {
+          missing.add(`${where}.repos.${name}.toolchain "${repoToolchain}" is not defined in ship.toolchains (have: ${[...toolchainNames].join(', ')})`);
+        }
+        if (e.hooks || e.labels || e.release || e.branch || e.hostPassengers !== undefined || e.worktreeName !== undefined || repoToolchain !== undefined) {
           repoOverrides[name] = {
             hooks: e.hooks, labels: e.labels,
             release: e.release ? parseReleaseOverride(e.release, `${where}.repos.${name}`, file) : undefined,
@@ -1112,6 +1124,7 @@ function parseOneRoute(
             ...(e.branch ? { branch: parseBranchOverride(e.branch, `${where}.repos.${name}`, file) } : {}),
             ...(e.hostPassengers !== undefined ? { hostPassengers: e.hostPassengers === true } : {}),
             ...(e.worktreeName !== undefined ? { worktreeName: parseWorktreeName(e.worktreeName, `${where}.repos.${name}`, file) } : {}),
+            ...(repoToolchain !== undefined ? { toolchain: repoToolchain } : {}),
           };
         }
       } else {

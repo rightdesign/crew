@@ -78,7 +78,9 @@ routes:
     # and the queue digest marks it NO CHECKOUT rather than leaving it blank.
     repos:
       My Product: "/home/me/src/my-product"
-      My Product CLI: "/home/me/src/my-product-cli"
+      My Product CLI:
+        dir: "/home/me/src/my-product-cli"
+        # toolchain: codex   # run tickets in this repo on another ship.toolchains entry (CREW-1529)
 
     # Leave `repos:` out entirely instead to serve every repo the board's
     # Repos table lists, each one defaulting to

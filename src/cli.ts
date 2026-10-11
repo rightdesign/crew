@@ -1624,6 +1624,7 @@ switch (command) {
           environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
           apiKey: resolveApiKey(w.route),
           cycle: wemit.cycle, ticket: w.decision.actionable.top?.issue_id,
+          repo: repoTargetFor(w.route, w.decision.actionable.top?.repo_id)?.name,
           divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -1650,6 +1651,7 @@ switch (command) {
       // ends this cycle for the whole fleet, same as "nothing to run" did
       // before this ticket, and the next poll re-ranks everything fresh.
       let fleetTicketHint = w.decision.actionable.top?.issue_id;
+      let fleetTicketRepo = repoTargetFor(w.route, w.decision.actionable.top?.repo_id)?.name;
       let fleetWorkingId = w.decision.actionable.top?.id ?? null;
       if (w.role === 'dev' || w.role === 'design' || w.role === 'qa') {
         const seat = w.route.resolved?.seats[w.role];
@@ -1699,6 +1701,7 @@ switch (command) {
           // it's the one about to be worked — not every repo `reposOf`
           // could derive a path for. See `ensureRepoCheckout`'s own doc.
           const target = repoTargetFor(w.route, result.ticket.repo_id);
+          fleetTicketRepo = target?.name;
           try {
             if (target && ensureRepoCheckout(target.dir, target.remote)) {
               wemit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
@@ -1716,7 +1719,7 @@ switch (command) {
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
         environment: await environmentFor(w.route, fleetTicketHint),
         apiKey: resolveApiKey(w.route),
-        cycle: wemit.cycle, ticket: fleetTicketHint,
+        cycle: wemit.cycle, ticket: fleetTicketHint, repo: fleetTicketRepo,
         divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -1869,6 +1872,7 @@ switch (command) {
       // the next candidate. A resumption ticket needs no claim and is handed
       // back as-is.
       let ticketHint = decision.actionable.top?.issue_id;
+      let ticketRepo = repoTargetFor(route, decision.actionable.top?.repo_id)?.name;
       let workingId = decision.actionable.top?.id ?? null;
       if (!dryRun && (current === 'dev' || current === 'design' || current === 'qa')) {
         const seat = route.resolved?.seats[current];
@@ -1921,6 +1925,7 @@ switch (command) {
           // one about to be worked. See the matching fleet-path comment
           // above and `ensureRepoCheckout`'s own doc in git.ts.
           const target = repoTargetFor(route, result.ticket.repo_id);
+          ticketRepo = target?.name;
           try {
             if (target && ensureRepoCheckout(target.dir, target.remote)) {
               emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
@@ -1941,7 +1946,7 @@ switch (command) {
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, route, current),
         environment: await environmentFor(route, ticketHint),
         apiKey: resolveApiKey(route),
-        cycle: emit.cycle, ticket: ticketHint,
+        cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
         divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
         agentPersona: await fetchSeatPersona(route, current, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(route, current, { userAgent: cfg.ship.userAgent }),
@@ -3630,6 +3635,8 @@ switch (command) {
           repos: repos.map((r) => ({
             name: r.name,
             dir: r.dir,
+            // Additive (CREW-1529): the toolchain a ticket in this repo runs on.
+            toolchain: resolveToolchain(cfg.ship, route, r.name).name,
             // Additive (CREW-1379): `unsafe` means a ship must not cut a
             // worktree or release from this base. `version` stays 1.
             baseBranch: baseHealth(r),
@@ -3912,6 +3919,10 @@ switch (command) {
       if (isOriLauncher(tc)) {
         process.stdout.write(`                   ori: headless auth under the scheduler is unverified — run \`ori login\` as the scheduler user, then confirm a run records provider openrouter (see docs/toolchains.md)\n`);
       }
+    }
+    // CREW-1529: repos on this route that run a toolchain other than the route's.
+    for (const [repoName, ov] of Object.entries(route.repoOverrides)) {
+      if (ov.toolchain) process.stdout.write(`repo toolchain:    ${repoName} → ${ov.toolchain} (binary and MCP checked above, as for every ship toolchain)\n`);
     }
     process.stdout.write(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
     if (!allBinsFound || !gitPath) {

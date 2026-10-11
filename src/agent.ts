@@ -186,6 +186,12 @@ export interface PlanOptions {
    */
   agentPersona?: PersonaChoice;
   /**
+   * The repo name (`repoTargetFor(...).name`) of the ticket this run was
+   * selected for, when one was: feeds `repos.<name>.toolchain` (CREW-1529).
+   * Undefined for a run with no ticket (triage, no candidate).
+   */
+  repo?: string;
+  /**
    * `role`'s linked Agent row id, straight from `agents.ts`'s
    * `resolveAgentId` (ISSUE-670) — the same cache-then-seat-fallback
    * resolution `fetchDivergedPrompt`/`fetchSeatAgentModel` already use, so
@@ -254,7 +260,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
-  const seat = resolveSeat(o.ship, o.route, o.role, o.agentPersona ?? (o.agentModel ? { model: o.agentModel } : {}));
+  const seat = resolveSeat(o.ship, o.route, o.role, o.agentPersona ?? (o.agentModel ? { model: o.agentModel } : {}), o.repo);
   const { toolchain, model } = seat;
   const adapter = adapterFor(toolchain.harness);
   const invocation = adapter.invocation(toolchain, {
@@ -286,8 +292,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     role: o.role,
     route: routeLabel,
     // The route's directory, which is a STARTING POINT and not the
-    // ticket's repo: the runner cannot know which ticket the session will
-    // take, so it cannot know the checkout either. Where an area spans
+    // ticket's repo: the session picks its own working directory even when
+    // the runner already selected a ticket (`o.repo` is known then, and
+    // only feeds the per-repo toolchain choice). Where an area spans
     // several repos this is whichever one `repos` happened to list first
     // (config.ts), and the digest's `repo` column is what actually places
     // the work. Kept deliberately rather than guessed at (ISSUE-349).

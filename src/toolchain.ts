@@ -163,8 +163,11 @@ export function shipToolchains(ship: Ship): ToolchainSpec[] {
 }
 
 /** The ship's default toolchain, unless the route overrides it. */
-export function resolveToolchain(ship: Ship, route?: Pick<Route, 'toolchain'>): ToolchainSpec {
-  const name = route?.toolchain ?? ship.toolchain ?? LEGACY_TOOLCHAIN;
+/** The slice of a Route that picks a toolchain: its own key plus per-repo overrides (CREW-1529). */
+export type RouteToolchainScope = Pick<Route, 'toolchain'> & { repoOverrides?: Route['repoOverrides'] };
+
+export function resolveToolchain(ship: Ship, route?: RouteToolchainScope, repo?: string): ToolchainSpec {
+  const name = (repo && route?.repoOverrides?.[repo]?.toolchain) ?? route?.toolchain ?? ship.toolchain ?? LEGACY_TOOLCHAIN;
   const found = shipToolchains(ship).find((t) => t.name === name);
   if (!found) throw new Error(`toolchain "${name}" is not defined (have: ${shipToolchains(ship).map((t) => t.name).join(', ')})`);
   return found;
@@ -207,7 +210,8 @@ export interface SeatResolution {
 /**
  * Picks the toolchain and the concrete model for one seat (EPIC-035 §4).
  *
- * Toolchain: the route's, else the ship's default — unless the persona names a
+ * Toolchain: the ticket's repo override (`repos.<name>.toolchain`), else the
+ * route's, else the ship's default — unless the persona names a
  * `vendor` the default does not serve, in which case the first ship toolchain
  * of that vendor wins. None → the default runs anyway, with a warning.
  *
@@ -220,14 +224,16 @@ export interface SeatResolution {
  */
 export function resolveSeat(
   ship: Ship,
-  route: Pick<Route, 'toolchain'> | undefined,
+  route: RouteToolchainScope | undefined,
   role: RoleName,
   persona: PersonaChoice = {},
+  repo?: string,
 ): SeatResolution {
   const warnings: string[] = [];
-  const base = resolveToolchain(ship, route);
+  const base = resolveToolchain(ship, route, repo);
   const baseVendor = toolchainVendor(base);
-  const baseWhy = route?.toolchain ? `route toolchain ${base.name}` : ship.toolchain ? `ship default ${base.name}` : `default ${base.name}`;
+  const repoToolchain = repo ? route?.repoOverrides?.[repo]?.toolchain : undefined;
+  const baseWhy = repoToolchain ? `repo ${repo} toolchain ${base.name}` : route?.toolchain ? `route toolchain ${base.name}` : ship.toolchain ? `ship default ${base.name}` : `default ${base.name}`;
 
   let chosen = base;
   let toolchainWhy = baseWhy;
