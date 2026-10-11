@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.43.2] — 2026-10-11
+
+- ISSUE-1559 `crew agents sync` no longer reports false local edits when two ships sync the same workspace, stamps unmanaged persona/skill rows as crew-managed, and `--force` now covers skills.
+
 ## [0.43.1] — 2026-10-11
 
 - Dev, design and QA runs open ticket attachments reliably — the Environment section now names the workspace's Media Library table and the record-then-file download recipe, and the lane policy spells the steps out instead of pointing at a skill (CREW-1558)
