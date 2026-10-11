@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.37.0] — 2026-10-11
+
+- `crew reload` and automatic daemon relaunch when crew.yaml changes (CREW-1532)
+
 ## [0.36.0] — 2026-10-11
 
 - Codex is now a supported harness: `harness: codex` toolchains run `codex exec --json` with sandbox-mapped capabilities, tracker MCP registration and Agent Log cycles/tokens (CREW-1520)
