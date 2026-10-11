@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.35.0] — 2026-10-11
+
+- A route's `repos.<name>.toolchain` runs tickets in that repo on a different ship toolchain (e.g. Codex) while the route stays on Claude (CREW-1529)
+
 ## [0.34.1] — 2026-10-11
 
 - `crew repos add` creates the Repos row on a keychain-only route instead of failing with "no API key" (CREW-1528)
