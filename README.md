@@ -36,12 +36,18 @@ prompt set (the three-lane dev/design/QA policy this repo ships with — see
 A fifth persona, **pair**, rides `crew agents sync` alongside these four but
 is not polled: it is the identity a live, interactive session (an IDE
 conversation, not a scheduled run) uses when it touches the tracker. It has
-no Crew-table seat, is never assigned a ticket by the poll loop, and its
-brief (`prompts/default/personas/lane-pair.md`) is not prefixed with
-`common.md` — none of the polling loop's shared policy describes it. `crew
+no Crew-table seat and is never assigned a ticket by the poll loop. `crew
 agents prompt pair` prints its current persona text (a workspace admin's
 live edit if there is one, else the local default) for something like a
 `SessionStart` hook to feed into a session at start.
+
+`common.md` — the building lanes' shared policy (worktrees, one stateless
+invocation per cycle, the dev/design/QA hand-off) — is prefixed to the
+**dev**, **design** and **qa** briefs only. **triage** and **pair** are
+self-contained (`SELF_CONTAINED_ROLES` in `src/config.ts`): neither cuts a
+worktree, builds or hands anything to QA, so the policy would only
+misdescribe them. The prompts carry rules, not history; the incidents behind
+each rule are kept in [`docs/prompt-rationale.md`](docs/prompt-rationale.md).
 
 Alongside personas, a prompt set can also ship **skills** —
 `prompts/<promptSet>/skills/*.md`, each one YAML frontmatter (`name`,
@@ -55,7 +61,14 @@ diverged sync narrowed to skills alone, for when you've only touched
 `skills/`. Example use — a Pair session invoked via an Epic's
 `grill_link` looks up the `Grill-Me` skill through the Tablation MCP tool
 `agent_skills_controller_get_skill` and follows it. `prompts/default/skills/
-grill-me.md` is the shipped example.
+grill-me.md` is one shipped example; the rest are the building lanes'
+situational procedures (`Worktree Setup`, `Running the Suite`, `Question and
+Investigation Tickets`, `Filing a Ticket`, `Ticket Attachments`, `Workspace
+Change Authorization`, `Design Pass`), which `common.md` names at the step
+that needs each one — every run keeps the rule and the minimum inline and
+fetches the full procedure only when it applies, so a dev run that never
+files a ticket never pays for the filing procedure. `test/prompts.test.ts`
+checks that every skill a persona names ships in the same preset.
 
 One role runs per cycle, whichever holds the most urgent actionable ticket
 (`src/priority.ts` decides, and the same module sorts the digest that agent is
@@ -100,10 +113,12 @@ edit its prose, and point `promptSet` at the copy (`~/my-crew-policy` or a
 relative path) — no fork of this repo required. A prompt set is a complete,
 self-contained fork of `personas/common.md` + one `personas/lane-<role>.md`
 per seat, plus whatever `skills/*.md` it wants, not a diff against another
-one; each persona file is read as plain prose concatenated ahead of the
-per-run roster/environment/queue sections
+one; each persona file is read as plain prose (common.md ahead of a building
+lane's brief, a self-contained brief alone) and concatenated after the
+per-run roster/environment sections and before the queue digest
 (`src/agent.ts`'s `assemblePrompt`), so there's no templating layer to
-learn. `prompts/dev-qa/` is a worked example of trimming a lane out of
+learn. Keep the prose generic: `test/prompts.test.ts` fails a preset that
+names a path, a command, an id, a ticket reference or a date. `prompts/dev-qa/` is a worked example of trimming a lane out of
 `default` cleanly, including the unused `lane-design.md` stub every
 preset still needs today — see the next paragraph for why.
 

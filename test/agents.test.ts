@@ -83,6 +83,11 @@ test('personaDefaultPrompt skips common.md for pair — it is not a dev-loop lan
   assert.equal(personaDefaultPrompt(promptsDir, 'pair'), 'PAIR BRIEF\n');
 });
 
+test('personaDefaultPrompt skips common.md for triage — it classifies, it never builds (CREW-1533)', () => {
+  const promptsDir = makePromptsDir({ common: 'COMMON\n', triage: 'TRIAGE BRIEF\n' });
+  assert.equal(personaDefaultPrompt(promptsDir, 'triage'), 'TRIAGE BRIEF\n');
+});
+
 test('a workspace with no Agents table yet fails with a message naming ISSUE-465, not a raw 404', async (t) => {
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 404, body: { message: 'not found' } }),

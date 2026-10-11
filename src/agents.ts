@@ -31,7 +31,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/client';
 import type { Route, RoleName } from './config.ts';
-import { ROLE_NAMES, resolveApiKey } from './config.ts';
+import { ROLE_NAMES, SELF_CONTAINED_ROLES, resolveApiKey } from './config.ts';
 import { TIERS, type Tier } from './toolchain.ts';
 
 // The SDK's own `FieldType` is deliberately trimmed to what the client
@@ -69,12 +69,7 @@ export class AgentsSyncError extends Error {}
 export function personaDefaultPrompt(promptsDir: string, role: RoleName): string {
   const briefPath = join(promptsDir, 'personas', `lane-${role}.md`);
   if (!existsSync(briefPath)) throw new AgentsSyncError(`no brief at ${briefPath}`);
-  // `common.md` is the polling loop's shared policy (worktrees, one
-  // stateless invocation per cycle, the three-lane hand-off protocol) — none
-  // of it describes `pair`, an interactive session with full conversation
-  // context and no lane of its own, so its brief is self-contained instead
-  // of being prefixed with policy prose that would misdescribe it.
-  if (role === 'pair') return readFileSync(briefPath, 'utf8');
+  if (SELF_CONTAINED_ROLES.has(role)) return readFileSync(briefPath, 'utf8');
   const commonPath = join(promptsDir, 'personas', 'common.md');
   if (!existsSync(commonPath)) throw new AgentsSyncError(`no shared policy at ${commonPath}`);
   return `${readFileSync(commonPath, 'utf8')}${readFileSync(briefPath, 'utf8')}`;

@@ -79,6 +79,17 @@ export type RoleName = 'dev' | 'design' | 'qa' | 'triage' | 'pair';
  * row gets created/kept in sync the same way the four polled seats' do.
  */
 export const ROLE_NAMES: RoleName[] = ['dev', 'design', 'qa', 'triage', 'pair'];
+/**
+ * The roles whose persona brief stands alone, without `common.md` in front of
+ * it. `common.md` is the building lanes' shared policy — worktrees, one
+ * stateless invocation per cycle, the dev/design/QA hand-off protocol. None
+ * of it describes `pair` (an interactive session with full conversation
+ * context and no lane of its own) or `triage` (which classifies tickets and
+ * never cuts a worktree, builds, or hands anything to QA); prefixing either
+ * brief with it misdescribed the seat and, for triage, turned a 6 KB brief
+ * into a 60 KB prompt (CREW-1533).
+ */
+export const SELF_CONTAINED_ROLES: ReadonlySet<RoleName> = new Set<RoleName>(['pair', 'triage']);
 export const ROLE_LABEL: Record<RoleName, string> = {
   dev: 'Dev', design: 'Design', qa: 'QA', triage: 'Triage', pair: 'Pair',
 };

@@ -14,7 +14,7 @@ import type { StreamKindEvent } from './stream.ts';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Route, RoleName, Ship } from './config.ts';
-import { routeSlug } from './config.ts';
+import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
@@ -223,8 +223,11 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   if (!existsSync(briefPath)) {
     throw new AgentError(`no brief at ${briefPath} — refusing to run an unscoped session`);
   }
+  // A self-contained role (`config.ts`'s SELF_CONTAINED_ROLES — today triage
+  // and pair) gets its brief alone; the others get common.md in front of it.
   const commonPath = join(o.route.promptsDir, 'personas', 'common.md');
-  if (!existsSync(commonPath)) throw new AgentError(`no shared policy at ${commonPath}`);
+  const usesCommon = !SELF_CONTAINED_ROLES.has(o.role);
+  if (usesCommon && !existsSync(commonPath)) throw new AgentError(`no shared policy at ${commonPath}`);
 
   const now = o.now ?? (() => Date.now());
   const routeLabel = routeSlug(o.route.route);
@@ -236,7 +239,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     if (ageSeconds <= DIGEST_MAX_AGE_SECONDS) digest = readFileSync(digestPath, 'utf8');
   }
 
-  const common = readFileSync(commonPath, 'utf8');
+  const common = usesCommon ? readFileSync(commonPath, 'utf8') : '';
   const brief = readFileSync(briefPath, 'utf8');
   // A diverged row's prompt is the full common+brief replacement (see
   // `divergedPrompt`'s own doc on `PlanOptions`), so it goes entirely into

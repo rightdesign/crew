@@ -33,6 +33,12 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   ['a hostname', /https?:\/\/(?!example\.com)[\w.-]+/],
   ['an email address', /[\w.+-]+@[\w-]+\.[\w.]+/],
   ['a hardcoded port', /:(?:3000|5173|5432|8080)\b/],
+  // CREW-1533: incident history belongs in docs/prompt-rationale.md, not in a
+  // prompt every run pays for — and a local ticket id or a date means nothing
+  // to another organization's board. `ISSUE-123`/`ISSUE-000` are the worked
+  // examples the briefs and the Environment section use for a tag's shape.
+  ['a ticket reference', /\b(?:ISSUE|CREW|TABL|CMAC)-(?!(?:123|000)\b)\d+\b/],
+  ['a date', /\b20\d\d-\d\d-\d\d\b/],
 ];
 
 /** Every `prompts/<name>/` directory is its own self-contained preset — see docs/CONTRACT.md and Route.promptsDir. */
@@ -117,17 +123,42 @@ test('every prompt set states the hybrid vs automatic hand-off rule', () => {
 for (const preset of ['default', 'dev-qa']) {
   test(`${preset} prompts park a ticket on cross-repo dependencies (CREW-1505)`, () => {
     const personas = join(PROMPTS, preset, 'personas');
+    // CREW-1533: the procedure lives in the `Filing a Ticket` skill, fetched on
+    // demand; common.md keeps the rule and the trigger.
     const common = readFileSync(join(personas, 'common.md'), 'utf8');
-    assert.match(common, /### Work your ticket needs in another repository/);
-    assert.match(common, /Add the new ticket's id to \*\*your own ticket's\*\* `blocked_by`/);
-    assert.match(common, /Set your ticket back to `accepted`/);
-    assert.match(common, /`hybrid` project keep `assignee_id` as your own seat/);
-    assert.match(common, /add the new ticket to \*\*your own ticket's\*\* `blocked_by`/);
-    assert.doesNotMatch(common, /in the new ticket's `blocked by` column/, 'the dependency points from the waiting ticket');
+    assert.match(common, /`Filing a Ticket` skill/);
+    assert.match(common, /add\s+it to your own ticket's `blocked_by`[^]*set your ticket back\s+to `accepted`/);
+    const filing = readFileSync(join(PROMPTS, preset, 'skills', 'filing-a-ticket.md'), 'utf8');
+    assert.match(filing, /### Work your ticket needs in another repository/);
+    assert.match(filing, /Add the new ticket's id to \*\*your own ticket's\*\* `blocked_by`/);
+    assert.match(filing, /Set your ticket back to `accepted`/);
+    assert.match(filing, /`hybrid` project keep `assignee_id` as your own seat/);
+    assert.match(filing, /add the new ticket to \*\*your own ticket's\*\* `blocked_by`/);
+    assert.doesNotMatch(filing, /in the new ticket's `blocked by` column/, 'the dependency points from the waiting ticket');
     assert.match(readFileSync(join(personas, 'lane-dev.md'), 'utf8'), /must not\s+name needed-but-unfiled work/);
     assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /needed-but-unfiled work[^]*that is a bounce[^]*stand-in/);
   });
 }
+
+// CREW-1533: a persona that says "fetch the `X` skill" must ship that skill in
+// the same preset, or the trigger points at nothing.
+test('every skill a persona names ships in the same preset', () => {
+  for (const dir of presetDirs()) {
+    const skillsDir = join(dir, 'skills');
+    const shipped = new Set(
+      existsSync(skillsDir)
+        ? readdirSync(skillsDir).filter((f) => f.endsWith('.md')).map((f) => parseSkillFile(join(skillsDir, f)).name)
+        : [],
+    );
+    const personas = join(dir, 'personas');
+    for (const f of readdirSync(personas).filter((x) => x.endsWith('.md'))) {
+      const text = readFileSync(join(personas, f), 'utf8');
+      for (const m of text.matchAll(/`([A-Z][^`]+)` skill/g)) {
+        assert.ok(shipped.has(m[1]!), `${dir}/personas/${f} names the \`${m[1]}\` skill, which ${dir}/skills does not ship`);
+      }
+    }
+  }
+});
 
 test('the default design lane checks its hand-off for unfiled needed work (CREW-1505)', () => {
   const design = readFileSync(join(PROMPTS, 'default', 'personas', 'lane-design.md'), 'utf8');

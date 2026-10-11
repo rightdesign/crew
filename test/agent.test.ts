@@ -22,7 +22,7 @@ function rig() {
   const personas = join(promptsDir, 'personas');
   mkdirSync(personas, { recursive: true });
   writeFileSync(join(personas, 'common.md'), 'SHARED POLICY\n');
-  for (const r of ['dev', 'design', 'qa']) {
+  for (const r of ['dev', 'design', 'qa', 'triage']) {
     writeFileSync(join(personas, `lane-${r}.md`), `BRIEF ${r}\n`);
   }
   const state = mkdtempSync(join(tmpdir(), 'crew-state-'));
@@ -128,6 +128,15 @@ test('a diverged prompt replaces common+brief wholesale, rather than being appen
   assert.match(plan.prompt, /R[\s\S]*ENV[\s\S]*CUSTOM ADMIN PROMPT/);
   assert.ok(!plan.prompt.includes('SHARED POLICY'), 'the local common.md must not survive alongside a diverged prompt');
   assert.ok(!plan.prompt.includes('BRIEF dev'), 'the local lane brief must not survive alongside a diverged prompt');
+});
+
+test('triage gets its brief alone — common.md is the building lanes\' policy, not triage\'s (CREW-1533)', () => {
+  const { home, state, route, ship } = rig();
+  const plan = planAgentRun({ role: 'triage', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  assert.match(plan.prompt, /R[\s\S]*ENV[\s\S]*BRIEF triage/);
+  assert.ok(!plan.prompt.includes('SHARED POLICY'), 'triage must not be prefixed with common.md');
+  const dev = planAgentRun({ role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c2' });
+  assert.ok(dev.prompt.includes('SHARED POLICY'), 'the building lanes still get common.md');
 });
 
 test('agentModel overrides the ship\'s own default model, in both the args and the plan (ISSUE-611)', () => {
@@ -260,7 +269,7 @@ test('every plan sets CREW_LANE_ROLE, so the operator\'s SessionStart hook can t
 test('a missing brief refuses the run rather than running unscoped', () => {
   const { home, state, route, ship } = rig();
   assert.throws(
-    () => planAgentRun({ role: 'triage', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
+    () => planAgentRun({ role: 'pair', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' }),
     (e: Error) => {
       assert.ok(e instanceof AgentError);
       assert.match(e.message, /refusing to run an unscoped session/);
