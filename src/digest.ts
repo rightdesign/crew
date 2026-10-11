@@ -191,9 +191,17 @@ function filedBy(t: DigestTicket, i: DigestInput): string {
   return t.reporter_name ? `${t.reporter_name} (unverified)` : '—';
 }
 
+/**
+ * The newest thing a person or seat actually wrote on the ticket. `event`
+ * rows are skipped (CREW-1560): the app writes a "Status changed to …" event
+ * under the zero system identity seconds after an operator's re-accept, and
+ * with it included the cell read "(no identity)" for a go-ahead the operator
+ * had just posted from the UI — so the seat, rightly trusting the digest over
+ * the comment body, refused it. `newFromOthers` already excludes events.
+ */
 function lastComment(i: DigestInput, ticketId: string): string {
   const forTicket = i.comments
-    .filter((c) => c.ticket_id === ticketId)
+    .filter((c) => c.ticket_id === ticketId && (c.kind ?? 'comment') !== 'event')
     .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
   const last = forTicket[forTicket.length - 1];
   if (!last) return '—';
