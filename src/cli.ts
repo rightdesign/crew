@@ -68,8 +68,8 @@ import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
-import { syncPersonas, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
-import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
+import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
@@ -1637,6 +1637,7 @@ switch (command) {
           cycle: wemit.cycle, ticket: w.decision.actionable.top?.issue_id,
           repo: repoTargetFor(w.route, w.decision.actionable.top?.repo_id)?.name,
           divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+          skillOverrides: await fetchSkillOverrides(w.route, { userAgent: cfg.ship.userAgent }),
           agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         });
@@ -1732,6 +1733,7 @@ switch (command) {
         apiKey: resolveApiKey(w.route),
         cycle: wemit.cycle, ticket: fleetTicketHint, repo: fleetTicketRepo,
         divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+        skillOverrides: await fetchSkillOverrides(w.route, { userAgent: cfg.ship.userAgent }),
         agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
       });
@@ -1959,6 +1961,7 @@ switch (command) {
         apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
         divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
+        skillOverrides: await fetchSkillOverrides(route, { userAgent: cfg.ship.userAgent }),
         agentPersona: await fetchSeatPersona(route, current, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(route, current, { userAgent: cfg.ship.userAgent }),
       });
@@ -2259,6 +2262,10 @@ switch (command) {
     }
     for (const o of personaResult.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
     for (const o of personaResult.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
+    // CREW-1534: a brief's `{{skill: Name}}` include of a skill this preset
+    // does not ship would refuse every run of that seat, so say so here.
+    const briefs = Object.fromEntries(ROLE_NAMES.map((r) => [r, personaDefaultPrompt(target.promptsDir, r)]));
+    for (const w of skillMarkerWarnings(target.promptsDir, briefs)) process.stderr.write(`crew agents sync: warning: ${w}\n`);
     // "Agents" here means every agent-shaped resource crew owns — personas
     // AND skills — not just the Agents table; `crew skills sync` remains
     // available on its own when an operator wants to push skill changes

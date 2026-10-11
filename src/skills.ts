@@ -26,6 +26,7 @@ import { parse as parseYaml } from 'yaml';
 import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/client';
 import type { Route } from './config.ts';
 import { resolveApiKey } from './config.ts';
+import { skillMarkerNames } from './skill-include.ts';
 
 export class SkillSyncError extends Error {}
 
@@ -200,4 +201,70 @@ export function describeSkillSyncOutcome(o: SkillSyncOutcome): string {
     case 'unchanged': return `${o.name}: already in sync`;
     case 'diverged': return `${o.name}: HAS LOCAL EDITS — crew's default is newer but was NOT applied; review ${o.skillId} in the app before syncing again`;
   }
+}
+
+/**
+ * Workspace Agent Skills rows that differ from crew's local file because
+ * someone edited them, keyed by skill name — what `planAgentRun` consults
+ * before the local file when expanding `{{skill: Name}}` includes (CREW-1534).
+ *
+ * Covers every row in the workspace, so a diverged brief can include a skill
+ * an admin created that crew's preset does not ship. A row
+ * whose `updated_at` still equals the one crew cached at its last write is
+ * crew's own stale copy, not an edit, so the local file wins — the same
+ * distinction `fetchDivergedPrompt` draws for persona rows (ISSUE-1382). With
+ * no cached baseline a differing row is treated as an edit, so an admin's
+ * change is never silently dropped. Best-effort like `fetchDivergedPrompt`:
+ * a missing table or unreachable tracker returns nothing and the local file
+ * is used.
+ */
+export async function fetchSkillOverrides(
+  route: Route,
+  opts: { userAgent?: string },
+): Promise<Record<string, string>> {
+  if (!route.resolved) return {};
+  const client = new TablationClient({
+    baseUrl: `${route.baseUrl}/api`,
+    apiKey: resolveApiKey(route),
+    headers: { 'User-Agent': opts.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' },
+  } as ConstructorParameters<typeof TablationClient>[0]);
+
+  let rows: SkillRow[];
+  try {
+    const model = await client.dataModels.get('agent_skills', route.resolved.workspaceId);
+    rows = await client.records.list<SkillRow>(model.id, { limit: 200 });
+  } catch {
+    return {};
+  }
+
+  const local = new Map(listLocalSkills(route.promptsDir).map((s) => [s.name, s]));
+  const cache = route.resolved.agentSkills ?? {};
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name;
+    if (row.prompt === local.get(name)?.prompt) continue;
+    const cached = cache[name];
+    if (cached?.skillId === row.id && cached.lastSyncedUpdatedAt === row.updated_at) continue;
+    out[name] = row.prompt;
+  }
+  return out;
+}
+
+/**
+ * Warnings for every `{{skill: Name}}` marker in a prompt set's persona
+ * briefs that names a skill the set does not ship — `crew agents sync` prints
+ * them, since an include of a missing skill refuses the run (CREW-1534).
+ */
+export function skillMarkerWarnings(
+  promptsDir: string,
+  personaPrompts: Partial<Record<string, string>>,
+): string[] {
+  const shipped = new Set(listLocalSkills(promptsDir).map((s) => s.name));
+  const out: string[] = [];
+  for (const [role, text] of Object.entries(personaPrompts)) {
+    for (const name of skillMarkerNames(text ?? '')) {
+      if (!shipped.has(name)) out.push(`${role}: brief includes {{skill: ${name}}} but this prompt set ships no skill with that name`);
+    }
+  }
+  return out;
 }

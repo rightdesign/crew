@@ -70,8 +70,12 @@ export function personaDefaultPrompt(promptsDir: string, role: RoleName): string
   const briefPath = join(promptsDir, 'personas', `lane-${role}.md`);
   if (!existsSync(briefPath)) throw new AgentsSyncError(`no brief at ${briefPath}`);
   if (SELF_CONTAINED_ROLES.has(role)) return readFileSync(briefPath, 'utf8');
+  // The shipped presets carry their shared policy as the `Crew Lane Agent`
+  // skill, which the brief includes by marker (CREW-1534) and which is
+  // deliberately NOT expanded here: the row keeps the marker. A preset forked
+  // before that still ships `personas/common.md`, which keeps being prefixed.
   const commonPath = join(promptsDir, 'personas', 'common.md');
-  if (!existsSync(commonPath)) throw new AgentsSyncError(`no shared policy at ${commonPath}`);
+  if (!existsSync(commonPath)) return readFileSync(briefPath, 'utf8');
   return `${readFileSync(commonPath, 'utf8')}${readFileSync(briefPath, 'utf8')}`;
 }
 

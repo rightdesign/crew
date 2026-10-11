@@ -153,3 +153,17 @@ tracker.
   later run.
 - **A PNG upload is required.** A described mockup is not a shown one, and
   a canvas link alone is unavailable to harnesses without one (CREW-1526).
+
+## The lane policy is a skill the briefs include (CREW-1534)
+
+`crew agents sync` used to write `common.md` and the lane brief concatenated
+into each building role's Agents row. The moment an admin edited one of those
+rows the role forked the whole shared policy: every later policy fix showed up
+as divergence and never reached it, and a lane-specific edit was buried in tens
+of kilobytes of shared text. The policy is now the `Crew Lane Agent` skill and
+each building brief starts with `{{skill: Crew Lane Agent}}`, expanded when the
+run is assembled. The marker is not a `[[table:key]]` link because personas and
+skills are control-plane records, and `[[Skills:…]]` would collide with a
+workspace table of that name. The recursion, depth and size caps exist because a
+skill row is admin-editable, so a cycle or a huge include must not be able to
+hang or bloat a run.

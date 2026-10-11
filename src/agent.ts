@@ -19,6 +19,8 @@ import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
 import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
+import { listLocalSkills } from './skills.ts';
 import { TicketAttributionTracker } from './ticket-attribution.ts';
 
 /**
@@ -171,6 +173,13 @@ export interface PlanOptions {
    */
   divergedPrompt?: string;
   /**
+   * Workspace Agent Skills rows an admin has edited, by skill name
+   * (`skills.ts` `fetchSkillOverrides`, CREW-1534): consulted before the
+   * local `skills/*.md` file when expanding `{{skill: Name}}` includes in the
+   * brief. Fetching is the caller's job, as with `divergedPrompt`.
+   */
+  skillOverrides?: Record<string, string>;
+  /**
    * The linked Agent row's own `model` field (`agents.ts`
    * `fetchSeatAgentModel`, ISSUE-611), overriding `ship.agent.model` for
    * this run when the workspace has set one. Undefined (no seat, no linked
@@ -224,10 +233,11 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     throw new AgentError(`no brief at ${briefPath} — refusing to run an unscoped session`);
   }
   // A self-contained role (`config.ts`'s SELF_CONTAINED_ROLES — today triage
-  // and pair) gets its brief alone; the others get common.md in front of it.
+  // and pair) gets its brief alone. For the others, a preset that still ships
+  // `personas/common.md` gets it in front of the brief; the shipped presets
+  // instead include their policy by `{{skill: ...}}` marker (CREW-1534).
   const commonPath = join(o.route.promptsDir, 'personas', 'common.md');
-  const usesCommon = !SELF_CONTAINED_ROLES.has(o.role);
-  if (usesCommon && !existsSync(commonPath)) throw new AgentError(`no shared policy at ${commonPath}`);
+  const usesCommon = !SELF_CONTAINED_ROLES.has(o.role) && existsSync(commonPath);
 
   const now = o.now ?? (() => Date.now());
   const routeLabel = routeSlug(o.route.route);
@@ -246,11 +256,24 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   // `brief` with `common` left empty rather than splitting it back apart.
   const effectiveCommon = o.divergedPrompt ? '' : common;
   const effectiveBrief = o.divergedPrompt ?? brief;
+  // CREW-1534: includes expand over the effective brief — the admin's edit
+  // when diverged, else the local file — so the hash below covers what ran.
+  const localSkills = new Map(listLocalSkills(o.route.promptsDir).map((s) => [s.name, s.prompt]));
+  let expanded: ExpandResult;
+  try {
+    expanded = expandSkillMarkers(
+      `${effectiveCommon}${effectiveBrief}`,
+      (name) => o.skillOverrides?.[name] ?? localSkills.get(name),
+    );
+  } catch (e) {
+    if (e instanceof SkillIncludeError) throw new AgentError(`${e.message} — refusing to run an unscoped session`);
+    throw e;
+  }
   const prompt = assemblePrompt({
     roster: o.roster,
     environment: o.environment,
-    common: effectiveCommon,
-    brief: effectiveBrief,
+    common: '',
+    brief: expanded.text,
     digest,
   });
   // ISSUE-377/529: hashed at composition time, over whatever content was
@@ -259,7 +282,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   // (agents.ts's `personaDefaultPrompt`) pushes into this role's Agents row
   // when not diverged, so a later `crew logbook show --prompt` can tell
   // whether the local file has moved on from what `prompt_version` points at.
-  const promptSha = createHash('sha256').update(`${effectiveCommon}${effectiveBrief}`).digest('hex');
+  const promptSha = createHash('sha256').update(expanded.text).digest('hex');
 
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}`;
@@ -308,7 +331,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     harness: toolchain.harness,
     provider: toolchainProvider(toolchain),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
-    warnings: seat.warnings,
+    warnings: [...(seat.warnings ?? []), ...expanded.warnings],
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
     unsetEnv: adapter.unsetEnv,

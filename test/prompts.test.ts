@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseSkillFile } from '../src/skills.ts';
+import { skillMarkerNames } from '../src/skill-include.ts';
 
 /**
  * ISSUE-293's acceptance criterion, as a test.
@@ -69,8 +70,7 @@ test('every prompt set is complete and names nothing specific to one project, ma
     const label = dir.slice(PROMPTS.length + 1);
     const personas = join(dir, 'personas');
     const files = existsSync(personas) ? readdirSync(personas).filter((f) => f.endsWith('.md')) : [];
-    assert.ok(files.includes('common.md'), `${dir}/personas: missing the shared common.md`);
-    assert.ok(files.length >= 2, `${dir}/personas: expected common.md plus at least one lane-<role>.md brief`);
+    assert.ok(files.some((f) => f.startsWith('lane-')), `${dir}/personas: expected at least one lane-<role>.md brief`);
     scan(personas, `${label}/personas`, found);
 
     const skills = join(dir, 'skills');
@@ -93,7 +93,7 @@ test('every prompt set is complete and names nothing specific to one project, ma
  */
 for (const preset of ['default', 'dev-qa']) {
   test(`${preset} common persona keeps the stop-in-data rules (CREW-1388)`, () => {
-    const text = readFileSync(join(PROMPTS, preset, 'personas', 'common.md'), 'utf8');
+    const text = readFileSync(join(PROMPTS, preset, 'skills', 'crew-lane-agent.md'), 'utf8');
     assert.match(text, /## Stopping: say it in data, not prose/);
     assert.match(text, /`needs_info` \*\*and\*\*\s+`assignee_id`/, 'a person-stop sets needs_info and the operator assignee');
     assert.match(text, /Resumes automatically when <condition>\. No status\s+change needed\./);
@@ -108,7 +108,7 @@ for (const preset of ['default', 'dev-qa']) {
 test('every prompt set states the hybrid vs automatic hand-off rule', () => {
   for (const dir of presetDirs()) {
     const personas = join(dir, 'personas');
-    const common = readFileSync(join(personas, 'common.md'), 'utf8');
+    const common = readFileSync(join(dir, 'skills', 'crew-lane-agent.md'), 'utf8');
     assert.match(common, /`hybrid` project[^]*assigning that lane's seat/, `${dir}: common.md lacks the hybrid hand-off rule`);
     assert.match(common, /`automatic` project \*\*clear `assignee_id`\*\*/, `${dir}: step 3.9 lacks the mode condition`);
     assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /Person-built hybrid ticket/, `${dir}: lane-qa.md lacks the person-built case`);
@@ -125,7 +125,7 @@ for (const preset of ['default', 'dev-qa']) {
     const personas = join(PROMPTS, preset, 'personas');
     // CREW-1533: the procedure lives in the `Filing a Ticket` skill, fetched on
     // demand; common.md keeps the rule and the trigger.
-    const common = readFileSync(join(personas, 'common.md'), 'utf8');
+    const common = readFileSync(join(PROMPTS, preset, 'skills', 'crew-lane-agent.md'), 'utf8');
     assert.match(common, /`Filing a Ticket` skill/);
     assert.match(common, /add\s+it to your own ticket's `blocked_by`[^]*set your ticket back\s+to `accepted`/);
     const filing = readFileSync(join(PROMPTS, preset, 'skills', 'filing-a-ticket.md'), 'utf8');
@@ -164,3 +164,22 @@ test('the default design lane checks its hand-off for unfiled needed work (CREW-
   const design = readFileSync(join(PROMPTS, 'default', 'personas', 'lane-design.md'), 'utf8');
   assert.match(design, /must not name needed-but-unfiled\s+work/);
 });
+
+// CREW-1534. The shared lane policy is a skill the building briefs include by
+// marker, so an admin edit to a brief never forks it.
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} building briefs include the Crew Lane Agent skill, and every marker names a shipped skill (CREW-1534)`, () => {
+    const dir = join(PROMPTS, preset);
+    assert.ok(!existsSync(join(dir, 'personas', 'common.md')), 'the policy lives in skills/, not personas/common.md');
+    for (const role of ['dev', 'design', 'qa']) {
+      const brief = readFileSync(join(dir, 'personas', `lane-${role}.md`), 'utf8');
+      assert.ok(brief.startsWith('{{skill: Crew Lane Agent}}\n'), `lane-${role}.md must start with the include marker`);
+    }
+    const shipped = new Set(readdirSync(join(dir, 'skills')).map((f) => parseSkillFile(join(dir, 'skills', f)).name));
+    for (const f of readdirSync(join(dir, 'personas'))) {
+      for (const name of skillMarkerNames(readFileSync(join(dir, 'personas', f), 'utf8'))) {
+        assert.ok(shipped.has(name), `${preset}/personas/${f} includes unshipped skill "${name}"`);
+      }
+    }
+  });
+}

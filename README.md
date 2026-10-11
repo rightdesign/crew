@@ -41,12 +41,25 @@ agents prompt pair` prints its current persona text (a workspace admin's
 live edit if there is one, else the local default) for something like a
 `SessionStart` hook to feed into a session at start.
 
-`common.md` — the building lanes' shared policy (worktrees, one stateless
-invocation per cycle, the dev/design/QA hand-off) — is prefixed to the
-**dev**, **design** and **qa** briefs only. **triage** and **pair** are
-self-contained (`SELF_CONTAINED_ROLES` in `src/config.ts`): neither cuts a
-worktree, builds or hands anything to QA, so the policy would only
-misdescribe them. The prompts carry rules, not history; the incidents behind
+The building lanes' shared policy (worktrees, one stateless invocation per
+cycle, the dev/design/QA hand-off) ships as the `Crew Lane Agent` skill, and
+the **dev**, **design** and **qa** briefs include it with a
+`{{skill: Crew Lane Agent}}` marker on their first line. The Agents row keeps
+the marker; the include is expanded when a run is assembled, from the
+workspace's Agent Skills row if an admin edited it, else the local
+`skills/*.md` file. So an admin edit to a lane's own sentences no longer forks
+the shared policy. The marker is `{{skill:`, a skill name matched exactly after
+trimming, `}}`, on its own line or inline. It is deliberately not a
+`[[table:key]]` record link: personas and skills are not rows of a workspace
+table. An unknown name refuses the run; a skill that includes itself (or a
+cycle) is expanded once and the repeat left literal with a warning in the run
+summary; nesting is capped at 3 levels and 200 KB of included text.
+`crew agents sync` warns about a marker naming a skill the preset doesn't
+ship. **triage** and **pair** are self-contained (`SELF_CONTAINED_ROLES` in
+`src/config.ts`): neither cuts a worktree, builds or hands anything to QA, so
+the policy would only misdescribe them. A preset forked before this change may
+still ship `personas/common.md`, which keeps being prefixed to the building
+briefs. The prompts carry rules, not history; the incidents behind
 each rule are kept in [`docs/prompt-rationale.md`](docs/prompt-rationale.md).
 
 Alongside personas, a prompt set can also ship **skills** —
@@ -64,7 +77,7 @@ diverged sync narrowed to skills alone, for when you've only touched
 grill-me.md` is one shipped example; the rest are the building lanes'
 situational procedures (`Worktree Setup`, `Running the Suite`, `Question and
 Investigation Tickets`, `Filing a Ticket`, `Ticket Attachments`, `Workspace
-Change Authorization`, `Design Pass`), which `common.md` names at the step
+Change Authorization`, `Design Pass`), which the lane policy names at the step
 that needs each one — every run keeps the rule and the minimum inline and
 fetches the full procedure only when it applies, so a dev run that never
 files a ticket never pays for the filing procedure. `test/prompts.test.ts`
@@ -111,10 +124,10 @@ wants is a fact about that workspace, not about the machine running it.
 fit: copy a preset directory (`cp -r prompts/default ~/my-crew-policy`),
 edit its prose, and point `promptSet` at the copy (`~/my-crew-policy` or a
 relative path) — no fork of this repo required. A prompt set is a complete,
-self-contained fork of `personas/common.md` + one `personas/lane-<role>.md`
-per seat, plus whatever `skills/*.md` it wants, not a diff against another
-one; each persona file is read as plain prose (common.md ahead of a building
-lane's brief, a self-contained brief alone) and concatenated after the
+self-contained fork of one `personas/lane-<role>.md` per seat
+(and the shared-policy skill the building briefs include), plus whatever `skills/*.md` it wants, not a diff against another
+one; each persona file is read as plain prose (`{{skill: Name}}` includes expanded
+at run time) and concatenated after the
 per-run roster/environment sections and before the queue digest
 (`src/agent.ts`'s `assemblePrompt`), so there's no templating layer to
 learn. Keep the prose generic: `test/prompts.test.ts` fails a preset that
@@ -265,7 +278,7 @@ which only discovers names and remotes, never fetches anything itself.
 bin/crew          the entry point
 src/              the implementation (Node, run directly via type stripping)
 test/             its tests, including a fake board for integration runs
-prompts/          prompt sets — prompts/<name>/personas/{common.md,lane-<role>.md}
+prompts/          prompt sets — prompts/<name>/personas/lane-<role>.md
                   + prompts/<name>/skills/*.md
 docs/             CONTRACT.md, REPO_SPEC.md, MIGRATION.md
 launchd/          timer templates (edit the paths before installing)
