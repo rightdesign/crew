@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.39.1] — 2026-10-11
+
+- `crew agents sync --force <route>` no longer syncs the wrong route; sync prints the route it used and requires a route name on multi-route ships (CREW-1539)
+
 ## [0.39.0] — 2026-10-11
 
 - Persona briefs can include a skill with a {{skill: Name}} marker expanded at run time, so the shared lane policy is a separate Agent Skill that an admin edit to a lane brief no longer forks (ISSUE-1534)
