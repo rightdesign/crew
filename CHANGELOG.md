@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.36.0] — 2026-10-11
+
+- Codex is now a supported harness: `harness: codex` toolchains run `codex exec --json` with sandbox-mapped capabilities, tracker MCP registration and Agent Log cycles/tokens (CREW-1520)
+
 ## [0.35.0] — 2026-10-11
 
 - A route's `repos.<name>.toolchain` runs tickets in that repo on a different ship toolchain (e.g. Codex) while the route stays on Claude (CREW-1529)
