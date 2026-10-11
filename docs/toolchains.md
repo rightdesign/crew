@@ -3,7 +3,7 @@
 A **toolchain** is the CLI crew launches for an agent session. Each one is a
 named instance of a **harness adapter** — the code that knows how one vendor's
 CLI is invoked, how it is granted tools, how the tracker MCP is registered with
-it, and how its output stream is read. Two harnesses exist: `claude` and `gemini`.
+it, and how its output stream is read. Three harnesses exist: `claude`, `codex` and `gemini`.
 
 ## Configuring
 
@@ -44,6 +44,42 @@ The legacy `ship.agent: {bin, model, maxThinkingTokens}` block still works and
 defines an implicit toolchain named `claude`. A `toolchains:` entry named
 `claude` replaces it. Unknown toolchain names, harnesses and tiers fail at load
 time (a bad route override drops only that route, with a warning).
+
+## Codex
+
+```yaml
+ship:
+  toolchains:
+    codex:
+      harness: codex
+      bin: codex             # the Codex CLI, logged in with `codex login`
+      model: gpt-5.5         # defaults: gpt-5.4-mini (light), gpt-5.5 (standard, deep)
+      tiers:
+        deep: { model: gpt-5.5, reasoning: high }   # minimal | low | medium | high
+      args: []               # appended to `codex exec`
+      env: {}
+```
+
+A run is `codex exec --json --sandbox <mode> -`, prompt on stdin, with approvals
+off (a headless run cannot answer a prompt). `read` (triage) maps to the
+`read-only` sandbox. `write` and `edit` run with `danger-full-access`, not
+`workspace-write`: that mode keeps every `.git` directory read-only (the
+checkout's own included, whatever `writable_roots` or `--add-dir` add), so a
+sandboxed seat could neither cut its worktree nor commit, and the escalation
+Codex would ask for is auto-rejected under `approval_policy="never"`. `crew
+doctor` lists this in the capability matrix; the lane guard and persona are the
+backstop, as they are for the Claude adapter's unsandboxed Bash. The tracker MCP is passed per run as `-c
+mcp_servers.tablation.*` overrides (`url`, `bearer_token_env_var`, and
+`default_tools_approval_mode="approve"`, without which Codex auto-rejects every
+MCP call under `approval_policy="never"`), with the key named by `CREW_API_KEY`,
+never written. `OPENAI_API_KEY`-style variables are removed from the inherited
+environment so the run bills the operator's Codex login; set them under `env:` to
+opt in. Cost is not reported, only tokens.
+
+For a local OpenAI-compatible endpoint, define a
+provider in `~/.codex/config.toml` (`[model_providers.local]`, `base_url`,
+`wire_api`) and select it with `args: ["-c", "model_provider=\"local\""]` and
+the matching `model`; `provider` is still recorded as `openai`.
 
 ## Gemini CLI
 
@@ -98,8 +134,8 @@ ship:
   login, and **whether that login is visible to a launchd/systemd job is not yet
   verified**. Run `ori login` as the user the scheduler runs as, then confirm one
   headless run lands in the Agent Log with `provider: openrouter`. If it cannot
-  authenticate headlessly, treat Ori as interactive-only. Only the `claude`
-  harness exists today, so Ori over Codex arrives with the Codex adapter.
+  authenticate headlessly, treat Ori as interactive-only. Ori has only been
+  exercised in front of the `claude` harness.
 
 ## Seat resolution: persona vendor, tier and model
 
@@ -122,7 +158,7 @@ the toolchain and the concrete model for that seat's runs:
 3. **Reasoning**: a tier entry's `reasoning` is the harness's knob. For Claude it
    is the extended-thinking budget and supersedes `maxThinkingTokens` for that
    run. Defaults: `light` 2048, `deep` 16384; override them per entry under
-   `tiers:`.
+   `tiers:`. For Codex it is the reasoning effort (`minimal`, `low`, `medium`, `high`).
 
 `crew run --dry-run` prints the chain (`resolved: toolchain ← why; model ← why`)
 and any warnings. `crew doctor` lists every seat whose persona vendor has no

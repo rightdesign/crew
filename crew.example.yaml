@@ -29,7 +29,7 @@ ship:
 
   # Optional (CREW-1511): named toolchains — a harness adapter plus the binary
   # and model to run it with. The `agent:` block above keeps working and
-  # defines an implicit toolchain named `claude`. Harnesses: claude, gemini. See docs/toolchains.md.
+  # defines an implicit toolchain named `claude`. Harnesses: claude, codex, gemini. See docs/toolchains.md.
   # toolchain: claude              # the ship's default; a route may override it
   # toolchains:
   #   claude-wrapped:

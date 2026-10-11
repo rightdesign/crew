@@ -73,7 +73,7 @@ import { syncSkills, describeSkillSyncOutcome, SkillSyncError } from './skills.t
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
-import { pairInstallerFor, harnessPromptNote } from './pair-install.ts';
+import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher } from './toolchain.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
@@ -3444,7 +3444,10 @@ switch (command) {
     // MCP server from Claude Code and Pair's block and MCP entry from every other
     // harness `ship.pair` lists. crew.yaml and the tracker are left alone.
     const url = mcpUrlFor(value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL);
-    for (const h of shipPair(cfg.ship)) {
+    // A configured toolchain's harness counts too: `connect` registers its MCP
+    // entry whether or not `ship.pair` lists it (CREW-1520).
+    const disconnectHarnesses = new Set([...shipPair(cfg.ship), ...shipToolchains(cfg.ship).map((t) => t.harness).filter(isPairHarness)]);
+    for (const h of disconnectHarnesses) {
       process.stderr.write(`${pairInstallerFor(h).removePair({ url, bin: cfg.ship.agent.bin, dryRun })}\n`);
     }
     break;

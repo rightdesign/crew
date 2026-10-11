@@ -16,6 +16,7 @@ import { basename } from 'node:path';
 import type { Route, RoleName, Ship } from './config.ts';
 import type { StreamKindEvent, StreamResult } from './stream.ts';
 import { claudeAdapter } from './adapters/claude.ts';
+import { codexAdapter } from './adapters/codex.ts';
 import { geminiAdapter } from './adapters/gemini.ts';
 import type { CapabilityProfile } from './capability.ts';
 
@@ -49,6 +50,8 @@ export interface ToolchainSpec {
   env: Record<string, string>;
   /** Claude: extended-thinking budget; 0 disables. Other harnesses ignore it. */
   maxThinkingTokens: number;
+  /** Codex: the reasoning effort the tier asked for (`model_reasoning_effort`). Other harnesses ignore it. */
+  reasoningEffort?: string;
 }
 
 export interface McpTarget {
@@ -122,6 +125,7 @@ export interface HarnessAdapter {
 
 const ADAPTERS: Record<string, HarnessAdapter> = {
   [claudeAdapter.harness]: claudeAdapter,
+  [codexAdapter.harness]: codexAdapter,
   [geminiAdapter.harness]: geminiAdapter,
 };
 

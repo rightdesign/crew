@@ -446,8 +446,10 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
         return;   // not our schema's stability guarantee — drop and move on
       }
       try {
-        const extracted = adapter.extractResult(parsed);
-        if (extracted) result = { ...result, ...extracted };
+        // Field by field: Codex reports the session id and a turn's usage on
+        // different lines, and a later line must not erase an earlier field.
+        const got = adapter.extractResult(parsed);
+        if (got) result = { ...result, ...Object.fromEntries(Object.entries(got).filter(([, v]) => v !== undefined)) };
         consume(parsed, mapper.map(parsed));
       } catch {
         /* a shape this run's mapping does not expect must not kill the cycle */
