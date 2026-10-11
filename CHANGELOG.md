@@ -17,6 +17,14 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.43.0] — 2026-10-11
+
+- CREW-1551 `crew worktree NNN` no longer reads the ticket number as a route name; on a multi-route ship it picks the route whose tracker has the ticket and whose checkout serves its repo.
+- CREW-1551 `crew worktree NNN` no longer reads the ticket number as a route name, and `crew worktree NNN <role>` works without a route.
+- CREW-1551 `crew worktree NNN` now works without a route argument (it failed with `no route "NNN"`), picking the route from the ticket's repo on a multi-route ship.
+- `launcher: omlx` runs a harness against a local oMLX server, with provider `local` and doctor checks for the server and model (CREW-1554)
+- `launcher: omlx` runs a harness against a local oMLX server, with provider `local` and doctor checks for the server and model (CREW-1554)
+
 ## [0.42.0] — 2026-10-11
 
 - ISSUE-1552 Optional `columns.position` contract column: a manual order that breaks ties inside an effective-priority band, never across bands, and shows in the digest.
