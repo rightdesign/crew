@@ -10,6 +10,7 @@ import { mapStreamLine, extractResult, extractTurnTokens } from '../stream.ts';
 import { ensureClaudeMcp, inspectClaudeMcp, removeClaudeMcp } from '../claude-mcp.ts';
 import type { PairInstaller } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
+import { wrapInvocation, isOmlxLauncher } from '../launcher.ts';
 import { profileFor, type CapabilityProfile } from '../capability.ts';
 
 /**
@@ -126,6 +127,9 @@ export const claudeAdapter: HarnessAdapter = {
     const args = [
       '-p', '--allowedTools', ...allowedTools(o.role),
       '--disallowedTools', ...DISALLOWED_TOOLS,
+      // oMLX denies LSP itself for prefix-cache stability, but only when the
+      // caller passes no --disallowedTools of its own — and crew always does.
+      ...(isOmlxLauncher(spec) ? ['LSP'] : []),
       '--model', o.model,
       '--output-format', 'stream-json', '--verbose',
       // Registers the tracker's own MCP tool surface for this run only —
@@ -146,9 +150,7 @@ export const claudeAdapter: HarnessAdapter = {
         : []),
       ...spec.args,
     ];
-    return spec.launcher
-      ? { bin: spec.launcherBin ?? spec.launcher, args: [spec.bin, ...args] }
-      : { bin: spec.bin, args };
+    return wrapInvocation(spec, { model: o.model, args });
   },
 
   runEnv(spec) {

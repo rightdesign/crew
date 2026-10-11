@@ -12,13 +12,15 @@
  * `HarnessAdapter` now. Adding another harness means writing another file under `adapters/` and registering it here.
  */
 
-import { basename } from 'node:path';
 import type { Route, RoleName, Ship } from './config.ts';
 import type { StreamKindEvent, StreamResult } from './stream.ts';
 import { claudeAdapter } from './adapters/claude.ts';
 import { codexAdapter } from './adapters/codex.ts';
 import { geminiAdapter } from './adapters/gemini.ts';
 import type { CapabilityProfile } from './capability.ts';
+import { isOriLauncher, isOmlxLauncher } from './launcher.ts';
+
+export { isOriLauncher, isOmlxLauncher } from './launcher.ts';
 
 /** Model-size tiers a toolchain can map to concrete models (EPIC-035 §2). */
 export const TIERS = ['light', 'standard', 'deep'] as const;
@@ -177,20 +179,18 @@ export function resolveToolchain(ship: Ship, route?: RouteToolchainScope, repo?:
   return found;
 }
 
-/** The vendor serving a toolchain's models: `openrouter` behind the `ori` launcher, else the harness's own. */
+/** The vendor serving a toolchain's models: `openrouter` behind the `ori` launcher (CREW-1522), `local` behind `omlx` (CREW-1554), else the harness's own. */
 export function toolchainVendor(spec: Pick<ToolchainSpec, 'harness' | 'launcher'>): string {
   if (isOriLauncher(spec)) return 'openrouter';
+  if (isOmlxLauncher(spec)) return 'local';
   return adapterFor(spec.harness).vendor;
 }
 
-/** OpenRouter's Ori runs the harness (`ori claude …`) against OpenRouter's catalog (CREW-1522). */
-export function isOriLauncher(spec: Pick<ToolchainSpec, 'launcher'>): boolean {
-  return !!spec.launcher && basename(spec.launcher) === 'ori';
-}
-
-/** Who serves and bills a run of `spec`: `openrouter` behind Ori, else whatever the adapter says. */
+/** Who serves and bills a run of `spec`: `openrouter` behind Ori, `local` behind oMLX, else whatever the adapter says. */
 export function toolchainProvider(spec: ToolchainSpec): string {
-  return isOriLauncher(spec) ? 'openrouter' : adapterFor(spec.harness).provider(spec);
+  if (isOriLauncher(spec)) return 'openrouter';
+  if (isOmlxLauncher(spec)) return 'local';
+  return adapterFor(spec.harness).provider(spec);
 }
 
 /** What a seat's persona asks for; every field optional (older workspaces have none). */
@@ -261,7 +261,7 @@ export function resolveSeat(
   let reasoning = chosen.tiers.standard?.reasoning;
 
   const explicit = persona.model;
-  const explicitOk = explicit !== undefined && (vendor === 'openrouter' || adapter.ownsModel(explicit));
+  const explicitOk = explicit !== undefined && (vendor === 'openrouter' || vendor === 'local' || adapter.ownsModel(explicit));
   if (explicit !== undefined && !explicitOk) {
     warnings.push(`seat ${role}: persona model "${explicit}" does not belong to vendor "${vendor}" (toolchain ${chosen.name}); ignored`);
   }

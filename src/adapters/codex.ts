@@ -17,6 +17,7 @@ import { profileFor, type CapabilityProfile } from '../capability.ts';
 import type { StreamKindEvent, StreamResult } from '../stream.ts';
 import type { HarnessAdapter, McpRegistrationOpts, McpRegistration } from '../toolchain.ts';
 import type { PairInstaller } from '../pair-install.ts';
+import { wrapInvocation, selectsCustomModelProvider } from '../launcher.ts';
 import {
   PAIR_KEY_VAR, SERVER, readIfExists, writeFileMkdir, installBlockFile, removeBlockFile, blockVerdict,
   type McpFileState, tomlTableRange, tomlValue, tomlString, upsertTomlTable, removeTomlTable,
@@ -260,13 +261,11 @@ export const codexAdapter: HarnessAdapter = {
       // Prompt on stdin.
       '-',
     ];
-    return spec.launcher
-      ? { bin: spec.launcher, args: [spec.bin, ...args] }
-      : { bin: spec.bin, args };
+    return wrapInvocation(spec, { model: o.model, args });
   },
 
   runEnv: (spec) => ({ ...spec.env }),
-  provider: () => 'openai',
+  provider: (spec) => (selectsCustomModelProvider(spec.args) ? 'local' : 'openai'),
   unsetEnv: CODEX_BILLING_VARS_TO_UNSET,
   mapStreamLine: mapCodexLine,
   extractResult: extractCodexResult,

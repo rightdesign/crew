@@ -79,7 +79,8 @@ opt in. Cost is not reported, only tokens.
 For a local OpenAI-compatible endpoint, define a
 provider in `~/.codex/config.toml` (`[model_providers.local]`, `base_url`,
 `wire_api`) and select it with `args: ["-c", "model_provider=\"local\""]` and
-the matching `model`; `provider` is still recorded as `openai`.
+the matching `model`; because the args select a non-default `model_provider`,
+`provider` is recorded as `local` (it stays `openai` otherwise).
 
 ## Gemini CLI
 
@@ -137,6 +138,47 @@ ship:
   authenticate headlessly, treat Ori as interactive-only. Ori has only been
   exercised in front of the `claude` harness.
 
+## Running a harness against a local oMLX server
+
+`launcher: omlx` runs the harness against oMLX, an
+MLX inference server on Apple Silicon, with `omlx launch <harness> --model <model> -- <harness args>`.
+Everything after `--` reaches the harness unchanged; `--model` is required because
+oMLX would otherwise prompt.
+
+```yaml
+ship:
+  toolchains:
+    local-qwen:
+      harness: claude
+      launcher: omlx
+      launcherBin: /Users/you/.omlx/bin/omlx   # optional: defaults to ~/.omlx/bin/omlx
+      model: Qwen3.8-27B-4bit
+routes:
+  - route: issues/issues
+    repos:
+      some-repo:
+        dir: /Users/you/git/some-repo
+        toolchain: local-qwen   # per-repo override: only this repo's tickets run locally
+```
+
+- The vendor and the recorded `provider` are `local`; a persona's explicit
+  `model` is accepted as-is, and tier maps pass local model ids through.
+- The API key lives in oMLX's own settings, never in `crew.yaml`; oMLX hands it to
+  the harness itself.
+- Crew passes its own `--disallowedTools` to Claude, so oMLX's default `LSP` deny
+  would not apply; crew appends `LSP` to the list under this launcher.
+- **Codex: do not use this launcher.** `omlx launch codex` rewrites
+  `~/.codex/config.toml` (a persistent `model_provider = "omlx"`), which would
+  redirect every Codex run on the ship. Use the per-run provider override above.
+- `crew doctor` checks the oMLX binary, reads `server.host`/`server.port` and
+  `model.model_dirs` from `~/.omlx/settings.json` (nothing under `auth`), probes
+  `GET /v1/models` with no key (a 401 is reported as "up, key required") and
+  checks the model is present in a model directory.
+- Scope the local toolchain with the per-repo override (as above), or a
+  route-level `toolchain:` when a whole project should go local, rather than
+  making it the ship default: local models vary in tool-call reliability and
+  prefill speed.
+
 ## Seat resolution: persona vendor, tier and model
 
 A seat's Agents row can carry `vendor`, `tier` and `model` (all optional; a
@@ -147,8 +189,8 @@ the toolchain and the concrete model for that seat's runs:
    names a `vendor` the default does not serve, the first ship toolchain whose
    vendor matches is used instead. If none matches, the default runs anyway and
    a `warn` event (`step: agent`) names the seat, the vendor and the toolchain
-   used. A toolchain's vendor is `openrouter` when its `launcher` is `ori`, else
-   its harness's own (`anthropic` for `claude`).
+   used. A toolchain's vendor is `openrouter` when its `launcher` is `ori`, `local`
+   when it is `omlx`, else its harness's own (`anthropic` for `claude`).
 2. **Model**, inside that toolchain: the persona's explicit `model` when it
    belongs to the toolchain's vendor (a mismatch is ignored with a `warn` event,
    never passed through); else the persona's `light` / `deep` tier through the

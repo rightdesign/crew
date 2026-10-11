@@ -320,3 +320,54 @@ test('planAgentRun forwards the selected ticket\'s repo to resolveSeat', () => {
   assert.equal(run('beta').toolchain, 'wrapped');
   assert.equal(run().toolchain, 'wrapped');
 });
+
+// CREW-1554: oMLX launcher — argv shape, local vendor/provider, LSP deny, settings parsing.
+
+const OMLX = `ship:
+  agent: { bin: /bin/true }
+  toolchains:
+    local-qwen:
+      harness: claude
+      launcher: omlx
+      launcherBin: /Users/x/.omlx/bin/omlx
+      model: Qwen3.8-27B-4bit
+routes:${ROUTE('    toolchain: local-qwen\n')}`;
+
+test('omlx launcher: `omlx launch claude --model M -- <harness args>`, LSP appended to the deny list, provider local', () => {
+  const p = plan(cfgFrom(OMLX), 0);
+  assert.equal(p.bin, '/Users/x/.omlx/bin/omlx');
+  assert.deepEqual(p.args.slice(0, 5), ['launch', 'claude', '--model', 'Qwen3.8-27B-4bit', '--']);
+  assert.equal(p.args[5], '-p');
+  // The harness's own --model still carries the model, after the separator.
+  assert.equal(p.args[p.args.indexOf('--model', 5) + 1], 'Qwen3.8-27B-4bit');
+  const deny = p.args.slice(p.args.indexOf('--disallowedTools') + 1);
+  assert.equal(deny[deny.indexOf('--model') - 1], 'LSP');
+  assert.equal(p.provider, 'local');
+  assert.equal(p.harness, 'claude');
+  assert.match(describePlan(p), /provider local/);
+});
+
+test('omlx launcher: launcherBin defaults to ~/.omlx/bin/omlx; vendor local accepts any persona model', () => {
+  const cfg = cfgFrom(OMLX.replace('      launcherBin: /Users/x/.omlx/bin/omlx\n', ''));
+  assert.match(plan(cfg, 0).bin, /\.omlx\/bin\/omlx$/);
+  const [, tc] = shipToolchains(cfg.ship);
+  assert.equal(toolchainVendor(tc!), 'local');
+  const r = resolveSeat(cfg.ship, cfg.routes[0], 'dev', { model: 'Some-Local-9B' });
+  assert.equal(r.model, 'Some-Local-9B');
+  assert.deepEqual(r.warnings, []);
+});
+
+test('a toolchain without a launcher gets no LSP entry; an unknown launcher keeps the generic prefix', () => {
+  const generic = plan(cfgFrom(OMLX.replace('omlx', 'wrapper').replace('      launcherBin: /Users/x/.omlx/bin/omlx\n', '')), 0);
+  assert.equal(generic.bin, 'wrapper');
+  assert.equal(generic.args[0], 'claude');
+  assert.equal(generic.args.includes('LSP'), false);
+});
+
+test('codex: a non-default model_provider in args records provider local', () => {
+  const codex = adapterFor('codex');
+  const base = { name: 'c', harness: 'codex', bin: 'codex', model: 'm', tiers: {}, env: {}, maxThinkingTokens: 0 };
+  assert.equal(codex.provider({ ...base, args: [] }), 'openai');
+  assert.equal(codex.provider({ ...base, args: ['-c', 'model_provider="omlx"'] }), 'local');
+  assert.equal(codex.provider({ ...base, args: ['-c', 'model_provider="openai"'] }), 'openai');
+});

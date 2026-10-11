@@ -75,7 +75,8 @@ import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
-import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher } from './toolchain.ts';
+import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
+import { launcherExecutable, readOmlxSettings, interpretOmlxProbe, omlxModelPresent } from './launcher.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
@@ -4019,17 +4020,39 @@ switch (command) {
     let allBinsFound = true;
     for (const tc of shipToolchains(cfg.ship)) {
       const adapter = adapterFor(tc.harness);
-      const binPath = findOnPath(tc.launcherBin ?? tc.launcher ?? tc.bin, schedulerPath);
+      const runBin = launcherExecutable(tc) ?? tc.bin;
+      const binPath = findOnPath(runBin, schedulerPath);
       if (!binPath) allBinsFound = false;
       const label = tc.name === defaultToolchain ? 'agent binary:     ' : `toolchain ${tc.name}:`.padEnd(18);
       process.stdout.write(
-        `${label} ${tc.launcherBin ?? tc.launcher ?? tc.bin} — ${binPath ? `OK (${binPath})` : 'NOT FOUND on the scheduler PATH'}` +
+        `${label} ${runBin} — ${binPath ? `OK (${binPath})` : 'NOT FOUND on the scheduler PATH'}` +
           `${tc.name === defaultToolchain ? '' : ` [${adapter.displayName}]`}\n`,
       );
       for (const limit of adapter.limitations) process.stdout.write(`                   cannot enforce: ${limit}\n`);
       // CREW-1522: Ori authenticates with an interactive OAuth login; whether that
       // login is visible to a launchd/systemd job is unverified, so say so rather
       // than imply a PATH hit means a headless run will authenticate.
+      if (isOmlxLauncher(tc)) {
+        // CREW-1554: the oMLX server must be up and hold the model; its API key lives
+        // in oMLX's own settings and is never read here.
+        const s = readOmlxSettings();
+        if (!s) {
+          process.stdout.write(`                   omlx: ~/.omlx/settings.json not found or has no server.port — cannot check the server\n`);
+        } else {
+          let status: number | undefined;
+          try {
+            status = (await fetch(`http://${s.host}:${s.port}/v1/models`, { signal: AbortSignal.timeout(3000) })).status;
+          } catch {
+            status = undefined;
+          }
+          const probe = interpretOmlxProbe(status);
+          process.stdout.write(`                   omlx server: ${s.host}:${s.port} — ${probe.detail}${probe.up ? '' : ' (start oMLX)'}\n`);
+          process.stdout.write(
+            `                   omlx model: ${tc.model} — ${omlxModelPresent(tc.model, s.modelDirs) ? 'present' : `NOT FOUND in ${s.modelDirs.join(', ') || 'any model dir'}`}\n`,
+          );
+        }
+        process.stdout.write(`                   local model: tool-call reliability and prefill speed vary by model\n`);
+      }
       if (isOriLauncher(tc)) {
         process.stdout.write(`                   ori: headless auth under the scheduler is unverified — run \`ori login\` as the scheduler user, then confirm a run records provider openrouter (see docs/toolchains.md)\n`);
       }

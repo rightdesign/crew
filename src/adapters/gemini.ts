@@ -21,6 +21,7 @@ import type { StreamKindEvent, StreamResult } from '../stream.ts';
 import { toolTarget } from '../stream.ts';
 import { ensureGeminiMcp, inspectGeminiMcp } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
+import { wrapInvocation } from '../launcher.ts';
 import { profileFor, type CapabilityProfile } from '../capability.ts';
 
 /**
@@ -151,9 +152,7 @@ export const geminiAdapter: HarnessAdapter = {
       ...geminiGrantArgs(o.role),
       ...spec.args,
     ];
-    return spec.launcher
-      ? { bin: spec.launcherBin ?? spec.launcher, args: [spec.bin, ...args] }
-      : { bin: spec.bin, args };
+    return wrapInvocation(spec, { model: o.model, args });
   },
 
   runEnv: (spec) => ({ ...spec.env }),

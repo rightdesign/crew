@@ -364,7 +364,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 export function describePlan(p: AgentPlan): string {
   return [
     `role:    ${p.role}`,
-    ...(p.resolution ? [`resolved: toolchain ${p.toolchain} ← ${p.resolution.toolchain}; model ${p.model} ← ${p.resolution.model}`] : []),
+    ...(p.resolution ? [`resolved: toolchain ${p.toolchain} ← ${p.resolution.toolchain}; model ${p.model} ← ${p.resolution.model}${p.provider ? `; provider ${p.provider}` : ''}`] : []),
     ...(p.warnings ?? []).map((w) => `warning: ${w}`),
     // Only for a non-default toolchain, so a plain Claude run's output is unchanged.
     ...(p.toolchain && p.toolchain !== 'claude' ? [`toolchain: ${p.toolchain} (${p.harness ?? 'claude'})`] : []),
