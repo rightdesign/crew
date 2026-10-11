@@ -250,3 +250,85 @@ test('skill create against a server without prompt_baseline sends the body uncha
   await syncSkills(makeRoute(), {});
   assert.deepEqual(Object.keys(created[0]).sort(), ['description', 'name', 'prompt']);
 });
+
+// ---- CREW-1559 ----
+
+function skillsServer(row: Record<string, unknown>, patches: Array<{ body: any }>) {
+  return mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: SKILLS_MODEL_WITH_BASELINE }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({
+      status: 200,
+      body: [{ id: 'row-gm', name: 'Grill-Me', description: 'Interview an Epic.', updated_at: '2026-01-01T00:00:00Z', ...row }],
+    }),
+    'PATCH /api/data-models/skills-model-1/records/row-gm': (b) => {
+      patches.push({ body: b });
+      return { status: 200, body: { id: 'row-gm', updated_at: '2026-01-02T00:00:00Z' } };
+    },
+  });
+}
+
+const NEW_DIR = () => makePromptsDir({ 'grill-me.md': { name: 'Grill-Me', description: 'Interview an Epic.', prompt: 'NEW\n' } });
+
+test('an unedited row (prompt === baseline) is updated even with no cache entry — another ship wrote it last', async (t) => {
+  const patches: Array<{ body: any }> = [];
+  const { restore } = skillsServer({ prompt: 'OLD', prompt_baseline: 'OLD', prompt_source: 'crew' }, patches);
+  t.after(restore);
+  const result = await syncSkills(makeRoute(undefined, NEW_DIR()), {});
+  assert.equal(result.outcomes[0]!.action, 'updated');
+  assert.equal(patches[0]!.body.prompt_baseline, 'NEW\n');
+  assert.equal(patches[0]!.body.prompt_source, 'crew');
+});
+
+test('an edited row (prompt !== baseline) is diverged even when the cache matches its updated_at', async (t) => {
+  const patches: Array<{ body: any }> = [];
+  const { restore } = skillsServer({ prompt: 'EDITED', prompt_baseline: 'OLD', prompt_source: 'crew' }, patches);
+  t.after(restore);
+  const route = makeRoute({ 'Grill-Me': { skillId: 'row-gm', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, NEW_DIR());
+  const result = await syncSkills(route, {});
+  assert.equal(result.outcomes[0]!.action, 'diverged');
+  assert.equal(patches.length, 0);
+});
+
+test('a row with no baseline and no cache stays diverged (TABL-1540: migration never overwrites)', async (t) => {
+  const patches: Array<{ body: any }> = [];
+  const { restore } = skillsServer({ prompt: 'OLD' }, patches);
+  t.after(restore);
+  const result = await syncSkills(makeRoute(undefined, NEW_DIR()), {});
+  assert.equal(result.outcomes[0]!.action, 'diverged');
+  assert.equal(patches.length, 0);
+});
+
+test('an unchanged row with no baseline gets prompt_source/prompt_baseline backfilled', async (t) => {
+  const patches: Array<{ body: any }> = [];
+  const { restore } = skillsServer({ prompt: 'NEW\n' }, patches);
+  t.after(restore);
+  const result = await syncSkills(makeRoute(undefined, NEW_DIR()), {});
+  assert.equal(result.outcomes[0]!.action, 'unchanged');
+  assert.deepEqual(patches[0]!.body, { prompt_source: 'crew', prompt_baseline: 'NEW\n' });
+  assert.equal(result.agentSkills['Grill-Me']?.lastSyncedUpdatedAt, '2026-01-02T00:00:00Z');
+});
+
+test('an unchanged row already stamped, or customized, is not rewritten', async (t) => {
+  const patches: Array<{ body: any }> = [];
+  const a = skillsServer({ prompt: 'NEW\n', prompt_baseline: 'NEW\n', prompt_source: 'crew' }, patches);
+  await syncSkills(makeRoute(undefined, NEW_DIR()), {});
+  a.restore();
+  const b = skillsServer({ prompt: 'NEW\n', prompt_customized: true }, patches);
+  t.after(b.restore);
+  await syncSkills(makeRoute(undefined, NEW_DIR()), {});
+  assert.equal(patches.length, 0);
+});
+
+test('--force overwrites a diverged skill and stamps it, but never a customized one', async (t) => {
+  const patches: Array<{ body: any }> = [];
+  const a = skillsServer({ prompt: 'EDITED', prompt_baseline: 'OLD' }, patches);
+  const forced = await syncSkills(makeRoute(undefined, NEW_DIR()), { force: true });
+  a.restore();
+  assert.equal(forced.outcomes[0]!.action, 'forced');
+  assert.equal(patches[0]!.body.prompt_baseline, 'NEW\n');
+  const b = skillsServer({ prompt: 'EDITED', prompt_customized: true }, patches);
+  t.after(b.restore);
+  const locked = await syncSkills(makeRoute(undefined, NEW_DIR()), { force: true });
+  assert.equal(locked.outcomes[0]!.action, 'overridden');
+  assert.equal(patches.length, 1);
+});

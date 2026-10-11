@@ -91,6 +91,9 @@ interface AgentRow {
   updated_at: string;
   /** TABL-1540: true = an operator locked this prompt; crew never writes it. Absent on an older server. */
   prompt_customized?: boolean | null;
+  /** CREW-1559: the prompt the row's source last wrote; `prompt !== prompt_baseline` means a person edited it. Null on a row never stamped. */
+  prompt_source?: string | null;
+  prompt_baseline?: string | null;
 }
 
 /**
@@ -400,6 +403,24 @@ export function promptSourceFields(
     : {};
 }
 
+export function hasPromptBaselineColumn(model: { fields?: ReadonlyArray<{ columnName: string }> }): boolean {
+  return model.fields?.some((f) => f.columnName === 'prompt_baseline') === true;
+}
+
+/**
+ * CREW-1559: whether a not-yet-stamped, not-customized row needs its
+ * `prompt_source`/`prompt_baseline` written. Callers only use this on a row
+ * whose prompt already equals crew's default, so the write gate accepts it
+ * and the app starts showing the row as managed by crew.
+ */
+export function needsBaselineBackfill(
+  model: { fields?: ReadonlyArray<{ columnName: string }> },
+  row: { prompt_customized?: boolean | null; prompt_source?: string | null; prompt_baseline?: string | null },
+): boolean {
+  return hasPromptBaselineColumn(model) && row.prompt_customized !== true
+    && (typeof row.prompt_baseline !== 'string' || !row.prompt_source);
+}
+
 /** The server's prompt write gate (TABL-1540) answers 422 when a row was customized after crew listed it. */
 export function isPromptGateRejection(e: unknown): boolean {
   return e instanceof TablationApiError && e.status === 422;
@@ -496,8 +517,17 @@ export async function syncPersonas(
       // In sync content-wise regardless of who wrote it last — nothing to
       // push, just (re)anchor the cache to the row's current updated_at so
       // a later sync's compare-and-swap has the right baseline.
+      let anchoredAt = row.updated_at;
+      if (!opts.dryRun && needsBaselineBackfill(agentsModel, row)) {
+        // CREW-1559: content already matches, so stamp the columns that make the app show the row as managed.
+        try {
+          anchoredAt = (await client.records.update<AgentRow>(agentsModel.id, row.id, promptSourceFields(agentsModel, defaultPrompt), row.updated_at)).updated_at;
+        } catch (e) {
+          if (!(e instanceof StaleWriteError) && !isPromptGateRejection(e)) throw e;
+        }
+      }
       const historyId = await fetchLatestHistoryId(route, agentsModel.id, row.id, opts.userAgent);
-      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, ...(historyId ? { historyId } : {}) };
+      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: anchoredAt, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'unchanged', agentId: row.id });
       continue;
     }
@@ -537,38 +567,42 @@ export async function syncPersonas(
     }
 
     const cached = cache[role]?.agentId === row.id ? cache[role] : undefined;
-    if (!cached?.historyId) {
-      // No cache entry for this row (or none with a historyId) — crew has
-      // never synced it (or the state dir was wiped) and cannot prove the
-      // current content is its own last write, so this is diverged by
-      // definition: there's no baseline to check the prompt against.
-      outcomes.push({ role, action: 'diverged', agentId: row.id });
-      continue;
-    }
+    // CREW-1559: when the row carries a baseline, divergence is a question
+    // about its content alone — `prompt === prompt_baseline` is unedited
+    // whichever ship wrote it last, so no per-ship cache is consulted.
+    const baselineKnown = hasPromptBaselineColumn(agentsModel) && typeof row.prompt_baseline === 'string';
+    if (baselineKnown) {
+      if (row.prompt !== row.prompt_baseline) {
+        outcomes.push({ role, action: 'diverged', agentId: row.id });
+        continue;
+      }
+    } else {
+      if (!cached?.historyId) {
+        // No cache entry for this row (or none with a historyId) — crew has
+        // never synced it (or the state dir was wiped) and cannot prove the
+        // current content is its own last write, so this is diverged by
+        // definition: there's no baseline to check the prompt against.
+        outcomes.push({ role, action: 'diverged', agentId: row.id });
+        continue;
+      }
 
-    // CREW-1055: whether this counts as diverged is a question about the
-    // `prompt` column specifically, not the row as a whole — a person (or
-    // another `crew` command) moving this row between projects, or any
-    // other column edit, bumps `updated_at` exactly the same as a real
-    // prompt edit would, but isn't one. Compare the row's CURRENT prompt to
-    // whatever crew's own last-synced history entry recorded for it: equal
-    // means nothing touched the prompt since crew wrote it, so the diff
-    // against `defaultPrompt` is just crew's own local template having
-    // moved on, safe to push. Different means a person genuinely edited the
-    // prompt in the app, which stays untouched either way.
-    let lastSyncedPrompt: string | undefined;
-    try {
-      const entries = await fetchHistoryEntries(route, agentsModel.id, row.id, opts.userAgent);
-      lastSyncedPrompt = entries.find((e) => e.history_id === cached.historyId)?.prompt;
-    } catch {
-      lastSyncedPrompt = undefined;
-    }
-    if (lastSyncedPrompt === undefined || lastSyncedPrompt !== row.prompt) {
-      // Either the lookup failed, crew's last-synced version has since
-      // rolled out of the history window, or the prompt itself really did
-      // change since crew wrote it — none of those are safe to overwrite.
-      outcomes.push({ role, action: 'diverged', agentId: row.id });
-      continue;
+      // CREW-1055: whether this counts as diverged is a question about the
+      // `prompt` column specifically, not the row as a whole — compare the
+      // row's CURRENT prompt to whatever crew's own last-synced history entry
+      // recorded for it: equal means nothing touched the prompt since crew
+      // wrote it, so the diff against `defaultPrompt` is just crew's own
+      // local template having moved on, safe to push.
+      let lastSyncedPrompt: string | undefined;
+      try {
+        const entries = await fetchHistoryEntries(route, agentsModel.id, row.id, opts.userAgent);
+        lastSyncedPrompt = entries.find((e) => e.history_id === cached.historyId)?.prompt;
+      } catch {
+        lastSyncedPrompt = undefined;
+      }
+      if (lastSyncedPrompt === undefined || lastSyncedPrompt !== row.prompt) {
+        outcomes.push({ role, action: 'diverged', agentId: row.id });
+        continue;
+      }
     }
 
     if (opts.dryRun) {
@@ -599,7 +633,7 @@ export async function syncPersonas(
       }
       if (isPromptGateRejection(e)) {
         // Flagged "Customize prompt" between the list and this write.
-        agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, historyId: cached.historyId };
+        agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: row.updated_at, ...(cached?.historyId ? { historyId: cached.historyId } : {}) };
         outcomes.push({ role, action: 'overridden', agentId: row.id });
         continue;
       }

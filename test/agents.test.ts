@@ -786,9 +786,32 @@ test('a 422 from the prompt gate on update is reported overridden, not thrown', 
       status: 200, body: [{ history_id: 'hist-1', changed_at: '2026-01-01T00:00:00Z', prompt: 'COMMON\nOLD DEV BRIEF\n' }],
     }),
     'PATCH /api/data-models/agents-model-1/records/row-Developer': () => ({ status: 422, body: { message: 'prompt is customized' } }),
+    // CREW-1559: the unchanged, never-stamped rows get their baseline backfilled.
+    ...Object.fromEntries(['Design', 'QA', 'Triage', 'Pair'].map((n) => [`PATCH /api/data-models/agents-model-1/records/row-${n}`, () => ({ status: 200, body: { id: `row-${n}`, updated_at: '2026-01-02T00:00:00Z' } })])),
   });
   t.after(restore);
   const route = makeRoute({ dev: { agentId: 'row-Developer', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z', historyId: 'hist-1' } } as any, {}, promptsDir);
   const result = await syncPersonas(route, {});
   assert.equal(result.outcomes.find((o) => o.role === 'dev')!.action, 'overridden');
+});
+
+test('a persona row whose prompt equals its baseline is updated with no history entry (another ship wrote it)', async (t) => {
+  const promptsDir = makePromptsDir({ dev: 'NEW DEV BRIEF\n' });
+  const patches: any[] = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL_WITH_BASELINE }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({
+      status: 200,
+      body: [
+        { id: 'row-Developer', name: 'Developer', prompt: 'COMMON\nOLD DEV BRIEF\n', prompt_baseline: 'COMMON\nOLD DEV BRIEF\n', prompt_source: 'crew', updated_at: '2026-01-01T00:00:00Z' },
+        ...['Design', 'QA', 'Triage', 'Pair'].map((n, i) => ({ id: `row-${n}`, name: n, prompt: personaDefaultPrompt(promptsDir, (['design', 'qa', 'triage', 'pair'] as const)[i]!), prompt_baseline: 'x', prompt_source: 'crew', updated_at: '2026-01-01T00:00:00Z' })),
+      ],
+    }),
+    'GET /api/data-models/agents-model-1/records/row-Developer/history?limit=50': () => ({ status: 200, body: [] }),
+    'PATCH /api/data-models/agents-model-1/records/row-Developer': (b) => { patches.push(b); return { status: 200, body: { id: 'row-Developer', updated_at: '2026-01-02T00:00:00Z' } }; },
+  });
+  t.after(restore);
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
+  assert.equal(result.outcomes.find((o) => o.role === 'dev')!.action, 'updated');
+  assert.equal(patches[0].prompt_baseline, patches[0].prompt);
 });

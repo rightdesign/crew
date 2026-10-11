@@ -27,7 +27,7 @@ import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/
 import type { Route } from './config.ts';
 import { resolveApiKey } from './config.ts';
 import { skillMarkerNames } from './skill-include.ts';
-import { promptSourceFields, isPromptGateRejection } from './agents.ts';
+import { promptSourceFields, isPromptGateRejection, hasPromptBaselineColumn, needsBaselineBackfill } from './agents.ts';
 
 export class SkillSyncError extends Error {}
 
@@ -76,9 +76,12 @@ interface SkillRow {
   updated_at: string;
   /** TABL-1540: true = an operator locked this prompt; crew never writes it. Absent on an older server. */
   prompt_customized?: boolean | null;
+  /** CREW-1559: `prompt !== prompt_baseline` on a non-customized row means a person edited it. Null on a row never stamped. */
+  prompt_source?: string | null;
+  prompt_baseline?: string | null;
 }
 
-export type SkillSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'overridden';
+export type SkillSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'overridden' | 'forced';
 
 export interface SkillSyncOutcome {
   name: string;
@@ -105,7 +108,7 @@ export interface SyncSkillsResult {
  */
 export async function syncSkills(
   route: Route,
-  opts: { userAgent?: string; dryRun?: boolean },
+  opts: { userAgent?: string; dryRun?: boolean; force?: boolean },
 ): Promise<SyncSkillsResult> {
   if (!route.resolved) {
     throw new SkillSyncError(`route "${route.route}" has no resolved ids — run \`crew connect\` first`);
@@ -154,19 +157,62 @@ export async function syncSkills(
       // In sync content-wise regardless of who wrote it last — nothing to
       // push, just (re)anchor the cache to the row's current updated_at so
       // a later sync's compare-and-swap has the right baseline.
-      agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: row.updated_at };
+      let anchoredAt = row.updated_at;
+      if (!opts.dryRun && needsBaselineBackfill(skillsModel, row)) {
+        // CREW-1559: a row written before the baseline columns existed is
+        // never re-stamped otherwise, so the app shows it as unmanaged.
+        // Content is equal, so the write gate accepts it.
+        try {
+          anchoredAt = (await client.records.update<SkillRow>(
+            skillsModel.id, row.id, promptSourceFields(skillsModel, skill.prompt), row.updated_at,
+          )).updated_at;
+        } catch (e) {
+          if (!(e instanceof StaleWriteError) && !isPromptGateRejection(e)) throw e;
+        }
+      }
+      agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: anchoredAt };
       outcomes.push({ name: skill.name, action: 'unchanged', skillId: row.id });
       continue;
     }
 
     if (row.prompt_customized === true) {
-      // TABL-1540: the operator's explicit lock — never written, not a failure.
+      // TABL-1540: the operator's explicit lock — never written, not even by --force.
       agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: row.updated_at };
       outcomes.push({ name: skill.name, action: 'overridden', skillId: row.id });
       continue;
     }
 
-    const knownBaseline = cache[skill.name]?.skillId === row.id ? cache[skill.name]?.lastSyncedUpdatedAt : undefined;
+    const body = { description: skill.description, prompt: skill.prompt, ...promptSourceFields(skillsModel, skill.prompt) };
+
+    if (opts.force) {
+      // Same as the persona `--force`: the operator has decided a local edit is meant to be discarded, so no CAS.
+      if (opts.dryRun) { outcomes.push({ name: skill.name, action: 'forced', skillId: row.id }); continue; }
+      try {
+        const updated = await client.records.update<SkillRow>(skillsModel.id, row.id, body);
+        agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: updated.updated_at };
+        outcomes.push({ name: skill.name, action: 'forced', skillId: row.id });
+      } catch (e) {
+        if (!isPromptGateRejection(e)) throw e;
+        outcomes.push({ name: skill.name, action: 'overridden', skillId: row.id });
+      }
+      continue;
+    }
+
+    // CREW-1559: with a baseline on the row, divergence is judged by its
+    // content alone — `prompt === prompt_baseline` is unedited whichever ship
+    // wrote it last. The per-ship cache can't tell another ship's sync from a
+    // human edit, so it is only the fallback for a row with no baseline
+    // (TABL-1540: those are only moved by --force or matching content).
+    let knownBaseline: string | undefined;
+    if (hasPromptBaselineColumn(skillsModel) && typeof row.prompt_baseline === 'string') {
+      if (row.prompt !== row.prompt_baseline) {
+        outcomes.push({ name: skill.name, action: 'diverged', skillId: row.id });
+        continue;
+      }
+      knownBaseline = row.updated_at;
+    } else {
+      knownBaseline = cache[skill.name]?.skillId === row.id ? cache[skill.name]?.lastSyncedUpdatedAt : undefined;
+    }
     if (!knownBaseline) {
       // No cache entry for this row — crew has never synced it (or the
       // state dir was wiped) and cannot prove the current content is its
@@ -184,7 +230,7 @@ export async function syncSkills(
 
     try {
       const updated = await client.records.update<SkillRow>(
-        skillsModel.id, row.id, { description: skill.description, prompt: skill.prompt, ...promptSourceFields(skillsModel, skill.prompt) }, knownBaseline,
+        skillsModel.id, row.id, body, knownBaseline,
       );
       agentSkills[skill.name] = { skillId: row.id, lastSyncedUpdatedAt: updated.updated_at };
       outcomes.push({ name: skill.name, action: 'updated', skillId: row.id });
@@ -216,6 +262,7 @@ export function describeSkillSyncOutcome(o: SkillSyncOutcome): string {
     case 'updated': return `${o.name}: prompt updated from crew's local file`;
     case 'unchanged': return `${o.name}: already in sync`;
     case 'overridden': return `${o.name}: override in place — prompt not synced (clear "Customize prompt" on the Agent Skills row to resume)`;
+    case 'forced': return `${o.name}: overwritten from crew's local file (--force)`;
     case 'diverged': return `${o.name}: HAS LOCAL EDITS — crew's default is newer but was NOT applied; review ${o.skillId} in the app before syncing again`;
   }
 }
@@ -260,6 +307,8 @@ export async function fetchSkillOverrides(
   for (const row of rows) {
     const name = row.name;
     if (row.prompt === local.get(name)?.prompt) continue;
+    // CREW-1559: an unedited, non-customized row is crew's own stale copy whoever wrote it.
+    if (row.prompt_customized !== true && row.prompt === row.prompt_baseline) continue;
     const cached = cache[name];
     if (cached?.skillId === row.id && cached.lastSyncedUpdatedAt === row.updated_at) continue;
     out[name] = row.prompt;

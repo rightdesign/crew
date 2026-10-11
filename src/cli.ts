@@ -300,7 +300,7 @@ function usage(): never {
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block (--no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
-  crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)
+  crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
@@ -2259,7 +2259,7 @@ switch (command) {
       break;
     }
     if (sub !== 'sync') {
-      process.stderr.write('crew agents sync [route] [--force]    push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona)\n');
+      process.stderr.write('crew agents sync [route] [--force]    push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)\n');
       process.stderr.write(`crew agents prompt <role> [route]     print a persona's current prompt (roles: ${ROLE_NAMES.join(', ')})\n`);
       process.exit(2);
     }
@@ -2295,7 +2295,7 @@ switch (command) {
     // reaches for after editing anything under prompts/<promptSet>/.
     let skillResult: Awaited<ReturnType<typeof syncSkills>>;
     try {
-      skillResult = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun });
+      skillResult = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun, force });
     } catch (e) {
       if (e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;
