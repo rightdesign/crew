@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.40.0] — 2026-10-11
+
+- ISSUE-1544 `crew agents sync` and `crew skills sync` now skip Agents/Agent Skills rows with "Customize prompt" on (even with `--force`), report the override, and record prompt_source/prompt_baseline on the rows they write.
+
 ## [0.39.1] — 2026-10-11
 
 - `crew agents sync --force <route>` no longer syncs the wrong route; sync prints the route it used and requires a route name on multi-route ships (CREW-1539)
