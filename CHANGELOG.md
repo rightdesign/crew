@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.34.1] — 2026-10-11
+
+- `crew repos add` creates the Repos row on a keychain-only route instead of failing with "no API key" (CREW-1528)
+
 ## [0.34.0] — 2026-10-10
 
 - Gemini CLI harness adapter: headless runs, capability mapping, MCP registration and stream mapping, with assistant text fragments coalesced into one Agent Log cycle per turn (CREW-1521)
