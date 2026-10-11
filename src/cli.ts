@@ -11,7 +11,7 @@ import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { positionalArgs } from './argv.ts';
+import { pickWorktreeRoute, positionalArgs, splitWorktreeArgs } from './argv.ts';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers,
@@ -499,15 +499,20 @@ const releaseFleetWide = ['merge', 'deploy', 'release'].includes(command) && fla
 // `crew daemon [route]` form (still the foreground loop) is unaffected,
 // since its route stays at positional[1].
 const DAEMON_SUBCOMMANDS = new Set(['start', 'stop', 'status', 'restart']);
-const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? '')
-  ? positional[2]
-  : positional[1];
+// `crew worktree NNN` (CREW-1551) names no route: the ticket's own repo picks it.
+const worktreeArgs = command === 'worktree' ? splitWorktreeArgs(positional, cfg.routes.map((r) => r.route)) : undefined;
+const named = worktreeArgs
+  ? worktreeArgs.route
+  : command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? '')
+    ? positional[2]
+    : positional[1];
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
 const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || releaseFleetWide ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
-  (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
+  (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
+  (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
   route = fleetWide ? (cfg.routes[0] as ReturnType<typeof findRoute>) : findRoute(cfg, named);
@@ -3328,14 +3333,31 @@ switch (command) {
     // existing worktree was left alone (dirty / unpushed commits) so the
     // session knows to say so rather than work in it.
     emit.enter('worktree');
-    const rawWt = positional[2] ?? positional[1];
+    const rawWt = worktreeArgs?.ticket;
     const nWt = rawWt ? parseTicketNumber(rawWt) : null;
     if (!nWt) { process.stderr.write('worktree: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
-    const trackerWt = new Tracker(route, cfg.ship);
-    const cWt = trackerWt.contract;
-    const ticketWt = (await trackerWt.openTickets()).find((t) => t[cWt.columns.key] === `ISSUE-${nWt}`);
-    if (!ticketWt) { process.stderr.write(`worktree: no open ticket ISSUE-${nWt} on ${route.route}\n`); process.exit(2); }
-    const repoWt = (await resolvedRepos(route)).find((r) => r.id === ticketWt.repo_id) ?? (await resolvedRepos(route))[0];
+    // No route typed on a multi-route ship: look the ticket up on each enabled
+    // route and take the one that has it AND serves its repo (CREW-1551).
+    const candidatesWt = !named && cfg.routes.length > 1 ? cfg.routes.filter((r) => r.enabled) : [route];
+    let ticketWt: Awaited<ReturnType<Tracker['openTickets']>>[number] | undefined;
+    const lookedWt: { route: string; hit?: { repoId: string | null }; servedRepoIds: string[] }[] = [];
+    const hitsWt = new Map<string, NonNullable<typeof ticketWt>>();
+    for (const cand of candidatesWt) {
+      const tr = new Tracker(cand, cfg.ship);
+      const hit = (await tr.openTickets()).find((t) => t[tr.contract.columns.key] === `ISSUE-${nWt}`);
+      if (hit) hitsWt.set(cand.route, hit);
+      lookedWt.push({
+        route: cand.route,
+        hit: hit ? { repoId: (hit.repo_id as string | null | undefined) ?? null } : undefined,
+        servedRepoIds: hit ? (await resolvedRepos(cand)).flatMap((r) => (r.id ? [r.id] : [])) : [],
+      });
+    }
+    const pickedWt = pickWorktreeRoute(Number(nWt), lookedWt);
+    if ('error' in pickedWt) { process.stderr.write(`worktree: ${pickedWt.error}\n`); process.exit(2); }
+    const routeWt = candidatesWt.find((r) => r.route === pickedWt.route) ?? route;
+    ticketWt = hitsWt.get(pickedWt.route);
+    if (!ticketWt) process.exit(2);
+    const repoWt = (await resolvedRepos(routeWt)).find((r) => r.id === ticketWt.repo_id) ?? (await resolvedRepos(routeWt))[0];
     if (!repoWt) { process.stderr.write('worktree: this route has no repository\n'); process.exit(2); }
     const roleWt = positional.find((p) => p === 'dev' || p === 'design' || p === 'qa');
     const planWt = planRunWorktree(repoWt.dir, repoWt.config, ticketWt, roleWt);

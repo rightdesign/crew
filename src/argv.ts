@@ -24,3 +24,52 @@ export function positionalArgs(argv: readonly string[]): string[] {
   }
   return out;
 }
+
+const WORKTREE_ROLES = ['dev', 'design', 'qa'];
+
+/**
+ * `crew worktree [route] NNN (CREW-1551): the route is optional, so a lone
+ * ticket number at positional[1] must never be looked up as a route name —
+ * that was `no route "1534" (have: ...)` on every `crew worktree 1534`.
+ * `route` is the explicit route when one was typed (a first argument that is
+ * not a ticket number, or that is the name of a route), `ticket` the raw
+ * ticket argument. When `route` is undefined the caller resolves it from the
+ * ticket's own repo.
+ */
+export function splitWorktreeArgs(
+  positional: readonly string[],
+  routeNames: readonly string[],
+): { route?: string; ticket?: string } {
+  // A trailing lane word (`crew worktree NNN qa`) is the role, not a route or
+  // ticket; the caller reads it separately from positional.
+  const args = positional.slice(1);
+  if (args.length > 1 && WORKTREE_ROLES.includes(args[args.length - 1] ?? '')) args.pop();
+  const [a, b] = [args[0], args[1]];
+  const isTicket = (s: string | undefined) => !!s && /^(?:[A-Za-z]+-)?\d+$/.test(s.trim());
+  if (b !== undefined) return { route: a, ticket: b };
+  if (a !== undefined && isTicket(a) && !routeNames.includes(a)) return { ticket: a };
+  return { route: a, ticket: undefined };
+}
+
+/**
+ * Which route serves `crew worktree NNN` when none was named (CREW-1551).
+ * Pure so the multi-route lookup is testable without a tracker: `candidates`
+ * is each route looked on, with the ticket's repo id when that route's board
+ * has the ticket (`hit`) and the repo ids its checkouts serve. A route wins
+ * when it has the ticket and serves its repo; with a single candidate the hit
+ * wins regardless (the route's own default repo is the fallback).
+ */
+export function pickWorktreeRoute(
+  ticketNumber: number,
+  candidates: readonly { route: string; hit?: { repoId: string | null }; servedRepoIds: readonly string[] }[],
+): { route: string } | { error: string } {
+  for (const c of candidates) {
+    if (c.hit && (candidates.length === 1 || c.servedRepoIds.includes(c.hit.repoId ?? ''))) return { route: c.route };
+  }
+  const looked = candidates.map((c) => c.route).join(', ');
+  const found = candidates.filter((c) => c.hit).map((c) => `${c.route} (repo ${c.hit?.repoId ?? 'none'})`);
+  return {
+    error: `no open ticket ISSUE-${ticketNumber} served by this ship — looked on ${looked}` +
+      (found.length ? `; found it only on ${found.join(', ')}, which has no checkout for its repo` : ''),
+  };
+}
