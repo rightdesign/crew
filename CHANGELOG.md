@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.41.0] — 2026-10-11
+
+- CREW-1549 A same-repo blocker now counts as resolved only once merged, so dependent tickets are no longer restored early and stacked on unmerged branches
+
 ## [0.40.1] — 2026-10-11
 
 - CREW-1550 — Lane skill and QA brief now say a stale or conflicting pushed branch is fixed by merging the base into it and pushing fast-forward, never by rebasing
