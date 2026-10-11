@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.39.0] — 2026-10-11
+
+- Persona briefs can include a skill with a {{skill: Name}} marker expanded at run time, so the shared lane policy is a separate Agent Skill that an admin edit to a lane brief no longer forks (ISSUE-1534)
+
 ## [0.38.0] — 2026-10-11
 
 - The building lanes' situational procedures (worktree setup, running the suite, question/investigation tickets, filing a ticket, ticket attachments, workspace-change authorization, the design pass) ship as Agent Skills that a run fetches only when the step applies, cutting the assembled dev/QA/design prompts roughly in half (CREW-1533)
