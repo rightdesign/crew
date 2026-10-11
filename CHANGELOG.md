@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.40.1] — 2026-10-11
+
+- CREW-1550 — Lane skill and QA brief now say a stale or conflicting pushed branch is fixed by merging the base into it and pushing fast-forward, never by rebasing
+
 ## [0.40.0] — 2026-10-11
 
 - ISSUE-1544 `crew agents sync` and `crew skills sync` now skip Agents/Agent Skills rows with "Customize prompt" on (even with `--force`), report the override, and record prompt_source/prompt_baseline on the rows they write.
