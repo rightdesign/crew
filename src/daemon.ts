@@ -69,7 +69,7 @@
  * ISSUE-763).
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName, Route, Ship } from './config.ts';
 import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, resolveApiKey } from './config.ts';
@@ -245,9 +245,55 @@ export function computeTreeSignature(paths: string[]): string {
  * reports whether it has since moved — the `checkStale` hook
  * `DaemonLoopOptions` expects.
  */
-export function makeStaleChecker(paths: string[]): () => boolean {
+export function makeStaleChecker(paths: string[], opts: { reloadSentinel?: string } = {}): () => boolean {
   const initial = computeTreeSignature(paths);
-  return () => computeTreeSignature(paths) !== initial;
+  return () =>
+    computeTreeSignature(paths) !== initial ||
+    (opts.reloadSentinel !== undefined && existsSync(opts.reloadSentinel));
+}
+
+/**
+ * CREW-1532: `crew reload` writes this file into `ship.stateDir`; the stale
+ * checker honors it exactly like a changed tree, so a busy daemon finishes
+ * its in-flight pass and then exits for the OS-level restart to relaunch it.
+ */
+export function reloadSentinelFor(stateDir: string): string {
+  return join(stateDir, 'reload-requested');
+}
+
+/** Written at daemon startup; `crew doctor` compares it with crew.yaml's mtime. */
+export function daemonStampFor(stateDir: string): string {
+  return join(stateDir, 'daemon.started');
+}
+
+/**
+ * Daemon startup: drop any reload request that triggered this very launch
+ * (otherwise it would exit again at once) and stamp the start time.
+ */
+export function noteDaemonStarted(stateDir: string, now: number = Date.now()): void {
+  mkdirSync(stateDir, { recursive: true });
+  rmSync(reloadSentinelFor(stateDir), { force: true });
+  writeFileSync(daemonStampFor(stateDir), `${JSON.stringify({ pid: process.pid, startedAt: now })}\n`);
+}
+
+/** Start time (ms) recorded by `noteDaemonStarted`, or null when absent/unreadable. */
+export function readDaemonStarted(stateDir: string): number | null {
+  try {
+    const v = (JSON.parse(readFileSync(daemonStampFor(stateDir), 'utf8')) as { startedAt?: unknown }).startedAt;
+    return typeof v === 'number' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Newest mtime among the config file and key files; null when none exist. */
+export function configChangedAfter(files: string[], startedAt: number): string | null {
+  for (const f of files) {
+    try {
+      if (statSync(f).mtimeMs > startedAt) return f;
+    } catch { /* missing file: nothing to compare */ }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

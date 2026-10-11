@@ -100,7 +100,10 @@ import {
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
 import { openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention } from './ship-attention.ts';
-import { runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker } from './daemon.ts';
+import {
+  runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
+  reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
+} from './daemon.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -280,6 +283,7 @@ function usage(): never {
   crew watch [route]             live view of what the crew is doing
   crew status [route] [--json]   paused/running state; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
+  crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
   crew doctor [route] [--fix]    preflight; --fix enables clean routes and offers crew install
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
@@ -336,6 +340,13 @@ const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.st
 const command = positional[0];
 if (!command) usage();
 
+/** crew.yaml plus every route's apiKeyFile: the files a daemon reads once, at startup (CREW-1532). */
+function daemonConfigPaths(c: { configFile: string; routes: Array<{ apiKeyFile?: string }> }): string[] {
+  const files = [c.configFile];
+  for (const r of c.routes) if (r.apiKeyFile && !files.includes(r.apiKeyFile)) files.push(r.apiKeyFile);
+  return files;
+}
+
 /**
  * Defence-in-depth for CREW-978's incident: a QA agent ran `crew connect`
  * "as a manual sanity check" against this ship's real `~/.config/crew/
@@ -364,7 +375,7 @@ if (!command) usage();
  * break the one legitimate `crew` call a session is actually supposed to
  * make.
  */
-const STATE_WRITING_COMMANDS = new Set(['connect', 'disconnect', 'install', 'uninstall', 'release', 'merge', 'deploy']);
+const STATE_WRITING_COMMANDS = new Set(['connect', 'disconnect', 'install', 'uninstall', 'reload', 'release', 'merge', 'deploy']);
 const STATE_WRITING_SUBCOMMANDS: Partial<Record<string, Set<string>>> = {
   agents: new Set(['sync']),
   skills: new Set(['sync']),
@@ -481,7 +492,7 @@ const named = command === 'daemon' && DAEMON_SUBCOMMANDS.has(positional[1] ?? ''
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
 const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || releaseFleetWide ||
-  command === 'pause' || command === 'resume' ||
+  command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1);
 let route: ReturnType<typeof findRoute>;
 try {
@@ -2112,6 +2123,13 @@ switch (command) {
     const watchPaths = isCompiledBinary(import.meta.url)
       ? [process.execPath]
       : [join(CREW_HOME, 'src'), join(CREW_HOME, 'dist'), join(CREW_HOME, 'bin')];
+    // CREW-1532: crew.yaml and every route's apiKeyFile are read once at
+    // startup, so an edit to either is as much an update as a new `dist/`.
+    const configPaths = daemonConfigPaths(cfg);
+    watchPaths.push(...configPaths);
+    // Clears the reload request that may have triggered this launch, and
+    // stamps the start time for `crew doctor`.
+    noteDaemonStarted(cfg.ship.stateDir);
 
     // One breaker for the whole daemon process, so a role's failed starts are
     // remembered across passes (ISSUE-1365).
@@ -2129,14 +2147,16 @@ switch (command) {
           console: (l) => process.stderr.write(`${l}\n`),
         }),
       }),
-      checkStale: makeStaleChecker(watchPaths),
+      checkStale: makeStaleChecker(watchPaths, { reloadSentinel: reloadSentinelFor(cfg.ship.stateDir) }),
       onPass: (result) => {
         if (result.started.length) emit.emit(`daemon pass started: ${result.started.join(', ')}`);
         for (const s of result.skipped) emit.emit(`daemon pass skipped ${s.role} — ${s.reason}`);
       },
     });
     if (stopReason === 'stale') {
-      emit.emit('crew daemon: installed tree changed on disk — exiting cleanly so the OS-level restart relaunches with the update');
+      emit.emit(
+        'crew daemon: installed tree, crew.yaml or a reload request changed on disk — exiting cleanly so the OS-level restart relaunches with the update',
+      );
       process.exit(0);
     }
     break;
@@ -3458,6 +3478,39 @@ switch (command) {
     break;
   }
 
+  case 'reload': {
+    // CREW-1532: the daemon holds the config it loaded at startup. The
+    // sentinel makes a busy daemon finish its in-flight pass and relaunch on
+    // its next idle one; `--now` also bounces the unit for an operator who
+    // does not want to wait (that interrupts an in-flight agent run).
+    const sentinel = reloadSentinelFor(cfg.ship.stateDir);
+    if (dryRun) { process.stdout.write(`would write ${sentinel}\n`); break; }
+    const host = hostPlatform();
+    const control = host === 'windows' ? null : planDaemonControl(CREW_HOME, host, detectSystemd());
+    const unitStatus = control?.statusCommand
+      ? spawnSync(control.statusCommand[0]!, control.statusCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' })
+      : null;
+    const unitRunning = unitStatus !== null && !unitStatus.error && unitStatus.status === 0;
+    if (!unitRunning) {
+      process.stdout.write('crew reload: no daemon unit is running — nothing to reload (the next run reads crew.yaml fresh)\n');
+      break;
+    }
+    mkdirSync(cfg.ship.stateDir, { recursive: true });
+    writeFileSync(sentinel, `${new Date().toISOString()}\n`);
+    process.stdout.write('crew reload: requested — the daemon finishes its in-flight pass, then relaunches with the new config\n');
+    if (flag('now') && control?.stopCommand && control.startCommand) {
+      for (const cmd of [control.stopCommand, control.startCommand]) {
+        const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+        if (cmd === control.startCommand && (res.error || res.status !== 0)) {
+          process.stderr.write(`crew reload: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
+          process.exitCode = 1;
+        }
+      }
+      process.stdout.write('crew reload: restarted the daemon unit now\n');
+    }
+    break;
+  }
+
   case 'uninstall': {
     const host = hostPlatform();
     if (host === 'windows') {
@@ -3749,6 +3802,19 @@ switch (command) {
           : 'events log:        ok\n',
       );
     } catch { /* an unreadable state dir is reported elsewhere */ }
+
+    // CREW-1532: a daemon started before the last crew.yaml / apiKeyFile
+    // edit is still running the old config.
+    const daemonStartedAt = readDaemonStarted(cfg.ship.stateDir);
+    if (daemonStartedAt !== null) {
+      const changed = configChangedAfter(daemonConfigPaths(cfg), daemonStartedAt);
+      if (changed) {
+        process.stdout.write(
+          `daemon config:     WARN ${changed} changed at ${new Date(statSync(changed).mtimeMs).toISOString()} ` +
+            `but the daemon started at ${new Date(daemonStartedAt).toISOString()} — run \`crew reload\`\n`,
+        );
+      }
+    }
 
     // Does this machine have a row on the board, and which seats are its own?
     // Matched by name, per Brad's call: it is what an operator recognises.

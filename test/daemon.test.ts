@@ -10,6 +10,7 @@ import { resolveApiKey } from '../src/config.ts';
 import type { CycleDecision } from '../src/poll.ts';
 import {
   runDaemonLoop, runOnePass, computeTreeSignature, makeStaleChecker, SpawnBreaker,
+  reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
   type PassResult, type RunOnePassOptions,
 } from '../src/daemon.ts';
 import { AgentSpawnError } from '../src/agent.ts';
@@ -650,4 +651,56 @@ test('runOnePass persists the attention set so the next pass can diff against it
   assert.deepEqual(state.attention(opts.route.route).previous(), {});
   await runOnePass({ ...opts, decide: async () => decision, spawnRoleAgent: async () => {} });
   assert.deepEqual(state.attention(opts.route.route).previous(), decision.attention);
+});
+
+test('a changed crew.yaml makes the stale checker report stale; an untouched one does not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-reload-'));
+  const cfgFile = join(dir, 'crew.yaml');
+  writeFileSync(cfgFile, 'a: 1\n');
+  utimesSync(cfgFile, new Date(1_000_000), new Date(1_000_000));
+  const stale = makeStaleChecker([cfgFile]);
+  assert.equal(stale(), false);
+  utimesSync(cfgFile, new Date(2_000_000), new Date(2_000_000));
+  assert.equal(stale(), true);
+});
+
+test('a config touch during a busy pass does not interrupt it; the next idle pass stops as stale', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-reload-'));
+  const cfgFile = join(dir, 'crew.yaml');
+  writeFileSync(cfgFile, 'a: 1\n');
+  utimesSync(cfgFile, new Date(1_000_000), new Date(1_000_000));
+  const stale = makeStaleChecker([cfgFile]);
+  let call = 0;
+  const reason = await runDaemonLoop({
+    runPass: async () => {
+      call++;
+      if (call === 1) utimesSync(cfgFile, new Date(2_000_000), new Date(2_000_000));
+      return emptyResult(call === 1 ? ['dev'] : []);
+    },
+    checkStale: stale,
+    sleep: async () => {},
+  });
+  assert.equal(reason, 'stale');
+  assert.equal(call, 2); // the busy pass ran to completion; only the idle one noticed
+});
+
+test('reload sentinel: stale once written, cleared (and the start stamped) by the next daemon startup', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-reload-'));
+  const sentinel = reloadSentinelFor(dir);
+  const stale = makeStaleChecker([], { reloadSentinel: sentinel });
+  assert.equal(stale(), false);
+  writeFileSync(sentinel, 'x\n');
+  assert.equal(stale(), true);
+  noteDaemonStarted(dir, 1234);
+  assert.equal(stale(), false);
+  assert.equal(readDaemonStarted(dir), 1234);
+});
+
+test('configChangedAfter names a file newer than the daemon start, and nothing otherwise', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-reload-'));
+  const f = join(dir, 'crew.yaml');
+  writeFileSync(f, 'a: 1\n');
+  utimesSync(f, new Date(5_000_000), new Date(5_000_000));
+  assert.equal(configChangedAfter([f, join(dir, 'missing')], 6_000_000), null);
+  assert.equal(configChangedAfter([f], 4_000_000), f);
 });
