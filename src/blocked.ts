@@ -30,8 +30,15 @@ import type { Ticket } from './tracker.ts';
 import { RESOLVED_STATUSES } from './tracker.ts';
 import { withinWorkMode, type WorkModes } from './work-mode.ts';
 
-/** {ticketId: {issue_id, issue_tag, status}} — closed blockers included. */
-export type BlockerInfo = Record<string, { issue_id?: string; issue_tag?: string | null; status?: string }>;
+/**
+ * {ticketId: {issue_id, issue_tag, status, repo_id, merged_at, commit_sha}} —
+ * closed blockers included. The last three decide whether a `verified`
+ * blocker has actually landed on the base branch (CREW-1549).
+ */
+export type BlockerInfo = Record<string, {
+  issue_id?: string; issue_tag?: string | null; status?: string;
+  repo_id?: string | null; merged_at?: string | null; commit_sha?: string | null;
+}>;
 
 /** Ids named in `blocked_by` that are not in the open set, and so need fetching. */
 export function missingBlockerIds(tickets: Ticket[]): string[] {
@@ -44,7 +51,10 @@ export function missingBlockerIds(tickets: Ticket[]): string[] {
 export function blockerInfoMap(tickets: Ticket[], extra: Ticket[] = []): BlockerInfo {
   const info: BlockerInfo = {};
   for (const t of [...tickets, ...extra]) {
-    info[t.id] = { issue_id: t.issue_id, issue_tag: t.issue_tag, status: t.status };
+    info[t.id] = {
+      issue_id: t.issue_id, issue_tag: t.issue_tag, status: t.status, repo_id: t.repo_id,
+      merged_at: t.merged_at as string | null | undefined, commit_sha: t.commit_sha as string | null | undefined,
+    };
   }
   return info;
 }
@@ -68,20 +78,42 @@ export function computeBlockedIds(tickets: Ticket[], info: BlockerInfo): Set<str
 /**
  * The ids in `t.blocked_by` that still hold it back (CREW-1506): known to
  * `info` and not at a resolved status. The one predicate `computeBlockedIds`
- * (the `accepted` sweep), QA selection and the release phase all share, so
- * "blocked" cannot mean something different at `fixed` than at `accepted`.
+ * (the `accepted` sweep) and QA selection share, so "blocked" cannot mean
+ * something different at `fixed` than at `accepted`.
  * A dangling id (absent from `info`) never blocks, as above.
+ *
+ * Merge-gated (CREW-1549): a blocker at `verified` in the SAME repo as `t` is
+ * only an unmerged branch — the release phase has not squash-merged it yet —
+ * so the dependent could only be built by stacking on that branch, which then
+ * diverges when the squash lands. Such a blocker stays unresolved until the
+ * release stamps `merged_at`/`commit_sha` (or it reaches a closed status). A
+ * blocker in another repo, or either side with no `repo_id`, keeps the plain
+ * rule: a dependent cannot stack on a branch in a different repository anyway.
+ *
+ * `opts.mergeGated: false` restores the plain rule. The release phase uses it:
+ * it merges a batch oldest-first, so a verified blocker is merged before its
+ * dependent in the same pass and holding the dependent for a whole extra
+ * release would only add latency.
  */
-export function unresolvedBlockers(t: Pick<Ticket, 'blocked_by'>, info: BlockerInfo): string[] {
+export function unresolvedBlockers(
+  t: Pick<Ticket, 'blocked_by' | 'repo_id'>, info: BlockerInfo, opts: { mergeGated?: boolean } = {},
+): string[] {
+  const mergeGated = opts.mergeGated ?? true;
   return (t.blocked_by ?? []).filter((id) => {
-    const status = info[id]?.status;
-    return status !== undefined && !RESOLVED_STATUSES.has(status);
+    const b = info[id];
+    const status = b?.status;
+    if (!b || status === undefined) return false;
+    if (!RESOLVED_STATUSES.has(status)) return true;
+    return mergeGated && status === 'verified' && !!t.repo_id && b.repo_id === t.repo_id
+      && !b.merged_at && !b.commit_sha;
   });
 }
 
 /** "CREW-1234 (accepted), CREW-9 (fixed)" — only the blockers still unresolved. */
-export function describeUnresolved(t: Pick<Ticket, 'blocked_by'>, info: BlockerInfo): string {
-  return unresolvedBlockers(t, info)
+export function describeUnresolved(
+  t: Pick<Ticket, 'blocked_by' | 'repo_id'>, info: BlockerInfo, opts: { mergeGated?: boolean } = {},
+): string {
+  return unresolvedBlockers(t, info, opts)
     .map((id) => `${info[id]?.issue_tag ?? info[id]?.issue_id ?? '?'} (${info[id]?.status ?? 'unknown'})`)
     .join(', ');
 }
@@ -299,7 +331,7 @@ export function sweepComment(step: SweepStep): string {
   return step.action === 'park'
     ? `Parked as **Blocked** by the crew — waiting on: ${step.blockers}.
 
-This is automatic and reversible: an approved ticket whose \`Blocked by\` entries are not all resolved is parked out of the queue, and restored on the first poll after the last one resolves. Nothing else about the ticket changes. A blocker counts as resolved at \`verified\`, \`closed_deployed\`, \`closed_wont_fix\` or \`closed_duplicate\` — not at \`fixed\`, which is still an unmerged branch awaiting QA.`
+This is automatic and reversible: an approved ticket whose \`Blocked by\` entries are not all resolved is parked out of the queue, and restored on the first poll after the last one resolves. Nothing else about the ticket changes. A blocker counts as resolved at \`closed_deployed\`, \`closed_wont_fix\` or \`closed_duplicate\`, or at \`verified\` when it is in a different repository or already merged (\`merged_at\` set) — not at \`fixed\`, which is still an unmerged branch awaiting QA, and not at \`verified\` for a blocker in this ticket's own repository until the release has merged it, so nothing gets built stacked on an unmerged branch.`
     : `Restored to **Approved** by the crew — every blocker has resolved${step.blockers && step.blockers !== '—' ? ` (${step.blockers})` : ''}.
 
 This restores the status it was approved at before being parked; it is back in the queue and a role may pick it up. If a blocker resolved as \`closed_wont_fix\` or \`closed_duplicate\` this ticket may still not be buildable as written — that is a call for a human, not the crew.`;

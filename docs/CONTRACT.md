@@ -83,6 +83,17 @@ ticket blocked by one is still genuinely blocked. A contract that called it
 resolved would have the crew build on unverified work. No naming convention
 conveys that; it has to be stated.
 
+**`verified` resolves a blocker only once it has landed (CREW-1549).** A
+blocker at `verified` in the **same repository** as the blocked ticket is still
+just an unmerged branch until the release phase squash-merges it, so the
+dependent stays `blocked` until the blocker's `merged_at`/`commit_sha` is
+stamped or it reaches a closed status. Otherwise the dependent gets built
+stacked on the blocker's branch and diverges when the squash lands. A blocker
+in a **different** repository keeps the plain rule (`verified` or any closed
+status): the dependent cannot stack on a branch in another repo. The release
+phase's own `blocked_by` hold keeps the plain rule too, since it merges a batch
+oldest-first.
+
 **Parking on a dependency.** When a ticket needs work in another repository,
 its lane files that work as its own ticket, adds it to the waiting ticket's
 `blocked_by`, comments, and returns the ticket to `accepted` (keeping its

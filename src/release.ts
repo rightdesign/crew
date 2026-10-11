@@ -188,8 +188,8 @@ export interface HeldTicket { ticket: Ticket; blockers: string }
 export function heldByBlockers(tickets: Ticket[], verifiedStatus: string, info: BlockerInfo | undefined): HeldTicket[] {
   if (!info) return [];
   return tickets
-    .filter((t) => t.status === verifiedStatus && unresolvedBlockers(t, info).length > 0)
-    .map((ticket) => ({ ticket, blockers: describeUnresolved(ticket, info) }));
+    .filter((t) => t.status === verifiedStatus && unresolvedBlockers(t, info, { mergeGated: false }).length > 0)
+    .map((ticket) => ({ ticket, blockers: describeUnresolved(ticket, info, { mergeGated: false }) }));
 }
 
 /** One line per held ticket: `CREW-9 held: blocked by CREW-1234 (accepted), …`. */

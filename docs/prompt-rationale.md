@@ -124,6 +124,12 @@ tracker.
   stand-in whose UI promised behaviour nothing delivered; QA now bounces
   that, and the building lane returns the ticket to `accepted` with the
   dependency in `blocked_by`.
+- **A same-repo blocker resolves at merge, not at `verified`** (CREW-1549).
+  Restoring a dependent while its blocker was only a verified branch led lanes
+  to stack the dependent on that branch by hand; the release then squash-merged
+  the blocker and the stacked branch conflicted, needing a force push the lanes
+  are denied. A cross-repo blocker cannot be stacked on, so it still resolves
+  at `verified`.
 - **A follow-up bug gets its own branch.** A fix for one ticket committed on
   another ticket's branch passed QA, but the hand-off guard checks per ticket
   for `origin/<branch>` and bounced the second ticket with "no branch".

@@ -274,3 +274,29 @@ test('the park and restore notes explain themselves', () => {
   assert.match(restore, /Restored to \*\*Approved\*\*/);
   assert.match(restore, /a call for a human, not the crew/);
 });
+
+test('a same-repo blocker at verified holds until merged (CREW-1549)', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'blocked', repo_id: 'r1', blocked_by: ['b'] });
+  const blockedAt = (b: Partial<Ticket>) => {
+    const blocker = T({ id: 'b', issue_id: 'ISSUE-2', status: 'verified', ...b });
+    return computeBlockedIds([t, blocker], blockerInfoMap([t, blocker])).has('a');
+  };
+  assert.equal(blockedAt({ repo_id: 'r1' }), true);                                 // verified, unmerged
+  assert.equal(blockedAt({ repo_id: 'r1', merged_at: '2026-10-11T18:30:00Z' }), false);
+  assert.equal(blockedAt({ repo_id: 'r1', commit_sha: 'abc123' }), false);
+  assert.equal(blockedAt({ repo_id: 'r1', status: 'closed_deployed' }), false);
+  assert.equal(blockedAt({ repo_id: 'r1', status: 'closed_wont_fix' }), false);
+  assert.equal(blockedAt({ repo_id: 'r2' }), false);                               // cross-repo keeps the plain rule
+});
+
+test('mixed blockers: merged same-repo + verified cross-repo restores; unmerged same-repo holds', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'blocked', repo_id: 'r1', blocked_by: ['s', 'x'] });
+  const x = T({ id: 'x', issue_id: 'ISSUE-3', status: 'verified', repo_id: 'r2' });
+  const merged = T({ id: 's', issue_id: 'ISSUE-2', status: 'verified', repo_id: 'r1', merged_at: '2026-10-11T18:30:00Z' });
+  const unmerged = T({ id: 's', issue_id: 'ISSUE-2', status: 'verified', repo_id: 'r1' });
+  assert.equal(computeBlockedIds([t, merged, x], blockerInfoMap([t, merged, x])).has('a'), false);
+  const held = blockerInfoMap([t, unmerged, x]);
+  assert.equal(computeBlockedIds([t, unmerged, x], held).has('a'), true);
+  assert.deepEqual(unresolvedBlockers(t, held), ['s']);
+  assert.deepEqual(unresolvedBlockers(t, held, { mergeGated: false }), []); // release phase keeps the plain rule
+});
