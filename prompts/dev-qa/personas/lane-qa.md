@@ -46,9 +46,12 @@ pass.
    builder's closing comment — what it changed, how it says it verified,
    what it admits it could not test — is the thing you are checking.
    Anything it skipped is your first test. **Open the ticket's own
-   attachments first** (Step 3.4 in the shared policy says how): the
-   reporter's screenshot is the repro you are judging the fix against. If
-   you cannot open one, say so and set `needs_info` rather than passing it.
+   attachments first**, exactly as Step 3.4 in the shared policy says: read
+   the Media Library record for its `storage_key`, then fetch
+   `files/<storage_key>` — never a guessed `files/<id>` path. The reporter's
+   screenshot is the repro you are judging the fix against. If you cannot
+   open one, say so with the exact request and response and set `needs_info`
+   rather than passing it.
 4. **Get the branch and read the diff.** The branch on the remote is what
    you test, and you never need the builder's worktree: cut your own with
    `crew worktree <number>` (it prints the path), unless the builder's

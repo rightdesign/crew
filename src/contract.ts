@@ -42,6 +42,15 @@ export interface ContractColumns {
   updatedAt: string;
   needsDesign: string;
   /**
+   * The ticket's attachments (CREW-1558): a REFERENCE into the workspace's
+   * Media Library table, holding record ids — not file ids and not URLs. The
+   * crew never writes it; it reads the field's own type to learn which table
+   * those ids live in (`Tracker.attachmentsProbe`), so the Environment section
+   * can name that table and the download recipe rather than leaving a session
+   * to guess a `files/<id>` path that does not exist.
+   */
+  attachments: string;
+  /**
    * On the Projects (area) row: whether the crew consumes that project's
    * work automatically or only what a human hands a lane (CREW-1445). A
    * missing column or a null value reads as automatic.
@@ -255,6 +264,7 @@ export const DEFAULT_CONTRACT: Contract = {
     blockedBy: 'blocked_by',
     updatedAt: 'updated_at',
     needsDesign: 'needs_design',
+    attachments: 'attachments',
     workMode: 'work_mode',
     reportType: 'report_type',
     epic: 'epic_id',

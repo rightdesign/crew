@@ -32,6 +32,7 @@ to mean exactly this, and needs no configuration at all.
 | blocked by | `blocked_by` | |
 | updated at | `updated_at` | |
 | needs design | `needs_design` | |
+| attachments | `attachments` | a reference into the workspace's Media Library table, holding record ids; never written by the crew, but its field type's target table is read so the Environment section can name the table and the download recipe (CREW-1558) |
 | report type | `report_type`, with `coordinating` marking a coordinating parent (ISSUE-354); `coordinating`, `question` and `investigation` are all exempt from needing a Repo (ISSUE-387), but only `coordinating` rolls up children |
 | epic | `epic_id` | only rendered when the workspace has an `Epics` table (ISSUE-384) |
 | comment parent | `ticket_id` | Comments |

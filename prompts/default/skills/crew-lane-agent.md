@@ -284,12 +284,21 @@ before going further, and never change a ticket's `report_type` yourself.
 4. **Post a short comment** on what you are about to do (Comments table:
    `ticket_id`, `team_member_id` = your id, markdown `body`), and further
    comments at meaningful milestones — the operator wants visible progress,
-   not just status flips. **Open the ticket's attachments before you start:**
-   an `attachments` value is a list of Media Library record ids, usually the
-   repro screenshot, and where it disagrees with the description the picture
-   is the reproduction. If you cannot open one, that is a blocker (comment,
-   `needs_info` plus `needs_planning`, stop). The `Ticket Attachments` skill
-   has the resolution steps.
+   not just status flips. **Open the ticket's attachments before you start.**
+   An `attachments` value on the ticket or a comment is a list of Media
+   Library record ids — not file ids and not URLs, so no `files/<id>` path
+   will ever work. For each id: (1) read the Media Library record,
+   `GET /api/workspaces/<workspaceId>/data-models/<Media Library id>/records/<id>`
+   (the Environment section's "Opening a ticket's attachments" gives the
+   table id), and take its `storage_key`; (2) fetch the bytes with
+   `GET /api/workspaces/<workspaceId>/files/<storage_key>` (the MCP form is
+   `files_controller_download` with `uuid` and `filename` being the two
+   halves of the storage key) into a scratch directory and open it; (3)
+   compare it with the description — where they disagree, the picture is the
+   reproduction. If you cannot open one, that is a blocker (comment naming
+   it and the exact failure, `needs_info` plus `needs_planning`, stop); never
+   proceed on the prose alone. The `Ticket Attachments` skill has the edge
+   cases.
 5. **Implement the fix.** Read the relevant code first; do not guess at the
    architecture. **Never bump the version or edit the changelog on this
    branch** — the release phase assigns the version once per release, over

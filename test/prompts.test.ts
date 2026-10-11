@@ -193,3 +193,17 @@ test('lane skill and QA brief never prescribe rewriting a pushed branch (CREW-15
     }
   }
 });
+
+// CREW-1558: the record-then-file attachment steps stay inline in the shared
+// lane policy and the QA brief — a one-line pointer to a skill was not enough
+// (TABL-1557: two runs guessed `files/<id>` paths and reported a 404).
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} prompts spell out the attachment lookup inline (CREW-1558)`, () => {
+    const lane = readFileSync(join(PROMPTS, preset, 'skills', 'crew-lane-agent.md'), 'utf8');
+    assert.match(lane, /Open the ticket's attachments before you start[^]*records\/<id>[^]*`storage_key`[^]*files\/<storage_key>/);
+    const qa = readFileSync(join(PROMPTS, preset, 'personas', 'lane-qa.md'), 'utf8');
+    assert.match(qa, /Media Library record for its `storage_key`/);
+    const skill = readFileSync(join(PROMPTS, preset, 'skills', 'ticket-attachments.md'), 'utf8');
+    assert.match(skill, /`uuid` and `filename`/);
+  });
+}

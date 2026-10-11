@@ -105,6 +105,31 @@ test('names the workspace id and the attachment upload recipe', () => {
   assert.match(out, /\$CREW_API_KEY/);
 });
 
+// CREW-1558. On TABL-1557 two runs guessed `files/<attachment id>` paths and
+// reported the screenshot as a 404. With the Media Library table id in hand the
+// brief names it and the record-then-file recipe; without it, it says nothing.
+test('names the Media Library table and the attachment download recipe when the probe resolved it', () => {
+  const r = {
+    ...route,
+    resolved: {
+      models: { issues: 'i', comments: 'c', crew: 'w' },
+      workspaceId: 'ws-123', seats: {}, operator: 'op', holds: [],
+    },
+  } as unknown as Route;
+  const base = { route: r, userAgent: 'crew/1', repos: [repo('synthesis', '/w/synthesis', SYN)], contract: DEFAULT_CONTRACT };
+  const out = renderEnvironment({ ...base, attachments: { mediaLibraryModelId: 'ml-77' } });
+  assert.match(out, /- Media Library: `ml-77`/);
+  assert.match(out, /## Opening a ticket's attachments/);
+  assert.match(out, /\/api\/workspaces\/ws-123\/data-models\/ml-77\/records\/<attachment id>/);
+  assert.match(out, /\/api\/workspaces\/ws-123\/files\/<storage_key>/);
+  assert.match(out, /files_controller_download/);
+
+  for (const absent of [renderEnvironment(base), renderEnvironment({ ...base, attachments: { mediaLibraryModelId: null } })]) {
+    assert.doesNotMatch(absent, /Media Library: /);
+    assert.doesNotMatch(absent, /Opening a ticket's attachments/);
+  }
+});
+
 test('authorship bullets name only the columns the workspace has, and this ship\'s row (CREW-1371)', () => {
   const withRepo = [{ ...repo('synthesis', '/w/synthesis', SYN), id: 'repo-1' }];
   const present = renderEnvironment({

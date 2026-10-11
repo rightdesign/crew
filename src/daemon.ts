@@ -733,5 +733,6 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
   // The authorship probe is best-effort guidance for the brief: a failed read
   // leaves the filing block without authorship lines, never a failed cycle.
   const authorship = await tracker.authorshipProbe().catch(() => null);
-  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship, shipName: ship.name });
+  const attachments = await tracker.attachmentsProbe().catch(() => null);
+  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship, attachments, shipName: ship.name });
 }

@@ -203,6 +203,22 @@ const encodeSort = (s: Sort[]): string => JSON.stringify(s);
  * have is simply not written: the install has not taken the `crew.issues`
  * template update yet, and `crew doctor` says so rather than a write failing.
  */
+/**
+ * Where a ticket's attachments live (CREW-1558). The Issues `attachments`
+ * column is a REFERENCE whose field type names a target table — the
+ * workspace's Media Library — and an attachment value is a record id in it.
+ * Read once per process so the Environment section can name that table and
+ * the record-then-file download recipe.
+ */
+export interface AttachmentsProbe {
+  /**
+   * The Media Library table the Issues `attachments` reference points at;
+   * null when Issues has no such column, its type names no target, or the
+   * field metadata could not be read.
+   */
+  mediaLibraryModelId: string | null;
+}
+
 export interface Authorship {
   /** Issues has the `contract.columns.author` column (`filed_by_id`). */
   issueAuthor: boolean;
@@ -232,6 +248,7 @@ export class Tracker {
    * so concurrent first writes share one round of field-metadata reads.
    */
   private authorship?: Promise<Authorship>;
+  private attachments?: Promise<AttachmentsProbe>;
   private readonly stateDir: string | undefined;
 
   constructor(route: Route, ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'name' | 'stateDir'>>) {
@@ -717,6 +734,32 @@ export class Tracker {
       commentShip: commentFields.has(this.contract.comments.ship),
       shipId: shipRow?.id ?? null,
     };
+  }
+
+  /**
+   * The attachments probe (CREW-1558): which table the Issues `attachments`
+   * column references, read once per process like the authorship probe. On
+   * TABL-1557 two runs reported a ticket's screenshot as a 404 because, with
+   * no table id in hand, they guessed `files/<attachment id>` paths; naming
+   * the table in the Environment section is what makes the lookup mechanical.
+   */
+  attachmentsProbe(): Promise<AttachmentsProbe> {
+    this.attachments ??= this.probeAttachments();
+    return this.attachments;
+  }
+
+  private async probeAttachments(): Promise<AttachmentsProbe> {
+    try {
+      const model = await this.client.dataModels.get(this.models.issues);
+      const field = model.fields.find((f) => f.columnName === this.contract.columns.attachments);
+      // `targetModelId` is what a REFERENCE field type carries; the client's
+      // `FieldType` does not declare it yet, so it is read loosely.
+      const fieldType = field?.fieldType as { kind?: string; targetModelId?: string | null } | undefined;
+      const target = fieldType?.targetModelId;
+      return { mediaLibraryModelId: typeof target === 'string' && target ? target : null };
+    } catch {
+      return { mediaLibraryModelId: null };
+    }
   }
 
   private async columnNames(modelId: string): Promise<Set<string>> {

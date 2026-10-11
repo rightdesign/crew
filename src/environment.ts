@@ -16,7 +16,7 @@ import { basename } from 'node:path';
 import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
-import type { Authorship } from './tracker.ts';
+import type { Authorship, AttachmentsProbe } from './tracker.ts';
 import { renderBranchName, renderWorktreeName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
 
 /** The environment variable the crew hands the session its tracker key in. */
@@ -68,6 +68,14 @@ export interface EnvironmentInput {
    * mentions a ship in a comment says "Brads-Mac-mini", never a bare uuid.
    */
   shipName?: string;
+  /**
+   * Which table the Issues `attachments` column references (CREW-1558), from
+   * `Tracker.attachmentsProbe()`. With it, the brief names the Media Library
+   * table and the record-then-file download recipe; absent or null, it says
+   * nothing and the `Ticket Attachments` skill's fallback (find the table by
+   * name) applies.
+   */
+  attachments?: AttachmentsProbe | null;
 }
 
 /**
@@ -250,6 +258,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
   const only = repos.length === 1 ? repos[0]! : undefined;
   const models = route.resolved?.models;
   const epicsModelId = route.resolved?.epicsModelId;
+  const mediaLibraryModelId = i.attachments?.mediaLibraryModelId ?? null;
   const key = 'ISSUE-000';
 
   const lines: string[] = [
@@ -277,6 +286,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
       `- Comments: \`${models.comments}\``,
       `- Crew: \`${models.crew}\``,
       ...(epicsModelId ? [`- Epics: \`${epicsModelId}\``] : []),
+      ...(mediaLibraryModelId ? [`- Media Library: \`${mediaLibraryModelId}\` (what a ticket's \`${contract.columns.attachments}\` ids point into)`] : []),
     );
   }
 
@@ -304,6 +314,30 @@ export function renderEnvironment(i: EnvironmentInput): string {
       'status and response body in your comment — do not write that uploads are',
       'impossible.',
     );
+    if (mediaLibraryModelId) {
+      lines.push(
+        '',
+        '## Opening a ticket\'s attachments',
+        '',
+        `A ticket\'s or a comment\'s \`${contract.columns.attachments}\` value is a list of Media Library`,
+        '**record ids** — not file ids and not URLs. `files/<id>`, `files/<id>/download` and',
+        '`media-library/<id>/...` do not exist for such an id and return 404. For each id,',
+        'read the record, then fetch the file by its storage key:',
+        '',
+        '```sh',
+        `curl -s -H "Authorization: Bearer $${API_KEY_VAR}" -H "User-Agent: ${i.userAgent}" \\`,
+        `  "${base}/api/workspaces/${workspaceId}/data-models/${mediaLibraryModelId}/records/<attachment id>"`,
+        '# → JSON with `storage_key` ("<uuid>/<filename>") and `mime_type`',
+        `curl -s -o <scratch dir>/<filename> -H "Authorization: Bearer $${API_KEY_VAR}" -H "User-Agent: ${i.userAgent}" \\`,
+        `  "${base}/api/workspaces/${workspaceId}/files/<storage_key>"`,
+        '```',
+        '',
+        'The MCP forms are `records_controller_find_one` (`dataModelId` = the Media Library',
+        'id above) and `files_controller_download` (`uuid` and `filename` = the two halves',
+        'of the storage key). Save the file outside the repository and open it; where it',
+        'disagrees with the description, the picture is the reproduction.',
+      );
+    }
   }
 
   if (i.shipName) {

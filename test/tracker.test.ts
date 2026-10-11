@@ -403,3 +403,43 @@ test('beatShip() carries the open attention items when the Ships table has the c
   const withoutColumn = await run({});
   assert.equal('attention' in withoutColumn[0]!, false, 'an install without the column must not be sent it');
 });
+
+// CREW-1558: the attachments probe reads the Issues `attachments` field's own
+// REFERENCE target — the Media Library table — and reads null for a table
+// without the column, a type with no target, or unreadable metadata.
+function mockIssuesModel(t: { after(fn: () => void): void }, fields: unknown[] | null): void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/api/data-models/issues-model-id') {
+      if (fields === null) return new Response('nope', { status: 500 });
+      return new Response(JSON.stringify({ id: 'issues-model-id', fields }), { status: 200 });
+    }
+    return new Response('[]', { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+}
+
+test('attachmentsProbe() names the Media Library table the attachments reference points at (CREW-1558)', async (t) => {
+  mockIssuesModel(t, [
+    { columnName: 'title' },
+    { columnName: 'attachments', fieldType: { kind: 'REFERENCE', targetModelId: 'media-library-model-id' } },
+  ]);
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  assert.deepEqual(await tracker.attachmentsProbe(), { mediaLibraryModelId: 'media-library-model-id' });
+});
+
+test('attachmentsProbe() reads null without the column, without a target, or when metadata cannot be read', async (t) => {
+  mockIssuesModel(t, [{ columnName: 'title' }]);
+  assert.deepEqual(await new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' }).attachmentsProbe(), { mediaLibraryModelId: null });
+});
+
+test('attachmentsProbe() reads null for an attachments column whose type names no target', async (t) => {
+  mockIssuesModel(t, [{ columnName: 'attachments', fieldType: { kind: 'STRUCTURED' } }]);
+  assert.deepEqual(await new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' }).attachmentsProbe(), { mediaLibraryModelId: null });
+});
+
+test('attachmentsProbe() reads null when the Issues metadata cannot be read', async (t) => {
+  mockIssuesModel(t, null);
+  assert.deepEqual(await new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' }).attachmentsProbe(), { mediaLibraryModelId: null });
+});

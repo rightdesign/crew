@@ -1127,6 +1127,7 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
   return renderEnvironment({
     route: c, userAgent: cfg.ship.userAgent, repos: await resolvedRepos(c), contract, sourceTicket: ticket,
     authorship: await tracker.authorshipProbe().catch(() => null),
+    attachments: await tracker.attachmentsProbe().catch(() => null),
     shipName: cfg.ship.name,
   });
 }

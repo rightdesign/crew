@@ -12,14 +12,20 @@ you picked up, and on any comment that has them, before you start.
 
 1. **Read the Media Library record for that id.** The `attachments` column is
    a reference into the workspace's Media Library table; its `storage_key`
-   and `mime_type` are what you need. Take that table's id from the
-   Environment section if it lists one, otherwise from a workspace-level
-   model listing — never by reading the whole Issues model definition, which
-   is over a megabyte.
-2. **Fetch the bytes:** `GET /api/workspaces/<workspaceId>/files/<storage_key>`
-   with the usual headers (the tracker MCP form is `files_controller_download`,
-   which hands an image back as a viewable block). Save the file in a scratch
-   directory outside the repository, then open it.
+   and `mime_type` are what you need:
+   `GET /api/workspaces/<workspaceId>/data-models/<Media Library id>/records/<id>`
+   (MCP: `records_controller_find_one`). The Environment section's "Opening
+   a ticket's attachments" names the table id; if it is absent, find the
+   table by name in a workspace-level model listing — never by reading the
+   whole Issues model definition, which is over a megabyte. The id is a
+   record id, not a file id: `files/<id>`, `files/<id>/download` and
+   `media-library/<id>/...` all 404 by design.
+2. **Fetch the bytes:** the `storage_key` has the form `<uuid>/<filename>`;
+   `GET /api/workspaces/<workspaceId>/files/<uuid>/<filename>` with the usual
+   headers streams it (the MCP form is `files_controller_download` with
+   `workspaceId`, `uuid` and `filename`, which hands an image back as a
+   viewable block). Save the file in a scratch directory outside the
+   repository, then open it.
 3. **Compare what the picture shows with what the description says.** Where
    they disagree, the picture is the reproduction.
 
