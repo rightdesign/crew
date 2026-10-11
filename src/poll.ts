@@ -112,6 +112,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // in place means every downstream consumer (select.ts, digest.ts, fleet.ts)
   // sees it too, since they all read from this same array or slices of it.
   const epicColumn = tracker.contract.columns.epic;
+  const positionColumn = tracker.contract.columns.position;
   const epicBuilding = tracker.contract.epics.statuses.building;
   const epicStatusColumn = tracker.contract.epics.statusColumn;
   const epicStatusById = new Map(epicRows.map((e) => [e.id, (e[epicStatusColumn] as string | null) ?? null]));
@@ -135,6 +136,11 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   for (const t of tickets) {
     const epicId = t[epicColumn];
     t.epicInProgress = typeof epicId === 'string' && epicStatusById.get(epicId) === epicBuilding;
+    // CREW-1552: normalise the contract's position column onto `position`,
+    // which is where the ranker reads it. A NUMBER can arrive as a string.
+    const pos = t[positionColumn];
+    const n = typeof pos === 'string' && pos.trim() !== '' ? Number(pos) : pos;
+    t.position = typeof n === 'number' && Number.isFinite(n) ? n : null;
   }
 
   const extra = await tracker.ticketsByIds(missingBlockerIds(tickets));

@@ -94,6 +94,14 @@ export interface ContractColumns {
    * the wrong PR when a branch is reused. Optional like `verifiedSha`.
    */
   prRef: string;
+  /**
+   * Manual order inside an effective-priority band (CREW-1552) — a nullable
+   * NUMBER on the tracker, written by the Board's drag-to-reorder. Optional
+   * like `heldBy`: a table without the column ranks exactly as it did
+   * before. It is only ever a tiebreak within a band, never an override of
+   * priority (see `rank` in priority.ts).
+   */
+  position: string;
 }
 
 export interface ContractComments {
@@ -255,6 +263,7 @@ export const DEFAULT_CONTRACT: Contract = {
     heldBy: 'held_by_ship_id',
     verifiedSha: 'verified_sha',
     prRef: 'pr_ref',
+    position: 'position',
   },
   comments: {
     parent: 'ticket_id',

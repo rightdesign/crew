@@ -65,8 +65,8 @@ test('epic tiebreaker: no epic ranks the same as an epic that is not in progress
   // Same priority/severity/epic-tier, so the two fall back to oldest-first —
   // exactly as they would have before this ticket existed.
   assert.ok(compareRank(noEpic, plannedEpic) < 0);
-  const [, , epicTierA] = rank(noEpic);
-  const [, , epicTierB] = rank(plannedEpic);
+  const [, , , epicTierA] = rank(noEpic);
+  const [, , , epicTierB] = rank(plannedEpic);
   assert.equal(epicTierA, epicTierB);
 });
 
@@ -77,10 +77,38 @@ test('the full severity x priority matrix ranks as it always has', () => {
   // tickets carry an epic, so drop the (constant, always-1) 3rd element
   // rank() now inserts before comparing against that oracle.
   const withoutEpicTier = (t: { severity: string | null; priority: string | null }) => {
-    const [p, s, , n] = rank(t);
+    const [p, , s, , n] = rank(t);
     return [p, s, n];
   };
   assert.deepEqual(MATRIX.tickets.map(withoutEpicTier), MATRIX.ranks);
+});
+
+test('position: tickets in the same effective band order by position', () => {
+  const a = { issue_id: 'ISSUE-9', severity: 's3', position: 1 };
+  const b = { issue_id: 'ISSUE-1', severity: 's3', position: 2 };
+  assert.ok(compareRank(a, b) < 0);   // position beats oldest-first
+  const sev = { issue_id: 'ISSUE-5', severity: 's3', position: 2 };
+  const worse = { issue_id: 'ISSUE-6', severity: 's4', priority: 'p2', position: 1 };
+  assert.ok(compareRank(worse, sev) < 0);   // position beats the severity tiebreak
+});
+
+test('position: never crosses an effective-priority band', () => {
+  const positionedP2 = { issue_id: 'ISSUE-2', severity: 's3', position: 0 };
+  const unpositionedP1 = { issue_id: 'ISSUE-3', severity: 's2' };
+  assert.ok(compareRank(unpositionedP1, positionedP2) < 0);
+  const unmarkedS1 = { issue_id: 'ISSUE-4', severity: 's1' };
+  assert.ok(compareRank(unmarkedS1, positionedP2) < 0);
+});
+
+test('position: null sorts after any set position, and unpositioned tickets keep the old order', () => {
+  const set = { issue_id: 'ISSUE-8', severity: 's3', position: 999 };
+  const unset = { issue_id: 'ISSUE-1', severity: 's3', position: null };
+  assert.ok(compareRank(set, unset) < 0);
+  const x = { issue_id: 'ISSUE-1', severity: 's3' };
+  const y = { issue_id: 'ISSUE-2', severity: 's3', position: null };
+  assert.ok(compareRank(x, y) < 0);
+  assert.equal(compareRank(x, x), 0);
+  assert.equal(rankScalar(set), rankScalar({ ...set, position: null }));   // scalar ignores position
 });
 
 test('the matrix ordering is total and stable', () => {

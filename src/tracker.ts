@@ -68,6 +68,8 @@ export interface Ticket {
    * on a workspace with no Epics table, which the ranker reads as "no epic".
    */
   epicInProgress?: boolean | null;
+  /** Manual order within the effective-priority band (CREW-1552) — `contract.columns.position` normalised by `decideCycle`; null when unset. */
+  position?: number | null;
   [k: string]: unknown;
 }
 

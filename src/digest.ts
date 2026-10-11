@@ -13,7 +13,7 @@
  */
 
 import { modeOf, type WorkModes } from './work-mode.ts';
-import { compareRank, effectivePriority, type Rankable } from './priority.ts';
+import { compareRank, effectivePriority, positionRank, type Rankable } from './priority.ts';
 import { crewLabel, isHold, memberByIdentity, type Roster } from './roster.ts';
 
 export interface DigestTicket extends Rankable {
@@ -253,6 +253,14 @@ function modeCell(t: DigestTicket, i: DigestInput): string {
   return i.workModes && i.workModes.modes.size > 0 ? modeOf(t, i.workModes) : '—';
 }
 
+/**
+ * The `eff` cell: effective priority, plus the ticket's manual position when
+ * it has one (CREW-1552), so a seat can see why a lower-numbered ticket came
+ * second. Unpositioned tickets render exactly as before.
+ */
+const effCell = (t: DigestTicket): string =>
+  `p${effectivePriority(t)}${positionRank(t) === Number.POSITIVE_INFINITY ? '' : ` #${positionRank(t)}`}`;
+
 const sorted = (ts: DigestTicket[]) => [...ts].sort(compareRank);
 
 /**
@@ -279,7 +287,7 @@ export function buildingDigest(i: DigestInput): string {
     const worktree = i.worktreeFor ? i.worktreeFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | ${effCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -356,7 +364,7 @@ export function qaDigest(i: DigestInput): string {
     const n = newFromOthers(i, t.id);
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${modeCell(t, i)} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | p${effectivePriority(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${modeCell(t, i)} | ${t.status} | ${builtBy(t)} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | ${effCell(t)} | ${branchCell(t)} | ${worktreeCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const waiting = i.tickets.filter((t) => (t.status === 'qa' || t.status === 'fixed') && i.blocked.has(t.id));
   const takeable = (status: string) => i.tickets.filter((t) => t.status === status && !i.blocked.has(t.id));

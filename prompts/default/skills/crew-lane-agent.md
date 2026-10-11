@@ -183,13 +183,17 @@ should is Step 1's call, not a filesystem check.
   and then it is a stop for a person (see "Stopping"), never a bare comment.
 - Otherwise pick from the digest's "Step 2" table, which is already
   `accepted`, in your lane and in order. Absent a digest, fetch those tickets
-  and order them by **effective priority, then severity, then `issue_id`**:
+  and order them by **effective priority, then manual position, then severity, then `issue_id`**:
   - **Effective priority** is the stronger of the ticket's own `priority`
     and one derived from `severity` (`s1`→p0, `s2`→p1, `s3`→p2, `s4`→p3;
     neither set → p2). p0 beats p1 beats p2 beats p3, so an explicit
     priority can only move a ticket *forward*. Priority is an escalation
     lever; to rank something down, lower its severity.
-  - Within one tier, more severe first (`s1` … `s4`, then unset).
+  - Within one tier, a ticket with a manual **`position`** (a lower number
+    is earlier) goes before one without; position only orders tickets of the
+    same effective priority and never lets a lower tier jump a higher one. A
+    workspace with no position column skips this clause.
+  - Then more severe first (`s1` … `s4`, then unset).
   - Within one severity, a ticket whose **epic is already in progress** goes
     first (finishing beats starting); a `planned` epic or none ranks the
     same. Only then oldest `issue_id` first.

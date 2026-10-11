@@ -26,6 +26,13 @@ export interface Rankable {
    * through as if every ticket had no epic, which is the correct default.
    */
   epicInProgress?: boolean | null;
+  /**
+   * Manual order within the effective-priority band (CREW-1552). Like
+   * `epicInProgress`, normalised by the caller from the contract's
+   * `columns.position`; absent or null means "never positioned", which sorts
+   * after every positioned ticket in the same band.
+   */
+  position?: number | null;
 }
 
 import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
@@ -102,11 +109,26 @@ export function epicRank(t: Rankable): number {
 }
 
 /**
- * Full sort key: effective priority, then severity, then epic-in-progress,
- * then oldest first.
+ * Manual position as a tiebreaker (CREW-1552): lower sorts first, and a
+ * ticket nobody has positioned (null, absent, or not a finite number) sorts
+ * after every positioned one. With no ticket positioned this is a constant,
+ * so a workspace without the column ranks exactly as it did before.
  */
-export function rank(t: Rankable, c: Contract = DEFAULT_CONTRACT): [number, number, number, number] {
-  return [effectivePriority(t, c), severityRank(t, c), epicRank(t), issueNumber(t)];
+export function positionRank(t: Rankable): number {
+  const p = t.position;
+  return typeof p === 'number' && Number.isFinite(p) ? p : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Full sort key: effective priority, then manual position, then severity,
+ * then epic-in-progress, then oldest first.
+ *
+ * Position sits right after effective priority: a human saying "this one
+ * next" outranks the severity/epic heuristics, but it can never cross an
+ * effective-priority band — a positioned p3 never beats an unpositioned p1.
+ */
+export function rank(t: Rankable, c: Contract = DEFAULT_CONTRACT): [number, number, number, number, number] {
+  return [effectivePriority(t, c), positionRank(t), severityRank(t, c), epicRank(t), issueNumber(t)];
 }
 
 /** Compare two rank keys lexicographically; lower sorts first. */
@@ -114,8 +136,11 @@ export function compareRank(a: Rankable, b: Rankable, c: Contract = DEFAULT_CONT
   const ra = rank(a, c);
   const rb = rank(b, c);
   for (let i = 0; i < ra.length; i++) {
-    const d = (ra[i] as number) - (rb[i] as number);
-    if (d !== 0) return d;
+    // Not a bare subtraction: Infinity - Infinity is NaN, and two unpositioned
+    // tickets must fall through to the next key.
+    const x = ra[i] as number;
+    const y = rb[i] as number;
+    if (x !== y) return x < y ? -1 : 1;
   }
   return 0;
 }
@@ -128,9 +153,15 @@ export function compareRank(a: Rankable, b: Rankable, c: Contract = DEFAULT_CONT
  * The epic-in-progress digit sits between severity and issue number, at
  * 1,000,000 — comfortably inside severity's 10,000,000-wide band, and with
  * ten times the headroom `issueNumber` needs at any realistic ticket count.
+ *
+ * Manual position (CREW-1552) is deliberately NOT in the scalar: it is
+ * unbounded, so it cannot get a digit, and it only reorders tickets inside
+ * one effective-priority band — which is irrelevant to choosing between
+ * roles. Anything that picks WHICH ticket (not which role) must use
+ * `compareRank`.
  */
 export function rankScalar(t: Rankable, c: Contract = DEFAULT_CONTRACT): number {
-  const [p, s, e, n] = rank(t, c);
+  const [p, , s, e, n] = rank(t, c);
   return p * 1_000_000_000 + s * 10_000_000 + e * 1_000_000 + n;
 }
 

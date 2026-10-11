@@ -44,7 +44,12 @@ feature, and the crew writes around it): `held_by_ship_id` (the ship holding a
 ticket), `verified_sha` (the branch head QA verified — written by QA with the
 move to `verified`) and `pr_ref` (the pull request a ticket was handed off
 under — a number or URL, written by the crew). The last two belong to the
-review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`).
+review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`). `position`
+(a nullable NUMBER, `columns.position`, CREW-1552) is a manual order: within
+one effective-priority band a lower position goes first and an unpositioned
+ticket goes after any positioned one. It is a tiebreak, never an override — it
+beats the severity and epic tiebreakers but can never move a ticket across an
+effective-priority band.
 
 ### The order of choice values
 

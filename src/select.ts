@@ -11,7 +11,7 @@
  * than whether a second session happens at all.
  */
 
-import { rankScalar, NOTHING_ACTIONABLE } from './priority.ts';
+import { rankScalar, compareRank, NOTHING_ACTIONABLE } from './priority.ts';
 import { DEFAULT_CONTRACT, type Contract } from './contract.ts';
 import type { Ticket, Comment } from './tracker.ts';
 import type { RoleName } from './config.ts';
@@ -322,7 +322,7 @@ export function claimStatuses(role: 'dev' | 'design' | 'qa', c: Contract): { app
  */
 export function rankedCandidates(role: RoleName, i: SelectionInput): Ticket[] {
   const c = i.contract ?? DEFAULT_CONTRACT;
-  return [...roleCandidates(role, i)].sort((a, b) => rankScalar(a, c) - rankScalar(b, c));
+  return [...roleCandidates(role, i)].sort((a, b) => compareRank(a, b, c));
 }
 
 export function roleTopRank(role: RoleName, i: SelectionInput): number {
@@ -354,7 +354,7 @@ export function actionableSummary(i: SelectionInput, pending: RoleName[]): Actio
   const c = i.contract ?? DEFAULT_CONTRACT;
   const all = pending.flatMap((role) => roleCandidates(role, i));
   if (all.length === 0) return { count: 0 };
-  const top = all.reduce((best, t) => (rankScalar(t, c) < rankScalar(best, c) ? t : best));
+  const top = all.reduce((best, t) => (compareRank(t, best, c) < 0 ? t : best));
   return { count: all.length, top };
 }
 
