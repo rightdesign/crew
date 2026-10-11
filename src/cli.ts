@@ -2386,6 +2386,10 @@ switch (command) {
         const planned = loadConfig(CREW_HOME, cfg.configFile, { text: plan.text, allowNoRoutes: true });
         const planRoute = planned.routes.find((r) => r.route === routeName);
         if (!planRoute) throw new ReposError(`route ${routeName} did not load from the planned config; use --no-create`);
+        // `hydrateApiKeys` ran once at startup over `cfg.routes`; these routes
+        // were freshly parsed from the planned text, so a keychain-only key
+        // (ISSUE-966) has to be resolved for them too or `Tracker` finds none.
+        await hydrateApiKeys([planRoute]);
         try {
           rowTracker = new Tracker(planRoute, cfg.ship);
         } catch (e) {

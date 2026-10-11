@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { SessionStore, StoredSession } from '@tablation/client';
+import { Tracker } from '../src/tracker.ts';
 import { hydrateApiKeys, resolveApiKey, apiKeyPathFor, type Route } from '../src/config.ts';
 
 // resolveApiKey falls back to CREW_API_KEY (CREW-1503); these tests assert the
@@ -145,4 +146,12 @@ test('apiKeyPathFor-style routes (mintedFromDevice-but-fallback-to-file) resolve
   await hydrateApiKeys([route], () => fakeStore({}, calls));
   assert.equal(resolveApiKey(route), 'sk_fallback');
   assert.deepEqual(calls, []);
+});
+
+test('a keychain-only route builds a Tracker once hydrated, as `crew repos add` needs for its create path (CREW-1528)', async () => {
+  const route = fakeRoute({ resolved: { models: {} } as Route['resolved'] });
+  const ship = { userAgent: 'crew-test', name: 'test-ship' };
+  assert.throws(() => new Tracker(route, ship), /no API key/);
+  await hydrateApiKeys([route], () => fakeStore({ 'example.test/issues': session('sk_from_keychain') }));
+  assert.doesNotThrow(() => new Tracker(route, ship));
 });
