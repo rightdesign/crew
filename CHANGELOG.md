@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.45.3] — 2026-10-12
+
+- ISSUE-1593 — the worktree and branch sweep resolves only the tickets it has a worktree or branch for, so deployed tickets are no longer missed once the board holds more than 500 closed tickets; a truncated lookup now warns
+- ISSUE-1593 — The worktree and remote-branch cleanup no longer miss deployed tickets once the board holds more than 500 closed tickets; it looks up only the tickets it has a worktree or pushed branch for, and warns if a lookup is truncated.
+
 ## [0.45.2] — 2026-10-12
 
 - ISSUE-1592 (CREW-1592) The worktree sweep now runs on every release cycle, including ones where nothing was released, and removes the leftover local branch of a deployed ticket whose worktree is already gone.
