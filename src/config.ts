@@ -35,7 +35,7 @@ import {
 } from './platform.ts';
 import {
   MODES as RELEASE_MODES, PROVIDERS as CI_PROVIDERS, MATCHES as VERIFY_MATCHES, VERSIONINGS,
-  worktreeNameProblem, type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning, type BranchNaming,
+  worktreeNameProblem, parseIsolateMax, type ReleaseMode, type CiProvider, type VerifyMatch, type Versioning, type BranchNaming,
 } from './repo-config.ts';
 
 /**
@@ -272,6 +272,7 @@ export interface Route {
     mode?: ReleaseMode;
     ci?: { provider?: CiProvider; ref?: string };
     verify?: { match?: VerifyMatch; timeoutSeconds?: number; intervalSeconds?: number };
+    isolateFailures?: { maxCandidates?: number };
     versioning?: Versioning;
     versionFiles?: string[];
     changelog?: string;
@@ -523,10 +524,11 @@ const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
 // `versionFile` (singular) is a ship-level-only alias for a one-entry
 // `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
 const RELEASE_OVERRIDE_KEYS = new Set([
-  'mode', 'ci', 'verify', 'versioning', 'versionFiles', 'versionFile', 'changelog', 'tag', 'tagPattern',
+  'mode', 'ci', 'verify', 'isolateFailures', 'versioning', 'versionFiles', 'versionFile', 'changelog', 'tag', 'tagPattern',
 ]);
 const CI_OVERRIDE_KEYS = new Set(['provider', 'ref']);
 const VERIFY_OVERRIDE_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
+const ISOLATE_OVERRIDE_KEYS = new Set(['maxCandidates']);
 
 /**
  * An unknown key is an ERROR, not something to ignore — the same rule the
@@ -562,6 +564,7 @@ function parseReleaseOverride(raw: any, where: string, file: string): Route['rel
   rejectUnknownKeys(raw, RELEASE_OVERRIDE_KEYS, `${where}.release`, file);
   if (raw.ci !== undefined) rejectUnknownKeys(raw.ci, CI_OVERRIDE_KEYS, `${where}.release.ci`, file);
   if (raw.verify !== undefined) rejectUnknownKeys(raw.verify, VERIFY_OVERRIDE_KEYS, `${where}.release.verify`, file);
+  if (raw.isolateFailures !== undefined) rejectUnknownKeys(raw.isolateFailures, ISOLATE_OVERRIDE_KEYS, `${where}.release.isolateFailures`, file);
 
   const mode = raw.mode === undefined ? undefined : (String(raw.mode) as ReleaseMode);
   if (mode !== undefined && !RELEASE_MODES.includes(mode)) {
@@ -591,6 +594,9 @@ function parseReleaseOverride(raw: any, where: string, file: string): Route['rel
   };
   const timeoutSeconds = num(raw.verify?.timeoutSeconds, 'timeoutSeconds');
   const intervalSeconds = num(raw.verify?.intervalSeconds, 'intervalSeconds');
+  const isolateMax = parseIsolateMax(
+    raw.isolateFailures?.maxCandidates, `${where}.release.isolateFailures`, (m) => new ConfigError(`${file}: ${m}`),
+  );
   const versionFiles: string[] | undefined = Array.isArray(raw.versionFiles)
     ? raw.versionFiles
     : raw.versionFile ? [String(raw.versionFile)] : undefined;
@@ -603,6 +609,7 @@ function parseReleaseOverride(raw: any, where: string, file: string): Route['rel
     verify: (match !== undefined || timeoutSeconds !== undefined || intervalSeconds !== undefined)
       ? { match, timeoutSeconds, intervalSeconds }
       : undefined,
+    ...(isolateMax === undefined ? {} : { isolateFailures: { maxCandidates: isolateMax } }),
     versioning,
     versionFiles,
     changelog: raw.changelog !== undefined ? String(raw.changelog) : undefined,
@@ -644,12 +651,14 @@ export function mergeRouteRelease(route: Route['release'], override?: Route['rel
   const match = override?.verify?.match ?? route.verify?.match;
   const timeoutSeconds = override?.verify?.timeoutSeconds ?? route.verify?.timeoutSeconds;
   const intervalSeconds = override?.verify?.intervalSeconds ?? route.verify?.intervalSeconds;
+  const isolateMax = override?.isolateFailures?.maxCandidates ?? route.isolateFailures?.maxCandidates;
   return {
     mode: override?.mode ?? route.mode,
     ci: (provider !== undefined || ref !== undefined) ? { provider, ref } : undefined,
     verify: (match !== undefined || timeoutSeconds !== undefined || intervalSeconds !== undefined)
       ? { match, timeoutSeconds, intervalSeconds }
       : undefined,
+    ...(isolateMax === undefined ? {} : { isolateFailures: { maxCandidates: isolateMax } }),
     versioning: override?.versioning ?? route.versioning,
     versionFiles: override?.versionFiles ?? route.versionFiles,
     changelog: override?.changelog ?? route.changelog,

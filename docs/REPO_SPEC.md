@@ -207,8 +207,30 @@ release:
 | `release.verify.match` | no | `commit` | `commit` (prefix match against the released HEAD) or `version` (exact match against the version just released — for a `hooks.released` like `npm view <pkg> version`). If a `ci_*` release is not confirmed within `timeoutSeconds`, a later cycle re-checks it and stamps the batch once it is live; no further ticket needs to land. |
 | `release.verify.timeoutSeconds` | no | `600` | How long to wait for `released` to match. |
 | `release.verify.intervalSeconds` | no | `15` | How often to ask. |
+| `release.isolateFailures.maxCandidates` | no | `4` | When the release's combined `test`/`build` fails with several branches merged, how many may be built one at a time to find the one that broke it. `0` turns isolation off. See [A failed combined build](#a-failed-combined-build). |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
+
+### A failed combined build
+
+Branches are verified one by one but built together. When the release's `test`
+or `build` hook fails with more than one branch merged (and it is not one of
+the transient retry cases), the crew looks for the branch responsible instead
+of holding the whole release:
+
+1. If the failing output names files (`path(line,col): error`, `path:line:col`,
+   `FAIL path`) and exactly one merged branch changed one of them, that branch
+   is the culprit.
+2. Otherwise each merged branch is built alone on the pre-merge base; a branch
+   that fails alone is a culprit. At most `release.isolateFailures.maxCandidates`
+   branches are tried — past that the release fails as a whole.
+
+Each culprit goes back to `in_progress`, unassigned, with a comment carrying the
+hook's output tail and `git merge <remote>/<base>` as the first step. The other
+branches are re-merged and the release continues, so no failure-alert ticket is
+filed. If no culprit can be named (everything passes alone, over the cap, or only
+one branch was merged) the release fails and alerts as before. QA is told to
+re-verify bounced branches against the current base so this surfaces earlier.
 
 ### The release lock row
 

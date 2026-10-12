@@ -289,6 +289,12 @@ export interface RepoConfig {
     ship: string | null;
     ci: { provider: CiProvider; ref?: string };
     verify: ReleaseVerify;
+    /**
+     * When the combined release build/test fails with several branches merged,
+     * how many may be built one at a time to find the culprit. Unset means
+     * `DEFAULT_ISOLATE_MAX_CANDIDATES`; 0 turns isolation off.
+     */
+    isolateFailures?: { maxCandidates: number };
     versioning: Versioning;
     versionFiles: string[];
     /** null when this repo keeps no changelog — not every project does. */
@@ -354,12 +360,23 @@ export function worktreeNameProblem(template: string): string | null {
   return null;
 }
 const RELEASE_KEYS = new Set([
-  'mode', 'ship', 'ci', 'verify', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
+  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
 /** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
 export const VERSIONINGS: Versioning[] = ['auto', 'none'];
 const CI_KEYS = new Set(['provider', 'ref']);
 const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
+const ISOLATE_KEYS = new Set(['maxCandidates']);
+/** How many merged branches a failed release build may build one by one. */
+export const DEFAULT_ISOLATE_MAX_CANDIDATES = 4;
+
+/** `release.isolateFailures.maxCandidates`: a non-negative integer, undefined when not given. */
+export function parseIsolateMax(raw: unknown, where: string, fail: (m: string) => Error): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) throw fail(`${where}.maxCandidates must be a non-negative integer (got "${raw}")`);
+  return n;
+}
 export const MATCHES: VerifyMatch[] = ['commit', 'version'];
 export const MODES: ReleaseMode[] = ['local', 'integrate', 'ci_manual', 'ci_auto', 'external'];
 export const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
@@ -404,6 +421,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.release, RELEASE_KEYS, 'release', file);
   rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file);
   rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file);
+  rejectUnknown(raw.release?.isolateFailures, ISOLATE_KEYS, 'release.isolateFailures', file);
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
   rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
@@ -570,6 +588,10 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     );
   }
 
+  const isolateMax = parseIsolateMax(
+    raw.release?.isolateFailures?.maxCandidates, 'release.isolateFailures', (m) => new RepoConfigError(`${file}: ${m}`),
+  );
+
   const versioning = String(raw.release?.versioning ?? 'auto') as Versioning;
   if (!VERSIONINGS.includes(versioning)) {
     throw new RepoConfigError(`${file}: release.versioning must be auto|none (got "${versioning}")`);
@@ -641,6 +663,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       ship,
       ci: { provider, ref: raw.release?.ci?.ref ? String(raw.release.ci.ref) : undefined },
       verify,
+      isolateFailures: isolateMax === undefined ? undefined : { maxCandidates: isolateMax },
       versioning,
       versionFiles,
       tag,
@@ -744,7 +767,8 @@ export interface ShipRepoSettings {
   // RESOLVED shape, where e.g. `ci.provider` always has a concrete value) —
   // a ship's fallback may reasonably know a release's `ci.ref` without its
   // `provider`, so those two need their own fields optional too.
-  release?: Partial<Omit<RepoConfig['release'], 'ci' | 'verify'>> & {
+  release?: Partial<Omit<RepoConfig['release'], 'ci' | 'verify' | 'isolateFailures'>> & {
+    isolateFailures?: { maxCandidates?: number };
     ci?: Partial<RepoConfig['release']['ci']>;
     verify?: Partial<RepoConfig['release']['verify']>;
   };
@@ -908,6 +932,10 @@ export function resolveRepoConfig(
         intervalSeconds: pick('release.verify.intervalSeconds',
           repo?.release.verify.intervalSeconds === DEFAULTS.intervalSeconds ? undefined : repo?.release.verify.intervalSeconds,
           ship?.release?.verify?.intervalSeconds, DEFAULTS.intervalSeconds),
+      },
+      isolateFailures: {
+        maxCandidates: pick('release.isolateFailures.maxCandidates', repo?.release.isolateFailures?.maxCandidates,
+          ship?.release?.isolateFailures?.maxCandidates, DEFAULT_ISOLATE_MAX_CANDIDATES),
       },
       versioning: pick('release.versioning',
         repo?.release.versioning === 'auto' ? undefined : repo?.release.versioning,

@@ -29,6 +29,7 @@ import { resolveTopCandidate } from './claim.ts';
 import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
+import { planBuildFailureBounce, applyBuildFailureBounce } from './build-failure.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
@@ -1427,6 +1428,21 @@ async function releasePhase(
     // can fix it (ISSUE-346 failed six times in an hour that way), and a
     // ticket the release cannot place at all is flagged and, if it repeats,
     // escalated to a person (ISSUE-379).
+    if (outcome.buildCulprits?.length) {
+      const seat = releaseSeat(c);
+      for (const cu of outcome.buildCulprits) {
+        try {
+          const bounce = planBuildFailureBounce(target.dir, cu, repo.branch.base, repo.branch.remote);
+          const r = await applyBuildFailureBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
+          if (r.kind === 'failed') {
+            remit.warn(`could not hand back ${cu.ticket.issue_id}: ${r.why}`, { step: 'release' });
+          }
+        } catch (e) {
+          remit.warn(`could not hand back ${cu.ticket.issue_id}: ${(e as Error).message}`, { step: 'release' });
+        }
+      }
+    }
+
     if ((outcome.conflicts?.length || outcome.unbuildable?.length)) {
       // Comments are fetched only when one of these actually happens, which
       // is almost never — it costs a request on the rare cycle that needs

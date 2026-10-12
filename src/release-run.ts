@@ -24,7 +24,8 @@ import {
   type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
-import { hookLabel } from './repo-config.ts';
+import { hookLabel, DEFAULT_ISOLATE_MAX_CANDIDATES } from './repo-config.ts';
+import { failingPaths, culpritByFiles, type BuildCulprit } from './build-failure.ts';
 import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
@@ -185,6 +186,13 @@ export interface ReleaseOutcome {
    * on another machine can see which command failed without this ship's log.
    */
   hookFailure?: { hook: string; label: string; tail: string };
+  /**
+   * Merged branches a failed build/test was pinned on and left out of this
+   * release (CREW-1581). The caller hands each back to the dev lane; the rest
+   * of the release carries on without them, so this is set on a release that
+   * may well have shipped.
+   */
+  buildCulprits?: BuildCulprit[];
   decision: ReleaseDecision;
   /**
    * Consecutive cycles `decision.block` has refused this release, from
@@ -1006,6 +1014,85 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   }
 }
 
+const isolateCap = (o: ReleaseRunOptions): number =>
+  o.repo.release.isolateFailures?.maxCandidates ?? DEFAULT_ISOLATE_MAX_CANDIDATES;
+
+/**
+ * A combined `test`/`build` just failed with several branches merged: find the
+ * branch(es) responsible (CREW-1581, see build-failure.ts). Returns the
+ * outcome of re-running the release WITHOUT them, or null when nothing could
+ * be pinned down (one branch merged, isolation off, over the cap, every
+ * branch passes alone) — the caller then fails the release exactly as before.
+ *
+ * The checkout is rewound to `preMerge` either way, so a null return is
+ * followed by the caller's own failure handling on a tree that is no worse
+ * than a plain failure left it... except that the merges are gone, which the
+ * failure path never relied on (the next cycle re-merges from the board).
+ */
+async function isolateAndRetry(
+  o: ReleaseRunOptions,
+  name: 'build' | 'test',
+  output: string,
+  merged: MergeCandidate[],
+  preMerge: string,
+  decision: ReleaseDecision,
+  fresh: ReturnType<typeof refreshBase>,
+  releaseBranch: string | undefined,
+): Promise<ReleaseOutcome | null> {
+  const applied = merged.filter((c) => c.sha && c.branch);
+  const cap = isolateCap(o);
+  if (o.dryRun || !preMerge || applied.length < 2 || cap === 0) return null;
+  const head = headSha(o.cwd);
+
+  // 1. The failure names files. Cheap: nothing is rebuilt.
+  const withFiles = applied.map((c) => ({
+    c,
+    changed: new Set(
+      (gitOk(o.cwd, ['diff', '--name-only', `${preMerge}...${c.branch}`]) ?? '').split('\n').filter(Boolean),
+    ),
+  }));
+  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo'; tail: string }> = [];
+  const byFile = culpritByFiles(withFiles, failingPaths(output, o.cwd));
+  if (byFile) {
+    o.emit.warn(`${name} failed; its output names files only ${byFile.c.branch} changed — treating it as the culprit`, { ticket: byFile.c.ticket.issue_id });
+    culprits.push({ c: byFile.c, how: 'files', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) });
+  } else if (applied.length > cap) {
+    o.emit.warn(`${name} failed with ${applied.length} branches merged, over release.isolateFailures.maxCandidates (${cap}) — not isolating`);
+    return null;
+  } else {
+    // 2. Build each alone on the pre-merge base (node_modules is reused).
+    o.emit.warn(`${name} failed with ${applied.length} branches merged — building each alone to find the culprit`);
+    for (const c of applied) {
+      gitOk(o.cwd, ['reset', '--hard', preMerge]);
+      const m = mergeOne(o, c);
+      if (typeof m === 'object' && 'conflict' in m) continue;
+      const r = await hook(o, name);
+      if (r && r.code !== 0) {
+        o.emit.warn(`${c.branch} fails the ${name} hook on its own`, { ticket: c.ticket.issue_id });
+        culprits.push({ c, how: 'solo', tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES) });
+      }
+    }
+  }
+
+  gitOk(o.cwd, ['reset', '--hard', preMerge]);
+  if (culprits.length === 0) {
+    o.emit.warn('no single branch could be blamed — failing the release as a whole');
+    gitOk(o.cwd, ['reset', '--hard', head]);
+    return null;
+  }
+  const out = new Set(culprits.map((x) => x.c.ticket.id));
+  const rest = decision.merges.filter((c) => !out.has(c.ticket.id));
+  // The squash merges are replayed from scratch; the guard stops a second
+  // round of isolation, so a still-red release fails normally.
+  const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, true);
+  return {
+    ...retried,
+    buildCulprits: culprits.map((x) => ({
+      ticket: x.c.ticket, branch: x.c.branch!, hook: name, tail: x.tail, how: x.how,
+    })),
+  };
+}
+
 /**
  * The merge-and-release body of `runRelease`: everything from the squash-merges
  * onward. `releaseBranch` is the temporary branch the release was cut on, when
@@ -1016,8 +1103,12 @@ async function mergeAndRelease(
   decision: ReleaseDecision,
   fresh: ReturnType<typeof refreshBase>,
   releaseBranch?: string,
+  isolated = false,
 ): Promise<ReleaseOutcome> {
   o.emit.enter('merge');
+  // Where the base stood before any candidate merged, so a failed combined
+  // build can be replayed branch by branch (CREW-1581).
+  const preMerge = o.dryRun ? '' : headSha(o.cwd);
   const merged: MergeCandidate[] = [];
   const conflicts: ConflictFailure[] = [];
   // `never-built` candidates: no branch here, and the key names no commit on
@@ -1166,6 +1257,10 @@ async function mergeAndRelease(
         o.emit.warn('test gate failed with what looks like a worker crash, not a real failure — retrying once');
         r = await hook(o, 'test');
       }
+      if (r && r.code !== 0 && !isolated) {
+        const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch);
+        if (out) return out;
+      }
       if (r && r.code !== 0) {
         o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
         const sha = headSha(o.cwd);
@@ -1204,12 +1299,23 @@ async function mergeAndRelease(
   }
 
   if (o.repo.hooks.build) {
-    if (o.dryRun) o.emit.emit(`would run: ${hookLabel(o.repo, 'build')}`);
-    else {
+    if (o.dryRun) {
+      o.emit.emit(`would run: ${hookLabel(o.repo, 'build')}`);
+      if (applied > 1) {
+        o.emit.emit(
+          `if it fails, would find the one of ${applied} merged branches that broke it (by the files it names, ` +
+            `else by building each alone, up to ${isolateCap(o)}), hand that back to the dev lane and ship the rest`,
+        );
+      }
+    } else {
       let r = await hook(o, 'build');
       if (r && r.code !== 0 && looksLikeTransientResolveFailure(r.output)) {
         o.emit.warn('build failed with what looks like a transient dependency-resolution glitch, not a real failure — retrying once');
         r = await hook(o, 'build');
+      }
+      if (r && r.code !== 0 && !isolated) {
+        const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch);
+        if (out) return out;
       }
       if (r && r.code !== 0) {
         o.emit.error('build failed — not deploying');

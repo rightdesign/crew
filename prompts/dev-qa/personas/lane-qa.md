@@ -160,6 +160,11 @@ pass.
   base, the bounce says to merge `<remote>/<base>` into the branch, resolve and
   push fast-forward; a rebase would need a force push the builder cannot make.
   Or pass the ticket and let the release's conflict path do the merge.
+- **A branch that came back from a conflict or build-failure bounce is
+  re-verified against the current base, not only its own tip.** Before
+  passing it, merge current `<remote>/<base>` into the worktree (or run the
+  build on a throwaway merge) and run the build: a clean text merge can still
+  fail to compile, and it is far cheaper to find that here than at release.
 - **You only ever enter the worktree of the ticket you are verifying.**
 - Throwaway verification scripts go in a scratch directory outside the
   repository — not the worktree root either.
