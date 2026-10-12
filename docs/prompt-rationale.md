@@ -167,7 +167,7 @@ into each building role's Agents row. The moment an admin edited one of those
 rows the role forked the whole shared policy: every later policy fix showed up
 as divergence and never reached it, and a lane-specific edit was buried in tens
 of kilobytes of shared text. The policy is now the `Crew Lane Agent` skill and
-each building brief starts with `{{skill: Crew Lane Agent}}`, expanded when the
+each building brief starts with <code v-pre>{{skill: Crew Lane Agent}}</code>, expanded when the
 run is assembled. The marker is not a `[[table:key]]` link because personas and
 skills are control-plane records, and `[[Skills:…]]` would collide with a
 workspace table of that name. The recursion, depth and size caps exist because a
