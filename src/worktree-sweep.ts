@@ -185,9 +185,19 @@ export function planRemoteBranchCleanup(
   cwd: string, remote: string, base: string, tickets: Ticket[], contract: Contract,
 ): string[] {
   if (!remoteConfigured(cwd, remote)) return [];
-  // Exact names only: every stem a deployed ticket's branch could carry
-  // (`issue-N`, `<project prefix>-N`), optionally followed by `-<slug>`. A free
-  // "contains the number" match would also take `v2`, `release-2` or `node-24`.
+  const stems = deployedBranchStems(tickets, contract);
+  if (stems.size === 0) return [];
+  const prefix = `refs/remotes/${remote}/`;
+  const refs = (gitOk(cwd, ['for-each-ref', '--format=%(refname)', prefix]) ?? '').split('\n').filter(Boolean);
+  return refs.map((ref) => ref.slice(prefix.length)).filter((name) => isTicketBranch(name, base, stems));
+}
+
+/**
+ * Every stem a deployed ticket's branch could carry (`issue-N`,
+ * `<project prefix>-N`), padded and unpadded. Exact names only: a free
+ * "contains the number" match would also take `v2`, `release-2` or `node-24`.
+ */
+function deployedBranchStems(tickets: Ticket[], contract: Contract): Set<string> {
   const stems = new Set<string>();
   for (const t of tickets) {
     if (t.status !== contract.statuses.deployed) continue;
@@ -196,17 +206,60 @@ export function planRemoteBranchCleanup(
     const prefixes = ['issue', t.project_issue_prefix?.toLowerCase()].filter((p): p is string => !!p);
     for (const p of prefixes) { stems.add(`${p}-${num}`); stems.add(`${p}-${unpadded}`); }
   }
+  return stems;
+}
+
+/** A branch name that is a ticket stem, optionally followed by `-<slug>`. */
+function isTicketBranch(name: string, base: string, stems: Set<string>): boolean {
+  if (name === 'HEAD' || name === base) return false;
+  const m = /^(.+?-\d+)(?:-.*)?$/.exec(name);
+  return !!m && stems.has(m[1]!);
+}
+
+/**
+ * Whether this checkout has anything the sweep could act on: a linked
+ * worktree, or a local branch, whose name ends in a ticket number. Local git
+ * reads only — the sweep runs every cycle on every repo whether or not this
+ * ship released anything (CREW-1592), and a repo with nothing to sweep must
+ * not cost a tracker call.
+ */
+export function sweepCandidatesExist(cwd: string, base: string): boolean {
+  const linked = worktrees(cwd).slice(1);
+  if (linked.some((w) => /(?:^|-)\d+$/.test(basename(w.path)))) return true;
+  return localBranches(cwd).some((b) => b !== base && /-\d+(?:-.*)?$/.test(b));
+}
+
+function localBranches(cwd: string): string[] {
+  return (gitOk(cwd, ['branch', '--list', '--format=%(refname:short)']) ?? '').split('\n').filter(Boolean);
+}
+
+/**
+ * Local branches of deployed tickets that no worktree has checked out
+ * (CREW-1592). `applyWorktreeSweep` only deletes a branch as part of removing
+ * its worktree, so a branch whose worktree was already gone (removed by hand,
+ * or by an earlier sweep that kept the branch) was reaped by nothing. A
+ * branch some worktree still has checked out is left to that worktree's
+ * sweep, which refuses a dirty one.
+ */
+export function planLocalBranchCleanup(
+  cwd: string, base: string, tickets: Ticket[], contract: Contract,
+): string[] {
+  const stems = deployedBranchStems(tickets, contract);
   if (stems.size === 0) return [];
-  const prefix = `refs/remotes/${remote}/`;
-  const refs = (gitOk(cwd, ['for-each-ref', '--format=%(refname)', prefix]) ?? '').split('\n').filter(Boolean);
-  const out: string[] = [];
-  for (const ref of refs) {
-    const name = ref.slice(prefix.length);
-    if (name === 'HEAD' || name === base) continue;
-    const m = /^(.+?-\d+)(?:-.*)?$/.exec(name);
-    if (m && stems.has(m[1]!)) out.push(name);
+  const checkedOut = new Set(worktrees(cwd).map((w) => w.branch).filter((b): b is string => !!b));
+  return localBranches(cwd).filter((b) => !checkedOut.has(b) && isTicketBranch(b, base, stems));
+}
+
+export function applyLocalBranchCleanup(
+  cwd: string, branches: string[], dryRun: boolean, log: SweepLog,
+): number {
+  let deleted = 0;
+  for (const b of branches) {
+    if (dryRun) { log.emit(`would delete local branch ${b} — its ticket is deployed`, { step: 'worktree' }); continue; }
+    if (gitOk(cwd, ['branch', '-D', b] ) !== null) { deleted++; log.emit(`deleted local branch ${b} — its ticket is deployed`, { step: 'worktree' }); }
+    else log.warn(`could not delete local branch ${b} — leaving it for the next sweep`, { step: 'worktree' });
   }
-  return out;
+  return deleted;
 }
 
 export function applyRemoteBranchCleanup(

@@ -84,7 +84,7 @@ import {
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
-import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup } from './worktree-sweep.ts';
+import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
@@ -1162,6 +1162,46 @@ async function releaserLine(
  * schedule. The two phases take DIFFERENT locks, so a long release never
  * blocks the next poll from starting, and vice versa.
  */
+/**
+ * The per-cycle cleanup of finished tickets in one repo: worktrees whose
+ * ticket reached a terminal status (ISSUE-346), a deployed ticket's pushed
+ * branch (CREW-1364) and its local branch once no worktree holds it
+ * (CREW-1592). Runs from every exit of the release phase, not only the one
+ * that released — on a route served by two ships the builder is often not the
+ * releaser, and would otherwise never clean up. Takes no board lock, never
+ * throws, and costs no tracker call when the checkout has nothing to sweep.
+ */
+async function sweepClosedTickets(
+  c: typeof route, target: RepoTarget, branch: { base: string; remote: string },
+  tracker: Tracker, dryRun: boolean, remit: ReturnType<typeof emit.forRoute>,
+  idle = false,
+): Promise<void> {
+  try {
+    // The idle path runs every cycle, so it skips the tracker reads when the
+    // checkout has nothing local to sweep. After a release the pushed-branch
+    // cleanup below must still run: it exists for a ship with no local trace.
+    if (idle && !sweepCandidatesExist(target.dir, branch.base)) return;
+    const terminal = await tracker.terminalTickets();
+    const verifiedNow = (await tracker.openTickets()).filter((t) => t.status === tracker.contract.statuses.verified);
+    const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
+    const actions = planWorktreeSweep(target, [...scoped, ...(ticketsByRepo(c, verifiedNow).byRepo.get(target.name) ?? [])], tracker.contract);
+    if (actions.length) {
+      remit.enter('worktree');
+      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote);
+      remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
+    }
+    // After the worktrees, so a branch freed by the removal above is seen.
+    const orphaned = planLocalBranchCleanup(target.dir, branch.base, scoped, tracker.contract);
+    if (orphaned.length) applyLocalBranchCleanup(target.dir, orphaned, dryRun, remit);
+    // CREW-1364: the pushed copy of a branch this ship may never have had a
+    // worktree for. After the stamp, so a ticket is `deployed` by now.
+    const stale = planRemoteBranchCleanup(target.dir, branch.remote, branch.base, scoped, tracker.contract);
+    if (stale.length) applyRemoteBranchCleanup(target.dir, branch.remote, stale, dryRun, remit);
+  } catch (e) {
+    remit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
+  }
+}
+
 /** One open-ticket read per route per release cycle, for the lock-free pre-check. */
 const precheckTickets = new Map<string, Promise<Ticket[]>>();
 
@@ -1257,6 +1297,7 @@ async function releasePhase(
         external: repo.release.mode === 'external', upToDate: d.upToDate, unseeded: d.unseeded, unstamped,
       })) {
         remit.emit(`${target.name}: nothing verified — not locking`, { step: 'release' });
+        await sweepClosedTickets(c, target, repo.branch, tracker, dryRun, remit, true);
         return { scope, tests: 'skipped', outcome: 'skipped', detail: 'nothing verified — not locking' };
       }
     }
@@ -1487,23 +1528,7 @@ async function releasePhase(
     // status (here or on an earlier cycle) is done with its worktree. A
     // tracker blip here must not turn a good release into a failed one, the
     // same reasoning as stamping above (ISSUE-346).
-    try {
-      const terminal = await tracker.terminalTickets();
-      const verifiedNow = (await tracker.openTickets()).filter((t) => t.status === tracker.contract.statuses.verified);
-      const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
-      const actions = planWorktreeSweep(target, [...scoped, ...(ticketsByRepo(c, verifiedNow).byRepo.get(target.name) ?? [])], tracker.contract);
-      if (actions.length) {
-        remit.enter('worktree');
-        const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, repo.branch.remote);
-        remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
-      }
-      // CREW-1364: the pushed copy of a branch this ship may never have had a
-      // worktree for. After the stamp, so a ticket is `deployed` by now.
-      const stale = planRemoteBranchCleanup(target.dir, repo.branch.remote, repo.branch.base, scoped, tracker.contract);
-      if (stale.length) applyRemoteBranchCleanup(target.dir, repo.branch.remote, stale, dryRun, remit);
-    } catch (e) {
-      remit.warn(`worktree sweep failed: ${(e as Error).message}`, { step: 'worktree' });
-    }
+    await sweepClosedTickets(c, target, repo.branch, tracker, dryRun, remit);
 
     return summary;
   } catch (e) {

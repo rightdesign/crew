@@ -5,7 +5,10 @@ import { mkdtempSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
-import { planWorktreeSweep, applyWorktreeSweep, type SweepLog } from '../src/worktree-sweep.ts';
+import {
+  planWorktreeSweep, applyWorktreeSweep, planLocalBranchCleanup, applyLocalBranchCleanup,
+  sweepCandidatesExist, type SweepLog,
+} from '../src/worktree-sweep.ts';
 import type { Ticket } from '../src/tracker.ts';
 
 function repo() {
@@ -170,4 +173,50 @@ test('the branch template is irrelevant — the sweep uses the branch actually c
   await applyWorktreeSweep(dir, actions, false, silentLog);
   assert.ok(!existsSync(wt));
   assert.ok(!branchesOf(dir).includes('bc/issue-16-old-title'));
+});
+
+// CREW-1592: the builder is not always the releaser, and a branch whose worktree
+// is already gone was reaped by nothing.
+test('a deployed ticket with a local branch and no worktree ends with the branch gone', () => {
+  const { dir, g } = repo();
+  g('branch', 'issue-20'); g('branch', 'tabl-21-some-slug'); g('branch', 'v2'); g('branch', 'issue-22');
+  const tickets = [
+    ticket({ issue_id: 'ISSUE-20', status: 'closed_deployed' }),
+    ticket({ issue_id: 'TABL-21', status: 'closed_deployed', project_issue_prefix: 'TABL' }),
+    ticket({ issue_id: 'ISSUE-22', status: 'closed_wont_fix' }),
+  ];
+  const doomed = planLocalBranchCleanup(dir, 'main', tickets, DEFAULT_CONTRACT);
+  assert.deepEqual(doomed.sort(), ['issue-20', 'tabl-21-some-slug']);
+  assert.equal(applyLocalBranchCleanup(dir, doomed, false, silentLog), 2);
+  assert.deepEqual(branchesOf(dir).sort(), ['issue-22', 'main', 'v2']);
+});
+
+test('a deployed ticket\'s branch still checked out in a worktree is not planned for deletion here', () => {
+  const { dir, g } = repo();
+  withWorktree(dir, g, 23);
+  const t = ticket({ issue_id: 'ISSUE-23', status: 'closed_deployed' });
+  assert.deepEqual(planLocalBranchCleanup(dir, 'main', [t], DEFAULT_CONTRACT), []);
+});
+
+test('sweepCandidatesExist is false for a clean checkout and true for a ticket worktree or branch', () => {
+  const { dir, g } = repo();
+  assert.equal(sweepCandidatesExist(dir, 'main'), false);
+  g('branch', 'feature-x');
+  assert.equal(sweepCandidatesExist(dir, 'main'), false);
+  g('branch', 'issue-30');
+  assert.equal(sweepCandidatesExist(dir, 'main'), true);
+  const other = repo();
+  withWorktree(other.dir, other.g, 31, 'whatever');
+  assert.equal(sweepCandidatesExist(other.dir, 'main'), true);
+});
+
+test('a clean worktree of a deployed ticket is swept even though this ship released nothing', async () => {
+  // The sweep is driven by tickets and the checkout alone, never by a release.
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 24);
+  const t = ticket({ issue_id: 'ISSUE-24', status: 'closed_deployed' });
+  assert.equal(sweepCandidatesExist(dir, 'main'), true);
+  await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog);
+  assert.ok(!existsSync(wt));
+  assert.ok(!branchesOf(dir).includes('issue-24'));
 });
