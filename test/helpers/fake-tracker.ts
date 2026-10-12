@@ -21,6 +21,8 @@ export class FakeTracker {
   readonly tables = new Map<string, Row[]>();
   /** Every write the crew made, in order. */
   readonly writes: Write[] = [];
+  /** Every event posted to a ticket's event log (CREW-1574), in order. */
+  readonly events: Array<{ model: string; recordId: string; body: Record<string, unknown> }> = [];
   port = 0;
   /**
    * Fired once, right after the NEXT `GET .../records` for `model` is
@@ -58,6 +60,23 @@ export class FakeTracker {
       const model = parts[2] ?? '';
       const rows = this.tables.get(model);
       if (!rows) return send(404, { message: `no such model ${model}` });
+
+      if (req.method === 'GET' && (parts[3] === 'events' || parts[5] === 'events')) {
+        // The live route's row shape (`record_id`, `event_type`, `message`, `occurred_at`),
+        // serving whatever the crew posted, filtered by `event_type` like the real one.
+        const raw = url.searchParams.get('filters');
+        const wanted = raw
+          ? (JSON.parse(raw) as Array<{ columnName: string; value: unknown }>).find((f) => f.columnName === 'event_type')?.value
+          : undefined;
+        const scope = parts[5] === 'events' ? parts[4] : undefined;
+        return send(200, this.events
+          .map((e, i) => ({
+            id: `event-${i + 1}`, record_id: e.recordId, event_type: e.body.type, message: e.body.message,
+            occurred_at: new Date(Date.UTC(2026, 9, 12) + i * 1000).toISOString(),
+          }))
+          .filter((e) => (wanted === undefined || e.event_type === wanted) && (scope === undefined || e.record_id === scope))
+          .reverse());
+      }
 
       if (req.method === 'GET' && parts[3] === 'records') {
         // Only the operators the crew actually uses.
@@ -98,6 +117,10 @@ export class FakeTracker {
           this.writes.push({ method: 'PATCH', model, id: parts[4], body: parsed });
           Object.assign(row, parsed, { updated_at: new Date(Date.parse(String(row.updated_at ?? 0)) + 1000).toISOString() });
           return send(200, row);
+        }
+        if (req.method === 'POST' && parts[3] === 'records' && parts[5] === 'events') {
+          this.events.push({ model, recordId: parts[4] ?? '', body: parsed });
+          return send(201, { id: `event-${this.events.length}`, ...parsed });
         }
         if (req.method === 'POST' && parts[3] === 'records') {
           const created = { id: `created-${rows.length + 1}`, created_at: '2026-08-24T00:00:00.000Z', ...parsed };

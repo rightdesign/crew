@@ -234,7 +234,7 @@ export async function applyReview(
         [contract.columns.status]: reviewing,
         ...(h.prRef && columns.prRef ? { [contract.columns.prRef]: h.prRef } : {}),
       }, t.updated_at);
-      await tracker.postEvent(t.id, lines.join('\n\n'), seat);
+      await tracker.postEvent(t.id, lines.join('\n\n'), seat, 'review');
       emit.emit(`moved to ${reviewing}`, { ticket: t.issue_id });
     } catch (e) {
       emit.warn(`could not move to ${reviewing}: ${(e as Error).message}`, { ticket: t.issue_id });
@@ -251,7 +251,7 @@ export async function applyReview(
     }
     try {
       await tracker.updateTicket(t.id, { [contract.columns.status]: contract.statuses.handoff }, t.updated_at);
-      await tracker.postEvent(t.id, body, seat);
+      await tracker.postEvent(t.id, body, seat, 'requeued');
       emit.emit(`returned to ${contract.statuses.handoff} — branch moved past ${q.verified.slice(0, 8)}`, { ticket: t.issue_id });
     } catch (e) {
       emit.warn(`could not return to ${contract.statuses.handoff}: ${(e as Error).message}`, { ticket: t.issue_id });

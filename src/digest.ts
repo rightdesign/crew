@@ -192,16 +192,16 @@ function filedBy(t: DigestTicket, i: DigestInput): string {
 }
 
 /**
- * The newest thing a person or seat actually wrote on the ticket. `event`
- * rows are skipped (CREW-1560): the app writes a "Status changed to …" event
- * under the zero system identity seconds after an operator's re-accept, and
- * with it included the cell read "(no identity)" for a go-ahead the operator
- * had just posted from the UI — so the seat, rightly trusting the digest over
- * the comment body, refused it. `newFromOthers` already excludes events.
+ * The newest comment on the ticket. Audit rows no longer live in Comments
+ * (CREW-1574): the runner's own events and the app's "Status changed to …"
+ * rows go to the Issues table's event log, so every row here is something a
+ * person or seat wrote. That is what closes CREW-1560, where a status-change
+ * row under the zero system identity read "(no identity)" for a go-ahead the
+ * operator had just posted from the UI.
  */
 function lastComment(i: DigestInput, ticketId: string): string {
   const forTicket = i.comments
-    .filter((c) => c.ticket_id === ticketId && (c.kind ?? 'comment') !== 'event')
+    .filter((c) => c.ticket_id === ticketId)
     .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
   const last = forTicket[forTicket.length - 1];
   if (!last) return '—';
@@ -214,8 +214,7 @@ function newFromOthers(i: DigestInput, ticketId: string): number {
     (c) =>
       c.ticket_id === ticketId &&
       c.team_member_id !== i.me &&
-      c.created_at > i.watermark &&
-      (c.kind ?? 'comment') !== 'event',
+      c.created_at > i.watermark,
   ).length;
 }
 

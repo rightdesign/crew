@@ -105,7 +105,7 @@ ${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. Set back to \`in_progress\`, 
 export interface HandoffWriter {
   ticket(id: string): Promise<Ticket>;
   updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
-  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
 export interface HandoffLog {
@@ -154,7 +154,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       return { kind: 'unverified', why: v.why };
     }
     if (v.kind === 'pushed') {
-      await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId);
+      await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');
       i.log.emit(`${t.issue_id} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
     }
@@ -165,7 +165,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       ...(t.assignee_id ? {} : { assignee_id: i.seatId }),
       ...(i.hold && !heldBy ? { [i.hold.column]: i.hold.shipId } : {}),
     });
-    await i.writer.postEvent(t.id, bounceComment(v, i.shipName), i.seatId).catch(() => {
+    await i.writer.postEvent(t.id, bounceComment(v, i.shipName), i.seatId, 'bounced').catch(() => {
       i.log.warn('bounced, but the note failed to post', log);
     });
     i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: ${v.reason}`, log);
@@ -238,7 +238,7 @@ async function retireRunWorktree(
     if (o.kind === 'removed') log.emit(`${t.issue_id}: removed the run's worktree ${o.path} — the branch is on ${cfg.branch.remote}`, at);
     else if (o.kind === 'kept-handoff') {
       log.emit(`${t.issue_id}: kept worktree ${o.path} — this repo's handoff hook serves from it`, at);
-      await tracker.postEvent(t.id, `worktree kept on ship ${shipName} at \`${o.path}\`: the repo's \`handoff\` hook serves from it. QA on another ship cuts its own from \`${cfg.branch.remote}/${branch}\` instead.`, seatId);
+      await tracker.postEvent(t.id, `worktree kept on ship ${shipName} at \`${o.path}\`: the repo's \`handoff\` hook serves from it. QA on another ship cuts its own from \`${cfg.branch.remote}/${branch}\` instead.`, seatId, 'worktree_kept');
     } else if (o.kind === 'kept-dirty') log.warn(`${t.issue_id}: left worktree ${o.path} — it has uncommitted changes`, at);
     else if (o.kind === 'kept-unpushed') log.warn(`${t.issue_id}: left worktree ${o.path} — its branch has commits that are not on ${cfg.branch.remote}`, at);
   } catch (e) {

@@ -37,7 +37,6 @@ to mean exactly this, and needs no configuration at all.
 | epic | `epic_id` | only rendered when the workspace has an `Epics` table (ISSUE-384) |
 | comment parent | `ticket_id` | Comments |
 | comment body / author | `body` / `team_member_id` | |
-| comment kind | `kind`, with `event` meaning the runner's own audit trail | |
 | crew name / ship | `name` / `ship_id` | Crew |
 
 **Optional columns on Issues** (a table without one has simply not adopted the

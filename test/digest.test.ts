@@ -182,19 +182,9 @@ test('the last-comment cell skips event rows, so a status event after an operato
   const ticket = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
   const reply = { ticket_id: 'a', team_member_id: null, created_by_id: 'ident-brad', reporter_name: 'Pair agent',
     kind: 'comment', created_at: '2026-10-11T20:37:23.000Z' };
-  // What the app writes when the operator then re-accepts the ticket: a
-  // system event under the zero identity, carrying the ticket's reporter_name.
-  const statusEvent = { ticket_id: 'a', team_member_id: null, created_by_id: '00000000-0000-0000-0000-000000000000',
-    reporter_name: 'Pair agent', body: 'Status changed to accepted', kind: 'event', created_at: '2026-10-11T20:38:11.000Z' };
-
-  const out = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [reply, statusEvent] }));
+  const out = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [reply] }));
   assert.match(out, /2026-10-11T20:37Z Brad C\. \(Operator\)/);
   assert.doesNotMatch(out, /no identity/);
-
-  // Only events: nothing a person wrote, so the cell is empty as for no comments.
-  const onlyEvents = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [statusEvent] }));
-  assert.match(onlyEvents, /\| — \| — \|$/m);
-  assert.doesNotMatch(onlyEvents, /no identity/);
 });
 
 test('a seat comment posted from another ship names that ship; this ship\'s own comments do not (CREW-1371)', () => {

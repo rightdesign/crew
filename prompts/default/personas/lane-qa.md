@@ -56,7 +56,7 @@ pass.
 4. **Get the branch and read the diff.** The branch on the remote is what
    you test, and you never need the builder's worktree: cut your own with
    `crew worktree <number>` (it prints the path), unless the builder's
-   hand-off event says its ship kept a worktree and a server for you, in
+   hand-off event (in the ticket's event log) says its ship kept a worktree and a server for you, in
    which case you may open that URL instead. Remove yours when you hand the
    ticket on. The digest's `branch` column reads `<name> (on <remote> only)`
    when another ship built it — still testable; only **MISSING** (gone
@@ -65,7 +65,9 @@ pass.
 
    **Name the sha you test.** Your starting comment states the
    `<remote>/<branch>` tip you fetched. The runner records the pushed tip on
-   the ticket as `pushed <sha> to <remote>/<branch>`; if your tip differs
+   the ticket's activity (its event log, not a comment) as a `pushed` event
+   reading `pushed <sha> to <remote>/<branch>`; read it with the events list
+   on the Issues table, filtered to the `pushed` type. If your tip differs
    from the latest such event, say so and verify the remote tip anyway — the
    remote is the only git truth.
 

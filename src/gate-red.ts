@@ -14,7 +14,7 @@
  * hook's output. Once per head — a new head that fails again earns a new note.
  */
 
-import type { Comment, Ticket } from './tracker.ts';
+import type { RunnerEvent, Ticket } from './tracker.ts';
 import type { MergeCandidate } from './release.ts';
 
 export const GATE_RED_MARKER = '<!-- crew:test-gate-red';
@@ -59,5 +59,6 @@ ${g.tail}
 }
 
 /** Whether this head's note is already on the ticket (belt and braces to the state file). */
-export const alreadyReported = (ticket: Ticket, g: GateRed, comments: Comment[]): boolean =>
-  comments.some((c) => c.ticket_id === ticket.id && (c.body ?? '').includes(`${GATE_RED_MARKER} ${g.sha.slice(0, 8)}`));
+export const alreadyReported = (ticket: Ticket, g: GateRed, events: RunnerEvent[]): boolean =>
+  events.some((e) => e.record_id === ticket.id && e.event_type === 'gate_red'
+    && (e.message ?? '').includes(`${GATE_RED_MARKER} ${g.sha.slice(0, 8)}`));

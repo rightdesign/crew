@@ -12,7 +12,7 @@ import { hostname } from 'node:os';
 import { TablationClient } from '@tablation/client';
 import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
-import { DEFAULT_CONTRACT, closedStatuses, resolveContract, type Contract } from './contract.ts';
+import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, closedStatuses, resolveContract, type Contract } from './contract.ts';
 import type { EpicRow } from './epics.ts';
 import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
@@ -114,6 +114,17 @@ export function referenceKeys(t: Ticket): string[] {
   return t.issue_tag && t.issue_tag !== t.issue_id ? [t.issue_id, t.issue_tag] : [t.issue_id];
 }
 
+/** A row of the Issues event log, as the live `/events` route returns it. */
+export interface RunnerEvent {
+  id?: string;
+  /** The ticket (Issues record) the event belongs to. */
+  record_id: string;
+  event_type: string;
+  message?: string | null;
+  occurred_at?: string | null;
+  created_at?: string | null;
+}
+
 export interface Comment {
   id: string;
   ticket_id: string;
@@ -129,7 +140,6 @@ export interface Comment {
   /** The `Ships` row the comment was posted from (CREW-1371); absent on older rows. */
   ship_id?: string | null;
   reporter_name?: string | null;
-  kind?: string | null;
   created_at: string;
 }
 
@@ -668,15 +678,68 @@ export class Tracker {
   }
 
   /**
-   * An `event` comment — the runner's own audit trail, distinct from a
-   * seat's prose. `kind` is what keeps these out of the "new comment from
-   * someone else" wake signal.
+   * One entry in the runner's audit trail, written to the Issues table's
+   * event log (CREW-1574) rather than to Comments, so it can never be mistaken
+   * for something a seat or person said. `type` is a short snake_case name
+   * (`pushed`, `claimed`, `bounced`, …); `body` is the human message and keeps
+   * whatever wording the caller already used. Attributed to the seat's Crew
+   * row, with the posting ship in `metadata`.
    */
-  async postEvent(ticketId: string, body: string, memberId: string): Promise<void> {
+  async postEvent(ticketId: string, body: string, memberId: string, type = 'note'): Promise<void> {
     const auth = await this.authorshipProbe();
-    await this.client.records.create(this.models.comments, {
-      ticket_id: ticketId, body, team_member_id: memberId, kind: 'event',
-      ...(auth.commentShip && auth.shipId ? { [this.contract.comments.ship]: auth.shipId } : {}),
+    const res = await this.eventsFetch('POST', `/records/${ticketId}/events`, {
+      type, message: body, actorRecordId: memberId,
+      ...(auth.shipId ? { metadata: { ship_id: auth.shipId } } : {}),
+    });
+    if (res.status === 404) throw new ConfigError(EVENT_LOG_MISSING);
+    if (!res.ok) throw new Error(`posting a ${type} event failed: HTTP ${res.status}`);
+  }
+
+  /**
+   * Whether the Issues table has an event log: `GET /data-models/<issues>/events`
+   * answers 200 when it does and 404 when the setting is off. Crew requires it
+   * (CREW-1574); `connect` and doctor report `false` by name.
+   */
+  async hasEventLog(): Promise<boolean> {
+    const res = await this.eventsFetch('GET', '/events?limit=1');
+    if (res.status === 404) return false;
+    if (!res.ok) throw new Error(`reading the event log failed: HTTP ${res.status}`);
+    return true;
+  }
+
+  /**
+   * Events of `type` across the Issues table, newest first. The runner's own
+   * dedupe/escalation markers (`stalled`, `gate_red`, `conflict_handed_back`,
+   * `stranded_flagged`) live here now, so the readers that used to scan
+   * Comments for them read this instead. A tracker without the log answers 404
+   * and reads as no events: the writes fail by name (`postEvent`), and a
+   * poll must not die on a read.
+   */
+  async events(type: string, limit = 500): Promise<RunnerEvent[]> {
+    const filters = encodeURIComponent(JSON.stringify([{ columnName: 'event_type', operator: 'EQ', value: type }]));
+    const res = await this.eventsFetch('GET', `/events?limit=${limit}&filters=${filters}`);
+    if (res.status === 404) return [];
+    if (!res.ok) throw new Error(`reading ${type} events failed: HTTP ${res.status}`);
+    const rows = (await res.json()) as RunnerEvent[];
+    return rows.filter((e) => e.event_type === type)
+      .sort((a, b) => Date.parse(b.occurred_at ?? b.created_at ?? '') - Date.parse(a.occurred_at ?? a.created_at ?? ''));
+  }
+
+  /** The newest event of `type` on a ticket, or undefined — e.g. the `pushed` tip QA verifies against. */
+  async latestEvent(ticketId: string, type: string): Promise<RunnerEvent | undefined> {
+    return (await this.events(type)).find((e) => e.record_id === ticketId);
+  }
+
+  /** The event-log routes hang off the Issues data model; @tablation/client has no resource for them yet. */
+  private eventsFetch(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
+    return fetch(`${this.route.baseUrl}/api/data-models/${this.models.issues}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${resolveApiKey(this.route)}`,
+        'User-Agent': this.userAgent,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   }
 

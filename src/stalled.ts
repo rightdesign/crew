@@ -29,7 +29,7 @@
  */
 
 import type { Contract } from './contract.ts';
-import type { Comment, ShipRow, Ticket } from './tracker.ts';
+import type { Comment, RunnerEvent, ShipRow, Ticket } from './tracker.ts';
 import { shipName, ticketHolderShipId } from './ship-affinity.ts';
 import { raiseShipAttention, clearShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import type { Emitter } from './events.ts';
@@ -77,6 +77,7 @@ export function planStalled(
   holds: Set<string> = new Set(),
   now: number = Date.now(),
   wm?: WorkModes,
+  events: RunnerEvent[] = [],
 ): Stalled[] {
   const watched = new Set([contract.statuses.building, contract.statuses.handoff, contract.statuses.verifying]);
   const byTicket = new Map<string, Comment[]>();
@@ -90,7 +91,9 @@ export function planStalled(
     if (!watched.has(t.status)) continue;
     if (t.assignee_id && holds.has(t.assignee_id)) continue;
     const mine = byTicket.get(t.id) ?? [];
-    const lastMarker = Math.max(0, ...mine.filter((c) => (c.body ?? '').includes(STALLED_MARKER)).map((c) => ms(c.created_at)));
+    const lastMarker = Math.max(0, ...events
+      .filter((e) => e.record_id === t.id && e.event_type === 'stalled')
+      .map((e) => ms(e.occurred_at ?? e.created_at ?? '')));
     const lastActivityAt = Math.max(
       ms(t.updated_at),
       ...mine.filter((c) => !(c.body ?? '').includes(STALLED_MARKER)).map((c) => ms(c.created_at)),
@@ -116,7 +119,7 @@ ${who}`;
 }
 
 export interface StalledWriter {
-  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
 export interface StalledLog {
@@ -162,7 +165,7 @@ export async function applyStalled(
       continue;
     }
     try {
-      await writer.postEvent(s.ticket.id, stalledComment(s, ships, now), memberId);
+      await writer.postEvent(s.ticket.id, stalledComment(s, ships, now), memberId, 'stalled');
       r.announced++;
       log.warn(`stalled at ${s.ticket.status} — ${s.holderShipId ? 'flagged on the holder' : 'commented, no holder'}`, x);
     } catch (e) {

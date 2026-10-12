@@ -33,7 +33,7 @@
  */
 
 import type { Contract } from './contract.ts';
-import type { Ticket, Comment } from './tracker.ts';
+import type { Ticket, RunnerEvent } from './tracker.ts';
 import type { MergeCandidate } from './release.ts';
 
 /** A marker in the note, so a repeat is recognisable. */
@@ -73,19 +73,19 @@ export type StrandedOutcome =
   | { kind: 'failed'; why: string };
 
 /** How many times this ticket has already been flagged as stranded. */
-export const priorStrandedFlags = (ticket: Ticket, comments: Comment[]): number =>
-  comments.filter((c) => c.ticket_id === ticket.id && (c.body ?? '').includes(STRANDED_MARKER)).length;
+export const priorStrandedFlags = (ticket: Ticket, events: RunnerEvent[]): number =>
+  events.filter((e) => e.record_id === ticket.id && e.event_type === 'stranded_flagged').length;
 
 export function planStrandedVerified(
-  candidate: MergeCandidate, base: string, remote: string, comments: Comment[],
+  candidate: MergeCandidate, base: string, remote: string, events: RunnerEvent[],
 ): StrandedVerified {
-  const stamps = comments
-    .filter((c) => c.ticket_id === candidate.ticket.id && (c.body ?? '').includes(STRANDED_MARKER))
-    .map((c) => Date.parse(c.created_at))
+  const stamps = events
+    .filter((e) => e.record_id === candidate.ticket.id && e.event_type === 'stranded_flagged')
+    .map((e) => Date.parse(e.occurred_at ?? e.created_at ?? ''))
     .filter((n) => !Number.isNaN(n));
   return {
     candidate, base, remote,
-    priorFlags: priorStrandedFlags(candidate.ticket, comments),
+    priorFlags: priorStrandedFlags(candidate.ticket, events),
     lastFlaggedAt: stamps.length ? Math.max(...stamps) : undefined,
   };
 }
@@ -112,7 +112,7 @@ The crew will not close this on its own.`;
 
 export interface StrandedWriter {
   updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
-  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
 export interface StrandedLog {
@@ -156,7 +156,7 @@ export async function applyStrandedVerified(
         status: contract.statuses.needsHuman,
         ...(operatorId ? { assignee_id: operatorId } : {}),
       });
-      await writer.postEvent(s.candidate.ticket.id, escalateComment(s), memberId).catch(() => {
+      await writer.postEvent(s.candidate.ticket.id, escalateComment(s), memberId, 'stranded_escalated').catch(() => {
         log.warn('escalated, but the note failed to post', t);
       });
       log.warn(`still nothing to merge after a flag — escalated to ${contract.statuses.needsHuman}`, t);
@@ -172,7 +172,7 @@ export async function applyStrandedVerified(
   }
 
   try {
-    await writer.postEvent(s.candidate.ticket.id, flagComment(s), memberId).catch(() => {
+    await writer.postEvent(s.candidate.ticket.id, flagComment(s), memberId, 'stranded_flagged').catch(() => {
       log.warn('flagged, but the note failed to post', t);
     });
     log.emit('flagged as stranded at verified — will escalate if still unplaceable next cycle', t);

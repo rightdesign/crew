@@ -4,7 +4,7 @@ import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planStalled, applyStalled, stalledKey, STALLED_AFTER_MS, STALLED_MARKER, type StalledWriter,
 } from '../src/stalled.ts';
-import type { Ticket, Comment, ShipRow } from '../src/tracker.ts';
+import type { Ticket, Comment, RunnerEvent, ShipRow } from '../src/tracker.ts';
 
 const NOW = Date.parse('2026-10-06T12:00:00Z');
 const at = (msAgo: number): string => new Date(NOW - msAgo).toISOString();
@@ -40,13 +40,16 @@ test('a ship engaged on the ticket, and a ticket assigned to a hold, are never s
 });
 
 test('a stalled event newer than the last activity marks it announced; new activity re-arms it', () => {
-  const marker = comment({ id: 'c2', body: `${STALLED_MARKER} stalled`, created_at: at(OLD - 120_000) });
-  const [s] = planStalled([ticket()], [comment(), marker], ships(), DEFAULT_CONTRACT, new Set(), NOW);
+  const marker: RunnerEvent = { record_id: 't1', event_type: 'stalled', message: `${STALLED_MARKER} stalled`, occurred_at: at(OLD - 120_000) };
+  const [s] = planStalled([ticket()], [comment()], ships(), DEFAULT_CONTRACT, new Set(), NOW, undefined, [marker]);
   assert.equal(s?.announced, true);
-  const older = comment({ id: 'c0', body: `${STALLED_MARKER} earlier stall`, created_at: at(OLD * 2) });
+  const older: RunnerEvent = { record_id: 't1', event_type: 'stalled', message: `${STALLED_MARKER} earlier stall`, occurred_at: at(OLD * 2) };
   const later = comment({ id: 'c3', created_at: at(OLD) });
-  const [again] = planStalled([ticket()], [older, later], ships(), DEFAULT_CONTRACT, new Set(), NOW);
+  const [again] = planStalled([ticket()], [later], ships(), DEFAULT_CONTRACT, new Set(), NOW, undefined, [older]);
   assert.equal(again?.announced, false);
+  const other: RunnerEvent = { ...marker, record_id: 'someone-else' };
+  const [unrelated] = planStalled([ticket()], [comment()], ships(), DEFAULT_CONTRACT, new Set(), NOW, undefined, [other]);
+  assert.equal(unrelated?.announced, false, "another ticket's stall event must not mark this one announced");
 });
 
 function writer() {
@@ -86,8 +89,8 @@ test('an unheld stall at any watched status is commented on and never PATCHed', 
 
 test('an announced stall writes nothing again, and a dry run writes nothing at all', async () => {
   const { w, patches, notes } = writer();
-  const marker = comment({ id: 'c2', body: STALLED_MARKER, created_at: at(OLD - 120_000) });
-  const done = planStalled([ticket({ held_by_ship_id: null })], [marker], ships(), DEFAULT_CONTRACT, new Set(), NOW);
+  const marker: RunnerEvent = { record_id: 't1', event_type: 'stalled', message: STALLED_MARKER, occurred_at: at(OLD - 120_000) };
+  const done = planStalled([ticket({ held_by_ship_id: null })], [], ships(), DEFAULT_CONTRACT, new Set(), NOW, undefined, [marker]);
   await applyStalled(w, done, ships(), 'seat', null, silent, false, NOW);
   const fresh = planStalled([ticket({ held_by_ship_id: null })], [], ships(), DEFAULT_CONTRACT, new Set(), NOW);
   await applyStalled(w, fresh, ships(), 'seat', null, silent, true, NOW);

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gateRedTickets, gateRedComment, alreadyReported, lastLines, GATE_RED_AFTER } from '../src/gate-red.ts';
 import type { MergeCandidate } from '../src/release.ts';
-import type { Ticket, Comment } from '../src/tracker.ts';
+import type { Ticket, RunnerEvent } from '../src/tracker.ts';
 
 const cand = (id: string, over: Partial<MergeCandidate> = {}): MergeCandidate =>
   ({ ticket: { id, issue_id: id } as Ticket, branch: null, entries: [], usedFallback: false, bump: 'patch', majorRequested: false, ...over });
@@ -21,7 +21,7 @@ test('gate-red comment names the hook, head and output, and is recognised on rep
   assert.match(body, /pnpm -r typecheck/);
   assert.match(body, /abcdef12/);
   assert.match(body, /error TS2353/);
-  const c = { ticket_id: 'A', body } as Comment;
+  const c: RunnerEvent = { record_id: 'A', event_type: 'gate_red', message: body };
   assert.equal(alreadyReported({ id: 'A' } as Ticket, g, [c]), true);
   assert.equal(alreadyReported({ id: 'B' } as Ticket, g, [c]), false);
   assert.equal(alreadyReported({ id: 'A' } as Ticket, { ...g, sha: 'ffffffff0000' }, [c]), false);

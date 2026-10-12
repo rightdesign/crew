@@ -77,8 +77,10 @@ test('a real cycle PARKS a blocked ticket in the tracker, not just in the log', 
     assert.equal(t.row(MODELS.issues, 'i1')?.status, 'blocked', 'the blocked ticket must actually be parked');
     assert.ok(t.writes.some((w) => w.method === 'PATCH' && w.id === 'i1' && w.body.status === 'blocked'));
     // and it explains itself
-    assert.ok(t.writes.some((w) => w.method === 'POST' && w.model === MODELS.comments
-      && String(w.body.body).includes('Parked as **Blocked**') && w.body.kind === 'event'));
+    // and goes to the event log, not Comments (CREW-1574)
+    assert.ok(t.events.some((e) => e.recordId === 'i1' && e.body.type === 'blocked_sweep'
+      && String(e.body.message).includes('Parked as **Blocked**')));
+    assert.equal(t.writes.some((w) => w.method === 'POST' && w.model === MODELS.comments), false);
   } finally { await t.stop(); }
 });
 

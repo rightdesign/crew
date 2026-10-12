@@ -181,7 +181,6 @@ export function buildingRoleHasWork(
     (c) =>
       c.created_at > i.watermark &&
       c.team_member_id !== me &&
-      (c.kind ?? 'comment') !== 'event' &&
       watchedIds.has(c.ticket_id),
   ).length;
 

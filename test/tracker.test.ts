@@ -333,31 +333,68 @@ test('fileTicket() writes no ship_id when this ship has no Ships row, but still 
   assert.deepEqual(creates[0]!.body, { title: 'boom', filed_by_id: 'seat-dev' });
 });
 
-test('postEvent() stamps ship_id on the comment when the Comments table has it (CREW-1371)', async (t) => {
-  const creates = mockAuthorshipApi(t, {
-    issueFields: [],
-    commentFields: ['body', 'ship_id'],
-    ships: [{ id: 'ship-row-1', name: 'test-ship' }],
-  });
+test('postEvent() posts to the Issues event log with the seat as actor and the ship in metadata (CREW-1574)', async (t) => {
+  mockAuthorshipApi(t, { issueFields: [], commentFields: ['body'], ships: [{ id: 'ship-row-1', name: 'test-ship' }] });
+  const calls: Array<{ method?: string; url: string; body: Record<string, unknown> }> = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/events')) {
+      calls.push({ method: init?.method, url, body: JSON.parse(init!.body as string) });
+      return new Response('{}', { status: 201 });
+    }
+    return inner(input, init);
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = inner; });
   const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
-  await tracker.postEvent('ticket-1', 'hello', 'seat-dev');
+  await tracker.postEvent('ticket-1', 'hello', 'seat-dev', 'pushed');
 
-  assert.equal(creates[0]!.model, 'comments-model-id');
-  assert.deepEqual(creates[0]!.body, {
-    ticket_id: 'ticket-1', body: 'hello', team_member_id: 'seat-dev', kind: 'event', ship_id: 'ship-row-1',
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, 'POST');
+  assert.match(calls[0]!.url, /\/api\/data-models\/issues-model-id\/records\/ticket-1\/events$/);
+  assert.deepEqual(calls[0]!.body, {
+    type: 'pushed', message: 'hello', actorRecordId: 'seat-dev', metadata: { ship_id: 'ship-row-1' },
   });
 });
 
-test('postEvent() leaves ship_id off a comment on a Comments table without the column', async (t) => {
-  const creates = mockAuthorshipApi(t, {
-    issueFields: [],
-    commentFields: ['body'],
-    ships: [{ id: 'ship-row-1', name: 'test-ship' }],
-  });
+test('postEvent() names the missing setting when the Issues table has no event log (CREW-1574)', async (t) => {
+  mockAuthorshipApi(t, { issueFields: [], commentFields: [], ships: [] });
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    /\/events(\?|$)/.test(String(input)) ? new Response('{}', { status: 404 }) : inner(input, init)) as typeof fetch;
+  t.after(() => { globalThis.fetch = inner; });
   const tracker = new Tracker(ROUTE_WITH_SHIPS(), { userAgent: 'crew-test', name: 'test-ship' });
-  await tracker.postEvent('ticket-1', 'hello', 'seat-dev');
 
-  assert.equal('ship_id' in creates[0]!.body, false);
+  await assert.rejects(() => tracker.postEvent('ticket-1', 'hello', 'seat-dev'), /Event log/);
+  assert.equal(await tracker.hasEventLog(), false);
+});
+
+test('events() asks the table-wide log for one event_type, newest first, and reads a missing log as empty (CREW-1574)', async (t) => {
+  const urls: string[] = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes('/events')) {
+      return new Response(JSON.stringify([
+        { record_id: 'a', event_type: 'stalled', message: 'old', occurred_at: '2026-10-12T00:00:00Z' },
+        { record_id: 'a', event_type: 'stalled', message: 'new', occurred_at: '2026-10-12T01:00:00Z' },
+        { record_id: 'b', event_type: 'pushed', message: 'other type', occurred_at: '2026-10-12T02:00:00Z' },
+      ]), { status: 200 });
+    }
+    return new Response('[]', { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = inner; });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+
+  const rows = await tracker.events('stalled');
+  assert.deepEqual(rows.map((r) => r.message), ['new', 'old']);
+  assert.match(decodeURIComponent(urls[0]!), /\/api\/data-models\/issues-model-id\/events\?.*"columnName":"event_type","operator":"EQ","value":"stalled"/);
+  assert.equal((await tracker.latestEvent('a', 'stalled'))?.message, 'new');
+  assert.equal(await tracker.latestEvent('zzz', 'stalled'), undefined);
+
+  globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+  assert.deepEqual(await tracker.events('stalled'), []);
 });
 
 test('missingAuthorshipColumns() names each column the workspace lacks, so doctor can say what to add', async (t) => {

@@ -323,9 +323,9 @@ export function filingErrors(tickets: Ticket[], opts: FilingErrorOptions = {}): 
 /**
  * What the crew writes on a ticket when it parks or restores one.
  *
- * An `event` comment, not prose: it is the crew's audit trail, and `kind`
- * keeps it out of the "new comment from someone else" wake signal so the crew
- * does not wake itself.
+ * Posted to the Issues event log, not Comments: it is the crew's audit trail,
+ * and living outside Comments keeps it out of the "new comment from someone
+ * else" wake signal so the crew does not wake itself.
  */
 export function sweepComment(step: SweepStep): string {
   return step.action === 'park'
@@ -339,7 +339,7 @@ This restores the status it was approved at before being parked; it is back in t
 
 export interface SweepWriter {
   updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown>;
-  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
 /**
@@ -388,7 +388,7 @@ export async function applySweep(
         { ticket: step.ticket.issue_id, step: 'sweep' },
       );
       try {
-        await writer.postEvent(step.ticket.id, sweepComment(step), memberId);
+        await writer.postEvent(step.ticket.id, sweepComment(step), memberId, 'blocked_sweep');
       } catch {
         log.warn('status changed but the note failed to post', { ticket: step.ticket.issue_id, step: 'sweep' });
       }

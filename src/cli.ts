@@ -1369,11 +1369,11 @@ async function releasePhase(
     if (outcome.gateRed && !dryRun) {
       try {
         const g = outcome.gateRed;
-        const comments = await tracker.comments();
+        const reported = await tracker.events('gate_red');
         const seat = releaseSeat(c);
         for (const t of gateRedTickets(outcome.merged, outcome.decision.merges)) {
-          if (alreadyReported(t, g, comments)) continue;
-          await tracker.postEvent(t.id, gateRedComment(g), seat);
+          if (alreadyReported(t, g, reported)) continue;
+          await tracker.postEvent(t.id, gateRedComment(g), seat, 'gate_red');
           remit.warn(`test gate red for ${g.count} cycles — noted on the ticket`, { ticket: t.issue_id, step: 'merge' });
         }
         state.release(scope).noteTestGateReported(g.sha);
@@ -1444,16 +1444,17 @@ async function releasePhase(
     }
 
     if ((outcome.conflicts?.length || outcome.unbuildable?.length)) {
-      // Comments are fetched only when one of these actually happens, which
+      // Prior hand-back/flag events are fetched only when one of these actually happens, which
       // is almost never — it costs a request on the rare cycle that needs
       // one, and none at all on the rest. Shared between both loops below.
-      const comments = await tracker.comments();
+      const handedBack = await tracker.events('conflict_handed_back');
+      const flagged = await tracker.events('stranded_flagged');
       const seat = releaseSeat(c);
 
       for (const f of outcome.conflicts ?? []) {
         try {
           const bounce = planConflictBounce(
-            target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, comments,
+            target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, handedBack,
           );
           const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
           if (r.kind === 'failed') {
@@ -1469,7 +1470,7 @@ async function releasePhase(
 
       for (const cand of outcome.unbuildable ?? []) {
         try {
-          const stranded = planStrandedVerified(cand, repo.branch.base, repo.branch.remote, comments);
+          const stranded = planStrandedVerified(cand, repo.branch.base, repo.branch.remote, flagged);
           const r = await applyStrandedVerified(
             tracker, stranded, tracker.contract, c.resolved?.operator, seat, remit, dryRun,
           );

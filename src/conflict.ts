@@ -39,7 +39,7 @@
 import { git, gitOk, worktrees, GitError } from './git.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
-import type { Ticket, Comment } from './tracker.ts';
+import type { Ticket, RunnerEvent } from './tracker.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
 export const BOUNCE_MARKER = '<!-- crew:merge-conflict -->';
@@ -89,8 +89,8 @@ export function worktreeForBranch(cwd: string, branch: string): string | null {
 }
 
 /** How many times the crew has already handed this ticket back. */
-export const priorBounces = (ticket: Ticket, comments: Comment[]): number =>
-  comments.filter((c) => c.ticket_id === ticket.id && (c.body ?? '').includes(BOUNCE_MARKER)).length;
+export const priorBounces = (ticket: Ticket, events: RunnerEvent[]): number =>
+  events.filter((e) => e.record_id === ticket.id && e.event_type === 'conflict_handed_back').length;
 
 export function planConflictBounce(
   cwd: string,
@@ -98,12 +98,12 @@ export function planConflictBounce(
   branch: string,
   base: string,
   paths: string[],
-  comments: Comment[],
+  events: RunnerEvent[],
 ): ConflictBounce {
   return {
     ticket, branch, base, paths,
     worktree: worktreeForBranch(cwd, branch),
-    priorBounces: priorBounces(ticket, comments),
+    priorBounces: priorBounces(ticket, events),
   };
 }
 
@@ -165,7 +165,7 @@ Either \`${b.base}\` is moving faster than this branch can absorb it, or this ti
 
 export interface ConflictWriter {
   updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown>;
-  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
 export interface ConflictLog {
@@ -199,7 +199,7 @@ export async function applyConflictBounce(
     }
     try {
       await writer.updateTicket(b.ticket.id, { status: contract.statuses.needsHuman }, b.ticket.updated_at);
-      await writer.postEvent(b.ticket.id, escalateComment(b), memberId).catch(() => {
+      await writer.postEvent(b.ticket.id, escalateComment(b), memberId, 'conflict_escalated').catch(() => {
         log.warn('escalated, but the note failed to post', t);
       });
       log.warn(`conflicts again after a hand-back — escalated to ${contract.statuses.needsHuman}`, t);
@@ -252,7 +252,7 @@ export async function applyConflictBounce(
     await writer.updateTicket(
       b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
     );
-    await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId).catch(() => {
+    await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId, 'conflict_handed_back').catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });
     log.emit(

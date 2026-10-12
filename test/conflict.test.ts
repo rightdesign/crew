@@ -10,7 +10,7 @@ import {
   planConflictBounce, applyConflictBounce, refreshBranch, worktreeForBranch,
   priorBounces, BOUNCE_MARKER, type ConflictWriter, type ConflictLog,
 } from '../src/conflict.ts';
-import type { Ticket, Comment } from '../src/tracker.ts';
+import type { Ticket, RunnerEvent } from '../src/tracker.ts';
 
 const silent: ConflictLog = { emit: () => {}, warn: () => {} };
 
@@ -155,8 +155,8 @@ test('conflicting a second time escalates instead of looping through the lanes',
   moveBase(g, dir);
   const { w, patches, notes } = writer();
 
-  const already: Comment[] = [
-    { id: 'c1', ticket_id: 'row-1', body: `${BOUNCE_MARKER}\nhanded back earlier`, created_at: '2026-01-01T00:00:00Z' } as Comment,
+  const already: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\nhanded back earlier`, occurred_at: '2026-01-01T00:00:00Z' },
   ];
   const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], already);
   assert.equal(b.priorBounces, 1);
@@ -172,8 +172,8 @@ test('an escalation never clobbers a ticket the board already moved since this r
   moveBase(g, dir);
   const { w, notes } = staleWriter();
 
-  const already: Comment[] = [
-    { id: 'c1', ticket_id: 'row-1', body: `${BOUNCE_MARKER}\nhanded back earlier`, created_at: '2026-01-01T00:00:00Z' } as Comment,
+  const already: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\nhanded back earlier`, occurred_at: '2026-01-01T00:00:00Z' },
   ];
   const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], already);
 
@@ -219,14 +219,14 @@ test('worktreeForBranch finds by branch, not by directory name', () => {
   assert.equal(worktreeForBranch(dir, 'issue-404'), null);
 });
 
-test('priorBounces counts only this ticket, and only crew hand-back notes', () => {
+test('priorBounces counts only this ticket, and only conflict hand-back events', () => {
   const t = ticket();
-  const comments = [
-    { id: 'a', ticket_id: 'row-1', body: `${BOUNCE_MARKER}\nx`, created_at: '' },
-    { id: 'b', ticket_id: 'row-2', body: `${BOUNCE_MARKER}\ny`, created_at: '' },
-    { id: 'c', ticket_id: 'row-1', body: 'a person talking about a merge conflict', created_at: '' },
-  ] as Comment[];
-  assert.equal(priorBounces(t, comments), 1);
+  const events: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\nx` },
+    { record_id: 'row-2', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\ny` },
+    { record_id: 'row-1', event_type: 'stalled', message: 'a different runner event' },
+  ];
+  assert.equal(priorBounces(t, events), 1);
 });
 
 test('refreshBranch reports the paths the branch itself disagrees about', () => {

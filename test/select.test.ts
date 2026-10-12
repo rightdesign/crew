@@ -85,9 +85,6 @@ test('a new comment from someone else wakes a role; our own does not', () => {
   assert.equal(roleHasWork('dev', mine).hasWork, false);
   const theirs = input({ tickets: [t], comments: [{ ticket_id: 'a', team_member_id: 'qa-1', created_at: at }] as any });
   assert.equal(roleHasWork('dev', theirs).hasWork, true);
-  // an `event` comment is the loop's own audit trail and must not wake anyone
-  const ev = input({ tickets: [t], comments: [{ ticket_id: 'a', team_member_id: 'qa-1', kind: 'event', created_at: at }] as any });
-  assert.equal(roleHasWork('dev', ev).hasWork, false);
 });
 
 test('a comment older than the watermark does not wake anyone', () => {

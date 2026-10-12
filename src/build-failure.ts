@@ -135,7 +135,7 @@ export async function applyBuildFailureBounce(
     await writer.updateTicket(
       b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
     );
-    await writer.postEvent(b.ticket.id, buildFailureComment(b), memberId).catch(() => {
+    await writer.postEvent(b.ticket.id, buildFailureComment(b), memberId, 'build_failed').catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });
     log.emit(`handed back to ${contract.statuses.building} — breaks the ${b.hook} hook once merged with the rest`, t);

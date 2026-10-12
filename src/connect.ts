@@ -18,7 +18,7 @@
  * that part shipped as ISSUE-609's device-authorization handshake instead.
  */
 
-import { DEFAULT_CONTRACT } from './contract.ts';
+import { DEFAULT_CONTRACT, EVENT_LOG_MISSING } from './contract.ts';
 import { ensureLockRows, releaseLockScope, type LockProvisionClient } from './board-lock.ts';
 import { PERSONA_NAME } from './agents.ts';
 import type { RoleName } from './config.ts';
@@ -459,6 +459,18 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         .map((opt) => ({ value: opt.value, label: opt.label ?? undefined, position: opt.position ?? undefined }));
     } catch {
       // Silent, not added to `problems` — see the field's own doc comment.
+    }
+  }
+
+  // Crew writes its audit trail to the Issues table's event log (CREW-1574),
+  // so a table without one is a problem, not an optional shape. 404 is the
+  // API's way of saying the setting is off; any other failure is left alone
+  // rather than blamed on the setting.
+  if (out.models.issues) {
+    try {
+      await get(o, `/data-models/${out.models.issues}/events?limit=1`);
+    } catch (e) {
+      if (e instanceof ConnectHttpError && e.status === 404) problems.push(EVENT_LOG_MISSING);
     }
   }
 

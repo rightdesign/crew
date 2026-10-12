@@ -5,7 +5,7 @@ import {
   planStrandedVerified, applyStrandedVerified, priorStrandedFlags, STRANDED_MARKER,
   type StrandedWriter, type StrandedLog,
 } from '../src/stranded-verified.ts';
-import type { Ticket, Comment } from '../src/tracker.ts';
+import type { Ticket, RunnerEvent } from '../src/tracker.ts';
 import type { MergeCandidate } from '../src/release.ts';
 
 const silent: StrandedLog = { emit: () => {}, warn: () => {} };
@@ -46,8 +46,8 @@ test('first sighting leaves a note and touches neither status nor assignee', asy
 
 test('still unplaceable after a prior flag escalates to a person', async () => {
   const { w, patches, notes } = writer();
-  const already: Comment[] = [
-    { id: 'c1', ticket_id: 'row-1', body: `${STRANDED_MARKER}\nflagged earlier`, created_at: '2026-01-01T00:00:00Z' } as Comment,
+  const already: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'stranded_flagged', message: `${STRANDED_MARKER}\nflagged earlier`, occurred_at: '2026-01-01T00:00:00Z' },
   ];
   const s = planStrandedVerified(candidate(), 'main', 'origin', already);
   assert.equal(s.priorFlags, 1);
@@ -62,8 +62,8 @@ test('still unplaceable after a prior flag escalates to a person', async () => {
 
 test('escalation omits assignee_id when no operator is configured', async () => {
   const { w, patches } = writer();
-  const already: Comment[] = [
-    { id: 'c1', ticket_id: 'row-1', body: STRANDED_MARKER, created_at: '' } as Comment,
+  const already: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'stranded_flagged', message: STRANDED_MARKER },
   ];
   const s = planStrandedVerified(candidate(), 'main', 'origin', already);
 
@@ -80,29 +80,29 @@ test('a dry run reports and writes nothing, either pass', async () => {
   assert.deepEqual(patches, []);
   assert.deepEqual(notes, []);
 
-  const already: Comment[] = [{ id: 'c1', ticket_id: 'row-1', body: STRANDED_MARKER, created_at: '' } as Comment];
+  const already: RunnerEvent[] = [{ record_id: 'row-1', event_type: 'stranded_flagged', message: STRANDED_MARKER }];
   const second = planStrandedVerified(candidate(), 'main', 'origin', already);
   await applyStrandedVerified(w, second, DEFAULT_CONTRACT, 'operator-1', 'seat', silent, true);
   assert.deepEqual(patches, []);
   assert.deepEqual(notes, []);
 });
 
-test('priorStrandedFlags counts only this ticket, and only crew stranded-verified notes', () => {
+test('priorStrandedFlags counts only this ticket, and only stranded-flag events', () => {
   const t = ticket();
-  const comments = [
-    { id: 'a', ticket_id: 'row-1', body: `${STRANDED_MARKER}\nx`, created_at: '' },
-    { id: 'b', ticket_id: 'row-2', body: `${STRANDED_MARKER}\ny`, created_at: '' },
-    { id: 'c', ticket_id: 'row-1', body: 'a person talking about a stranded ticket', created_at: '' },
-  ] as Comment[];
-  assert.equal(priorStrandedFlags(t, comments), 1);
+  const events: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'stranded_flagged', message: `${STRANDED_MARKER}\nx` },
+    { record_id: 'row-2', event_type: 'stranded_flagged', message: `${STRANDED_MARKER}\ny` },
+    { record_id: 'row-1', event_type: 'stranded_escalated', message: 'the escalation, not a flag' },
+  ];
+  assert.equal(priorStrandedFlags(t, events), 1);
 });
 
 test('a second flag inside the gap waits instead of escalating (CREW-1364)', async () => {
   const { w, patches } = writer();
   const t0 = Date.parse('2026-10-05T10:00:00Z');
-  const comments = [{
-    id: 'c1', ticket_id: 'row-1', body: `${STRANDED_MARKER} flagged`, created_at: new Date(t0).toISOString(),
-  }] as Comment[];
+  const comments: RunnerEvent[] = [{
+    record_id: 'row-1', event_type: 'stranded_flagged', message: `${STRANDED_MARKER} flagged`, occurred_at: new Date(t0).toISOString(),
+  }];
   const s = planStrandedVerified(candidate(), 'main', 'origin', comments);
   const soon = await applyStrandedVerified(w, s, DEFAULT_CONTRACT, 'operator-1', 'seat', silent, false, t0 + 3 * 60 * 1000);
   assert.equal(soon.kind, 'waiting');

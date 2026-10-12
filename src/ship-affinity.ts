@@ -106,7 +106,7 @@ export function shipIdByName(ships: ShipRow[], name: string): string | null {
  * unnecessary. Best effort — a failed comment never blocks the work.
  */
 export async function noteReaccepted(
-  tracker: { postEvent(ticketId: string, body: string, memberId: string): Promise<void> },
+  tracker: { postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void> },
   result: { ticket: Ticket | null; reaccepted: boolean },
   seat: string,
   shipLabel: string,
@@ -117,6 +117,7 @@ export async function noteReaccepted(
       result.ticket.id,
       `Re-accepted while held by ${shipLabel}; resuming there, not re-claiming. Setting a held ticket back to \`accepted\` is not needed — to move it to another ship, clear \`held_by_ship_id\`.`,
       seat,
+      'reaccepted',
     );
   } catch {
     // an audit comment; the resume itself already happened
@@ -165,7 +166,7 @@ export async function applyHoldReleases(
  * yet); a failed comment never blocks the work.
  */
 export async function noteTakeover(
-  tracker: { postEvent(ticketId: string, body: string, memberId: string): Promise<void> },
+  tracker: { postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void> },
   result: { ticket: Ticket | null; tookOverFrom: string | null },
   seat: string,
   ships: ShipRow[],
@@ -185,6 +186,7 @@ export async function noteTakeover(
       `Taken over from ${shipName(ships, result.tookOverFrom)} (not seen recently) by ${myShipName}; ` +
         (sha ? `continuing from \`${sha}\` on origin.` : 'no branch commit was found on origin to continue from.'),
       seat,
+      'taken_over',
     );
   } catch {
     // an audit comment; the takeover itself already happened

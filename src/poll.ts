@@ -94,13 +94,14 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const tracker = new Tracker(route, ship);
   emit.enter('poll');
 
-  const [tickets, comments, crewRows, epicRows, ships, projectModes] = await Promise.all([
+  const [tickets, comments, crewRows, epicRows, ships, projectModes, stalledEvents] = await Promise.all([
     tracker.openTickets(),
     tracker.comments(200),
     tracker.crewRows(),
     tracker.epicRows(),
     tracker.shipRows(),
     tracker.projectWorkModes(),
+    tracker.events('stalled'),
   ]);
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
@@ -158,7 +159,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   }
   const sweep = planSweep(tickets, info, blocked, workModes);
   const holdReleases = planHoldReleases(tickets, tracker.contract);
-  const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes);
+  const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes, stalledEvents);
   const skipped = skippedByMode(tickets, workModes);
   if (skipped.manual || skipped.hybrid) {
     emit.emit(`sweeps skipped ${skipped.manual} manual/project-less and ${skipped.hybrid} unassigned hybrid ticket(s)`, {

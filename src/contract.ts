@@ -117,10 +117,6 @@ export interface ContractComments {
   parent: string;
   body: string;
   author: string;
-  /** Marks a comment as the runner's own audit trail rather than prose. */
-  kind: string;
-  /** The value of `kind` that means "audit trail" — never wakes a role. */
-  eventKind: string;
   createdAt: string;
   /**
    * The Ships row a comment was posted from (CREW-1371's `ship_id`, "Posted
@@ -279,8 +275,6 @@ export const DEFAULT_CONTRACT: Contract = {
     parent: 'ticket_id',
     body: 'body',
     author: 'team_member_id',
-    kind: 'kind',
-    eventKind: 'event',
     createdAt: 'created_at',
     ship: 'ship_id',
   },
@@ -432,3 +426,7 @@ export function orderFromChoiceOptions(
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
     .map((o) => o.value);
 }
+
+/** What `crew connect` and doctor say when the Issues table has no event log (CREW-1574). */
+export const EVENT_LOG_MISSING =
+  "the Issues table has no event log — crew writes its audit trail there (CREW-1574). In the app, open the Issues table's Data & lifecycle tab and turn on Event log, then rerun.";

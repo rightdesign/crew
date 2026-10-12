@@ -26,7 +26,7 @@ export const FAILURE_ALERT_MARKER = '<!-- crew:failure-alert -->';
 export interface FailureAlertWriter {
   /** `memberId` is the seat filing the ticket, stamped as `filed_by_id` (CREW-1371). */
   fileTicket(fields: Record<string, unknown>, memberId: string): Promise<Ticket>;
-  postEvent(ticketId: string, body: string, memberId: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
 export interface FailureAlertLog {
@@ -75,7 +75,7 @@ export async function applyFailureAlert(
       return { kind: 'commented', issueId: label };
     }
     try {
-      await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\nStill failing: ${n.detail ?? n.headline}`, memberId);
+      await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\nStill failing: ${n.detail ?? n.headline}`, memberId, 'failure_alert');
       log.warn(`release failure recurring — commented on ${label}`, { step: 'release' });
       return { kind: 'commented', issueId: label };
     } catch (e) {

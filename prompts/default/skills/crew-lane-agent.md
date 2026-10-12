@@ -363,7 +363,7 @@ before going further, and never change a ticket's `report_type` yourself.
    `fixed` and `<remote>/<branch>` is missing or not at your worktree's
    HEAD, it sets the ticket back to `in_progress` with an event saying what
    it found, and QA never sees it. When it matches, the runner records
-   `pushed <sha> to <remote>/<branch>` on the ticket; you still state the sha
+   `pushed <sha> to <remote>/<branch>` in the ticket's activity (its event log); you still state the sha
    in your last progress comment.
 
    **The branch on the remote is what QA tests.** Leave it unmerged, and do
