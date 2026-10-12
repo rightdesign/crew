@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.45.0] — 2026-10-12
+
+- ISSUE-1574 The runner records its audit events (pushed, blocked sweeps, stalls, conflict hand-backs, gate-red notes) in the tracker's Issues event log instead of Comments, and reads its own markers back from there.
+- ISSUE-1574 Crew records its audit trail (pushed tips, claims, bounces) in the Issues table's event log instead of as Comments rows; the Issues table must have Event log turned on.
+
 ## [0.44.0] — 2026-10-12
 
 - ISSUE-1581 A failed combined release build now finds the one verified branch that broke it, hands it back to the dev lane with the build output, and ships the rest
