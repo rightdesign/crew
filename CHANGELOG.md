@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.44.0] — 2026-10-12
+
+- ISSUE-1581 A failed combined release build now finds the one verified branch that broke it, hands it back to the dev lane with the build output, and ships the rest
+
 ## [0.43.4] — 2026-10-11
 
 - ISSUE-1577 The Grill-Me skill now sets the Epic to `planned` when its Map goes active.
