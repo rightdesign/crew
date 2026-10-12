@@ -90,6 +90,20 @@ export function planWorktreeSweep(
   return actions;
 }
 
+/**
+ * Ticket numbers of the worktrees that exist in `target` — what the sweep
+ * resolves through the tracker, so its cost follows the worktrees on disk and
+ * not the size of the closed-ticket backlog (CREW-1593).
+ */
+export function worktreeTicketNumbers(target: RepoTarget): string[] {
+  const nums = new Set<string>();
+  for (const w of worktrees(target.dir)) {
+    const m = /(?:^|-)(\d+)$/.exec(basename(w.path));
+    if (m) nums.add(m[1]!);
+  }
+  return [...nums];
+}
+
 export interface SweepLog {
   emit(msg: string, extra?: Record<string, unknown>): unknown;
   warn(msg: string, extra?: Record<string, unknown>): unknown;
@@ -180,7 +194,24 @@ export async function applyWorktreeSweep(
  * branch list instead: one `for-each-ref`, however many tickets are closed,
  * and a branch is a candidate only if its name is exactly a deployed
  * ticket's own branch name (`tabl-1359`, `issue-1359`, `crew-1359-slug`). Anything else is left alone, including the base.
+ *
+ * The tickets passed in come from `remoteBranchTicketNumbers` resolved through
+ * the tracker, not from a closed-ticket listing (CREW-1593).
  */
+export function remoteBranchTicketNumbers(cwd: string, remote: string, base: string): string[] {
+  if (!remoteConfigured(cwd, remote)) return [];
+  const prefix = `refs/remotes/${remote}/`;
+  const refs = (gitOk(cwd, ['for-each-ref', '--format=%(refname)', prefix]) ?? '').split('\n').filter(Boolean);
+  const nums = new Set<string>();
+  for (const ref of refs) {
+    const name = ref.slice(prefix.length);
+    if (name === 'HEAD' || name === base) continue;
+    const m = /^.+?-(\d+)(?:-.*)?$/.exec(name);
+    if (m) nums.add(m[1]!);
+  }
+  return [...nums];
+}
+
 export function planRemoteBranchCleanup(
   cwd: string, remote: string, base: string, tickets: Ticket[], contract: Contract,
 ): string[] {
@@ -227,6 +258,16 @@ export function sweepCandidatesExist(cwd: string, base: string): boolean {
   const linked = worktrees(cwd).slice(1);
   if (linked.some((w) => /(?:^|-)\d+$/.test(basename(w.path)))) return true;
   return localBranches(cwd).some((b) => b !== base && /-\d+(?:-.*)?$/.test(b));
+}
+
+/** Ticket numbers carried by this checkout's local branches (CREW-1592 sweeps those too). */
+export function localBranchTicketNumbers(cwd: string, base: string): string[] {
+  const nums = new Set<string>();
+  for (const b of localBranches(cwd)) {
+    const m = b === base ? null : /^.+?-(\d+)(?:-.*)?$/.exec(b);
+    if (m) nums.add(m[1]!);
+  }
+  return [...nums];
 }
 
 function localBranches(cwd: string): string[] {

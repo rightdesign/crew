@@ -27,24 +27,52 @@ function makeRoute(opts: { shipsModelId?: string; reposModelId?: string; areaMod
   } as unknown as Route;
 }
 
-test('terminalTickets() sorts by updatedAt descending, so a truncated page still holds the most-recently-closed tickets', async (t) => {
+function stubFetch(t: { after: (fn: () => void) => void }, respond: (url: URL) => unknown[]): URL[] {
   const requests: URL[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
-    requests.push(new URL(input instanceof Request ? input.url : String(input)));
-    return new Response(JSON.stringify([]), { status: 200 });
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    requests.push(url);
+    return new Response(JSON.stringify(respond(url)), { status: 200 });
   }) as typeof fetch;
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
+  return requests;
+}
 
+test('ticketsByNumbers() asks for exactly the named numbers, in every spelling they are stored under — no sort, no global closed list (CREW-1593)', async (t) => {
+  const requests = stubFetch(t, () => []);
   const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
-  await tracker.terminalTickets();
+  await tracker.ticketsByNumbers(['1514', '036']);
 
   assert.equal(requests.length, 1);
-  const sortParam = requests[0]!.searchParams.get('sort');
-  assert.ok(sortParam, 'expected a sort query param on the terminalTickets() request');
-  assert.deepEqual(JSON.parse(sortParam), [{ columnName: 'updated_at', direction: 'desc' }]);
+  const filters = JSON.parse(requests[0]!.searchParams.get('filters')!) as Array<{ columnName: string; operator: string; value: string[] }>;
+  assert.equal(filters.length, 1);
+  assert.equal(filters[0]!.columnName, 'issue_id');
+  assert.equal(filters[0]!.operator, 'IN');
+  assert.deepEqual(filters[0]!.value.sort(), ['ISSUE-036', 'ISSUE-1514', 'ISSUE-36']);
+  assert.equal(requests[0]!.searchParams.get('sort'), null);
+});
+
+test('ticketsByNumbers() with nothing to look up makes no request', async (t) => {
+  const requests = stubFetch(t, () => []);
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  assert.deepEqual(await tracker.ticketsByNumbers([]), []);
+  assert.equal(requests.length, 0);
+});
+
+test('ticketsByNumbers() chunks a long list and reports a page that came back full', async (t) => {
+  const full = Array.from({ length: 500 }, (_, i) => ({ id: `r${i}`, issue_id: `ISSUE-${i}` }));
+  const requests = stubFetch(t, (_url) => (requests.length === 1 ? full : []));
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  const limits: number[] = [];
+  const nums = Array.from({ length: 150 }, (_, i) => String(1000 + i));
+  const got = await tracker.ticketsByNumbers(nums, (l) => limits.push(l));
+
+  assert.equal(requests.length, 2, '150 numbers x 1 spelling each is two requests of at most 100');
+  assert.equal(got.length, 500);
+  assert.deepEqual(limits, [500]);
 });
 
 test('setCrewStatus(working, ticketId) patches status, the ticket reference, and a timestamp', async (t) => {

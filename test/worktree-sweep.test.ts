@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planWorktreeSweep, applyWorktreeSweep, planLocalBranchCleanup, applyLocalBranchCleanup,
-  sweepCandidatesExist, type SweepLog,
+  sweepCandidatesExist, worktreeTicketNumbers, type SweepLog,
 } from '../src/worktree-sweep.ts';
 import type { Ticket } from '../src/tracker.ts';
 

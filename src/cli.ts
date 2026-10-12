@@ -84,7 +84,7 @@ import {
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
-import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist } from './worktree-sweep.ts';
+import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
@@ -1181,10 +1181,17 @@ async function sweepClosedTickets(
     // checkout has nothing local to sweep. After a release the pushed-branch
     // cleanup below must still run: it exists for a ship with no local trace.
     if (idle && !sweepCandidatesExist(target.dir, branch.base)) return;
-    const terminal = await tracker.terminalTickets();
-    const verifiedNow = (await tracker.openTickets()).filter((t) => t.status === tracker.contract.statuses.verified);
-    const scoped = ticketsByRepo(c, terminal).byRepo.get(target.name) ?? [];
-    const actions = planWorktreeSweep(target, [...scoped, ...(ticketsByRepo(c, verifiedNow).byRepo.get(target.name) ?? [])], tracker.contract);
+    // CREW-1593: resolve only the tickets this repo has a worktree, a local
+    // branch or a pushed branch for, instead of paging a global closed-ticket
+    // list that a busy board outgrows.
+    const truncated = (limit: number) => remit.warn(`ticket lookup for the sweep hit its ${limit}-row limit; some tickets may be missed`, { step: 'worktree' });
+    const nums = new Set([
+      ...worktreeTicketNumbers(target),
+      ...localBranchTicketNumbers(target.dir, branch.base),
+      ...remoteBranchTicketNumbers(target.dir, branch.remote, branch.base),
+    ]);
+    const scoped = ticketsByRepo(c, await tracker.ticketsByNumbers([...nums], truncated)).byRepo.get(target.name) ?? [];
+    const actions = planWorktreeSweep(target, scoped, tracker.contract);
     if (actions.length) {
       remit.enter('worktree');
       const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote);
@@ -3181,14 +3188,16 @@ switch (command) {
     // (ISSUE-969) — see `planWorktreeSweep`'s own doc comment for why a
     // fixed prefix can no longer be trusted to find every worktree here.
     const tracker = new Tracker(route, cfg.ship);
-    const terminal = await tracker.terminalTickets();
-    const { byRepo } = ticketsByRepo(route, terminal);
-    const verifiedByRepo = ticketsByRepo(
-      route, (await tracker.openTickets()).filter((t) => t.status === tracker.contract.statuses.verified),
-    ).byRepo;
+    // CREW-1593: tickets are resolved from the worktrees/branches that exist,
+    // not from a capped closed-ticket listing.
+    const truncated = (limit: number) => emit.warn(`ticket lookup for the sweep hit its ${limit}-row limit; some tickets may be missed`, { step: 'worktree' });
     for (const r of await resolvedRepos(route)) {
-      const actions = planWorktreeSweep(r, [...(byRepo.get(r.name) ?? []), ...(verifiedByRepo.get(r.name) ?? [])], tracker.contract);
-      const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, byRepo.get(r.name) ?? [], tracker.contract);
+      const wtTickets = ticketsByRepo(route, await tracker.ticketsByNumbers(worktreeTicketNumbers(r), truncated)).byRepo.get(r.name) ?? [];
+      const brTickets = ticketsByRepo(
+        route, await tracker.ticketsByNumbers(remoteBranchTicketNumbers(r.dir, r.config.branch.remote, r.config.branch.base), truncated),
+      ).byRepo.get(r.name) ?? [];
+      const actions = planWorktreeSweep(r, wtTickets, tracker.contract);
+      const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, brTickets, tracker.contract);
       if (stale.length) { anything = true; applyRemoteBranchCleanup(r.dir, r.config.branch.remote, stale, dryRun, emit); }
       if (!actions.length) continue;
       anything = true;

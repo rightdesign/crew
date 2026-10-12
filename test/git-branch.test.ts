@@ -56,7 +56,7 @@ test('worktreeForNumber does not match a different ticket that merely shares a t
 
 // CREW-1364: a branch built on another ship exists here only on the remote.
 import { remoteBranchForIssue, materializeRemoteBranch, deleteRemoteBranch, fetchRemote } from '../src/git.ts';
-import { planRemoteBranchCleanup } from '../src/worktree-sweep.ts';
+import { planRemoteBranchCleanup, remoteBranchTicketNumbers } from '../src/worktree-sweep.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -153,4 +153,10 @@ test('planRemoteBranchCleanup: only branches of deployed tickets, never the base
     c,
   );
   assert.deepEqual(plan.sort(), ['crew-12-some-slug', 'tabl-10']);
+});
+
+test('remoteBranchTicketNumbers: the numbers on pushed ticket branches, never the base (CREW-1593)', () => {
+  const { shipA, sh } = twoShips();
+  for (const b of ['tabl-10', 'crew-12-some-slug', 'issue-7']) { sh(shipA, 'branch', b); sh(shipA, 'push', '-q', 'origin', b); }
+  assert.deepEqual(remoteBranchTicketNumbers(shipA, 'origin', 'main').sort(), ['10', '12', '7']);
 });

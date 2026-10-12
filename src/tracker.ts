@@ -304,37 +304,42 @@ export class Tracker {
   }
 
   /**
-   * Tickets at a terminal, no-longer-open status — the worktree sweep's
-   * input (ISSUE-346).
+   * The tickets behind a set of ticket numbers — the cleanup sweeps' input
+   * (CREW-1593).
    *
-   * The exact complement of `openTickets()`: `closed_deployed`,
-   * `closed_wont_fix`, `closed_duplicate`. `verified` is excluded even
-   * though the contract counts it as resolved for a *blocker*'s purposes —
-   * it is still pre-release, and its worktree is exactly what the release
-   * phase is about to merge.
+   * The sweeps used to fetch "every closed ticket, newest `updated_at` first,
+   * capped at 500" and hope the tickets they cared about were in the page. They
+   * were not once the board held more than 500 closed tickets, and a bulk
+   * write gave 1457 of them one identical `updated_at`, so which ones made the
+   * page was arbitrary and a deployed ticket's worktree/branch was silently
+   * never swept. The caller now names the numbers it actually has a worktree
+   * or remote branch for, so the request is bounded by those and not by how
+   * many tickets are closed.
    *
-   * Sorted most-recently-updated first: a board can hold far more than
-   * `limit` closed tickets (this one already has), and an unordered fetch
-   * has no guarantee which ones a truncated page contains. Ordering by
-   * `updatedAt` descending means a truncated page still holds the tickets
-   * most likely to need their worktree swept — the ones that closed most
-   * recently — rather than an arbitrary, possibly stale slice (ISSUE-403).
+   * Matched on `issue_id`, in the raw, unpadded and 3-digit-padded spellings a
+   * number has been stored under. `onTruncated` is told when a page came back
+   * full, since anything past it would be missing without a trace.
    */
-  async terminalTickets(): Promise<Ticket[]> {
+  async ticketsByNumbers(nums: string[], onTruncated?: (limit: number) => void): Promise<Ticket[]> {
     const c = this.contract;
-    const statuses = closedStatuses(c);
-    if (!statuses.length) return [];
-    const filters: Filter[] = [
-      { columnName: c.columns.status, operator: 'IN', value: statuses },
-    ];
-    const areaId = this.route.resolved?.areaId;
-    if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
-    const params: { filters: string; limit: number; sort: string } = {
-      filters: encodeFilters(filters),
-      limit: 500,
-      sort: encodeSort([{ columnName: c.columns.updatedAt, direction: 'desc' }]),
-    };
-    return this.client.records.list<Ticket>(this.models.issues, params);
+    const keys = new Set<string>();
+    for (const raw of nums) {
+      const unpadded = String(Number.parseInt(raw, 10));
+      for (const n of [raw, unpadded, unpadded.padStart(3, '0')]) keys.add(`ISSUE-${n}`);
+    }
+    const all = [...keys];
+    const out: Ticket[] = [];
+    const limit = 500;
+    // IN lists go in the URL, so keep each request's well under any length cap.
+    for (let i = 0; i < all.length; i += 100) {
+      const page = await this.client.records.list<Ticket>(this.models.issues, {
+        filters: encodeFilters([{ columnName: c.columns.key, operator: 'IN', value: all.slice(i, i + 100) }]),
+        limit,
+      });
+      if (page.length >= limit) onTruncated?.(limit);
+      out.push(...page);
+    }
+    return out;
   }
 
   /**
