@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.45.2] — 2026-10-12
+
+- ISSUE-1592 (CREW-1592) The worktree sweep now runs on every release cycle, including ones where nothing was released, and removes the leftover local branch of a deployed ticket whose worktree is already gone.
+
 ## [0.45.0] — 2026-10-12
 
 - ISSUE-1574 The runner records its audit events (pushed, blocked sweeps, stalls, conflict hand-backs, gate-red notes) in the tracker's Issues event log instead of Comments, and reads its own markers back from there.
