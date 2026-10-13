@@ -85,3 +85,17 @@ test('a tracker write failure is reported, not thrown', async () => {
   assert.equal(out.kind, 'failed');
   assert.match((out as { why: string }).why, /boom/);
 });
+
+test('placement: files with the repo and project ids when supplied', async () => {
+  const { w, filed } = writer();
+  await applyFailureAlert(w, n, 'proj', [], 'seat', silent, false, { repo_id: 'repo-1', project_id: 'proj-1' });
+  assert.equal(filed[0]!.repo_id, 'repo-1');
+  assert.equal(filed[0]!.project_id, 'proj-1');
+});
+
+test('placement: omitted, the ticket is filed without repo or project', async () => {
+  const { w, filed } = writer();
+  await applyFailureAlert(w, n, 'proj', [], 'seat', silent, false);
+  assert.ok(!('repo_id' in filed[0]!));
+  assert.ok(!('project_id' in filed[0]!));
+});

@@ -136,7 +136,7 @@ export function describeRelease(o: {
       level: 'fail',
       headline: `${route}: deploy FAILED`,
       detail: withHookTail(
-        'the version is merged to the base branch but not live — run `crew deploy` to retry; do not re-release',
+        'the version is merged to the base branch but not live — if the deploy target was the problem, run `crew deploy` to retry (do not re-release); if the merged code itself failed to build, fix forward on a ticket branch, and merging it clears the not-retrying guard',
         o.hookFailure,
       ),
     };

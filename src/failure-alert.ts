@@ -65,6 +65,12 @@ export async function applyFailureAlert(
   memberId: string,
   log: FailureAlertLog,
   dryRun: boolean,
+  /**
+   * The failing repo's Repos row id and that row's project, so the ticket is
+   * filed where a project's lanes can see it (CREW-1632). Without them it has
+   * no project prefix and no lane takes it. Omitted when either lookup failed.
+   */
+  placement: { repo_id?: string; project_id?: string } = {},
 ): Promise<FailureAlertOutcome> {
   const existing = findOpenFailureAlert(openTickets, n.headline);
 
@@ -94,6 +100,8 @@ export async function applyFailureAlert(
       report_type: 'bug',
       severity: 's2',
       reporter_name: 'Crew release',
+      ...(placement.repo_id ? { repo_id: placement.repo_id } : {}),
+      ...(placement.project_id ? { project_id: placement.project_id } : {}),
     }, memberId);
     const label = created.issue_id ? displayKey(created) : created.id;
     log.warn(`release failure — filed ${label}`, { step: 'release' });

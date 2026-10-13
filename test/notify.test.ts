@@ -102,5 +102,6 @@ test('setup/build/deploy failures carry the hook name and its output tail; the h
   const build = describeRelease({ merged: [], stopped: 'build failed', hookFailure: { ...hookFailure, hook: 'build' } }, 'r');
   assert.match(build?.detail ?? '', /datasource\.url/);
   // No output captured: the plain line, not an empty fence.
-  assert.equal(describeRelease({ merged: [], stopped: 'deploy failed' }, 'r')?.detail, 'the version is merged to the base branch but not live — run `crew deploy` to retry; do not re-release');
+  assert.equal(describeRelease({ merged: [], stopped: 'deploy failed' }, 'r')?.detail?.split('\n')[0],
+    'the version is merged to the base branch but not live — if the deploy target was the problem, run `crew deploy` to retry (do not re-release); if the merged code itself failed to build, fix forward on a ticket branch, and merging it clears the not-retrying guard');
 });

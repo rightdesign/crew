@@ -1480,7 +1480,18 @@ async function releasePhase(
       // has always done for a deploy failure.
       if (!notified && news.level === 'fail') {
         const memberId = releaseSeat(c);
-        await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun).catch((e) => {
+        // File it under the failing repo's project so that project's lanes can
+        // take it (CREW-1632). A failed lookup files it unplaced, as before.
+        const placement: { repo_id?: string; project_id?: string } = {};
+        try {
+          const repoId = repoIdForName(c, target.name);
+          if (repoId) {
+            placement.repo_id = repoId;
+            const projectId = (await tracker.repoRow(repoId))?.project_id;
+            if (projectId) placement.project_id = projectId;
+          }
+        } catch { /* unplaced beats no alert */ }
+        await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun, placement).catch((e) => {
           remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
       }
