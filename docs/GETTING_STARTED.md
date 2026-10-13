@@ -98,6 +98,12 @@ pass a project explicitly (`crew connect my-workspace/my-product`, or
 `--project`) when you deliberately want a different, non-default tracker
 project.
 
+The template's Issues table carries status rules: a close as won't fix, can't
+reproduce or completed needs a resolution note, and a close as duplicate needs
+a duplicate target. A write a rule refuses comes back as a 422 whose `message`
+is the rule's text and whose `fieldErrors` names the field. Later template
+versions may add rules that depend on who is writing.
+
 `connect` signs you in with device authorization: it prints a code and a link,
 you approve it in the browser, and the resulting credential is stored in your
 OS keychain. You never copy an API key by hand.
