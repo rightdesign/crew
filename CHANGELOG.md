@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.46.1] — 2026-10-13
+
+- ISSUE-1414 Host Passengers clones now show git's real error, use HTTPS when the repo's origin is HTTPS (or ship.cloneScheme says so), and a failing clone is reported once instead of every cycle.
+
 ## [0.46.0] — 2026-10-13
 
 - CREW-1603 Seats write to the tracker as their own agent principal using per-seat agent API keys, with a ship-key fallback and a doctor line per seat.
