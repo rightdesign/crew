@@ -148,7 +148,7 @@ export function createSyncDaemonServer(targets: PassengerCheckoutSyncSpec[], sec
     try {
       const synced: SyncOutcome[] = targets.map((t) => ({
         name: t.name,
-        outcome: syncPassengerCheckout(t.dir, t.remote, t.gitRemoteName, t.base),
+        outcome: syncPassengerCheckout(t.dir, t.remote, t.gitRemoteName, t.base, { originUrl: t.originUrl, scheme: t.cloneScheme }),
       }));
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ synced }));
     } catch (error) {

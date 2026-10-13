@@ -70,6 +70,14 @@ To run a locally built image instead, set `ship.passengerImage` in `crew.yaml`
 crew repo root with `docker build -f Dockerfile.passenger-mcp -t
 crew-passenger-mcp:dev .`, then set `passengerImage: crew-passenger-mcp:dev`.
 
+Host Passengers keeps its own clone of each repo and clones it the way the
+repo's ordinary checkout talks to GitHub: an HTTPS `origin` is cloned over
+HTTPS, an SSH one over SSH. With no ordinary checkout to copy from, it uses
+`ship.cloneScheme` (`ssh` by default; set `https` on a ship with HTTPS-only
+GitHub access). A clone that fails is logged once with git's own message and
+is not retried each cycle; it is retried once the clone URL changes (the
+`origin` or `cloneScheme`), or after deleting `<checkout>.clone-failed`.
+
 To sync containers and tunnels once by hand, run `crew passengers`; the
 scheduler's passengers unit invokes the same command.
 

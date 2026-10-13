@@ -638,6 +638,17 @@ async function syncHostPassengers(): Promise<void> {
     // freshness. A checkout that won't fast-forward (diverged
     // upstream) is reported, not force-reset past.
     for (const r of syncAllPassengerCheckouts(cfg)) {
+      // Once per repo: a repeat means the same clone URL already failed and
+      // was skipped (git.ts#syncPassengerCheckout), so there is nothing new to say.
+      if (r.outcome.action === 'clone-failed') {
+        if (!r.outcome.repeat) {
+          emit.warn(
+            `passenger checkout for ${r.name} could not be cloned (not retried until its clone URL changes): ${r.outcome.detail}`,
+            { step: 'passengers', data: { workspaceId: r.workspaceId, repo: r.name } },
+          );
+        }
+        continue;
+      }
       if (r.outcome.action === 'diverged' || r.outcome.action === 'ff-failed') {
         emit.warn(
           `passenger checkout for ${r.name} is stale: ${r.outcome.detail}`,

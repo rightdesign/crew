@@ -8,11 +8,20 @@
 
 import { execFileSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, openSync, closeSync, writeSync, statSync, unlinkSync,
+  existsSync, mkdirSync, openSync, closeSync, writeSync, statSync, unlinkSync, readFileSync, writeFileSync,
 } from 'node:fs';
 import { dirname, basename } from 'node:path';
 
 export class GitError extends Error {}
+
+/**
+ * An `execFileSync` error stream as text. `stderr`/`stdout` are Buffers on any
+ * call that omits `encoding: 'utf8'`; a bare `.trim()` on one threw a
+ * TypeError that replaced git's real message (CREW-1414).
+ */
+export function streamText(x: unknown): string {
+  return String(x ?? '').trim();
+}
 
 /**
  * The same call without the trailing `.trim()`.
@@ -28,8 +37,8 @@ export function gitRaw(cwd: string, args: string[]): string {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
-    const err = e as { stderr?: string; stdout?: string; message: string };
-    const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
+    const err = e as { stderr?: unknown; stdout?: unknown; message: string };
+    const why = [err.stderr, err.stdout].map(streamText).filter(Boolean).join(' / ');
     throw new GitError(`git ${args.join(' ')}: ${why || err.message.trim()}`);
   }
 }
@@ -42,8 +51,8 @@ export function git(cwd: string, args: string[]): string {
     // there, "nothing to commit, working tree clean" among them. Reading only
     // stderr produced a bare "Command failed" with no cause, which is what
     // made a stalled release phase so hard to read.
-    const err = e as { stderr?: string; stdout?: string; message: string };
-    const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
+    const err = e as { stderr?: unknown; stdout?: unknown; message: string };
+    const why = [err.stderr, err.stdout].map(streamText).filter(Boolean).join(' / ');
     throw new GitError(`git ${args.join(' ')}: ${why || err.message.trim()}`);
   }
 }
@@ -814,16 +823,32 @@ export function worktrees(cwd: string): WorktreeInfo[] {
   return list;
 }
 
+export type CloneScheme = 'ssh' | 'https';
+
 /**
  * `owner/repo` (the tracker's `Repos.remote` shape) -> a real clone URL.
  *
- * SSH over GitHub, matching what every checkout actually observed on this
- * fleet uses (no ship here authenticates over HTTPS) — not configurable
- * per-workspace yet because nothing has needed it to be; revisit if a repo
- * genuinely lives somewhere else.
+ * The scheme follows how this ship already talks to GitHub: `originUrl` (the
+ * primary checkout's own `origin`) wins when it is recognisably HTTPS or SSH,
+ * since a ship that pushes over HTTPS has HTTPS credentials and may have no
+ * SSH key at all (CREW-1414). Without one, `scheme` (`ship.cloneScheme`)
+ * applies, defaulting to SSH.
  */
-export function cloneUrlFor(remote: string): string {
-  return `git@github.com:${remote}.git`;
+export function cloneUrlFor(remote: string, opts: { originUrl?: string | null; scheme?: CloneScheme } = {}): string {
+  const origin = opts.originUrl?.trim() ?? '';
+  const scheme: CloneScheme = /^https?:\/\//i.test(origin) ? 'https'
+    : /^(git@|ssh:\/\/)/i.test(origin) ? 'ssh'
+    : opts.scheme ?? 'ssh';
+  return scheme === 'https' ? `https://github.com/${remote}.git` : `git@github.com:${remote}.git`;
+}
+
+/** The URL a checkout's remote points at, or null when it has none / is not a checkout. */
+export function originUrlOf(dir: string, remoteName: string): string | null {
+  try {
+    return git(dir, ['remote', 'get-url', remoteName]) || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -840,7 +865,9 @@ export function cloneUrlFor(remote: string): string {
  * placed checkout (explicit `repos:` entry) or one this function already
  * cloned on an earlier run.
  */
-export function ensureRepoCheckout(dir: string, remote: string | undefined): boolean {
+export function ensureRepoCheckout(
+  dir: string, remote: string | undefined, opts: { originUrl?: string | null; scheme?: CloneScheme } = {},
+): boolean {
   if (existsSync(`${dir}/.git`)) return false;
   if (!remote) {
     throw new GitError(
@@ -849,12 +876,13 @@ export function ensureRepoCheckout(dir: string, remote: string | undefined): boo
     );
   }
   mkdirSync(dirname(dir), { recursive: true });
+  const url = cloneUrlFor(remote, opts);
   try {
-    execFileSync('git', ['clone', cloneUrlFor(remote), dir], { stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['clone', url, dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
-    const err = e as { stderr?: string; stdout?: string; message: string };
-    const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
-    throw new GitError(`git clone ${cloneUrlFor(remote)} ${dir}: ${why || err.message.trim()}`);
+    const err = e as { stderr?: unknown; stdout?: unknown; message: string };
+    const why = [err.stderr, err.stdout].map(streamText).filter(Boolean).join(' / ');
+    throw new GitError(`git clone ${url} ${dir}: ${why || err.message.trim()}`);
   }
   return true;
 }
@@ -867,7 +895,11 @@ export function ensureRepoCheckout(dir: string, remote: string | undefined): boo
 // dirty or mid-branch.
 // ---------------------------------------------------------------------------
 
-export type PassengerCheckoutOutcome = { action: 'cloned'; detail: string } | BaseRefreshOutcome;
+export type PassengerCheckoutOutcome =
+  | { action: 'cloned'; detail: string }
+  /** `repeat` is true when this exact clone URL already failed on an earlier cycle and was not retried. */
+  | { action: 'clone-failed'; detail: string; repeat: boolean }
+  | BaseRefreshOutcome;
 
 /** A sync that legitimately runs a `git fetch`/`clone` never takes anywhere near this long — past it, the holder is presumed crashed mid-sync rather than still working. */
 const CHECKOUT_LOCK_STALE_MS = 5 * 60 * 1000;
@@ -941,10 +973,31 @@ export function acquireCheckoutLock(dir: string, timeoutMs = 30_000): () => void
  */
 export function syncPassengerCheckout(
   dir: string, githubRemote: string | undefined, gitRemoteName: string, base: string,
+  clone: { originUrl?: string | null; scheme?: CloneScheme } = {},
 ): PassengerCheckoutOutcome {
   const release = acquireCheckoutLock(dir);
   try {
-    if (ensureRepoCheckout(dir, githubRemote)) {
+    if (!existsSync(`${dir}/.git`) && githubRemote) {
+      // A clone that failed is not retried every cycle: the marker records the
+      // URL that failed, so a changed origin/scheme (the "something changed")
+      // retries and anything else stays quiet after the first warning.
+      const url = cloneUrlFor(githubRemote, clone);
+      const marker = cloneFailureMarker(dir);
+      if (existsSync(marker) && readFileSync(marker, 'utf8').split('\n')[0] === url) {
+        return { action: 'clone-failed', detail: readFileSync(marker, 'utf8').split('\n').slice(1).join('\n'), repeat: true };
+      }
+      try {
+        ensureRepoCheckout(dir, githubRemote, clone);
+      } catch (e) {
+        if (!(e instanceof GitError)) throw e;
+        writeFileSync(marker, `${url}\n${e.message}`);
+        return { action: 'clone-failed', detail: e.message, repeat: false };
+      }
+      try { unlinkSync(marker); } catch { /* none to clear */ }
+      if (currentBranch(dir) !== base) git(dir, ['checkout', base]);
+      return { action: 'cloned', detail: `cloned ${githubRemote} into ${dir}` };
+    }
+    if (ensureRepoCheckout(dir, githubRemote, clone)) {
       if (currentBranch(dir) !== base) git(dir, ['checkout', base]);
       return { action: 'cloned', detail: `cloned ${githubRemote} into ${dir}` };
     }
@@ -952,4 +1005,9 @@ export function syncPassengerCheckout(
   } finally {
     release();
   }
+}
+
+/** Sits beside the checkout directory (like its `.sync.lock`), so a failed clone leaves nothing inside `dir`. */
+export function cloneFailureMarker(dir: string): string {
+  return `${dir}.clone-failed`;
 }

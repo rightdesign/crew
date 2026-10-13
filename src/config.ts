@@ -481,6 +481,13 @@ export interface Ship {
    * this. See `passengerImageRef` in passenger-containers.ts.
    */
   passengerImage?: string;
+  /**
+   * Which GitHub URL scheme crew clones with when it has no primary checkout
+   * to copy one from (CREW-1414) — Host Passengers' dedicated checkouts use
+   * the scheme of the repo's own `origin` when that checkout exists. Default
+   * `ssh`; set `https` on a ship whose GitHub access is HTTPS-only.
+   */
+  cloneScheme?: 'ssh' | 'https';
 }
 
 export interface CrewConfig {
@@ -501,10 +508,16 @@ export interface CrewConfig {
 
 export class ConfigError extends Error {}
 
+function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (v === 'ssh' || v === 'https') return v;
+  throw new ConfigError(`ship.cloneScheme must be "ssh" or "https", got ${JSON.stringify(v)}`);
+}
+
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays', 'eventsRotateBytes',
-  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage',
+  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -1008,6 +1021,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       relayHttpPort: shipRaw.relayHttpPort !== undefined ? Number(shipRaw.relayHttpPort) : 443,
       relayPublicDomain: shipRaw.relayPublicDomain ? String(shipRaw.relayPublicDomain) : undefined,
       passengerImage: shipRaw.passengerImage ? String(shipRaw.passengerImage) : undefined,
+      cloneScheme: parseCloneScheme(shipRaw.cloneScheme),
     },
     routes,
     crewHome,

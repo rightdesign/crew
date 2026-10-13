@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import type { CrewConfig } from './config.ts';
 import { crewVersion, passengerCheckoutTargets, reposOf } from './config.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
-import { syncPassengerCheckout, type PassengerCheckoutOutcome } from './git.ts';
+import { syncPassengerCheckout, originUrlOf, type CloneScheme, type PassengerCheckoutOutcome } from './git.ts';
 
 export type Exec = (cmd: string, args: string[]) => string;
 
@@ -384,6 +384,10 @@ export interface PassengerCheckoutSyncSpec {
   remote: string | undefined;
   gitRemoteName: string;
   base: string;
+  /** The ordinary checkout's `origin` URL, whose scheme a first clone copies (CREW-1414). */
+  originUrl?: string | null;
+  /** `ship.cloneScheme`: the scheme when there is no `originUrl` to copy. */
+  cloneScheme?: CloneScheme;
 }
 
 /**
@@ -425,6 +429,8 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
         remote: target.remote,
         gitRemoteName: effective.branch.remote,
         base: effective.branch.base,
+        originUrl: ordinary ? originUrlOf(ordinary.dir, effective.branch.remote) : null,
+        cloneScheme: cfg.ship.cloneScheme,
       });
     }
   }
@@ -450,6 +456,6 @@ export function syncAllPassengerCheckouts(cfg: CrewConfig): PassengerCheckoutSyn
   return passengerCheckoutSyncSpecs(cfg).map((spec) => ({
     name: spec.name,
     workspaceId: spec.workspaceId,
-    outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base),
+    outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base, { originUrl: spec.originUrl, scheme: spec.cloneScheme }),
   }));
 }
