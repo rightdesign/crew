@@ -303,6 +303,20 @@ your interactive shell, so the variable must be in the job's own environment
 (for launchd, an `EnvironmentVariables` entry in the plist), not just
 exported in your shell profile.
 
+**Seat identity.** The ship key above is a person's key. For each seat persona
+(dev, design, QA, triage) that `crew agents sync` has linked to an Agents row,
+`crew connect` and `crew agents sync` use the ship key once to mint a separate
+agent API key for that seat and keep it in the OS keychain, keyed by workspace
+and agent. A lane's own tracker writes (claim, status, assignee, comments) and
+the `CREW_API_KEY` its harness receives then use the seat's key, so the event
+log records `actor_kind: agent` and table rules can tell a seat from a person.
+The ship key stays for connect, admin commands and Pair sessions. A seat with no
+stored key (an older install, a refused mint, no keychain) still runs as the
+ship, with a warning line on the run log naming why. `crew doctor` prints the
+identity each seat will write as. The agent's workspace membership needs a role
+on the project, assigned once by a workspace admin the same way as for a
+human member.
+
 Useful day-to-day commands once it's running:
 
 ```sh

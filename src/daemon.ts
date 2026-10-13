@@ -72,7 +72,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName, Route, Ship } from './config.ts';
-import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, resolveApiKey } from './config.ts';
+import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf } from './config.ts';
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
@@ -87,6 +87,7 @@ import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { Tracker } from './tracker.ts';
+import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { ensureRepoCheckout, resolve as gitResolve, type GitError } from './git.ts';
 import { fetchDivergedPrompt, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
@@ -307,6 +308,8 @@ export interface RoleAgentContext {
   ship: Ship;
   state: State;
   emit: Emitter;
+  /** Keychain backend for seat-key lookups; tests inject one, production uses the real store. */
+  getSessionStore?: () => import('@tablation/client').SessionStore;
 }
 
 /** The real claim+checkout+spawn sequence for one role, or an injectable fake in tests. */
@@ -463,7 +466,7 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
   const decide = o.decide ?? decideCycle;
   const spawn = o.spawnRoleAgent ?? runRoleAgent;
   const breaker = o.spawnBreaker ?? new SpawnBreaker();
-  const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit };
+  const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit, getSessionStore: o.getSessionStore };
 
   const decision = await decide(ctx);
 
@@ -600,7 +603,16 @@ async function publishShipAttention(o: RunOnePassOptions): Promise<void> {
 
 async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAgentContext): Promise<void> {
   const { route, ship, emit } = ctx;
-  const tracker = new Tracker(route, ship);
+  // CREW-1603: the lane's own writes (claim, status, hand-off) and the key its
+  // harness gets use the seat's agent key; a seat without one keeps working as
+  // the ship, with the reason on the run log.
+  const identity = await resolveSeatKey(route, role, ctx.getSessionStore);
+  if (identity.kind === 'ship' && SEAT_KEY_ROLES.includes(role)) {
+    emit.warn(`${role} writes as the ship, not its own agent: ${identity.reason}`, { step: 'agent', role });
+  } else if (identity.kind === 'agent') {
+    emit.emit(`${role} writes as its own agent principal`, { step: 'agent', role });
+  }
+  const tracker = new Tracker(route, ship, { apiKey: identity.apiKey });
   let ticketHint = decision.actionable.top?.issue_id;
   let ticketRepo = repoTargetFor(route, decision.actionable.top?.repo_id)?.name;
   let workingId = decision.actionable.top?.id ?? null;
@@ -664,7 +676,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
   const plan = planAgentRun({
     role, route, ship, stateDir: ship.stateDir, roster: rosterFor(decision, route, role),
     environment: await buildEnvironment(route, ship, ticketHint),
-    apiKey: resolveApiKey(route),
+    apiKey: identity.apiKey,
     cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
     divergedPrompt: await fetchDivergedPrompt(route, role, { userAgent: ship.userAgent }),
     skillOverrides: await fetchSkillOverrides(route, { userAgent: ship.userAgent }),

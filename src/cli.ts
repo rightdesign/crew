@@ -70,6 +70,7 @@ import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
+import { mintMissingSeatKeys, describeMintOutcome, resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -2363,6 +2364,14 @@ switch (command) {
       mkdirSync(dirOf(resolvedPath), { recursive: true });
       writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
     }
+    // CREW-1603: each seat persona now linked to an Agents row gets its own
+    // agent API key, minted once with the ship key and kept in the keychain.
+    if (!dryRun) {
+      target.resolved.agentPersonas = personaResult.agentPersonas;
+    }
+    for (const o of await mintMissingSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
+      process.stdout.write(`${describeMintOutcome(o)}\n`);
+    }
     // A diverged persona or skill is not this run's failure, but it IS
     // something an operator needs to act on (review the row, or re-sync
     // once they have) — a nonzero exit is what makes that visible to
@@ -2947,6 +2956,17 @@ switch (command) {
         writeFileSync(tmpPath, `${JSON.stringify(resolved, null, 2)}\n`);
         renameSync(tmpPath, resolvedPath);
         process.stderr.write(`Resolved ids written to ${resolvedPath}\n`);
+      }
+      // CREW-1603: seats already linked to Agents rows get their agent keys now;
+      // a first connect has none linked yet, and `crew agents sync` mints them.
+      if (!dryRun && previous?.agentPersonas && existingRoute?.resolved) {
+        try {
+          for (const o of await mintMissingSeatKeys({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name })) {
+            process.stderr.write(`${describeMintOutcome(o)}\n`);
+          }
+        } catch (e) {
+          process.stderr.write(`seat keys: skipped (${(e as Error).message})\n`);
+        }
       }
       // A device-authorization key that made it into the OS keychain
       // (ISSUE-966) needs no file at all — `hydrateApiKeys` resolves it from
@@ -3989,6 +4009,15 @@ switch (command) {
         ? 'release seat:    this ship has its own Release Crew row\n'
         : 'release seat:    none — release comments are credited to the dev seat; run `crew connect` once the Crew table has this ship\'s row\n',
     );
+
+    // CREW-1603: which principal each seat will write as.
+    for (const role of SEAT_KEY_ROLES) {
+      if (!route.resolved?.seats[role]) continue;
+      const id = await resolveSeatKey(route, role);
+      process.stdout.write(
+        `seat identity:    ${role} writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
+      );
+    }
 
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
     if (ships.length === 0) {

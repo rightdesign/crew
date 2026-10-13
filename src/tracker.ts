@@ -261,7 +261,16 @@ export class Tracker {
   private attachments?: Promise<AttachmentsProbe>;
   private readonly stateDir: string | undefined;
 
-  constructor(route: Route, ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'name' | 'stateDir'>>) {
+  /**
+   * `opts.apiKey` overrides the route's ship key (CREW-1603): a lane's own
+   * writes pass its seat's agent key so the event log and rule context see an
+   * agent, not the ship's human principal.
+   */
+  constructor(
+    route: Route,
+    ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'name' | 'stateDir'>>,
+    opts: { apiKey?: string } = {},
+  ) {
     this.route = route;
     if (!route.resolved) {
       throw new ConfigError(
@@ -275,7 +284,7 @@ export class Tracker {
     this.stateDir = ship.stateDir;
     this.client = new TablationClient({
       baseUrl: `${route.baseUrl}/api`,
-      apiKey: resolveApiKey(route),
+      apiKey: opts.apiKey ?? resolveApiKey(route),
       // Cloudflare 403s (error 1010) default agents on this host.
       headers: { 'User-Agent': ship.userAgent },
     } as ConstructorParameters<typeof TablationClient>[0]);

@@ -802,7 +802,7 @@ export function apiKeyPathFor(stateDir: string, route: string): string {
 }
 
 /** `"workspace/project"` -> `["workspace", "project"]`, validated. */
-function splitRoute(route: string): [string, string] {
+export function splitRoute(route: string): [string, string] {
   const parts = route.split('/');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     throw new ConfigError(`route must be "workspace/project" (got "${route}")`);
