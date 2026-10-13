@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.46.0] — 2026-10-13
+
+- CREW-1603 Seats write to the tracker as their own agent principal using per-seat agent API keys, with a ship-key fallback and a doctor line per seat.
+
 ## [0.45.4] — 2026-10-13
 
 - ISSUE-1601 Lane agents now know how to react when the tracker's Issues table refuses a write under a status rule, and the getting-started guide describes those rules.
