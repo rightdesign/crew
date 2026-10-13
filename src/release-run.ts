@@ -919,7 +919,24 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   o.emit.enter('release');
   const fresh = refreshBase(o);
 
-  const decision = decideRelease(o.cwd, o.tickets, o.contract, {
+  // CREW-1636: a verified ticket whose local branch is behind the remote and
+  // cannot be moved (a worktree holds it with changes in flight) must not be
+  // squashed from the stale ref — that merges something nobody verified. Say
+  // so loudly and leave the ticket out of this cycle; it retries next one.
+  let releasable = o.tickets;
+  if (!o.dryRun) {
+    const skipped = new Set<string>();
+    for (const t of o.tickets) {
+      if (t.status !== o.contract.statuses.verified) continue;
+      materializeBranchForTicket(o.cwd, o.repo, t, undefined, (problem) => {
+        skipped.add(t.id);
+        o.emit.error(`not releasing ${t.issue_id} this cycle: ${problem}`, { ticket: t.issue_id });
+      });
+    }
+    if (skipped.size) releasable = o.tickets.filter((t) => !skipped.has(t.id));
+  }
+
+  const decision = decideRelease(o.cwd, releasable, o.contract, {
     tagPattern, base: o.repo.branch.base, blockerInfo: o.blockerInfo,
     // CREW-1364: a branch another ship built and pushed at `fixed` exists
     // here only on the remote. Materialize it so the squash below has a ref.

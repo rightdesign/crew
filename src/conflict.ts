@@ -36,7 +36,7 @@
  * real wherever the branch lives, and the ship that owns it will find it.
  */
 
-import { git, gitOk, worktrees, GitError } from './git.ts';
+import { git, gitOk, worktrees, isAncestor, GitError } from './git.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
 import type { Ticket, RunnerEvent } from './tracker.ts';
@@ -117,13 +117,21 @@ export function planConflictBounce(
  */
 export function refreshBranch(
   worktree: string, base: string,
-): { clean: boolean; paths: string[]; why?: string } {
+): { clean: boolean; paths: string[]; why?: string; behind?: boolean } {
   // A worktree with uncommitted work of its own is not ours to merge into:
   // git would refuse anyway, and forcing it would destroy work nobody has
   // seen. Treat it as a conflict to hand back — a person or agent looking at
   // that worktree is the right resolver.
   const dirty = gitOk(worktree, ['status', '--porcelain']);
   if (dirty) return { clean: false, paths: [], why: 'the worktree has uncommitted changes' };
+  // CREW-1636: merging base into a branch that is behind its own remote
+  // produces a "conflict" the pushed tip may already have resolved. Behind
+  // the remote is the finding, not a conflict to hand back.
+  const upstream = gitOk(worktree, ['rev-parse', '-q', '--verify', '@{upstream}']);
+  const head = gitOk(worktree, ['rev-parse', 'HEAD']);
+  if (upstream && head && upstream !== head && isAncestor(worktree, head, upstream)) {
+    return { clean: false, paths: [], behind: true, why: 'the branch is behind its remote; fast-forward it before merging the base in' };
+  }
   try {
     git(worktree, ['merge', '--no-edit', base]);
     return { clean: true, paths: [] };
@@ -232,6 +240,12 @@ export async function applyConflictBounce(
       // is woken and nothing is written to the board.
       log.emit(`merged ${b.base} into ${b.branch} cleanly — it was stale, not conflicting`, t);
       return { kind: 'refreshed' };
+    }
+    if (r.behind) {
+      // Not a real conflict: the local copy is stale. Leave the ticket at
+      // `verified` untouched; the release levels the branch next cycle.
+      log.warn(`not handing ${b.ticket.issue_id} back: ${r.why}`, t);
+      return { kind: 'failed', why: r.why ?? 'branch behind its remote' };
     }
     merged = r.paths.length > 0;
     if (r.why) log.warn(`could not merge ${b.base} into ${b.branch}: ${r.why}`, t);

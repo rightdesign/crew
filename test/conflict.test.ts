@@ -236,3 +236,18 @@ test('refreshBranch reports the paths the branch itself disagrees about', () => 
   assert.equal(r.clean, false);
   assert.deepEqual(r.paths, ['f.txt']);
 });
+
+test('refreshBranch refuses a branch that is behind its remote instead of calling it a conflict (CREW-1636)', () => {
+  const { dir, wt, g } = conflictingRepo();
+  // The "remote": a ref ahead of the worktree's branch, as a resolved push would be.
+  g('branch', 'issue-9-up', 'issue-9');
+  g('checkout', '-q', 'issue-9-up');
+  g('commit', '--allow-empty', '-qm', 'resolved upstream');
+  g('checkout', '-q', 'main');
+  g('branch', '--set-upstream-to=issue-9-up', 'issue-9');
+  moveBase(g, dir);
+  const r = refreshBranch(wt, 'main');
+  assert.equal(r.clean, false);
+  assert.equal(r.behind, true);
+  assert.deepEqual(r.paths, []);
+});

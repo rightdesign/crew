@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { branchForIssue, worktreeForNumber } from '../src/git.ts';
@@ -55,7 +55,7 @@ test('worktreeForNumber does not match a different ticket that merely shares a t
 });
 
 // CREW-1364: a branch built on another ship exists here only on the remote.
-import { remoteBranchForIssue, materializeRemoteBranch, deleteRemoteBranch, fetchRemote } from '../src/git.ts';
+import { remoteBranchForIssue, materializeRemoteBranch, levelRemoteBranch, deleteRemoteBranch, fetchRemote } from '../src/git.ts';
 import { planRemoteBranchCleanup, remoteBranchTicketNumbers } from '../src/worktree-sweep.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import type { Ticket } from '../src/tracker.ts';
@@ -129,6 +129,41 @@ test('materializeRemoteBranch: leaves a diverged local branch alone', () => {
   const before = sh(shipB, 'rev-parse', 'tabl-6');
   materializeRemoteBranch(shipB, 'origin', 'tabl-6');
   assert.equal(sh(shipB, 'rev-parse', 'tabl-6'), before);
+});
+
+test('levelRemoteBranch: fast-forwards a branch a clean worktree holds (CREW-1636)', () => {
+  const { shipA, shipB, sh } = twoShips();
+  sh(shipA, 'checkout', '-q', '-b', 'tabl-7');
+  sh(shipA, 'push', '-q', '--set-upstream', 'origin', 'tabl-7');
+  fetchRemote(shipB);
+  materializeRemoteBranch(shipB, 'origin', 'tabl-7');
+  const wt = shipB + '-wt7';
+  sh(shipB, 'worktree', 'add', '-q', wt, 'tabl-7');
+  sh(shipA, 'commit', '--allow-empty', '-qm', 'resolved');
+  sh(shipA, 'push', '-q', 'origin', 'tabl-7');
+  fetchRemote(shipB);
+  const r = levelRemoteBranch(shipB, 'origin', 'tabl-7');
+  assert.equal(r.problem, undefined);
+  assert.equal(sh(shipB, 'rev-parse', 'tabl-7'), sh(shipA, 'rev-parse', 'tabl-7'));
+  assert.equal(sh(wt, 'rev-parse', 'HEAD'), sh(shipA, 'rev-parse', 'tabl-7'));
+});
+
+test('levelRemoteBranch: reports, never hides, a stale branch a dirty worktree holds (CREW-1636)', () => {
+  const { shipA, shipB, sh } = twoShips();
+  sh(shipA, 'checkout', '-q', '-b', 'tabl-8');
+  sh(shipA, 'push', '-q', '--set-upstream', 'origin', 'tabl-8');
+  fetchRemote(shipB);
+  materializeRemoteBranch(shipB, 'origin', 'tabl-8');
+  const wt = shipB + '-wt8';
+  sh(shipB, 'worktree', 'add', '-q', wt, 'tabl-8');
+  writeFileSync(join(wt, 'dirty.txt'), 'x');
+  sh(shipA, 'commit', '--allow-empty', '-qm', 'resolved');
+  sh(shipA, 'push', '-q', 'origin', 'tabl-8');
+  fetchRemote(shipB);
+  const before = sh(shipB, 'rev-parse', 'tabl-8');
+  const r = levelRemoteBranch(shipB, 'origin', 'tabl-8');
+  assert.match(r.problem ?? '', /uncommitted or mid-merge/);
+  assert.equal(sh(shipB, 'rev-parse', 'tabl-8'), before);
 });
 
 test('deleteRemoteBranch removes the upstream copy; a branch already gone is success', () => {

@@ -186,26 +186,58 @@ export function remoteBranchForIssue(
 }
 
 /**
- * Make `branch` exist locally, level with `<remote>/<branch>`, without
- * checking it out anywhere.
+ * Make `branch` exist locally, level with `<remote>/<branch>`.
  *
  * - No local branch: create one tracking the remote's.
- * - A local branch that is strictly behind the remote and checked out in no
- *   worktree: fast-forward it (`fetch <remote> b:b` refuses anything that is
- *   not a fast-forward, and anything checked out). A worktree that holds it
- *   is `crew sync`'s to move.
+ * - A local branch strictly behind the remote: fast-forward it. When a
+ *   worktree holds it, `fetch <remote> b:b` is refused by git, so the
+ *   worktree itself is fast-forwarded — but only when it is clean. A dirty
+ *   or mid-merge worktree is not ours to move.
+ * - Diverged or ahead: left alone.
  *
- * Returns whether a local branch now exists.
+ * `problem` is set when the local branch is behind the remote and could not
+ * be moved. That is never silent: a release that squashes a stale local ref
+ * merges something nobody verified (CREW-1636). Callers must not treat
+ * `exists` as "current" when `problem` is present.
  */
+export function levelRemoteBranch(
+  cwd: string, remote: string, branch: string,
+): { exists: boolean; problem?: string } {
+  const local = gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]);
+  if (!remoteBranchExists(cwd, remote, branch)) return { exists: local !== null };
+  if (local === null) {
+    return { exists: gitOk(cwd, ['branch', '--track', branch, `${remote}/${branch}`]) !== null };
+  }
+  const remoteTip = gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/remotes/${remote}/${branch}`]);
+  if (!remoteTip || remoteTip === local) return { exists: true };
+  if (!isAncestor(cwd, local, remoteTip)) return { exists: true };   // diverged or ahead: not ours to move
+
+  const holder = worktrees(cwd).find((w) => w.branch === branch && !w.prunable);
+  if (holder) {
+    if (gitOk(holder.path, ['status', '--porcelain'])) {
+      return {
+        exists: true,
+        problem: `${branch} is behind ${remote}/${branch} and the worktree ${holder.path} that holds it has uncommitted or mid-merge changes`,
+      };
+    }
+    try {
+      git(holder.path, ['merge', '--ff-only', '--quiet', `${remote}/${branch}`]);
+    } catch (e) {
+      return { exists: true, problem: `could not fast-forward ${branch} in ${holder.path}: ${(e as Error).message}` };
+    }
+    return { exists: true };
+  }
+  try {
+    git(cwd, ['fetch', '--quiet', remote, `${branch}:${branch}`]);
+  } catch (e) {
+    return { exists: true, problem: `could not move ${branch} to ${remote}/${branch}: ${(e as Error).message}` };
+  }
+  return { exists: true };
+}
+
+/** Boolean form of `levelRemoteBranch`: whether a local branch now exists. */
 export function materializeRemoteBranch(cwd: string, remote: string, branch: string): boolean {
-  if (!remoteBranchExists(cwd, remote, branch)) {
-    return gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]) !== null;
-  }
-  if (gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]) === null) {
-    return gitOk(cwd, ['branch', '--track', branch, `${remote}/${branch}`]) !== null;
-  }
-  gitOk(cwd, ['fetch', '--quiet', remote, `${branch}:${branch}`]);
-  return true;
+  return levelRemoteBranch(cwd, remote, branch).exists;
 }
 
 /** Deletes `<remote>/<branch>` upstream. A branch already gone is success. */

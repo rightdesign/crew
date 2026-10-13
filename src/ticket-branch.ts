@@ -12,7 +12,7 @@
  */
 import { basename } from 'node:path';
 import {
-  branchForIssue, remoteBranchForIssue, remoteConfigured, fetchRemote, materializeRemoteBranch,
+  branchForIssue, remoteBranchForIssue, remoteConfigured, fetchRemote, levelRemoteBranch,
 } from './git.ts';
 import {
   effectiveBranchTemplate, effectiveWorktreeDirName, renderBranchName, renderWorktreeName, type EffectiveRepoConfig,
@@ -110,9 +110,11 @@ export function locateBranchForTicket(
  */
 export function materializeBranchForTicket(
   dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
+  onProblem?: (problem: string) => void,
 ): string | null {
   const loc = locateBranchForTicket(dir, cfg, t, role);
   if (!loc) return null;
-  materializeRemoteBranch(dir, cfg.branch.remote, loc.branch);
+  const r = levelRemoteBranch(dir, cfg.branch.remote, loc.branch);
+  if (r.problem) onProblem?.(r.problem);
   return loc.branch;
 }
