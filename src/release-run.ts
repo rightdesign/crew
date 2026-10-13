@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   BRANCH_TIP_TRAILER, createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
-  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, recoverStrandedReleaseCheckouts, remoteBranchExists, remoteConfigured, fetchRemote, resolve, tagCommit, tagExists,
+  isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, recoverStrandedReleaseCheckouts, sweepStaleReleaseRoots, remoteBranchExists, remoteConfigured, fetchRemote, resolve, tagCommit, tagExists,
   type ClosureCheck,
 } from './git.ts';
 import type { BlockerInfo } from './blocked.ts';
@@ -852,17 +852,33 @@ async function confirmLastRelease(
  */
 interface ReleaseCheckout { dir: string; branch: string; close(): void }
 
+/**
+ * Tear down a release checkout. The temp `root` is removed even when a git
+ * step throws, so a failing `worktree remove` cannot strand it (CREW-1633).
+ */
+export function closeReleaseCheckout(
+  cwd: string, root: string, dir: string, branch: string,
+  run: typeof gitOk = gitOk,
+): void {
+  try {
+    run(cwd, ['worktree', 'remove', '--force', dir]);
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      run(cwd, ['worktree', 'prune']);
+      run(cwd, ['branch', '-D', branch]);
+    }
+  }
+}
+
 function openReleaseCheckout(o: ReleaseRunOptions): ReleaseCheckout {
   const { remote, base } = o.repo.branch;
   const branch = `crew/release-${Date.now()}`;
   const root = mkdtempSync(join(tmpdir(), 'crew-release-'));
   const dir = join(root, 'checkout');
-  const close = () => {
-    gitOk(o.cwd, ['worktree', 'remove', '--force', dir]);
-    rmSync(root, { recursive: true, force: true });
-    gitOk(o.cwd, ['worktree', 'prune']);
-    gitOk(o.cwd, ['branch', '-D', branch]);
-  };
+  o.emit.emit(`release checkout: ${dir}`, { step: 'release' });
+  const close = () => closeReleaseCheckout(o.cwd, root, dir, branch);
   try {
     git(o.cwd, ['worktree', 'add', '-q', '-b', branch, dir, `${remote}/${base}`]);
   } catch (e) {
@@ -987,6 +1003,8 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   let checkout: ReleaseCheckout;
   const stranded = recoverStrandedReleaseCheckouts(o.cwd);
   if (stranded.length > 0) o.emit.warn(scoped(`dropped release checkout(s) stranded by a crash: ${stranded.join(', ')}`));
+  const swept = sweepStaleReleaseRoots(tmpdir());
+  if (swept.length > 0) o.emit.emit(scoped(`removed ${swept.length} stale crew-release-* temp dir(s)`), { step: 'release' });
   try {
     checkout = openReleaseCheckout(o);
   } catch (e) {

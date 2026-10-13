@@ -9,8 +9,9 @@
 import { execFileSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, openSync, closeSync, writeSync, statSync, unlinkSync, readFileSync, writeFileSync,
+  readdirSync, rmSync,
 } from 'node:fs';
-import { dirname, basename } from 'node:path';
+import { dirname, basename, join } from 'node:path';
 
 export class GitError extends Error {}
 
@@ -776,12 +777,41 @@ export function recoverStrandedReleaseCheckouts(cwd: string): string[] {
     if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
     else if (line.startsWith('branch refs/heads/crew/release-') && path) {
       gitOk(cwd, ['worktree', 'remove', '--force', path]);
+      // `path` is `<tmp>/crew-release-XXXXXX/checkout`; removing the worktree
+      // leaves its root behind, which is how empty roots piled up (CREW-1633).
+      const root = dirname(path);
+      if (basename(root).startsWith('crew-release-')) rmSync(root, { recursive: true, force: true });
     }
   }
   const stranded = (gitOk(cwd, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/crew/release-*']) ?? '')
     .split('\n').filter(Boolean);
   for (const b of stranded) gitOk(cwd, ['branch', '-q', '-D', b]);
   return stranded;
+}
+
+/**
+ * Removes `crew-release-*` roots under `tmp` that hold no `checkout` (empty, or
+ * left over from a release whose checkout is already gone) and are older than
+ * `maxAgeMs`. A release's root is created and given its checkout within
+ * moments, so the age floor keeps a sweep from racing one being opened. Only
+ * called under the release lock. Returns the names removed (CREW-1633).
+ */
+export function sweepStaleReleaseRoots(tmp: string, now = Date.now(), maxAgeMs = 60 * 60 * 1000): string[] {
+  const removed: string[] = [];
+  let names: string[];
+  try { names = readdirSync(tmp); } catch { return removed; }
+  for (const name of names) {
+    if (!name.startsWith('crew-release-')) continue;
+    const root = join(tmp, name);
+    try {
+      const st = statSync(root);
+      if (!st.isDirectory() || now - st.mtimeMs < maxAgeMs) continue;
+      if (existsSync(join(root, 'checkout'))) continue;
+      rmSync(root, { recursive: true, force: true });
+      removed.push(name);
+    } catch { /* unreadable or already gone: leave it for the next sweep */ }
+  }
+  return removed;
 }
 
 /**
