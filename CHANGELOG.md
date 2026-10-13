@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.47.2] — 2026-10-13
+
+- ISSUE-1633 Fixed empty crew-release-* directories piling up in the temp directory after releases.
+
 ## [0.47.1] — 2026-10-13
 
 - ISSUE-1632 Release failure alerts are filed under the failing repo's project so its lanes can pick them up.
