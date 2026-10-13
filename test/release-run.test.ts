@@ -1570,3 +1570,32 @@ test('a deploy failure after a successful push leaves the base published and the
   assert.equal(state.calls.failed, after);
   assert.ok(lines.some((l) => /already merged to origin\/main but NOT live/.test(l)));
 });
+
+test('a verified branch that moved past what QA verified is left out and reported (CREW-1637)', async () => {
+  const { dir, repo, g } = project(LOCAL);
+  const verified = execFileSync('git', ['rev-parse', 'issue-7'], { cwd: dir, encoding: 'utf8' }).trim();
+  g('checkout', '-q', 'issue-7');
+  writeFileSync(join(dir, 'late.txt'), 'y'); g('add', '.'); g('commit', '-qm', 'pushed after QA');
+  g('checkout', '-q', 'main');
+  const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    verifiedShas: new Map([['ISSUE-7', verified]]), emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.merged.length, 0);
+  assert.equal(out.movedPast?.length, 1);
+  assert.equal(out.movedPast?.[0]?.verified, verified);
+  assert.equal(execFileSync('git', ['rev-parse', 'main'], { cwd: dir, encoding: 'utf8' }).trim(), before);
+  assert.ok(lines.some((l) => /not releasing ISSUE-7/.test(l)));
+});
+
+test('a verified branch still at the verified sha releases normally (CREW-1637)', async () => {
+  const { dir, repo } = project(LOCAL);
+  const verified = execFileSync('git', ['rev-parse', 'issue-7'], { cwd: dir, encoding: 'utf8' }).trim();
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    verifiedShas: new Map([['ISSUE-7', verified]]), emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.movedPast, undefined);
+  assert.equal(out.merged.length, 1);
+});

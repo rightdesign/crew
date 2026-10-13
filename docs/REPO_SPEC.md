@@ -211,6 +211,17 @@ release:
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
 
+### A branch that moved after QA verified it
+
+Before squashing, the release compares each `verified` ticket's branch with the
+commit QA verified: the ticket's `verified_sha` when the board has that column
+and it is set, otherwise the sha in the newest `pushed <sha> to <remote>/<branch>`
+event the runner posted at hand-off. A branch carrying work of its own beyond
+that commit is left out of the release (the error log names both shas) and the
+ticket returns to the hand-off status with a note, so QA checks what changed.
+Merge commits do not count, so the runner merging the base into a stale branch
+never triggers it. With no sha on record the branch is released as before.
+
 ### A failed combined build
 
 Branches are verified one by one but built together. When the release's `test`

@@ -243,7 +243,7 @@ export async function applyReview(
   for (const q of outcome.requeues) {
     const t = q.ticket;
     const body =
-      `The branch is no longer what was verified: \`verified_sha\` is ${q.verified.slice(0, 8)}, the branch is now at ` +
+      `The branch is no longer what was verified: QA verified ${q.verified.slice(0, 8)}, the branch is now at ` +
       `${q.head.slice(0, 8)}. Returned to ${contract.statuses.handoff} for QA to check what changed.`;
     if (dryRun) {
       emit.emit(`would return to ${contract.statuses.handoff} — branch moved past ${q.verified.slice(0, 8)}`, { ticket: t.issue_id });

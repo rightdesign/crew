@@ -27,13 +27,14 @@ import type { EffectiveRepoConfig } from './repo-config.ts';
 import { hookLabel, DEFAULT_ISOLATE_MAX_CANDIDATES } from './repo-config.ts';
 import { failingPaths, culpritByFiles, type BuildCulprit } from './build-failure.ts';
 import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
+import { movedPastVerified } from './verified-tip.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
 import { referenceKeys, type Ticket } from './tracker.ts';
 import { planStamp } from './stamp.ts';
 import { pushedBranchForTicket } from './ticket-branch.ts';
 import {
-  reviewApplies, reviewProblems, runReview, type ReviewColumns, type ReviewItem, type ReviewOutcome,
+  reviewApplies, reviewProblems, runReview, type ReviewColumns, type ReviewItem, type ReviewOutcome, type ReviewRequeue,
 } from './review.ts';
 import { GATE_RED_AFTER, lastLines, type GateRed } from './gate-red.ts';
 import type { Contract } from './contract.ts';
@@ -86,6 +87,12 @@ export interface ReleaseRunOptions {
    * recorded — the push and the move to `reviewing` still happen.
    */
   reviewColumns?: ReviewColumns;
+  /**
+   * What QA verified, by ticket id (CREW-1637): a verified ticket whose branch
+   * carries work beyond its sha is left out of the release and returned in
+   * `ReleaseOutcome.movedPast`. A ticket absent from the map is not checked.
+   */
+  verifiedShas?: ReadonlyMap<string, string>;
   emit: Emitter;
   /**
    * `route/repo`, prefixed onto a message that would otherwise read the same
@@ -194,6 +201,12 @@ export interface ReleaseOutcome {
    */
   buildCulprits?: BuildCulprit[];
   decision: ReleaseDecision;
+  /**
+   * Verified tickets left out of this release because their branch moved past
+   * the commit QA verified (CREW-1637). The caller returns each to the
+   * hand-off status; set on any outcome, shipped or not.
+   */
+  movedPast?: ReviewRequeue[];
   /**
    * Consecutive cycles `decision.block` has refused this release, from
    * `state.release(route).noteBlocked()`. Only set when a block just
@@ -910,6 +923,12 @@ export function reportHeld(o: Pick<ReleaseRunOptions, 'emit' | 'state' | 'dryRun
 }
 
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
+  const movedPast: ReviewRequeue[] = [];
+  const out = await runReleaseCycle(o, movedPast);
+  return movedPast.length ? { ...out, movedPast } : out;
+}
+
+async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[]): Promise<ReleaseOutcome> {
   const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
 
@@ -934,6 +953,27 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
       });
     }
     if (skipped.size) releasable = o.tickets.filter((t) => !skipped.has(t.id));
+  }
+
+  // CREW-1637: the branch is now level with the remote. If it carries work
+  // beyond what QA verified, squashing it would ship untested code: leave the
+  // ticket out and let the caller send it back to QA.
+  if (o.verifiedShas?.size) {
+    const drop = new Set<string>();
+    for (const t of releasable) {
+      const verified = o.verifiedShas.get(t.id);
+      if (t.status !== o.contract.statuses.verified || !verified) continue;
+      const branch = locateBranchForTicket(o.cwd, o.repo, t)?.branch;
+      const moved = branch ? movedPastVerified(o.cwd, branch, verified) : null;
+      if (!moved) continue;
+      drop.add(t.id);
+      movedPast.push({ ticket: t, verified: moved.verified, head: moved.tip });
+      o.emit.error(
+        `not releasing ${t.issue_id}: ${branch} is at ${moved.tip.slice(0, 8)}, past the ${moved.verified.slice(0, 8)} QA verified`,
+        { ticket: t.issue_id },
+      );
+    }
+    if (drop.size) releasable = releasable.filter((t) => !drop.has(t.id));
   }
 
   const decision = decideRelease(o.cwd, releasable, o.contract, {

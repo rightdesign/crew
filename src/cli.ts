@@ -47,6 +47,7 @@ import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, rele
 import { locateBranchForTicket } from './ticket-branch.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
+import { verifiedShaFor } from './verified-tip.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease } from './notify.ts';
 import { applyFailureAlert } from './failure-alert.ts';
@@ -1363,8 +1364,27 @@ async function releasePhase(
     // tickets, and a blocker already closed is not in it, so fetch the rest.
     const blockerInfo = blockerInfoMap(all, await tracker.ticketsByIds(missingBlockerIds(all)));
 
+    // What QA verified, per ticket (CREW-1637): the release leaves out a
+    // branch that has moved past it. A board with no event log reads as none
+    // known, so nothing is held back for want of a sha.
+    const verifiedStatus = tracker.contract.statuses.verified;
+    const verifiedTickets = tickets.filter((t) => t.status === verifiedStatus);
+    const verifiedShas = new Map<string, string>();
+    if (verifiedTickets.length && repo.release.mode !== 'external') {
+      let pushedEvents: Awaited<ReturnType<Tracker['events']>> = [];
+      try {
+        pushedEvents = await tracker.events('pushed');
+      } catch (e) {
+        remit.warn(`could not read hand-off events; not checking branches against what QA verified: ${(e as Error).message}`);
+      }
+      for (const t of verifiedTickets) {
+        const sha = verifiedShaFor(t, tracker.contract.columns.verifiedSha, pushedEvents);
+        if (sha) verifiedShas.set(t.id, sha);
+      }
+    }
+
     const outcome = await runRelease({
-      cwd: target.dir, repo, contract: tracker.contract, tickets, blockerInfo, emit: remit, scope,
+      cwd: target.dir, repo, contract: tracker.contract, tickets, blockerInfo, emit: remit, scope, verifiedShas,
       state: state.release(scope),
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
@@ -1464,6 +1484,15 @@ async function releasePhase(
       await applyReview(
         tracker, tracker.contract, outcome.review, repo.branch.remote, remit, releaseSeat(c),
         await tracker.reviewColumns(), dryRun,
+      );
+    }
+
+    // Verified tickets whose branch moved past what QA verified were left out
+    // of the release above: send them back to QA (CREW-1637).
+    if (outcome.movedPast?.length) {
+      await applyReview(
+        tracker, tracker.contract, { handoffs: [], requeues: outcome.movedPast }, repo.branch.remote, remit,
+        releaseSeat(c), { verifiedSha: false, prRef: false }, dryRun,
       );
     }
 
