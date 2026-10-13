@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.45.4] — 2026-10-13
+
+- ISSUE-1601 Lane agents now know how to react when the tracker's Issues table refuses a write under a status rule, and the getting-started guide describes those rules.
+
 ## [0.45.3] — 2026-10-12
 
 - ISSUE-1593 — the worktree and branch sweep resolves only the tickets it has a worktree or branch for, so deployed tickets are no longer missed once the board holds more than 500 closed tickets; a truncated lookup now warns
