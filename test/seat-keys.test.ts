@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionStore, StoredSession } from '@tablation/client';
 import type { Route } from '../src/config.ts';
-import { mintMissingSeatKeys, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
+import { mintMissingSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
 
 delete process.env.CREW_API_KEY;
 
@@ -84,4 +84,41 @@ test('dryRun mints nothing', async () => {
   let called = false;
   await mintMissingSeatKeys(route(), { getStore: () => store, dryRun: true, fetchImpl: async () => { called = true; return new Response('{}'); } });
   assert.equal(called, false);
+});
+
+function releaseRoute(releaseAgentId?: string): Route {
+  const r = route();
+  return {
+    ...r,
+    resolved: { ...r.resolved!, releaseSeat: 'crew-release', ...(releaseAgentId ? { releaseAgentId } : {}) },
+  } as Route;
+}
+
+test('the release seat gets its own key minted and resolved (CREW-1605)', async () => {
+  const store = memoryStore();
+  const urls: string[] = [];
+  const fetchImpl = (async (url: string) => {
+    urls.push(url);
+    return new Response(JSON.stringify({ key: `sk_${urls.length}` }), { status: 201 });
+  }) as unknown as typeof fetch;
+  const out = await mintMissingSeatKeys(releaseRoute('agent-release'), { getStore: () => store, fetchImpl });
+  assert.equal(out.find((o) => o.role === 'release')?.action, 'minted');
+  assert.ok(urls.some((u) => u.endsWith('/agents/agent-release/api-keys')));
+  const id = await resolveReleaseKey(releaseRoute('agent-release'), () => store);
+  assert.equal(id.kind, 'agent');
+  assert.equal((await mintMissingSeatKeys(releaseRoute('agent-release'), { getStore: () => store, fetchImpl }))
+    .find((o) => o.role === 'release')?.action, 'already_stored');
+});
+
+test('the release seat falls back to the ship key when unlinked, unkeyed or the keychain is down', async () => {
+  const store = memoryStore();
+  const unlinked = await resolveReleaseKey(releaseRoute(), () => store);
+  assert.equal(unlinked.kind, 'ship');
+  assert.equal(unlinked.apiKey, 'ship-key');
+  assert.equal((await resolveReleaseKey(releaseRoute('agent-release'), () => store)).kind, 'ship');
+  assert.equal((await resolveReleaseKey(releaseRoute('agent-release'), () => { throw new Error('no keychain'); })).kind, 'ship');
+  const noSeat = await mintMissingSeatKeys(route(), { getStore: () => store, dryRun: true });
+  assert.ok(!noSeat.some((o) => o.role === 'release'));
+  const noAgent = await mintMissingSeatKeys(releaseRoute(), { getStore: () => store, dryRun: true });
+  assert.equal(noAgent.find((o) => o.role === 'release')?.action, 'no_agent');
 });

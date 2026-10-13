@@ -147,6 +147,12 @@ export interface ResolvedIds {
    * release phase then falls back to the dev seat (see `releaseSeat()`).
    */
   releaseSeat?: string;
+  /**
+   * The Agents row backing the release seat's Crew row (CREW-1605), written by
+   * `crew agents sync`. It carries no persona prompt: it exists so the release
+   * phase can write as its own agent principal rather than the ship's key.
+   */
+  releaseAgentId?: string;
   operator: string;
   holds: HoldConfig[];
   /**
@@ -880,6 +886,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     holds,
     contract: raw.contract ?? undefined,
     ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}),
+    ...(typeof raw.releaseAgentId === 'string' && raw.releaseAgentId ? { releaseAgentId: raw.releaseAgentId } : {}),
     ...(Object.keys(agentPersonas).length > 0 ? { agentPersonas } : {}),
     ...(Object.keys(agentSkills).length > 0 ? { agentSkills } : {}),
   };

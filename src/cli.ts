@@ -70,7 +70,7 @@ import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
-import { mintMissingSeatKeys, describeMintOutcome, resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
+import { mintMissingSeatKeys, describeMintOutcome, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -1284,7 +1284,12 @@ async function releasePhase(
     }
 
     if (!dryRun && !c.enabled) return { scope, tests: 'skipped', outcome: 'skipped', detail: 'route not enabled' };
-    const tracker = new Tracker(c, cfg.ship);
+    // CREW-1605: release comments, failure tickets and stamps write as the
+    // release seat's own agent principal; without a stored key they stay on the
+    // ship key, with the reason on the run log.
+    const releaseIdentity = await resolveReleaseKey(c);
+    if (releaseIdentity.kind === 'ship') remit.warn(`release writes as the ship, not its own agent: ${releaseIdentity.reason}`, { step: 'release' });
+    const tracker = new Tracker(c, cfg.ship, { apiKey: releaseIdentity.apiKey });
 
     // Lock-free pre-check (CREW-1415): the lock exists to cover a decision to
     // release, so a repo with nothing verified and a base level with its last
@@ -2372,6 +2377,7 @@ switch (command) {
       const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
       raw.agentPersonas = personaResult.agentPersonas;
       raw.agentSkills = skillResult.agentSkills;
+      if (personaResult.releaseAgentId) raw.releaseAgentId = personaResult.releaseAgentId;
       mkdirSync(dirOf(resolvedPath), { recursive: true });
       writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
     }
@@ -2379,6 +2385,7 @@ switch (command) {
     // agent API key, minted once with the ship key and kept in the keychain.
     if (!dryRun) {
       target.resolved.agentPersonas = personaResult.agentPersonas;
+      if (personaResult.releaseAgentId) target.resolved.releaseAgentId = personaResult.releaseAgentId;
     }
     for (const o of await mintMissingSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
       process.stdout.write(`${describeMintOutcome(o)}\n`);
@@ -2862,6 +2869,7 @@ switch (command) {
             operator?: string;
             agentPersonas?: unknown;
             agentSkills?: unknown;
+            releaseAgentId?: string;
           }
         | undefined;
       const hadPreviousFile = existsSync(resolvedPath);
@@ -2948,6 +2956,7 @@ switch (command) {
         // nothing about its prompt actually changed.
         ...(previous?.agentPersonas ? { agentPersonas: previous.agentPersonas } : {}),
         ...(previous?.agentSkills ? { agentSkills: previous.agentSkills } : {}),
+        ...(previous?.releaseAgentId ? { releaseAgentId: previous.releaseAgentId } : {}),
       };
       if (dryRun) {
         process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
@@ -4027,6 +4036,13 @@ switch (command) {
       const id = await resolveSeatKey(route, role);
       process.stdout.write(
         `seat identity:    ${role} writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
+      );
+    }
+
+    if (route.resolved?.releaseSeat) {
+      const id = await resolveReleaseKey(route);
+      process.stdout.write(
+        `seat identity:    release writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
       );
     }
 

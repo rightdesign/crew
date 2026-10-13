@@ -460,7 +460,16 @@ export interface SyncPersonasResult {
    * reporting a linkage it didn't check.
    */
   crewLinks: CrewLinkOutcome[];
+  /**
+   * The Agents row linked to this ship's release Crew row (CREW-1605), or the
+   * previously known one on a dry run; absent when the route has no release seat.
+   */
+  releaseAgentId?: string;
 }
+
+export const RELEASE_AGENT_NAME = 'Release agent';
+const RELEASE_AGENT_PROMPT =
+  'Principal for the crew release phase (merge, deploy, release comments). It runs no model; this row only gives those tracker writes an agent identity.';
 
 /**
  * `route.resolved.workspaceId` and `resolveApiKey(route)` are required —
@@ -645,7 +654,37 @@ export async function syncPersonas(
     ? []
     : await linkCrewSeats(route, client, agentsModel.id, agentPersonas, opts.userAgent);
 
-  return { outcomes, agentPersonas, crewLinks };
+  const releaseAgentId = opts.dryRun
+    ? route.resolved.releaseAgentId
+    : await linkReleaseSeat(route, client, agentsModel, opts.userAgent);
+
+  return { outcomes, agentPersonas, crewLinks, ...(releaseAgentId ? { releaseAgentId } : {}) };
+}
+
+/**
+ * Finds or creates the persona-less Agents row for this ship's release Crew
+ * row and links the two (CREW-1605). The row is matched by name, like the
+ * persona rows; an existing one is never rewritten.
+ */
+async function linkReleaseSeat(
+  route: Route,
+  client: TablationClient,
+  agentsModel: Awaited<ReturnType<TablationClient['dataModels']['get']>>,
+  userAgent: string | undefined,
+): Promise<string | undefined> {
+  const seatId = route.resolved!.releaseSeat;
+  if (!seatId) return undefined;
+  const rows = await client.records.list<AgentRow>(agentsModel.id, { limit: 200 });
+  const agentId = rows.find((r) => r.name === RELEASE_AGENT_NAME)?.id
+    ?? (await client.records.create<AgentRow>(agentsModel.id, {
+      name: RELEASE_AGENT_NAME, prompt: RELEASE_AGENT_PROMPT, ...promptSourceFields(agentsModel, RELEASE_AGENT_PROMPT),
+    })).id;
+  const crewModelId = route.resolved!.models.crew;
+  const crewModel = await client.dataModels.get(crewModelId);
+  const columnName = await ensureCrewAgentField(route, client, crewModel, agentsModel.id, userAgent);
+  const seatRow = await client.records.get<CrewRow>(crewModelId, seatId);
+  if (seatRow[CREW_AGENT_COLUMN] !== agentId) await client.records.update<CrewRow>(crewModelId, seatId, { [columnName]: agentId });
+  return agentId;
 }
 
 /**

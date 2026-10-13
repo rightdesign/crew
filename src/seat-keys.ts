@@ -44,6 +44,28 @@ export function seatAgentId(route: Route, role: RoleName): string | undefined {
 }
 
 /**
+ * The key the release phase writes with (CREW-1605): the ship's own "Release"
+ * Crew row is not a `RoleName` seat, so its Agents row is tracked on its own
+ * (`resolved.releaseAgentId`, written by `crew agents sync`) and the same
+ * ship-key fallback applies.
+ */
+export async function resolveReleaseKey(
+  route: Route,
+  getStore: () => SessionStore = getSessionStore,
+): Promise<SeatIdentity> {
+  const ship = (reason: string): SeatIdentity => ({ kind: 'ship', apiKey: resolveApiKey(route), reason });
+  const agentId = route.resolved?.releaseAgentId;
+  if (!agentId) return ship('release seat has no linked Agents row (run `crew agents sync`)');
+  try {
+    const session = await getStore().get(hostFromUrl(route.baseUrl), slugFor(route, agentId));
+    if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
+    return ship('no agent key stored for the release seat (run `crew agents sync`)');
+  } catch {
+    return ship('OS keychain unavailable');
+  }
+}
+
+/**
  * The key `role` should write with. The keychain read is async; this never
  * throws, and an unavailable keychain or a missing key is a `ship` identity
  * carrying the reason.
@@ -67,7 +89,7 @@ export async function resolveSeatKey(
 }
 
 export interface MintOutcome {
-  role: RoleName;
+  role: RoleName | 'release';
   action: 'minted' | 'already_stored' | 'no_agent' | 'failed';
   detail?: string;
 }
@@ -85,19 +107,22 @@ export async function mintMissingSeatKeys(
   if (!route.resolved) return out;
   const resolved = route.resolved;
   const doFetch = o.fetchImpl ?? fetch;
-  const seated = SEAT_KEY_ROLES.filter((r) => resolved.seats[r]);
+  // The release seat is not a RoleName, so it is minted for alongside the roles.
+  const targets: Array<{ role: RoleName | 'release'; agentId: string | undefined }> = [
+    ...SEAT_KEY_ROLES.filter((r) => resolved.seats[r]).map((role) => ({ role, agentId: seatAgentId(route, role) })),
+    ...(resolved.releaseSeat ? [{ role: 'release' as const, agentId: resolved.releaseAgentId }] : []),
+  ];
   let store: SessionStore;
   try {
     store = (o.getStore ?? getSessionStore)();
   } catch (e) {
-    return seated.map((role) => ({
+    return targets.map(({ role }) => ({
       role, action: 'failed' as const, detail: `OS keychain unavailable: ${(e as Error).message}`,
     }));
   }
   const host = hostFromUrl(route.baseUrl);
   const base = route.baseUrl.replace(/\/+$/, '');
-  for (const role of seated) {
-    const agentId = seatAgentId(route, role);
+  for (const { role, agentId } of targets) {
     if (!agentId) { out.push({ role, action: 'no_agent' }); continue; }
     const slug = slugFor(route, agentId);
     try {
