@@ -137,16 +137,23 @@ export interface HandoffGuardInput {
 }
 
 /**
- * Run after a dev/design session ends. A ticket not at `fixed` is none of this
- * guard's business (the session is mid-work, parked at `needs_info`, ...).
+ * Run after a dev/design session ends. A ticket not at `fixed` (or already
+ * claimed past it) is none of this guard's business (the session is mid-work, parked at `needs_info`, ...).
  * Non-fatal throughout: a tracker blip here must not fail a run that already
  * finished its work.
  */
 export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutcome> {
   try {
     const t = await i.writer.ticket(i.ticketId);
-    if (t.status !== i.contract.statuses.handoff) return { kind: 'not-handed-off' };
+    const st = i.contract.statuses;
     const log = { ticket: t.issue_id, step: 'handoff' };
+    // CREW-1729: QA may claim a `fixed` ticket in the seconds before this guard
+    // reads it, so a status past the hand-off means the hand-off already happened.
+    const claimed = [st.verifying, st.verified, st.deployed].some((s) => s && t.status === s);
+    if (t.status !== st.handoff && !claimed) {
+      i.log.emit(`${t.issue_id} is at ${t.status}, not handed off — nothing to check`, log);
+      return { kind: 'not-handed-off' };
+    }
 
     const v = inspectHandoff(i.dir, i.cfg, t, i.role);
     if (v.kind === 'unverified') {
@@ -157,6 +164,12 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');
       i.log.emit(`${t.issue_id} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
+    }
+
+    // QA owns a claimed ticket: never pull it back to the building lane.
+    if (claimed) {
+      i.log.warn(`${t.issue_id} is at ${t.status} but its branch is not on the remote at HEAD: ${v.reason}`, log);
+      return { kind: 'failed', why: v.reason };
     }
 
     const heldBy = i.hold ? t[i.hold.column] : undefined;

@@ -140,6 +140,24 @@ test('enforce: a ticket not at fixed is not this guard\'s business', async () =>
   assert.deepEqual(h.notes, []);
 });
 
+test('enforce: a ticket QA claimed before the guard ran still gets its pushed event (CREW-1729)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket({ status: 'qa' }));
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'pushed');
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, [pushedEventBody(sh(f.wt, 'rev-parse', 'HEAD'), 'origin', 'crew-9')]);
+});
+
+test('enforce: a claimed ticket with an unpushed branch is never bounced out of QA', async () => {
+  const f = fixture();
+  const h = harness(ticket({ status: 'verified' }));
+  assert.equal((await enforceHandoff(input(f, h))).kind, 'failed');
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+});
+
 test('enforce: a repo with no remote writes nothing', async () => {
   const f = fixture(false);
   const h = harness(ticket());
