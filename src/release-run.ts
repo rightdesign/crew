@@ -967,6 +967,20 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[])
       const moved = branch ? movedPastVerified(o.cwd, branch, verified) : null;
       if (!moved) continue;
       drop.add(t.id);
+      // CREW-1758: a requeue records `pushed <tip>`, which must be a sha the
+      // remote has. A local tip the remote lacks is this ship's checkout, not
+      // the ticket's branch: report it and leave the ticket where it is.
+      const remoteTip = branch
+        ? gitOk(o.cwd, ['rev-parse', '-q', '--verify', `refs/remotes/${o.repo.branch.remote}/${branch}^{commit}`])
+        : null;
+      if (remoteTip && remoteTip !== moved.tip) {
+        o.emit.error(
+          `not releasing ${t.issue_id}: local ${branch} at ${moved.tip.slice(0, 8)} is not on ` +
+            `${o.repo.branch.remote}/${branch} (${remoteTip.slice(0, 8)}); not requeuing it`,
+          { ticket: t.issue_id },
+        );
+        continue;
+      }
       movedPast.push({ ticket: t, verified: moved.verified, head: moved.tip, branch: pushedBranchForTicket(o.repo, t) });
       o.emit.error(
         `not releasing ${t.issue_id}: ${branch} is at ${moved.tip.slice(0, 8)}, past the ${moved.verified.slice(0, 8)} QA verified`,

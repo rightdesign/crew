@@ -166,6 +166,28 @@ test('levelRemoteBranch: reports, never hides, a stale branch a dirty worktree h
   assert.equal(sh(shipB, 'rev-parse', 'tabl-8'), before);
 });
 
+test('levelRemoteBranch: reports a diverged branch a worktree holds, naming both shas (CREW-1758)', () => {
+  const { shipA, shipB, sh } = twoShips();
+  sh(shipA, 'checkout', '-q', '-b', 'tabl-10');
+  sh(shipA, 'push', '-q', '--set-upstream', 'origin', 'tabl-10');
+  fetchRemote(shipB);
+  materializeRemoteBranch(shipB, 'origin', 'tabl-10');
+  const wt = shipB + '-wt10';
+  sh(shipB, 'worktree', 'add', '-q', wt, 'tabl-10');
+  sh(wt, 'config', 'user.email', 't@t'); sh(wt, 'config', 'user.name', 'T');
+  sh(wt, 'commit', '--allow-empty', '-qm', 'local only');
+  sh(shipA, 'commit', '--allow-empty', '-qm', 'remote only');
+  sh(shipA, 'push', '-q', 'origin', 'tabl-10');
+  fetchRemote(shipB);
+  const local = sh(shipB, 'rev-parse', 'tabl-10');
+  const r = levelRemoteBranch(shipB, 'origin', 'tabl-10');
+  assert.match(r.problem ?? '', /has commits not on origin\/tabl-10/);
+  assert.ok((r.problem ?? '').includes(local.slice(0, 8)));
+  assert.ok((r.problem ?? '').includes(sh(shipA, 'rev-parse', 'tabl-10').slice(0, 8)));
+  assert.ok((r.problem ?? '').includes(wt));
+  assert.equal(sh(shipB, 'rev-parse', 'tabl-10'), local);
+});
+
 test('deleteRemoteBranch removes the upstream copy; a branch already gone is success', () => {
   const { shipA, sh } = twoShips();
   sh(shipA, 'branch', 'tabl-9');

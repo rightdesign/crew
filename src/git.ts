@@ -193,10 +193,11 @@ export function remoteBranchForIssue(
  *   worktree holds it, `fetch <remote> b:b` is refused by git, so the
  *   worktree itself is fast-forwarded — but only when it is clean. A dirty
  *   or mid-merge worktree is not ours to move.
- * - Diverged or ahead: left alone.
+ * - Diverged or ahead: left alone. Diverged while a worktree holds it is
+ *   reported as a `problem` (CREW-1758).
  *
  * `problem` is set when the local branch is behind the remote and could not
- * be moved. That is never silent: a release that squashes a stale local ref
+ * be moved, or has diverged from it in a worktree. That is never silent: a release that squashes a stale local ref
  * merges something nobody verified (CREW-1636). Callers must not treat
  * `exists` as "current" when `problem` is present.
  */
@@ -210,7 +211,20 @@ export function levelRemoteBranch(
   }
   const remoteTip = gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/remotes/${remote}/${branch}`]);
   if (!remoteTip || remoteTip === local) return { exists: true };
-  if (!isAncestor(cwd, local, remoteTip)) return { exists: true };   // diverged or ahead: not ours to move
+  if (!isAncestor(cwd, local, remoteTip)) {
+    // Diverged or ahead: not ours to move. But a worktree holding commits the
+    // remote lacks, next to a remote tip QA may have verified, is the ship's
+    // problem to see (CREW-1758) — never a quiet "exists".
+    const diverged = !isAncestor(cwd, remoteTip, local);
+    const holder = diverged ? worktrees(cwd).find((w) => w.branch === branch && !w.prunable) : undefined;
+    if (holder) {
+      return {
+        exists: true,
+        problem: `local ${branch} at ${local.slice(0, 8)} has commits not on ${remote}/${branch} at ${remoteTip.slice(0, 8)}; worktree ${holder.path}`,
+      };
+    }
+    return { exists: true };
+  }
 
   const holder = worktrees(cwd).find((w) => w.branch === branch && !w.prunable);
   if (holder) {
