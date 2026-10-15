@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.49.4] — 2026-10-15
+
+- ISSUE-1759 A dev run that hands off a ticket it never claimed is now caught: the ticket is bounced if another ship holds it, or its push is verified, without disturbing other ships' valid hand-offs.
+- ISSUE-1759 A run that hands off a ticket it did not claim is now caught: a ticket held by another ship is bounced back, and an unheld one has its push verified.
+
 ## [0.49.3] — 2026-10-15
 
 - ISSUE-1758 A verified ticket whose local branch diverged from the remote is reported and skipped by the release instead of being requeued forever with a false `pushed` event.
