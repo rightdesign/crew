@@ -29,6 +29,7 @@ import type { Emitter } from './events.ts';
 import type { Contract } from './contract.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { pushedBranchForTicket } from './ticket-branch.ts';
+import { pushedEventBody } from './handoff-guard.ts';
 import { displayKey, type Ticket, type Tracker } from './tracker.ts';
 import { lastLines } from './gate-red.ts';
 
@@ -59,6 +60,8 @@ export interface ReviewRequeue {
   verified: string;
   /** Where the branch is now (local head, or the remote's if a reviewer pushed past it). */
   head: string;
+  /** The branch name the `pushed` event records for `head` (CREW-1730). */
+  branch: string;
 }
 
 export interface ReviewOutcome {
@@ -138,10 +141,10 @@ function movedPast(r: ReviewRun, t: Ticket, branch: string, pushedAs: string): R
   const head = resolve(r.cwd, branch);
   const remoteHead = resolve(r.cwd, `${r.repo.branch.remote}/${pushedAs}`);
   if (remoteHead && !isAncestor(r.cwd, remoteHead, verified) && remoteHead !== head) {
-    return { ticket: t, verified, head: remoteHead };
+    return { ticket: t, verified, head: remoteHead, branch: pushedAs };
   }
   if (head && head !== verified && !isAncestor(r.cwd, head, verified)) {
-    return { ticket: t, verified, head };
+    return { ticket: t, verified, head, branch: pushedAs };
   }
   return null;
 }
@@ -252,6 +255,13 @@ export async function applyReview(
     try {
       await tracker.updateTicket(t.id, { [contract.columns.status]: contract.statuses.handoff }, t.updated_at);
       await tracker.postEvent(t.id, body, seat, 'requeued');
+      // CREW-1730: the requeue is a hand-back to QA at `head`, so record it as
+      // one. `verifiedShaFor` reads the newest `pushed` event as what QA
+      // verified; without this the next release compares the new verification
+      // against the old sha and requeues forever.
+      await tracker.postEvent(
+        t.id, pushedEventBody(q.head, remote, q.branch), seat, 'pushed',
+      );
       emit.emit(`returned to ${contract.statuses.handoff} — branch moved past ${q.verified.slice(0, 8)}`, { ticket: t.issue_id });
     } catch (e) {
       emit.warn(`could not return to ${contract.statuses.handoff}: ${(e as Error).message}`, { ticket: t.issue_id });

@@ -64,3 +64,8 @@ test('movedPastVerified: a verified sha this checkout cannot see is "can\'t tell
   g('checkout', '-qb', 'crew-1');
   assert.equal(movedPastVerified(dir, 'crew-1', SHA_A), null);
 });
+
+test('verifiedShaFor: a requeue\'s pushed event at the new tip becomes the reference (CREW-1730)', () => {
+  const events = [ev(SHA_A, '2026-10-15T10:00:00Z'), ev(SHA_B, '2026-10-15T10:30:00Z')];
+  assert.equal(verifiedShaFor(T(), 'verified_sha', events), SHA_B);
+});

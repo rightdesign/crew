@@ -967,7 +967,7 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[])
       const moved = branch ? movedPastVerified(o.cwd, branch, verified) : null;
       if (!moved) continue;
       drop.add(t.id);
-      movedPast.push({ ticket: t, verified: moved.verified, head: moved.tip });
+      movedPast.push({ ticket: t, verified: moved.verified, head: moved.tip, branch: pushedBranchForTicket(o.repo, t) });
       o.emit.error(
         `not releasing ${t.issue_id}: ${branch} is at ${moved.tip.slice(0, 8)}, past the ${moved.verified.slice(0, 8)} QA verified`,
         { ticket: t.issue_id },

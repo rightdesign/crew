@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runRelease } from '../src/release-run.ts';
+import { parsePushedSha } from '../src/verified-tip.ts';
 import { applyReview, parsePrRef, reviewProblems } from '../src/review.ts';
 import { parseRepoConfig, resolveRepoConfig } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT, type Contract } from '../src/contract.ts';
@@ -197,19 +198,24 @@ test('parsePrRef takes a lone line, else the last URL or number', () => {
 
 test('applyReview moves a handed-off ticket to reviewing with its PR, and a moved branch back to fixed', async () => {
   const updates: { id: string; patch: Record<string, unknown>; at?: string }[] = [];
-  const events: { id: string; body: string }[] = [];
+  const events: { id: string; body: string; type?: string }[] = [];
   const tracker = {
     updateTicket: async (id: string, patch: Record<string, unknown>, at?: string) => { updates.push({ id, patch, at }); return {} as Ticket; },
-    postEvent: async (id: string, body: string) => { events.push({ id, body }); },
+    postEvent: async (id: string, body: string, _m?: string, type?: string) => { events.push({ id, body, type }); },
   };
   await applyReview(tracker, CONTRACT, {
     handoffs: [{ ticket: T(), pushedAs: 'crew/ISSUE-7', head: 'b'.repeat(40), prRef: '#12' }],
-    requeues: [{ ticket: T({ id: 'rec-8', issue_id: 'ISSUE-8' }), verified: 'a'.repeat(40), head: 'c'.repeat(40) }],
+    requeues: [{ ticket: T({ id: 'rec-8', issue_id: 'ISSUE-8' }), verified: 'a'.repeat(40), head: 'c'.repeat(40), branch: 'crew/ISSUE-8' }],
   }, 'origin', emitter(), 'seat-1', { verifiedSha: true, prRef: true }, false);
   assert.deepEqual(updates[0], { id: 'rec-7', patch: { status: 'in_review', pr_ref: '#12' }, at: '2026-10-06T00:00:00Z' });
   assert.deepEqual(updates[1]?.patch, { status: 'fixed' });
   assert.match(events[0]!.body, /Pull request: #12/);
   assert.match(events[1]!.body, /aaaaaaaa.*cccccccc/);
+  // CREW-1730: the requeue records the tip as the new hand-off, so the next
+  // verification is measured against it rather than the stale sha.
+  assert.equal(events[2]!.type, 'pushed');
+  assert.equal(events[2]!.body, `pushed ${'c'.repeat(40)} to origin/crew/ISSUE-8`);
+  assert.equal(parsePushedSha(events[2]!.body), 'c'.repeat(40));
 });
 
 test('applyReview leaves pr_ref out when the table has no such column', async () => {
