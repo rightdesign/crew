@@ -52,7 +52,26 @@ export interface DigestComment {
   created_at: string;
 }
 
+/** A runner event row, as far as the digest reads it (a `RunnerEvent` fits). */
+export interface DigestEvent {
+  record_id: string;
+  event_type: string;
+  message?: string | null;
+  occurred_at?: string | null;
+  created_at?: string | null;
+}
+
+/**
+ * Event types that tell a lane what to do next (CREW-1761). They live in the
+ * event log, not Comments (CREW-1574), so without surfacing them a hand-back
+ * reads as an `in_progress`, unassigned ticket with nothing new on it.
+ * `pushed` is not one of these: it is the marker that a direction was acted on.
+ */
+export const DIRECTION_EVENT_TYPES = ['conflict_handed_back', 'requeued', 'bounced', 'conflict_escalated'] as const;
+
 export interface DigestInput {
+  /** Runner events from the event log: the direction types above plus `pushed`. */
+  events?: DigestEvent[];
   /**
    * How this repo names branches, rendered per ticket by the crew.
    *
@@ -208,14 +227,43 @@ function lastComment(i: DigestInput, ticketId: string): string {
   return `${last.created_at.slice(0, 16)}Z ${author(last, i)}`;
 }
 
-/** Comments from someone other than the running seat since the poll watermark. */
+const eventAt = (e: DigestEvent): string => e.occurred_at ?? e.created_at ?? '';
+
+/**
+ * The newest runner direction on a ticket that nothing has acted on since: a
+ * `pushed` event newer than it means a lane already answered it. Not limited
+ * to the watermark, because a run that read the hand-back and did nothing
+ * must not make the next run blind to it (CREW-1761).
+ */
+function pendingDirection(i: DigestInput, ticketId: string): DigestEvent | undefined {
+  const mine = (i.events ?? []).filter((e) => e.record_id === ticketId);
+  const pushed = mine.filter((e) => e.event_type === 'pushed').map(eventAt).sort().pop() ?? '';
+  return mine
+    .filter((e) => (DIRECTION_EVENT_TYPES as readonly string[]).includes(e.event_type) && eventAt(e) > pushed)
+    .sort((a, b) => (eventAt(a) < eventAt(b) ? 1 : -1))[0];
+}
+
+/** The `last comment` cell's companion: what the runner last told this lane to do. */
+function directionCell(i: DigestInput, ticketId: string): string {
+  const d = pendingDirection(i, ticketId);
+  if (!d) return '—';
+  const msg = (d.message ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
+  return `${d.event_type} ${eventAt(d).slice(0, 16)}Z${msg ? ` — ${msg}` : ''}`.replace(/\|/g, '/');
+}
+
+/**
+ * Comments from someone other than the running seat since the poll
+ * watermark, plus a runner direction landing since then (CREW-1761).
+ */
 function newFromOthers(i: DigestInput, ticketId: string): number {
-  return i.comments.filter(
+  const comments = i.comments.filter(
     (c) =>
       c.ticket_id === ticketId &&
       c.team_member_id !== i.me &&
       c.created_at > i.watermark,
   ).length;
+  const d = pendingDirection(i, ticketId);
+  return comments + (d && eventAt(d) > i.watermark ? 1 : 0);
 }
 
 /**
@@ -286,15 +334,15 @@ function table(ts: DigestTicket[], i: DigestInput, header: string, row: (t: Dige
 /** The digest for a building role — dev or design. */
 export function buildingDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | branch | worktree | mode | status | assignee | filed by | sev | pri | eff | updated | last comment | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | branch | worktree | mode | status | assignee | filed by | sev | pri | eff | updated | last comment | runner direction | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
     const branch = i.branchFor ? i.branchFor(t) : '';
     const worktree = i.worktreeFor ? i.worktreeFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | ${effCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | ${effCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${directionCell(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -320,6 +368,7 @@ export function buildingDigest(i: DigestInput): string {
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
+    '\n"runner direction" is the newest instruction the crew itself posted to the\nevent log (not Comments) that no push has answered yet: `conflict_handed_back`\n(merge the base into the branch and resolve), `requeued`, `bounced`,\n`conflict_escalated`. It is direction, same as a comment from a hold: act on it.\n',
     '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` and `worktree` columns verbatim.** They are that\nrepository\'s own naming convention, rendered for THIS ticket — cut the\nworktree at `<repo>/../<worktree>`, on branch `<branch>`. Do not derive\neither yourself, and prefer these over the Environment section\'s own worked\nexample if the two ever disagree — that example is illustrative only,\nrendered before any ticket is picked.\n',
     ...(i.workModes && [...i.workModes.modes.values()].some((m) => m !== 'automatic')
       ? ['\n**Manual / hybrid projects.** Some projects on this board are not fully automatic. In a `manual` project no lane touches any ticket, and a ticket with no project is treated the same way, so none appear below. In a `hybrid` project a ticket appears below only when it is assigned to an agent. An `accepted` ticket that is absent for either reason is not yours to claim — do not go looking for it.\n']

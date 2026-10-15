@@ -142,6 +142,12 @@ Then:
   the ticket again because the status was left alone.
 - A hold gave new direction on an `in_progress` ticket → adjust the branch
   and comment on what changed.
+- A ticket whose `runner direction` cell is not `—` has been handed back by
+  the crew itself (a conflict with the base, a requeue, a bounce). That is
+  direction exactly as a comment from a hold is, and "no new comment" does not
+  cancel it: for `conflict_handed_back`, merge `<remote>/<base>` into the
+  branch, resolve, run the suite, push as a fast-forward and set `fixed`
+  (Step 4.4). Never answer it with "nothing to build".
 - An `in_progress` ticket with no assignee and no new comment → still "up
   for grabs, more work to do": a hold clearing the assignee *is* the signal.
 - **An `in_progress` ticket assigned to you with no new comment is your own
@@ -397,8 +403,10 @@ worktree, runs the test gate and deploys. Three consequences:
    lines from Step 3.5 are the only input the release phase has; nobody
    reads the diff later to fill them in.
 3. **A branch that no longer squash-merges cleanly comes back to you** at
-   `in_progress`, reassigned to your lane, with a comment naming the
-   conflict. Fix it in the same worktree and take it to `fixed` again. "Never
+   `in_progress`, reassigned to your lane, with the hand-back
+   posted to the event log, which the digest's `runner direction` column
+   shows (a ticket there reads as new direction even with no new comment).
+   Fix it in the same worktree and take it to `fixed` again. "Never
    merge" above means never merge INTO the base; merging the base INTO your
    own ticket branch is the expected fix (rule 4), and it is not "by hand to
    help".

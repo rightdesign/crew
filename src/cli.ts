@@ -1552,7 +1552,7 @@ async function releasePhase(
       // Prior hand-back/flag events are fetched only when one of these actually happens, which
       // is almost never — it costs a request on the rare cycle that needs
       // one, and none at all on the rest. Shared between both loops below.
-      const handedBack = await tracker.events('conflict_handed_back');
+      const handedBack = [...await tracker.events('conflict_handed_back'), ...await tracker.events('pushed')];
       const flagged = await tracker.events('stranded_flagged');
       const seat = releaseSeat(c);
 

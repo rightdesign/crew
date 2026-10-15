@@ -157,6 +157,7 @@ test('conflicting a second time escalates instead of looping through the lanes',
 
   const already: RunnerEvent[] = [
     { record_id: 'row-1', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\nhanded back earlier`, occurred_at: '2026-01-01T00:00:00Z' },
+    { record_id: 'row-1', event_type: 'pushed', occurred_at: '2026-01-02T00:00:00Z' },
   ];
   const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], already);
   assert.equal(b.priorBounces, 1);
@@ -225,8 +226,14 @@ test('priorBounces counts only this ticket, and only conflict hand-back events',
     { record_id: 'row-1', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\nx` },
     { record_id: 'row-2', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\ny` },
     { record_id: 'row-1', event_type: 'stalled', message: 'a different runner event' },
+    { record_id: 'row-1', event_type: 'pushed', occurred_at: '2026-01-02T00:00:00Z' },
+    { record_id: 'row-2', event_type: 'pushed', occurred_at: '2026-01-02T00:00:00Z' },
   ];
+  events[0]!.occurred_at = '2026-01-01T00:00:00Z';
+  events[1]!.occurred_at = '2026-01-01T00:00:00Z';
   assert.equal(priorBounces(t, events), 1);
+  // a hand-back no push has answered is not a failed fix
+  assert.equal(priorBounces(t, events.slice(0, 1)), 0);
 });
 
 test('refreshBranch reports the paths the branch itself disagrees about', () => {

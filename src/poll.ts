@@ -21,7 +21,7 @@ import {
 } from './select.ts';
 import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } from './epics.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
-import { buildingDigest, qaDigest } from './digest.ts';
+import { buildingDigest, DIRECTION_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
 import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
@@ -56,6 +56,8 @@ export interface CycleDecision {
   /** Everything actionable this cycle, pooled across every pending role (ISSUE-382). */
   actionable: ActionableSummary;
   watermark: string;
+  /** Runner direction events plus `pushed` markers, for the digest (CREW-1761). */
+  directionEvents?: DigestEvent[];
   /**
    * The exact input `selectRole` ranked this cycle — exposed so the caller
    * can re-rank the winning role's candidates itself (ISSUE-395's claim
@@ -103,6 +105,8 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     tracker.projectWorkModes(),
     tracker.events('stalled'),
   ]);
+  // CREW-1761: the runner's own directions live in the event log, not Comments.
+  const directionEvents = (await Promise.all([...DIRECTION_EVENT_TYPES, 'pushed'].map((t) => tracker.events(t)))).flat();
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
   });
@@ -266,7 +270,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const selection = selectRole(selectionInput);
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark,
+    tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark, directionEvents,
     selectionInput, attention: attentionCurrent,
   };
 
@@ -392,6 +396,7 @@ export function writeDigest(
       ships: d.ships,
       myShipId: d.ships.find((s) => (s.name ?? '').trim() === o.ship.name.trim())?.id ?? null,
       watermark: d.watermark,
+      events: d.directionEvents,
       blocked: d.blocked,
       blockerInfo: d.info,
     };

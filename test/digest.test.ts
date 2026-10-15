@@ -298,3 +298,22 @@ test('the QA digest lists a blocked fixed ticket under "Waiting on blockers", no
   assert.doesNotMatch(awaiting!, /\| ISSUE-30 \|/);
   assert.match(waiting!, /\| ISSUE-30 \| fixed \| ISSUE-99 \(accepted\) \|/);
 });
+
+test('a conflict hand-back in the event log reads as new direction until a push answers it (CREW-1761)', () => {
+  const tickets = [T({ id: 'h', issue_id: 'ISSUE-9', status: 'in_progress', assignee_id: null })];
+  const handBack = { record_id: 'h', event_type: 'conflict_handed_back', message: 'merge main | resolve', occurred_at: '2026-10-15T19:34:45.000Z' };
+  const unseen = buildingDigest(input({ tickets, events: [handBack], watermark: '2026-10-15T19:00:00Z' }));
+  assert.match(unseen, /conflict_handed_back 2026-10-15T19:34Z — merge main \/ resolve/);
+  assert.match(unseen, /\*\*1 new\*\*/);
+
+  // A run that missed it still sees it after the watermark moves on, but it no longer counts as new.
+  const later = buildingDigest(input({ tickets, events: [handBack], watermark: '2026-10-15T20:00:00Z' }));
+  assert.match(later, /conflict_handed_back 2026/);
+  assert.doesNotMatch(later, /\*\*1 new\*\*/);
+
+  const answered = buildingDigest(input({
+    tickets,
+    events: [handBack, { record_id: 'h', event_type: 'pushed', occurred_at: '2026-10-15T20:44:00.000Z' }],
+  }));
+  assert.doesNotMatch(answered, /conflict_handed_back 2026/);
+});

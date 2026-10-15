@@ -88,9 +88,21 @@ export function worktreeForBranch(cwd: string, branch: string): string | null {
   return null;
 }
 
-/** How many times the crew has already handed this ticket back. */
-export const priorBounces = (ticket: Ticket, events: RunnerEvent[]): number =>
-  events.filter((e) => e.record_id === ticket.id && e.event_type === 'conflict_handed_back').length;
+const stampOf = (e: RunnerEvent): string => e.occurred_at ?? e.created_at ?? '';
+
+/**
+ * How many hand-backs of this ticket a lane has already acted on: a
+ * `conflict_handed_back` counts only once a later `pushed` event exists, so a
+ * hand-back nobody saw (or answered) does not make the next conflict look like
+ * a lane that failed to fix it (CREW-1761). `events` carries both types.
+ */
+export const priorBounces = (ticket: Ticket, events: RunnerEvent[]): number => {
+  const mine = events.filter((e) => e.record_id === ticket.id);
+  const pushes = mine.filter((e) => e.event_type === 'pushed').map(stampOf);
+  return mine.filter(
+    (e) => e.event_type === 'conflict_handed_back' && pushes.some((p) => p > stampOf(e)),
+  ).length;
+};
 
 export function planConflictBounce(
   cwd: string,
