@@ -1880,8 +1880,9 @@ switch (command) {
         wemit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
       }
       try {
+        const runStart = new Date().toISOString();
         await spawnAgent(fleetPlan, wemit);
-        await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit);
+        await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit, runStart);
       } finally {
         dropLock();
         if (fleetMemberId) {
@@ -2113,8 +2114,9 @@ switch (command) {
         emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
       }
       try {
+        const runStart = new Date().toISOString();
         await spawnAgent(plan, emit);
-        await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit);
+        await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit, runStart);
       } finally {
         dropLock();
         if (memberId) {

@@ -478,6 +478,12 @@ existing worktree and note that the status change was not needed.
 
 - One ticket at a time. Never mix two tickets' changes in one branch,
   worktree or commit.
+- **A ticket that appears mid-run is not yours this run.** A bounce, a
+  re-accept or a hand-back that lands while you work another ticket is left for
+  a later run, which claims it with `assignee_id` and the ship hold like any
+  other. Finish the ticket you claimed. Before touching any worktree, re-fetch
+  its record and stop if the ship hold names another ship. Setting `fixed` on a
+  ticket you did not claim is bounced by the runner.
 - **Stay in your lane.** Status decides QA's slice; `needs_design` decides
   dev versus design. Both are checked before assignee and before whether a
   worktree exists.

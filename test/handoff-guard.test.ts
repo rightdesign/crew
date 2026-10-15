@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
 import {
-  inspectHandoff, enforceHandoff, pushedEventBody, HANDOFF_BOUNCED_MARKER,
+  inspectHandoff, enforceHandoff, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
   type HandoffWriter, type HandoffLog,
 } from '../src/handoff-guard.ts';
 import type { Ticket } from '../src/tracker.ts';
@@ -164,4 +164,81 @@ test('enforce: a repo with no remote writes nothing', async () => {
   assert.equal((await enforceHandoff(input(f, h))).kind, 'unverified');
   assert.deepEqual(h.patches, []);
   assert.deepEqual(h.notes, []);
+});
+
+const stray = (f: ReturnType<typeof fixture>, h: ReturnType<typeof harness>, t: Ticket, myShipId: string | null = 'ship-A') => ({
+  writer: h.w, contract: DEFAULT_CONTRACT, candidates: [t], seatId: 'seat-dev', role: 'dev', myShipId, shipName: 'Studio',
+  checkout: () => ({ dir: f.dir, cfg: cfg(f.dir) }), log: h.log,
+});
+
+test('stray: a fixed ticket held by another ship goes back to in_progress, hold and assignee untouched', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: 'ship-B' })));
+  assert.deepEqual(h.patches, [{ status: 'in_progress' }]);
+  assert.match(h.notes[0]!, new RegExp(STRAY_HANDOFF_MARKER));
+  assert.ok(h.warns.some((w) => /did not claim it/.test(w)));
+});
+
+test('stray: an unheld fixed ticket with a pushed local branch gets its pushed event', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: null })));
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, [pushedEventBody(sh(f.wt, 'rev-parse', 'HEAD'), 'origin', 'crew-9')]);
+});
+
+test('stray: an unheld fixed ticket whose branch is unpushed is bounced', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: null })));
+  assert.deepEqual(h.patches, [{ status: 'in_progress', assignee_id: 'seat-dev' }]);
+  assert.match(h.notes[0]!, new RegExp(HANDOFF_BOUNCED_MARKER));
+});
+
+test('stray: an unheld fixed ticket whose local branch is stale (origin ahead) is left alone', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const stale = sh(f.wt, 'rev-parse', 'HEAD');
+  // Another ship builds on and pushes a newer tip; this checkout's branch stays at `stale`.
+  writeFileSync(join(f.wt, 'c.txt'), 'c');
+  sh(f.wt, 'add', '.');
+  sh(f.wt, 'commit', '-qm', 'other ship');
+  sh(f.wt, 'push', '-q', 'origin', 'crew-9');
+  sh(f.wt, 'reset', '-q', '--hard', stale);
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: null })));
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+  assert.ok(h.warns.some((w) => /left alone/.test(w)));
+});
+
+test('stray: a local branch strictly ahead of origin is bounced', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  writeFileSync(join(f.wt, 'd.txt'), 'd');
+  sh(f.wt, 'add', '.');
+  sh(f.wt, 'commit', '-qm', 'unpushed local');
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: null })));
+  assert.equal(h.patches.length, 1);
+});
+
+test('stray: a qa run never inspects other hand-offs', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  await guardStrayHandoffs({ ...stray(f, h, ticket({ held_by_ship_id: 'ship-B' })), role: 'qa' });
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+});
+
+test('stray: a ticket held by this ship, or with no branch here, is not bounced', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: 'ship-A', issue_id: 'ISSUE-77', issue_tag: 'CREW-77' })));
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+  assert.ok(h.warns.length > 0);
 });

@@ -26,10 +26,11 @@
  */
 
 import type { Contract } from './contract.ts';
-import { gitOk, headSha, remoteConfigured, worktrees } from './git.ts';
+import { gitOk, headSha, isAncestor, remoteConfigured, worktrees } from './git.ts';
 import { existingBranchForTicket, type BranchLookupTicket } from './ticket-branch.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, type Route, type Ship, type RoleName } from './config.ts';
+import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import type { Ticket, Tracker } from './tracker.ts';
 import { finishRunWorktree } from './run-worktree.ts';
@@ -196,21 +197,17 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
  */
 export async function guardRunHandoff(
   route: Route, ship: Ship, tracker: Tracker, role: RoleName, workingId: string | null, log: HandoffLog,
+  /** ISO time the run started; with it, hand-offs to tickets other than `workingId` are checked too (CREW-1759). */
+  since?: string,
 ): Promise<HandoffOutcome | null> {
   if (!workingId || (role !== 'dev' && role !== 'design' && role !== 'qa')) return null;
   const seatId = route.resolved?.seats[role];
   if (!seatId) return null;
   try {
     const t = await tracker.ticket(workingId);
-    const target = repoTargetFor(route, t.repo_id);
-    if (!target) return null;
-    const o = route.repoOverrides[target.name];
-    const cfg = resolveRepoConfig(loadRepoConfig(target.dir), {
-      hooks: { ...route.hooks, ...o?.hooks },
-      labels: { ...route.labels, ...o?.labels },
-      branch: { ...route.branch, ...o?.branch },
-      worktrees: { nameOverride: o?.worktreeName },
-    }, target.dir);
+    const resolved = repoConfigFor(route, t);
+    if (!resolved) return null;
+    const { target, cfg } = resolved;
     // CREW-1405: QA hands nothing on (it verifies or bounces), and its hard
     // limits forbid `crew drop`, so the runner retires the worktree a QA run cut
     // with `crew worktree NNN` once the run ends. Same rules as a hand-off:
@@ -225,6 +222,7 @@ export async function guardRunHandoff(
       seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, log,
     });
     if (outcome.kind === 'pushed') await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
+    if (since) await guardRunStrays(route, ship, tracker, role, workingId, since, log);
     return outcome;
   } catch (e) {
     log.warn(`could not check the hand-off: ${(e as Error).message}`, { step: 'handoff' });
@@ -256,5 +254,115 @@ async function retireRunWorktree(
     else if (o.kind === 'kept-unpushed') log.warn(`${t.issue_id}: left worktree ${o.path} — its branch has commits that are not on ${cfg.branch.remote}`, at);
   } catch (e) {
     log.warn(`could not retire the run's worktree: ${(e as Error).message}`, { step: 'handoff' });
+  }
+}
+
+function repoConfigFor(route: Route, t: Ticket) {
+  const target = repoTargetFor(route, t.repo_id);
+  if (!target) return null;
+  const o = route.repoOverrides[target.name];
+  const cfg = resolveRepoConfig(loadRepoConfig(target.dir), {
+    hooks: { ...route.hooks, ...o?.hooks },
+    labels: { ...route.labels, ...o?.labels },
+    branch: { ...route.branch, ...o?.branch },
+    worktrees: { nameOverride: o?.worktreeName },
+  }, target.dir);
+  return { target, cfg };
+}
+
+export const STRAY_HANDOFF_MARKER = '<!-- crew:stray-handoff -->';
+
+export interface StrayGuardInput {
+  writer: HandoffWriter;
+  contract: Contract;
+  /** Tickets at the hand-off status that changed since the run began, excluding the claimed one. */
+  candidates: Ticket[];
+  seatId: string;
+  role: string;
+  /** This ship's Ships row id (`null`: no hold column, so holds cannot be compared). */
+  myShipId: string | null;
+  shipName?: string;
+  /** Resolves the checkout for a candidate; `null` when this ship has no clone of its repo. */
+  checkout(t: Ticket): { dir: string; cfg: EffectiveRepoConfig } | null;
+  log: HandoffLog;
+}
+
+/**
+ * CREW-1759: a run claims ONE ticket, but the session can move another to
+ * `fixed` anyway (it did, on a bounce that appeared mid-run, while a second
+ * ship held it). The claimed-ticket guard never looks at it, so no `pushed`
+ * event was written and two ships built the same bounce.
+ *
+ * For each other ticket handed off during the run:
+ *   - held by a DIFFERENT ship: that ship's own hand-off clears its hold, so
+ *     this is a stray write. Return it to `in_progress` (assignee and hold are
+ *     left as they were) with a note.
+ *   - not held by another ship and a branch for it exists in this checkout:
+ *     verify the push exactly like the claimed ticket's.
+ *   - otherwise (nothing to inspect here — most likely another ship's honest
+ *     hand-off): leave it alone.
+ * Every one is logged as an error naming the ticket: it is outside the claim.
+ */
+export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
+  const st = i.contract.statuses;
+  // QA verifies or bounces; it never hands a ticket on, so a `fixed` ticket seen
+  // during its run is some other seat's or ship's honest hand-off.
+  if (i.role === 'qa') return;
+  for (const t of i.candidates) {
+    const at = { ticket: t.issue_id, step: 'handoff' };
+    try {
+      const holder = i.myShipId ? ticketHolderShipId(t, i.contract) : null;
+      if (holder && holder !== i.myShipId) {
+        await i.writer.updateTicket(t.id, { status: st.building });
+        await i.writer.postEvent(t.id,
+          `${STRAY_HANDOFF_MARKER}\n**Hand-off bounced: this ticket is held by another ship.**\n\n${i.shipName ? `${i.shipName}'s ` : 'A '}${i.role} run set it to \`${st.handoff}\` without having claimed it. Set back to \`${st.building}\`; the holding ship's own hand-off is the one that counts.`,
+          i.seatId, 'bounced').catch(() => i.log.warn('bounced, but the note failed to post', at));
+        i.log.warn(`${t.issue_id} was handed off by a run that did not claim it, while held by another ship — bounced to ${st.building}`, at);
+        continue;
+      }
+      const co = i.checkout(t);
+      if (!co || !existingBranchForTicket(co.dir, co.cfg, t, i.role)) {
+        i.log.warn(`${t.issue_id} moved to ${st.handoff} during a run that did not claim it; no local branch to verify, left alone`, at);
+        continue;
+      }
+      const v = inspectHandoff(co.dir, co.cfg, t, i.role);
+      i.log.warn(`${t.issue_id} was handed off by a run that did not claim it`, at);
+      if (v.kind === 'pushed') {
+        await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');
+      } else if (v.kind === 'bounce') {
+        // The remote tip is only "ours to bounce" when this checkout's branch is
+        // missing from it or strictly ahead of it. A remote that is ahead of (or
+        // has diverged from) a stale local branch was pushed by another ship's
+        // honest hand-off, which clears its hold and so looks unheld here.
+        if (v.origin && v.local && !isAncestor(co.dir, v.origin, v.local)) {
+          i.log.warn(`${t.issue_id}: \`${v.remote}/${v.branch}\` is at ${v.origin.slice(0, 7)}, not a tip this checkout built — left alone`, at);
+          continue;
+        }
+        await i.writer.updateTicket(t.id, { status: st.building, ...(t.assignee_id ? {} : { assignee_id: i.seatId }) });
+        await i.writer.postEvent(t.id, bounceComment(v, i.shipName), i.seatId, 'bounced').catch(() => {});
+      }
+    } catch (e) {
+      i.log.warn(`could not check the stray hand-off: ${(e as Error).message}`, at);
+    }
+  }
+}
+
+async function guardRunStrays(
+  route: Route, ship: Ship, tracker: Tracker, role: RoleName, workingId: string, since: string, log: HandoffLog,
+): Promise<void> {
+  const seatId = route.resolved?.seats[role];
+  if (!seatId) return;
+  try {
+    const affinity = await tracker.claimAffinity();
+    const candidates = await tracker.handedOffSince(since, workingId);
+    if (candidates.length === 0) return;
+    await guardStrayHandoffs({
+      writer: tracker, contract: tracker.contract, candidates, seatId, role,
+      myShipId: affinity?.shipId ?? null, shipName: ship.name,
+      checkout: (t) => { const r = repoConfigFor(route, t); return r ? { dir: r.target.dir, cfg: r.cfg } : null; },
+      log,
+    });
+  } catch (e) {
+    log.warn(`could not check for stray hand-offs: ${(e as Error).message}`, { step: 'handoff' });
   }
 }

@@ -700,8 +700,9 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
     emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
   }
   try {
+    const runStart = new Date().toISOString();
     await spawnAgent(plan, emit);
-    await guardRunHandoff(route, ship, tracker, role, workingId, emit);
+    await guardRunHandoff(route, ship, tracker, role, workingId, emit, runStart);
   } finally {
     if (memberId) {
       try {

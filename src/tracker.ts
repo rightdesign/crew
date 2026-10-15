@@ -313,6 +313,20 @@ export class Tracker {
   }
 
   /**
+   * Tickets at the hand-off status whose row changed at or after `since`,
+   * other than `exceptId` (CREW-1759: a run's stray hand-offs).
+   */
+  async handedOffSince(since: string, exceptId: string): Promise<Ticket[]> {
+    const c = this.contract;
+    const rows = await this.client.records.list<Ticket>(this.models.issues, {
+      filters: encodeFilters([{ columnName: c.columns.status, operator: 'EQ', value: c.statuses.handoff }]),
+      limit: 100,
+    });
+    const from = Date.parse(since);
+    return rows.filter((t) => t.id !== exceptId && Date.parse(t.updated_at) >= from);
+  }
+
+  /**
    * The tickets behind a set of ticket numbers — the cleanup sweeps' input
    * (CREW-1593).
    *
