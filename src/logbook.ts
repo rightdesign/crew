@@ -11,6 +11,7 @@
  * coverage at all.
  */
 
+import { appendAdditions } from './prompt-additions.ts';
 import { createHash } from 'node:crypto';
 import { TablationClient } from '@tablation/client';
 import type { Route } from './config.ts';
@@ -156,7 +157,8 @@ export async function showLogEntry(
     };
   }
 
-  const prompt = match.prompt ?? '';
+  // TABL-1716: the run's text carried the row's Additional instructions as of that version.
+  const prompt = appendAdditions(match.prompt ?? '', match.prompt_additions);
   const actualSha = createHash('sha256').update(prompt).digest('hex');
   const exact = !!entry.prompt_sha && actualSha === entry.prompt_sha;
   return {

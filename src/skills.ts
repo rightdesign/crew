@@ -27,6 +27,7 @@ import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/
 import type { Route } from './config.ts';
 import { resolveApiKey } from './config.ts';
 import { skillMarkerNames } from './skill-include.ts';
+import { appendAdditions } from './prompt-additions.ts';
 import { promptSourceFields, isPromptGateRejection, hasPromptBaselineColumn, needsBaselineBackfill } from './agents.ts';
 
 export class SkillSyncError extends Error {}
@@ -79,6 +80,8 @@ interface SkillRow {
   /** CREW-1559: `prompt !== prompt_baseline` on a non-customized row means a person edited it. Null on a row never stamped. */
   prompt_source?: string | null;
   prompt_baseline?: string | null;
+  /** TABL-1716: workspace text appended after the prompt at run time. Absent on an older server. */
+  prompt_additions?: string | null;
 }
 
 export type SkillSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'overridden' | 'forced';
@@ -306,14 +309,27 @@ export async function fetchSkillOverrides(
   const out: Record<string, string> = {};
   for (const row of rows) {
     const name = row.name;
-    if (row.prompt === local.get(name)?.prompt) continue;
-    // CREW-1559: an unedited, non-customized row is crew's own stale copy whoever wrote it.
-    if (row.prompt_customized !== true && row.prompt === row.prompt_baseline) continue;
-    const cached = cache[name];
-    if (cached?.skillId === row.id && cached.lastSyncedUpdatedAt === row.updated_at) continue;
-    out[name] = row.prompt;
+    // TABL-1716: Additional instructions apply to a managed row too, so a row
+    // carrying them is always returned, composed over whichever prompt wins:
+    // the row's own when it was edited, else crew's local file.
+    const edited = isEditedSkillRow(row, local.get(name)?.prompt, cache[name]);
+    const base = edited ? row.prompt : local.get(name)?.prompt ?? row.prompt;
+    const composed = appendAdditions(base, row.prompt_additions);
+    if (edited || composed !== base) out[name] = composed;
   }
   return out;
+}
+
+/** True when `row.prompt` is a person's edit rather than crew's own copy; see `fetchSkillOverrides`. */
+function isEditedSkillRow(
+  row: SkillRow,
+  localPrompt: string | undefined,
+  cached: { skillId?: string; lastSyncedUpdatedAt?: string } | undefined,
+): boolean {
+  if (row.prompt === localPrompt) return false;
+  // CREW-1559: an unedited, non-customized row is crew's own stale copy whoever wrote it.
+  if (row.prompt_customized !== true && row.prompt === row.prompt_baseline) return false;
+  return !(cached?.skillId === row.id && cached.lastSyncedUpdatedAt === row.updated_at);
 }
 
 /**

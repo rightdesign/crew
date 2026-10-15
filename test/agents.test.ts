@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   syncPersonas, personaDefaultPrompt, currentPersonaPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError,
-  fetchHistoryEntries, fetchDivergedPrompt, fetchSeatAgentModel, fetchSeatPersona,
+  fetchHistoryEntries, fetchDivergedPrompt, fetchPersonaPrompt, fetchSeatAgentModel, fetchSeatPersona,
 } from '../src/agents.ts';
+import { PROMPT_ADDITIONS_SEPARATOR } from '../src/prompt-additions.ts';
 import type { Route } from '../src/config.ts';
 
 /** A minimal prompts directory with just the files agents.ts reads — what Route.promptsDir points at. */
@@ -814,4 +815,46 @@ test('a persona row whose prompt equals its baseline is updated with no history 
   const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
   assert.equal(result.outcomes.find((o) => o.role === 'dev')!.action, 'updated');
   assert.equal(patches[0].prompt_baseline, patches[0].prompt);
+});
+
+// ---- TABL-1716 / CREW-1718 ----
+
+function agentRowServer(row: Record<string, unknown>) {
+  return mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records/row-dev': () => ({
+      status: 200,
+      body: { id: 'row-dev', name: 'Developer', updated_at: '2026-02-01T00:00:00Z', ...row },
+    }),
+  });
+}
+
+test('fetchPersonaPrompt returns additions for a managed row (prompt equals the local brief) with no divergence', async (t) => {
+  const promptsDir = makePromptsDir();
+  const { restore } = agentRowServer({ prompt: 'COMMON\nLANE-DEV\n', prompt_additions: 'HOUSE RULES' });
+  t.after(restore);
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' }, promptsDir);
+  assert.deepEqual(await fetchPersonaPrompt(route, 'dev', {}), { divergedPrompt: undefined, additions: 'HOUSE RULES' });
+});
+
+test('fetchPersonaPrompt returns the diverged prompt and the additions for a customized row', async (t) => {
+  const { restore } = agentRowServer({ prompt: 'CUSTOM\n', prompt_additions: 'HOUSE RULES' });
+  t.after(restore);
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  assert.deepEqual(await fetchPersonaPrompt(route, 'dev', {}), { divergedPrompt: 'CUSTOM\n', additions: 'HOUSE RULES' });
+});
+
+test('fetchPersonaPrompt ignores blank additions and a row without the column', async (t) => {
+  const { restore } = agentRowServer({ prompt: 'CUSTOM\n', prompt_additions: '  \n' });
+  t.after(restore);
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' });
+  assert.deepEqual(await fetchPersonaPrompt(route, 'dev', {}), { divergedPrompt: 'CUSTOM\n', additions: undefined });
+});
+
+test('currentPersonaPrompt prints the composed text, additions included', async (t) => {
+  const promptsDir = makePromptsDir();
+  const { restore } = agentRowServer({ prompt: 'COMMON\nLANE-DEV\n', prompt_additions: 'HOUSE RULES' });
+  t.after(restore);
+  const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' }, promptsDir);
+  assert.equal(await currentPersonaPrompt(route, 'dev', {}), `COMMON\nLANE-DEV\n\n\n${PROMPT_ADDITIONS_SEPARATOR}\n\nHOUSE RULES`);
 });

@@ -21,6 +21,7 @@ import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from '
 import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
+import { appendAdditions } from './prompt-additions.ts';
 import { TicketAttributionTracker } from './ticket-attribution.ts';
 
 /**
@@ -173,6 +174,13 @@ export interface PlanOptions {
    */
   divergedPrompt?: string;
   /**
+   * The Agent row's non-blank `prompt_additions` (`agents.ts`
+   * `fetchPersonaPrompt`, TABL-1716): appended after the effective brief —
+   * local or diverged — before `{{skill:}}` markers expand, so additions may
+   * include markers and `promptSha` covers them.
+   */
+  personaAdditions?: string;
+  /**
    * Workspace Agent Skills rows an admin has edited, by skill name
    * (`skills.ts` `fetchSkillOverrides`, CREW-1534): consulted before the
    * local `skills/*.md` file when expanding `{{skill: Name}}` includes in the
@@ -255,7 +263,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   // `divergedPrompt`'s own doc on `PlanOptions`), so it goes entirely into
   // `brief` with `common` left empty rather than splitting it back apart.
   const effectiveCommon = o.divergedPrompt ? '' : common;
-  const effectiveBrief = o.divergedPrompt ?? brief;
+  const effectiveBrief = appendAdditions(o.divergedPrompt ?? brief, o.personaAdditions);
   // CREW-1534: includes expand over the effective brief — the admin's edit
   // when diverged, else the local file — so the hash below covers what ran.
   const localSkills = new Map(listLocalSkills(o.route.promptsDir).map((s) => [s.name, s.prompt]));

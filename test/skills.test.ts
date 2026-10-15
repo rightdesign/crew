@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncSkills, parseSkillFile, describeSkillSyncOutcome, SkillSyncError } from '../src/skills.ts';
+import { fetchSkillOverrides, syncSkills, parseSkillFile, describeSkillSyncOutcome, SkillSyncError } from '../src/skills.ts';
 import type { Route } from '../src/config.ts';
+import { PROMPT_ADDITIONS_SEPARATOR } from '../src/prompt-additions.ts';
 
 /** A minimal prompts directory with just the skills/ files skills.ts reads — what Route.promptsDir points at. */
 function makePromptsDir(skills: Record<string, { name: string; description: string; prompt: string }> = {}): string {
@@ -331,4 +332,30 @@ test('--force overwrites a diverged skill and stamps it, but never a customized 
   const locked = await syncSkills(makeRoute(undefined, NEW_DIR()), { force: true });
   assert.equal(locked.outcomes[0]!.action, 'overridden');
   assert.equal(patches.length, 1);
+});
+
+// ---- TABL-1716 / CREW-1718 ----
+
+test('fetchSkillOverrides composes additions over a managed row (prompt equals the local file) and skips a managed row without them', async (t) => {
+  const { restore } = skillsServer({ prompt: 'NEW\n', prompt_additions: 'EXTRA' }, []);
+  t.after(restore);
+  const out = await fetchSkillOverrides(makeRoute(undefined, NEW_DIR()), {});
+  assert.deepEqual(out, { 'Grill-Me': `NEW\n\n\n${PROMPT_ADDITIONS_SEPARATOR}\n\nEXTRA` });
+});
+
+test('fetchSkillOverrides: a stale crew copy with additions composes over the local file, not the stale row', async (t) => {
+  const { restore } = skillsServer({ prompt: 'OLD', prompt_baseline: 'OLD', prompt_additions: 'EXTRA' }, []);
+  t.after(restore);
+  const out = await fetchSkillOverrides(makeRoute(undefined, NEW_DIR()), {});
+  assert.deepEqual(out, { 'Grill-Me': `NEW\n\n\n${PROMPT_ADDITIONS_SEPARATOR}\n\nEXTRA` });
+});
+
+test('fetchSkillOverrides: an edited row with additions composes over its own prompt; no additions and no edit returns nothing', async (t) => {
+  const first = skillsServer({ prompt: 'EDITED', prompt_baseline: 'OLD', prompt_additions: 'EXTRA' }, []);
+  const out = await fetchSkillOverrides(makeRoute(undefined, NEW_DIR()), {});
+  first.restore();
+  assert.deepEqual(out, { 'Grill-Me': `EDITED\n\n${PROMPT_ADDITIONS_SEPARATOR}\n\nEXTRA` });
+  const second = skillsServer({ prompt: 'OLD', prompt_baseline: 'OLD' }, []);
+  t.after(second.restore);
+  assert.deepEqual(await fetchSkillOverrides(makeRoute(undefined, NEW_DIR()), {}), {});
 });

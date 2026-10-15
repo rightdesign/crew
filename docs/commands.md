@@ -57,6 +57,8 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | `crew agents prompt ROLE [route]` | Print one persona's current prompt (e.g. `pair`, for a SessionStart hook). |
 | `crew skills sync [route]` | Push only the skill files. |
 
+A row's "Additional instructions" (`prompt_additions`) are appended, after a fixed divider, to the persona brief and to each included skill at run time, with or without "Customize prompt". `crew agents prompt` and `crew logbook show --prompt` print that composed text.
+
 ## Host Passengers
 
 | Command | What it does |

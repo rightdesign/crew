@@ -72,7 +72,7 @@ import {
   type SessionStore,
 } from '@tablation/client';
 import { mintMissingSeatKeys, describeMintOutcome, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
-import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchDivergedPrompt, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
@@ -1763,7 +1763,7 @@ switch (command) {
           apiKey: resolveApiKey(w.route),
           cycle: wemit.cycle, ticket: w.decision.actionable.top?.issue_id,
           repo: repoTargetFor(w.route, w.decision.actionable.top?.repo_id)?.name,
-          divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+          ...personaPromptOptions(await fetchPersonaPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent })),
           skillOverrides: await fetchSkillOverrides(w.route, { userAgent: cfg.ship.userAgent }),
           agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
           resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -1859,7 +1859,7 @@ switch (command) {
         environment: await environmentFor(w.route, fleetTicketHint),
         apiKey: resolveApiKey(w.route),
         cycle: wemit.cycle, ticket: fleetTicketHint, repo: fleetTicketRepo,
-        divergedPrompt: await fetchDivergedPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent }),
+        ...personaPromptOptions(await fetchPersonaPrompt(w.route, w.role, { userAgent: cfg.ship.userAgent })),
         skillOverrides: await fetchSkillOverrides(w.route, { userAgent: cfg.ship.userAgent }),
         agentPersona: await fetchSeatPersona(w.route, w.role, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
@@ -2087,7 +2087,7 @@ switch (command) {
         environment: await environmentFor(route, ticketHint),
         apiKey: resolveApiKey(route),
         cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
-        divergedPrompt: await fetchDivergedPrompt(route, current, { userAgent: cfg.ship.userAgent }),
+        ...personaPromptOptions(await fetchPersonaPrompt(route, current, { userAgent: cfg.ship.userAgent })),
         skillOverrides: await fetchSkillOverrides(route, { userAgent: cfg.ship.userAgent }),
         agentPersona: await fetchSeatPersona(route, current, { userAgent: cfg.ship.userAgent }),
         resolvedAgentId: await resolveAgentId(route, current, { userAgent: cfg.ship.userAgent }),

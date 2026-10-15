@@ -9,6 +9,7 @@ import {
   planAgentRun, describePlan, spawnAgent, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
+import { PROMPT_ADDITIONS_SEPARATOR } from '../src/prompt-additions.ts';
 import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
@@ -640,4 +641,30 @@ test('spawnAgent on a binary that is not installed rejects as a spawn failure an
   // not report a run that never happened.
   await new Promise((r) => setTimeout(r, 50));
   assert.ok(!lines.some((l) => l.includes('agent run finished')), lines.join('\n'));
+});
+
+// ---- TABL-1716 / CREW-1718: Additional instructions ----
+
+test('personaAdditions follow the local brief after the separator; no additions leaves the prompt and promptSha unchanged', () => {
+  const { state, route, ship } = rig();
+  const base = { role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' } as const;
+  const plain = planAgentRun(base);
+  const blank = planAgentRun({ ...base, personaAdditions: undefined });
+  assert.equal(blank.prompt, plain.prompt);
+  assert.equal(blank.promptSha, plain.promptSha);
+  const withAdd = planAgentRun({ ...base, personaAdditions: 'HOUSE RULES' });
+  assert.ok(withAdd.prompt.includes(`BRIEF dev\n\n\n${PROMPT_ADDITIONS_SEPARATOR}\n\nHOUSE RULES`));
+  assert.notEqual(withAdd.promptSha, plain.promptSha);
+});
+
+test('personaAdditions follow a diverged prompt, and may include a {{skill:}} marker that expands', () => {
+  const { state, route, ship } = rig();
+  mkdirSync(join(route.promptsDir, 'skills'), { recursive: true });
+  writeFileSync(join(route.promptsDir, 'skills', 'filing.md'), '---\nname: Filing a Ticket\ndescription: d\n---\nFILING BODY\n');
+  const plan = planAgentRun({
+    role: 'dev', route, ship, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1',
+    divergedPrompt: 'CUSTOM', personaAdditions: 'see {{skill: Filing a Ticket}}',
+  });
+  assert.match(plan.prompt, /CUSTOM[\s\S]*Additional instructions from this workspace[\s\S]*FILING BODY/);
+  assert.ok(!plan.prompt.includes('{{skill:'));
 });

@@ -27,6 +27,7 @@
  * `crew agents prompt`.
  */
 
+import { appendAdditions } from './prompt-additions.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/client';
@@ -94,6 +95,8 @@ interface AgentRow {
   /** CREW-1559: the prompt the row's source last wrote; `prompt !== prompt_baseline` means a person edited it. Null on a row never stamped. */
   prompt_source?: string | null;
   prompt_baseline?: string | null;
+  /** TABL-1716: workspace text appended after the prompt at run time. Absent on an older server. */
+  prompt_additions?: string | null;
 }
 
 /**
@@ -157,8 +160,22 @@ export async function fetchDivergedPrompt(
   role: RoleName,
   opts: { userAgent?: string },
 ): Promise<string | undefined> {
+  return (await fetchPersonaPrompt(route, role, opts)).divergedPrompt;
+}
+
+/**
+ * `fetchDivergedPrompt` plus the row's Additional instructions (TABL-1716):
+ * `additions` is the row's non-blank `prompt_additions`, independent of
+ * whether the prompt itself diverged — a managed row (prompt equal to the
+ * local brief) still carries them. Undefined when the row lacks the column.
+ */
+export async function fetchPersonaPrompt(
+  route: Route,
+  role: RoleName,
+  opts: { userAgent?: string },
+): Promise<{ divergedPrompt?: string; additions?: string }> {
   const agentId = await resolveAgentId(route, role, opts);
-  if (!agentId || !route.resolved) return undefined;
+  if (!agentId || !route.resolved) return {};
 
   const client = new TablationClient({
     baseUrl: `${route.baseUrl}/api`,
@@ -176,9 +193,29 @@ export async function fetchDivergedPrompt(
     // A missing table, a deleted row, an unreachable tracker — none of
     // these should block a run that has always worked without this check;
     // the local template is always a safe fallback.
-    return undefined;
+    return {};
   }
 
+  const additions = typeof row.prompt_additions === 'string' && row.prompt_additions.trim() !== '' ? row.prompt_additions : undefined;
+  const divergedPrompt = await divergedRowPrompt(route, role, row, agentId, agentsModelId, opts);
+  return { divergedPrompt, additions };
+}
+
+/** `fetchPersonaPrompt`'s result spread into `planAgentRun`'s options. */
+export function personaPromptOptions(p: { divergedPrompt?: string; additions?: string }): { divergedPrompt?: string; personaAdditions?: string } {
+  return { divergedPrompt: p.divergedPrompt, personaAdditions: p.additions };
+}
+
+/** The row's `prompt` when it is a real edit rather than crew's own copy; see `fetchDivergedPrompt`. */
+async function divergedRowPrompt(
+  route: Route,
+  role: RoleName,
+  row: AgentRow,
+  agentId: string,
+  agentsModelId: string,
+  opts: { userAgent?: string },
+): Promise<string | undefined> {
+  if (!route.resolved) return undefined;
   const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
   if (row.prompt === defaultPrompt) return undefined;
 
@@ -304,8 +341,8 @@ export async function currentPersonaPrompt(
   role: RoleName,
   opts: { userAgent?: string },
 ): Promise<string> {
-  const diverged = await fetchDivergedPrompt(route, role, opts);
-  return diverged ?? personaDefaultPrompt(route.promptsDir, role);
+  const { divergedPrompt, additions } = await fetchPersonaPrompt(route, role, opts);
+  return appendAdditions(divergedPrompt ?? personaDefaultPrompt(route.promptsDir, role), additions);
 }
 
 interface CrewRow {

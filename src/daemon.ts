@@ -89,7 +89,7 @@ import { DEFAULT_CONTRACT } from './contract.ts';
 import { Tracker } from './tracker.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { ensureRepoCheckout, resolve as gitResolve, type GitError } from './git.ts';
-import { fetchDivergedPrompt, fetchSeatPersona, resolveAgentId } from './agents.ts';
+import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
@@ -678,7 +678,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
     environment: await buildEnvironment(route, ship, ticketHint),
     apiKey: identity.apiKey,
     cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
-    divergedPrompt: await fetchDivergedPrompt(route, role, { userAgent: ship.userAgent }),
+    ...personaPromptOptions(await fetchPersonaPrompt(route, role, { userAgent: ship.userAgent })),
     skillOverrides: await fetchSkillOverrides(route, { userAgent: ship.userAgent }),
     agentPersona: await fetchSeatPersona(route, role, { userAgent: ship.userAgent }),
     resolvedAgentId: await resolveAgentId(route, role, { userAgent: ship.userAgent }),
