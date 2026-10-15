@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.49.0] — 2026-10-15
+
+- ISSUE-1718 Lane runs now append a workspace Agent or Agent Skill row's Additional instructions after the persona brief and after each included skill, with or without Customize prompt.
+
 ## [0.48.0] — 2026-10-13
 
 - CREW-1637 The release holds back a verified branch that gained commits after QA verified it and returns the ticket to QA, instead of shipping untested work.
