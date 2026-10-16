@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.50.3] — 2026-10-16
+
+- ISSUE-1797 `crew agents sync` no longer fails for a non-admin key: it links seats to the workspace's existing persona rows and reports what an admin must sync; `crew doctor` shows the key role and role-aware hints.
+
 ## [0.50.2] — 2026-10-16
 
 - ISSUE-1796 `crew doctor` now reports a repo directory that is missing on disk (and any base-branch check that fails) instead of aborting with `spawnSync git ENOENT`.
