@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.51.1] — 2026-10-16
+
+- ISSUE-1800 Seat key minting no longer prints raw API keys when the keychain write fails; the keychain is probed before minting and a key that cannot be stored is revoked.
+
 ## [0.51.0] — 2026-10-16
 
 - ISSUE-1798 `crew connect` now links your own Crew row to your account (or creates one) instead of leaving `user_id` for `crew doctor` to flag.
