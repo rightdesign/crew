@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.49.6] — 2026-10-16
+
+- ISSUE-1774 The crew daemon no longer exits when a tracker read fails with a 502 or an HTML error page; the pass degrades, logs a warning and the next pass runs.
+
 ## [0.49.5] — 2026-10-15
 
 - CREW-1761 The dev digest shows runner direction events (conflict hand-backs, requeues, bounces) so a handed-back ticket is no longer invisible, and a conflict escalates only after a hand-back was acted on.
