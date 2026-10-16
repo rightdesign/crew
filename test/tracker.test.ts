@@ -425,6 +425,33 @@ test('events() asks the table-wide log for one event_type, newest first, and rea
   assert.deepEqual(await tracker.events('stalled'), []);
 });
 
+test('events() reads a 5xx, an HTML error page or a dropped connection as empty and warns once (CREW-1774)', async (t) => {
+  const inner = globalThis.fetch;
+  t.after(() => { globalThis.fetch = inner; });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  const warns: string[] = [];
+  tracker.onReadFailure = (m) => warns.push(m);
+
+  globalThis.fetch = (async () => new Response('bad gateway', { status: 502 })) as typeof fetch;
+  assert.deepEqual(await tracker.events('stalled'), []);
+  assert.equal(warns.length, 1);
+  assert.match(warns[0]!, /stalled events failed: HTTP 502/);
+
+  globalThis.fetch = (async () => new Response('<!DOCTYPE html><html></html>', {
+    status: 200, headers: { 'content-type': 'text/html' },
+  })) as typeof fetch;
+  assert.deepEqual(await tracker.events('pushed'), []);
+  assert.equal(warns.length, 2);
+
+  globalThis.fetch = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+  assert.deepEqual(await tracker.events('pushed'), []);
+  assert.equal(warns.length, 3);
+
+  globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+  assert.deepEqual(await tracker.events('stalled'), []);
+  assert.equal(warns.length, 3);
+});
+
 test('missingAuthorshipColumns() names each column the workspace lacks, so doctor can say what to add', async (t) => {
   mockAuthorshipApi(t, {
     issueFields: ['filed_by_id'],

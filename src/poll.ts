@@ -94,15 +94,25 @@ export interface CycleOptions {
 export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const { route, ship, state, emit } = o;
   const tracker = new Tracker(route, ship);
+  tracker.onReadFailure = (m) => emit.warn(m);
   emit.enter('poll');
 
+  // CREW-1774: only the ticket and comment reads are load-bearing; a failed
+  // optional read (a 502, an HTML error page) yields its empty default with a
+  // warn, so one flaky endpoint degrades the pass instead of aborting it.
+  const optional = async <T>(what: string, read: Promise<T>, fallback: T): Promise<T> => {
+    try { return await read; } catch (err) {
+      emit.warn(`reading ${what} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return fallback;
+    }
+  };
   const [tickets, comments, crewRows, epicRows, ships, projectModes, stalledEvents] = await Promise.all([
     tracker.openTickets(),
     tracker.comments(200),
     tracker.crewRows(),
-    tracker.epicRows(),
-    tracker.shipRows(),
-    tracker.projectWorkModes(),
+    optional('epics', tracker.epicRows(), []),
+    optional('ships', tracker.shipRows(), []),
+    optional('project work modes', tracker.projectWorkModes(), new Map()),
     tracker.events('stalled'),
   ]);
   // CREW-1761: the runner's own directions live in the event log, not Comments.

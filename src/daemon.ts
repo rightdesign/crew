@@ -139,6 +139,12 @@ export interface DaemonLoopOptions {
    */
   onPass?: (result: PassResult, nextBackoffMs: number) => void;
   /**
+   * CREW-1774: called with whatever a rejected `runPass` threw. The loop backs
+   * off like an idle pass and carries on; without this hook it still survives,
+   * just silently. Only the `'stale'` path ends the process.
+   */
+  onPassError?: (err: unknown) => void;
+  /**
    * Self-update detection (ISSUE-764). Consulted only on an IDLE pass, right
    * before the loop would otherwise sleep — never while chaining on found
    * work, so an actively-busy daemon is never interrupted mid-cycle to pick
@@ -179,7 +185,20 @@ export async function runDaemonLoop(o: DaemonLoopOptions): Promise<DaemonStopRea
 
   for (;;) {
     if (o.signal?.aborted) return 'aborted';
-    const result = await o.runPass();
+    let result: PassResult;
+    try {
+      result = await o.runPass();
+    } catch (err) {
+      // CREW-1774: a failed tracker read must not end the daemon — launchd's
+      // restart kills every in-flight agent run with it.
+      passes++;
+      o.onPassError?.(err);
+      if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
+      if (o.signal?.aborted) return 'aborted';
+      await sleep(backoff);
+      backoff = Math.min(backoff * 2, ceiling);
+      continue;
+    }
     passes++;
 
     if (result.started.length > 0) {

@@ -2279,6 +2279,9 @@ switch (command) {
           console: (l) => process.stderr.write(`${l}\n`),
         }),
       }),
+      onPassError: (err) => emit.error(
+        `daemon pass failed, continuing: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+      ),
       checkStale: makeStaleChecker(watchPaths, { reloadSentinel: reloadSentinelFor(cfg.ship.stateDir) }),
       onPass: (result) => {
         if (result.started.length) emit.emit(`daemon pass started: ${result.started.join(', ')}`);

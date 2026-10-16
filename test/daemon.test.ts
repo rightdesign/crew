@@ -66,6 +66,27 @@ test('chains immediately with no sleep while a pass keeps finding work', async (
   assert.deepEqual(sleeps, [5000]);
 });
 
+test('a rejected pass is reported and the loop runs the next pass (CREW-1774)', async () => {
+  const sleeps: number[] = [];
+  const errors: unknown[] = [];
+  let call = 0;
+  const reason = await runDaemonLoop({
+    runPass: async () => {
+      call++;
+      if (call === 1) throw new Error('reading stalled events failed: HTTP 502');
+      return emptyResult();
+    },
+    onPassError: (err) => errors.push(err),
+    sleep: async (ms) => { sleeps.push(ms); },
+    maxPasses: 3,
+  });
+  assert.equal(reason, 'maxPasses');
+  assert.equal(call, 3);
+  assert.equal(errors.length, 1);
+  assert.match((errors[0] as Error).message, /HTTP 502/);
+  assert.deepEqual(sleeps, [5000, 10000]);
+});
+
 test('backs off exponentially from the floor up to the ceiling while idle', async () => {
   const sleeps: number[] = [];
   await runDaemonLoop({

@@ -266,6 +266,9 @@ export class Tracker {
    * writes pass its seat's agent key so the event log and rule context see an
    * agent, not the ship's human principal.
    */
+  /** Told once per failed best-effort read (`events`); poll.ts points it at the pass's emitter. */
+  onReadFailure?: (message: string) => void;
+
   constructor(
     route: Route,
     ship: Pick<Ship, 'userAgent'> & Partial<Pick<Ship, 'name' | 'stateDir'>>,
@@ -745,10 +748,19 @@ export class Tracker {
    */
   async events(type: string, limit = 500): Promise<RunnerEvent[]> {
     const filters = encodeURIComponent(JSON.stringify([{ columnName: 'event_type', operator: 'EQ', value: type }]));
-    const res = await this.eventsFetch('GET', `/events?limit=${limit}&filters=${filters}`);
-    if (res.status === 404) return [];
-    if (!res.ok) throw new Error(`reading ${type} events failed: HTTP ${res.status}`);
-    const rows = (await res.json()) as RunnerEvent[];
+    let rows: RunnerEvent[];
+    try {
+      const res = await this.eventsFetch('GET', `/events?limit=${limit}&filters=${filters}`);
+      if (res.status === 404) return [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = (await res.json()) as RunnerEvent[];
+    } catch (err) {
+      // CREW-1774: a transient 5xx, an HTML error page or a dropped connection
+      // degrades this pass (the sweep or direction that wanted these events
+      // skips a cycle); it must not reject the poll and end the daemon.
+      this.onReadFailure?.(`reading ${type} events failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
     return rows.filter((e) => e.event_type === type)
       .sort((a, b) => Date.parse(b.occurred_at ?? b.created_at ?? '') - Date.parse(a.occurred_at ?? a.created_at ?? ''));
   }
