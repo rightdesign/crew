@@ -65,7 +65,7 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
-  discover, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks,
+  discover, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIER,
 } from './connect.ts';
 import {
@@ -184,19 +184,31 @@ function terminalPrompter(): Prompter & { close(): void } {
  * answer or an out-of-range number, leaving the caller to fall back to the
  * "edit the state file by hand" instructions.
  */
-async function pickOperator(holds: Array<{ id: string; name: string }>): Promise<string | undefined> {
+async function pickOperator(
+  holds: Array<{ id: string; name: string; user_id?: string | null }>,
+  me: { id?: string; name?: string; email?: string },
+): Promise<string | undefined> {
+  // A row carrying another identity is someone else's, not an option.
+  const choices = holds.filter((h) => !h.user_id || h.user_id === me.id);
+  const canCreate = !!me.id;
   process.stderr.write('\nWhich of these Crew rows is you?\n');
-  holds.forEach((h, i) => process.stderr.write(`  ${i + 1}. ${h.name || h.id}\n`));
+  choices.forEach((h, i) => process.stderr.write(`  ${i + 1}. ${h.name || h.id}\n`));
+  if (canCreate) process.stderr.write(`  0. Create a new Crew row for ${me.name ?? ''} ${me.email ?? ''}`.trimEnd() + '\n');
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const answer = (await rl.question('Enter a number (blank to skip): ')).trim();
+    // With no plausible listed row, creating one is the default.
+    const fallback = canCreate && choices.length === 0 ? '0' : '';
+    const answer = ((await rl.question(`Enter a number (blank to ${fallback ? 'create one' : 'skip'}): `)).trim()) || fallback;
     const n = Number(answer);
-    if (!answer || !Number.isInteger(n) || n < 1 || n > holds.length) return undefined;
-    return holds[n - 1]!.id;
+    if (!answer || !Number.isInteger(n) || n < 0 || n > choices.length) return undefined;
+    return n === 0 ? (canCreate ? NEW_OPERATOR_ROW : undefined) : choices[n - 1]!.id;
   } finally {
     rl.close();
   }
 }
+
+/** `pickOperator`'s answer for "make me a new Crew row" (CREW-1798). */
+const NEW_OPERATOR_ROW = 'new';
 
 /**
  * Asks, on a real terminal, which of this workspace's own status values
@@ -2886,11 +2898,11 @@ switch (command) {
     };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
-      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun });
+      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun, interactive: !!(process.stdin.isTTY && process.stdout.isTTY) });
       if (!found.projectId && found.offerTemplateInstall && process.stdin.isTTY && process.stdout.isTTY) {
         const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId);
         if (installedSlug) {
-          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun });
+          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun, interactive: !!(process.stdin.isTTY && process.stdout.isTTY) });
         }
       }
       if (!found.projectId) {
@@ -2923,7 +2935,15 @@ switch (command) {
       // to ask — a script piping stdin gets the old file-editing fallback.
       let operator = found.operator;
       if (!operator && found.holds.length > 0 && process.stdin.isTTY && process.stdout.isTTY) {
-        operator = await pickOperator(found.holds);
+        const picked = await pickOperator(found.holds, { id: found.meId, name: found.meName, email: found.meEmail });
+        if (picked === NEW_OPERATOR_ROW) {
+          await createOperatorRow({ ...authOpts, dryRun }, found);
+          operator = found.operator;
+        } else if (picked) {
+          operator = picked;
+          const row = found.holds.find((h) => h.id === picked);
+          if (row && found.meId && row.user_id !== found.meId) await linkOperatorRow({ ...authOpts, dryRun }, found, row);
+        }
       }
       // Read whatever this route already had — a re-run must not clobber a
       // hand-authored `contract` block (column renames, priority order, an
@@ -4189,7 +4209,7 @@ switch (command) {
       } else if (!row.user_id) {
         process.stdout.write(
           `operator identity: ERROR Crew row "${row.name ?? op}" has no user_id — their UI comments will read ` +
-            '"(no identity)"; link it to the account they sign in with\n',
+            '"(no identity)"; re-run `crew connect` to link it\n',
         );
         process.exitCode = 1;
       } else {

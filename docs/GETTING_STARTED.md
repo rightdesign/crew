@@ -120,6 +120,18 @@ block for you to paste instead — and neither is a non-terminal run. If the
 credential could not be stored in the keychain or a key file (a plain `--key`
 connect), it prints the block instead of writing a file with no key in it.
 
+`connect` also makes sure you have your own Crew row, linked to the account you
+signed in with (`user_id`, and `email` when blank), so your comments in the app
+read as you rather than "(no identity)". It matches by identity first, then by
+email, then takes the only non-seat row; a row already linked to another account
+is never touched or relinked. If nothing matches it creates a row from your
+account (name, email, `user_id`), so a fresh workspace needs no hand-made
+Crew row before you connect; on a terminal with several candidate rows it asks,
+and offers "create a new row" as the last choice. A workspace that refuses the
+write (no WRITE on the Crew table) is reported, connect still completes, and
+`crew doctor` keeps flagging the missing `user_id` until a workspace admin sets
+it or you re-run `crew connect`. `--dry-run` says what it would link or create.
+
 `connect` also records you, by identity, as the owner of this ship's row in the
 Ships table, when that table has an `owner_id` column (a workspace that has not
 taken the latest Issues template update just skips it and says so).

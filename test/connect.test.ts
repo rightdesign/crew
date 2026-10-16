@@ -936,3 +936,119 @@ test('provisionReleaseLocks creates a row for each repo scope that has none and 
   assert.equal(writes.length, 1);
   assert.deepEqual(writes[0]!.body, { scope: 'ws/proj/tablation', holder: '' });
 });
+
+// CREW-1798: connect links or creates the operator's own Crew row from /auth/me.
+function operatorRoutes(crewRows: unknown[], extra: Record<string, unknown> = {}) {
+  return {
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', id: 'ident-brad', email: 'Brad@example.test', name: 'Brad C.' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }],
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+      { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' },
+      ...crewRows,
+    ],
+    ...extra,
+  };
+}
+const writes = (calls: Array<{ method: string; key: string; body: unknown }>) =>
+  calls.filter((c) => c.method !== 'GET' && c.key.includes('crew-model'));
+
+test('discover() creates the operator row when there are no holds (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes([], { '/api/data-models/crew-model/records': { id: 'new-op' } }));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'new-op');
+  assert.deepEqual(writes(calls).map((c) => c.body), [{ name: 'Brad C.', email: 'Brad@example.test', user_id: 'ident-brad' }]);
+  assert.ok(found.provisioning.some((p) => p.includes('created Crew row "Brad C." for you')));
+});
+
+test('discover() links the hold with a matching email and null user_id (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes(
+    [{ id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' }, { id: 'hold-x', name: 'X', email: 'x@example.test' }],
+    { '/api/data-models/crew-model/records/hold-brad': {} },
+  ));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'hold-brad');
+  const w = writes(calls);
+  assert.equal(w.length, 1);
+  assert.equal(w[0]!.method, 'PATCH');
+  assert.deepEqual(w[0]!.body, { user_id: 'ident-brad' });
+  assert.ok(found.provisioning.some((p) => p.includes('linked Crew row "Brad C."')));
+});
+
+test('discover() matches by identity first and writes nothing on a re-run (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes([
+    { id: 'hold-brad', name: 'Brad C.', user_id: 'ident-brad' }, { id: 'hold-x', name: 'X', email: 'brad@example.test' },
+  ]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'hold-brad');
+  assert.equal(writes(calls).length, 0);
+});
+
+test('discover() never touches a single hold that carries another identity; creates instead (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes(
+    [{ id: 'hold-other', name: 'Other', email: 'brad@example.test', user_id: 'ident-other' }],
+    { '/api/data-models/crew-model/records': { id: 'new-op' } },
+  ));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'new-op');
+  const w = writes(calls);
+  assert.deepEqual(w.map((c) => c.method), ['POST']);
+});
+
+test('discover() links the only hold even with no email match (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes(
+    [{ id: 'hold-solo', name: 'Solo', email: 'solo@example.test' }],
+    { '/api/data-models/crew-model/records/hold-solo': {} },
+  ));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'hold-solo');
+  assert.deepEqual(writes(calls).map((c) => c.body), [{ user_id: 'ident-brad' }]);
+});
+
+test('discover() leaves an ambiguous operator to the interactive caller instead of creating (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes([
+    { id: 'hold-a', name: 'A', email: 'a@example.test' }, { id: 'hold-b', name: 'B', email: 'b@example.test' },
+  ]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, interactive: true });
+  assert.equal(found.operator, undefined);
+  assert.equal(writes(calls).length, 0);
+});
+
+test('discover() reports a 403 on link and still selects the operator (CREW-1798)', async (t) => {
+  const original = globalThis.fetch;
+  const routes = operatorRoutes([{ id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' }]) as Record<string, unknown>;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const key = `${url.pathname}${url.search}`;
+    if (init?.method === 'PATCH' && key.includes('hold-brad')) return new Response('{}', { status: 403 });
+    return key in routes ? new Response(JSON.stringify(routes[key]), { status: 200 }) : new Response('{}', { status: 404 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'hold-brad');
+  assert.ok(found.provisioning.some((p) => p.includes('could not link your Crew row (no write access)')));
+});
+
+test('discover() under --dry-run says what it would do and writes nothing (CREW-1798)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes([]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, dryRun: true });
+  assert.equal(calls.filter((c) => c.method !== 'GET').length, 0);
+  assert.ok(found.provisioning.some((p) => /^would (create|link) Crew row/.test(p)));
+});

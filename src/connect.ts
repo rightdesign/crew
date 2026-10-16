@@ -52,6 +52,14 @@ export interface DiscoverOptions extends AuthOptions {
    * network POST/PATCH calls at all when set.
    */
   dryRun?: boolean;
+  /**
+   * A person can be asked which Crew row is theirs (the CLI has a terminal).
+   * When set, an operator that cannot be settled by identity/email/the only
+   * candidate is left unresolved for the caller to ask about (CREW-1798);
+   * otherwise `discover()` creates the operator's own Crew row rather than
+   * leave the route with none.
+   */
+  interactive?: boolean;
 }
 
 /** One workspace this key's identity can see, whichever workspace minted it. */
@@ -92,6 +100,10 @@ export interface Discovered {
   meEmail?: string;
   /** This key's own identity id, from the same `/auth/me` call — written onto the Ships row as `owner_id` (CREW-1286). */
   meId?: string;
+  /** This key's own display name, from the same `/auth/me` call — names a Crew row `connect` creates for the operator (CREW-1798). */
+  meName?: string;
+  /** The Crew table's id, kept so the caller can link/create the operator's row after an interactive pick. */
+  crewModelId?: string;
   projectId?: string;
   /** The canonical slug, when the resolved project has one — building the
    * `route:` string (`workspaceSlug/projectSlug`) needs this, not the
@@ -132,7 +144,7 @@ export interface Discovered {
    * against `meEmail` when possible. Left unset when no hold's email matches
    * (or none is on file): the caller decides then, by asking. */
   operator?: string;
-  holds: Array<{ id: string; name: string }>;
+  holds: Array<{ id: string; name: string; email?: string | null; user_id?: string | null }>;
   /**
    * Set only when no `project` was given AND more than one project qualifies
    * — an ambiguity refused rather than guessed, same reasoning as a
@@ -352,10 +364,11 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // API key as for a session, and is the only "am I an admin here" a plain
   // member's own key can ask without a 403 (no admin-only membership list).
   try {
-    const me = await get<{ role?: string; email?: string; id?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
+    const me = await get<{ role?: string; email?: string; id?: string; name?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
     out.role = me.role;
     out.meEmail = me.email;
     out.meId = me.id;
+    out.meName = me.name;
   } catch { /* not fatal — the no-qualifying-project message just stays generic */ }
 
   if (o.project) {
@@ -644,7 +657,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   }
 
   if (out.models.crew) {
-    const rows = await get<Array<{ id: string; name?: string | null; email?: string | null; ship_id?: string | null }>>(
+    const rows = await get<Array<{ id: string; name?: string | null; email?: string | null; ship_id?: string | null; user_id?: string | null }>>(
       o, `/data-models/${out.models.crew}/records?limit=200`,
     );
     // Unscoped (old behaviour) unless a ship actually resolved above.
@@ -711,27 +724,92 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // The release row is not a seat, but it is not a person either — leaving
     // it out of this set would list it as a hold the poll loop then respects.
     const seatIds = new Set([...Object.values(out.seats), ...(out.releaseSeat ? [out.releaseSeat] : [])]);
-    out.holds = rows.filter((r) => !seatIds.has(r.id)).map((r) => ({ id: r.id, name: r.name ?? '' }));
-    if (out.holds.length === 0) {
-      problems.push('no non-seat Crew rows — which row is the operator?');
-    } else if (out.meEmail) {
-      // The key's own identity email against each hold's Crew-row email —
-      // when exactly one matches, that IS the operator, with no digging for
-      // a uuid required. Ambiguous (0 or 2+ matches) is left for the caller
-      // to ask about instead of guessing.
-      const holdRows = rows.filter((r) => !seatIds.has(r.id));
-      const matches = holdRows.filter((r) => eq(r.email, out.meEmail!));
-      if (matches.length === 1) out.operator = matches[0]!.id;
+    const holdRows = rows.filter((r) => !seatIds.has(r.id));
+    out.holds = holdRows.map((r) => ({ id: r.id, name: r.name ?? '', email: r.email, user_id: r.user_id }));
+    out.crewModelId = out.models.crew;
+    if (!out.meId) {
+      // No identity to link or create with (the `/auth/me` call failed or
+      // returned none): the pre-CREW-1798 selection, which only selects.
+      if (out.holds.length === 0) problems.push('no non-seat Crew rows — which row is the operator?');
+      else {
+        const byEmail = out.meEmail ? holdRows.filter((r) => eq(r.email, out.meEmail!)) : [];
+        if (byEmail.length === 1) out.operator = byEmail[0]!.id;
+        else if (out.holds.length === 1) out.operator = out.holds[0]!.id;
+      }
+    } else {
+      // A row already carrying another identity is someone else's: never a
+      // candidate, never overwritten (CREW-1798).
+      const candidates = holdRows.filter((r) => !r.user_id || r.user_id === out.meId);
+      const mine = holdRows.find((r) => r.user_id === out.meId);
+      const byEmail = out.meEmail ? candidates.filter((r) => eq(r.email, out.meEmail!)) : [];
+      const only = holdRows.length === 1 && candidates.length === 1 ? candidates[0] : undefined;
+      const pick = mine ?? (byEmail.length === 1 ? byEmail[0] : only);
+      if (pick) {
+        out.operator = pick.id;
+        // Like the Ships/Crew provisioning above, writes need a `ship`: a bare
+        // `discover()` stays a read-only lookup.
+        if (pick.user_id !== out.meId && o.ship) await linkOperatorRow(o, out, pick);
+      } else if (o.ship && (!o.interactive || candidates.length === 0)) {
+        await createOperatorRow(o, out);
+      }
     }
-    // No email match (or no email on file) but only one candidate anyway —
-    // same "exactly one, no ambiguity" reasoning as the email match above,
-    // just without needing an email at all (CREW-978: this is the case a
-    // fresh non-interactive `connect` hit with no previous resolved file —
-    // one hold, no email match, nowhere to ask — and wrote a route with no
-    // `operator` at all rather than picking the only row it could mean).
-    if (!out.operator && out.holds.length === 1) out.operator = out.holds[0]!.id;
   }
   return out;
+}
+
+/**
+ * Writes this key's identity onto an existing Crew row (`user_id`, and `email`
+ * when blank) so UI comments from the operator resolve to them (CREW-1798).
+ * A 403 is reported in `provisioning` and the row is still the operator —
+ * connect completes either way (CREW-1797's principle).
+ */
+export async function linkOperatorRow(
+  o: AuthOptions & { dryRun?: boolean },
+  found: Discovered,
+  row: { id: string; name?: string | null; email?: string | null },
+): Promise<void> {
+  const name = row.name || row.id;
+  if (!found.meId || !found.crewModelId) return;
+  if (o.dryRun) {
+    found.provisioning.push(`would link Crew row "${name}" to your account`);
+    return;
+  }
+  const body: Record<string, unknown> = { user_id: found.meId };
+  if (!row.email && found.meEmail) body.email = found.meEmail;
+  try {
+    await patch(o, `/data-models/${found.crewModelId}/records/${row.id}`, body);
+    found.provisioning.push(`linked Crew row "${name}" to your account`);
+  } catch (e) {
+    if (!(e instanceof ConnectHttpError) || e.status !== 403) throw e;
+    found.provisioning.push(
+      `could not link your Crew row (no write access) — ask a workspace admin to set user_id on "${name}"`,
+    );
+  }
+}
+
+/**
+ * Creates the operator's own Crew row — a person's row, with no ship or agent
+ * — from `/auth/me`, and makes it `found.operator` (CREW-1798). A 403 is
+ * reported and leaves the operator unset, as before this existed.
+ */
+export async function createOperatorRow(o: AuthOptions & { dryRun?: boolean }, found: Discovered): Promise<void> {
+  if (!found.meId || !found.crewModelId) return;
+  const name = found.meName || found.meEmail || 'Operator';
+  if (o.dryRun) {
+    found.provisioning.push(`would create Crew row "${name}" for you`);
+    return;
+  }
+  try {
+    const created = await post<{ id: string }>(o, `/data-models/${found.crewModelId}/records`, {
+      name, ...(found.meEmail ? { email: found.meEmail } : {}), user_id: found.meId,
+    });
+    found.operator = created.id;
+    found.holds.push({ id: created.id, name, email: found.meEmail, user_id: found.meId });
+    found.provisioning.push(`created Crew row "${name}" for you`);
+  } catch (e) {
+    if (!(e instanceof ConnectHttpError) || e.status !== 403) throw e;
+    found.provisioning.push('could not create your Crew row (no write access) — ask a workspace admin to add one with your user_id');
+  }
 }
 
 /**
