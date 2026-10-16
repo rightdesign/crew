@@ -123,6 +123,14 @@ export interface ContractComments {
    * from"). Optional: a comments table without the column is written without it.
    */
   ship: string;
+  /**
+   * The flag a public intake form's server stamps on a reply from someone
+   * outside the workspace (CREW-1811). Optional: a comments table without the
+   * column has no public form, and every comment is read as not public.
+   */
+  publicReply: string;
+  /** The name a public reporter typed, the only authorship such a reply has (CREW-1811). */
+  authorName: string;
 }
 
 export interface ContractStatuses {
@@ -277,6 +285,8 @@ export const DEFAULT_CONTRACT: Contract = {
     author: 'team_member_id',
     createdAt: 'created_at',
     ship: 'ship_id',
+    publicReply: 'is_public_reply',
+    authorName: 'author_name',
   },
   statuses: {
     open: ['new', 'accepted', 'blocked', 'in_progress', 'needs_info', 'fixed', 'qa', 'verified'],

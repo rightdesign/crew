@@ -140,6 +140,10 @@ export interface Comment {
   /** The `Ships` row the comment was posted from (CREW-1371); absent on older rows. */
   ship_id?: string | null;
   reporter_name?: string | null;
+  /** Set by the server on a reply from a public intake form (CREW-1811); such a reply has no `team_member_id`. */
+  is_public_reply?: boolean | null;
+  /** The name a public reporter typed (CREW-1811). */
+  author_name?: string | null;
   created_at: string;
 }
 
@@ -238,6 +242,8 @@ export interface Authorship {
   issueHeld: boolean;
   /** Comments has the `contract.comments.ship` column (`ship_id`). */
   commentShip: boolean;
+  /** Comments has the `contract.comments.publicReply` column (`is_public_reply`, CREW-1811). */
+  commentPublicReply: boolean;
   /** This ship's `Ships` row id; null when there is no row for this ship's name. */
   shipId: string | null;
 }
@@ -835,6 +841,7 @@ export class Tracker {
       issueShip: issueFields.has(this.contract.columns.ship),
       issueHeld: issueFields.has(this.contract.columns.heldBy),
       commentShip: commentFields.has(this.contract.comments.ship),
+      commentPublicReply: commentFields.has(this.contract.comments.publicReply),
       shipId: shipRow?.id ?? null,
     };
   }
@@ -872,6 +879,14 @@ export class Tracker {
     } catch {
       return new Set();
     }
+  }
+
+  /**
+   * Whether Comments carries the public-reply flag (CREW-1811). Its absence is
+   * not a fault: the tracker then has no public form and the guard is moot.
+   */
+  async hasPublicReplyColumn(): Promise<boolean> {
+    return (await this.authorshipProbe()).commentPublicReply;
   }
 
   /**

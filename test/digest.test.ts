@@ -325,3 +325,33 @@ test('an interrupted run in the event log reads as direction on its ticket (CREW
   assert.match(out, /interrupted 2026-10-15T21:12Z — the run was cut short \/ resume/);
   assert.match(out, /\*\*1 new\*\*/);
 });
+
+test('a public reporter\'s reply is never attributed to the view creator who ran the form (CREW-1811)', () => {
+  const linked = buildRoster(MEMBERS, [
+    ...ROWS.filter((r) => r.id !== 'op-1'),
+    { id: 'op-1', name: 'Brad C.', user_id: 'ident-brad' },
+  ]);
+  const ticket = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', assignee_id: 'dev-1' });
+  const reply = { ticket_id: 'a', team_member_id: null, created_by_id: 'ident-brad', is_public_reply: true,
+    author_name: 'Mallory', kind: 'comment', created_at: '2026-10-11T20:37:23.000Z' };
+  const out = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [reply] }));
+  assert.match(out, /Mallory \(public reporter\)/);
+  assert.doesNotMatch(out, /Brad C\./);
+  assert.match(out, /\*\*1 new\*\*/);
+
+  const anon = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [{ ...reply, author_name: '  ' }] }));
+  assert.match(anon, /anonymous \(public reporter\)/);
+
+  // Flag false: today's CREW-1304 resolution.
+  const plain = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [{ ...reply, is_public_reply: false }] }));
+  assert.match(plain, /Brad C\. \(Operator\)/);
+
+  // The contract may rename the columns.
+  const custom = { ...reply, is_public_reply: false, from_form: true, who: 'Eve' };
+  const renamed = buildingDigest(input({
+    roster: linked, tickets: [ticket],
+    commentColumns: { publicReply: 'from_form', authorName: 'who' },
+    comments: [custom],
+  }));
+  assert.match(renamed, /Eve \(public reporter\)/);
+});

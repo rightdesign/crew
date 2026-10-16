@@ -37,6 +37,7 @@ to mean exactly this, and needs no configuration at all.
 | epic | `epic_id` | only rendered when the workspace has an `Epics` table (ISSUE-384) |
 | comment parent | `ticket_id` | Comments |
 | comment body / author | `body` / `team_member_id` | |
+| comment public reply / author name | `is_public_reply` / `author_name` | optional (CREW-1811): a reply from a public intake form carries no `team_member_id` and its `created_by_id` is the public view's creator, so the digest labels a flagged comment `<author_name or anonymous> (public reporter)` and never resolves it through the roster. A Comments table without the column is read as having no public replies; `crew doctor` reports which case applies |
 | crew name / ship | `name` / `ship_id` | Crew |
 
 **Optional columns on Issues** (a table without one has simply not adopted the

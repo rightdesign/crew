@@ -48,6 +48,10 @@ export interface DigestComment {
   /** The Ships row the comment was posted from (CREW-1371). */
   ship_id?: string | null;
   reporter_name?: string | null;
+  /** True on a reply from a public intake form (CREW-1811); its `created_by_id` is the view's creator, not the writer. */
+  is_public_reply?: boolean | null;
+  /** The name a public reporter typed (CREW-1811). */
+  author_name?: string | null;
   kind?: string | null;
   created_at: string;
 }
@@ -122,6 +126,11 @@ export interface DigestInput {
   workModes?: WorkModes;
   tickets: DigestTicket[];
   comments: DigestComment[];
+  /**
+   * The workspace's names for the public-reply columns (`contract.comments`,
+   * CREW-1811); the defaults apply when absent.
+   */
+  commentColumns?: { publicReply: string; authorName: string };
   /** The running seat's Crew row id — what "you" means in every column. */
   me: string;
   roster: Roster;
@@ -166,6 +175,15 @@ function displayKey(t: { issue_id?: string; issue_tag?: string | null }): string
  */
 function author(c: DigestComment, i: DigestInput): string {
   const { me, roster } = i;
+  // CREW-1811: a public reply's `created_by_id` is the public view's creator
+  // (a public view runs as its creator), so resolving it through the roster
+  // would print a stranger as the operator. Checked before anything else.
+  const cols = i.commentColumns ?? { publicReply: 'is_public_reply', authorName: 'author_name' };
+  const row: Record<string, unknown> = { ...c };
+  if (row[cols.publicReply] === true) {
+    const name = row[cols.authorName];
+    return `${typeof name === 'string' && name.trim() ? name.trim() : 'anonymous'} (public reporter)`;
+  }
   if (c.team_member_id === me) return 'you';
   if (c.team_member_id === null || c.team_member_id === undefined) {
     // CREW-1304: a comment posted from the app's UI never sets

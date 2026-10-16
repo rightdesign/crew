@@ -399,6 +399,7 @@ export function writeDigest(
         : withinWorkMode(sliceFor(d.tickets, role), d.selectionInput.workModes),
       workModes: d.selectionInput.workModes,
       comments: d.comments,
+      commentColumns: d.selectionInput.contract?.comments,
       me,
       roster: d.roster,
       // CREW-1371: a comment from another ship is labelled with that ship's

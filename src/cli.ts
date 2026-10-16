@@ -4145,6 +4145,13 @@ switch (command) {
         ? 'authorship:       filed_by_id, ship_id present\n'
         : `authorship:       missing ${missingAuthorship.join(', ')} — update the Issues template\n`,
     );
+    // CREW-1811: informational only — without the column the tracker has no
+    // public intake form and nothing to guard against.
+    process.stdout.write(
+      await tracker.hasPublicReplyColumn()
+        ? `public replies:  Comments.${tracker.contract.comments.publicReply} present — public reporters are labelled in the digest\n`
+        : `public replies:  Comments.${tracker.contract.comments.publicReply} absent — no public intake form, nothing to guard\n`,
+    );
     // Release seat (CREW-1371 D5). Absent is not a fault: release comments are
     // credited to the dev seat instead, which is what they were before.
     process.stdout.write(
