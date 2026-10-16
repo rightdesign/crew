@@ -261,11 +261,18 @@ function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   // install` loads the plist — the whole point of "installed" for a
   // persistent service is "running". `release`/`passengers` keep the old
   // fixed-interval, load-but-don't-run-yet shape untouched.
+  //
+  // AbandonProcessGroup (CREW-1775): without it launchd kills every process in
+  // the job's group whenever it relaunches the daemon, taking the in-flight
+  // agent run down with it. Agents are spawned in their own group and the next
+  // daemon reattaches to them, so the relaunch must leave them be.
   const persistent = job === 'run';
   const scheduleKeys = persistent
     ? `  <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
+  <true/>
+  <key>AbandonProcessGroup</key>
   <true/>`
     : `  <key>StartInterval</key>
   <integer>${INTERVAL_SECONDS}</integer>
@@ -343,6 +350,9 @@ StandardOutput=append:${schedulerLog}
 StandardError=append:${schedulerLog}
 Restart=on-failure
 RestartSec=5
+# CREW-1775: a restart stops only the daemon; agent runs it started live in
+# their own process groups and the next daemon reattaches to them.
+KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -437,6 +447,22 @@ function planCron(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
  * every existing caller (and every test written before the release lane
  * existed) keeps behaving exactly as it did.
  */
+/**
+ * Whether the installed `run` unit lets a daemon restart leave agent runs
+ * alone (CREW-1775): `AbandonProcessGroup` for launchd, `KillMode=process` for
+ * systemd. `null` when there is nothing to judge — no unit on disk, or cron,
+ * which has no restart that kills a process group.
+ */
+export function unitAbandonsAgents(plan: InstallPlan, read: (path: string) => string | null): boolean | null {
+  const path = plan.unitPaths[0];
+  if (!path || (plan.mechanism !== 'launchd' && plan.mechanism !== 'systemd')) return null;
+  const text = read(path);
+  if (text === null) return null;
+  return plan.mechanism === 'launchd'
+    ? /<key>AbandonProcessGroup<\/key>\s*<true\/>/.test(text)
+    : /^KillMode=process\s*$/m.test(text);
+}
+
 export function planInstall(
   ship: Ship, crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean, job: InstallJob = 'run',
 ): InstallPlan {

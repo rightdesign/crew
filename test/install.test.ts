@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS, findOnPath, dockerPathProblem, pathFor } from '../src/install.ts';
+import { unitAbandonsAgents, planInstall, planUninstall, planDaemonControl, INTERVAL_SECONDS, findOnPath, dockerPathProblem, pathFor } from '../src/install.ts';
 import type { Ship } from '../src/config.ts';
 
 const ship = (over: Partial<Ship> = {}): Ship => ({
@@ -336,4 +336,26 @@ test('dockerPathProblem names the shell directory ship.extraPath needs, and clea
 test('dockerPathProblem with docker nowhere says so rather than naming a directory', (t) => {
   if (findOnPath('docker', pathFor(ship()))) return t.skip('docker is on the scheduler base PATH here');
   assert.match(dockerPathProblem(ship(), '/nonexistent')!, /or your shell PATH; install Docker/);
+});
+
+test('the run job leaves agent runs alone when the daemon restarts: AbandonProcessGroup / KillMode=process (CREW-1775)', () => {
+  const mac = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
+  assert.match(Object.values(mac.unitContent)[0]!, /<key>AbandonProcessGroup<\/key>\s*<true\/>/);
+  const linux = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run');
+  assert.match(Object.values(linux.unitContent)[0]!, /^KillMode=process$/m);
+  // The one-shot jobs spawn no agents, so they keep the defaults.
+  assert.ok(!Object.values(planInstall(ship(), '/opt/crew', 'macos', true, 'release').unitContent)[0]!.includes('AbandonProcessGroup'));
+});
+
+test('unitAbandonsAgents tells a current unit from one installed before CREW-1775, and says nothing without a unit', () => {
+  const mac = planInstall(ship(), '/opt/crew', 'macos', true, 'run');
+  const current = Object.values(mac.unitContent)[0]!;
+  assert.equal(unitAbandonsAgents(mac, () => current), true);
+  assert.equal(unitAbandonsAgents(mac, () => current.replace(/\s*<key>AbandonProcessGroup<\/key>\s*<true\/>/, '')), false);
+  assert.equal(unitAbandonsAgents(mac, () => null), null);
+  const linux = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run');
+  const svc = Object.values(linux.unitContent)[0]!;
+  assert.equal(unitAbandonsAgents(linux, () => svc), true);
+  assert.equal(unitAbandonsAgents(linux, () => svc.replace('KillMode=process\n', '')), false);
+  assert.equal(unitAbandonsAgents(planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false, 'run'), () => 'x'), null);
 });

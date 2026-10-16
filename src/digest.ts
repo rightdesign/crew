@@ -67,7 +67,7 @@ export interface DigestEvent {
  * reads as an `in_progress`, unassigned ticket with nothing new on it.
  * `pushed` is not one of these: it is the marker that a direction was acted on.
  */
-export const DIRECTION_EVENT_TYPES = ['conflict_handed_back', 'requeued', 'bounced', 'conflict_escalated'] as const;
+export const DIRECTION_EVENT_TYPES = ['conflict_handed_back', 'requeued', 'bounced', 'conflict_escalated', 'interrupted'] as const;
 
 export interface DigestInput {
   /** Runner events from the event log: the direction types above plus `pushed`. */
@@ -368,7 +368,7 @@ export function buildingDigest(i: DigestInput): string {
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
-    '\n"runner direction" is the newest instruction the crew itself posted to the\nevent log (not Comments) that no push has answered yet: `conflict_handed_back`\n(merge the base into the branch and resolve), `requeued`, `bounced`,\n`conflict_escalated`. It is direction, same as a comment from a hold: act on it.\n',
+    '\n"runner direction" is the newest instruction the crew itself posted to the\nevent log (not Comments) that no push has answered yet: `conflict_handed_back`\n(merge the base into the branch and resolve), `requeued`, `bounced`,\n`conflict_escalated`, `interrupted` (an earlier run on this seat was cut short; its\nuncommitted worktree is yours, resume it). It is direction, same as a comment from a hold: act on it.\n',
     '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` and `worktree` columns verbatim.** They are that\nrepository\'s own naming convention, rendered for THIS ticket — cut the\nworktree at `<repo>/../<worktree>`, on branch `<branch>`. Do not derive\neither yourself, and prefer these over the Environment section\'s own worked\nexample if the two ever disagree — that example is illustrative only,\nrendered before any ticket is picked.\n',
     ...(i.workModes && [...i.workModes.modes.values()].some((m) => m !== 'automatic')
       ? ['\n**Manual / hybrid projects.** Some projects on this board are not fully automatic. In a `manual` project no lane touches any ticket, and a ticket with no project is treated the same way, so none appear below. In a `hybrid` project a ticket appears below only when it is assigned to an agent. An `accepted` ticket that is absent for either reason is not yours to claim — do not go looking for it.\n']

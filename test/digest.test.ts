@@ -317,3 +317,11 @@ test('a conflict hand-back in the event log reads as new direction until a push 
   }));
   assert.doesNotMatch(answered, /conflict_handed_back 2026/);
 });
+
+test('an interrupted run in the event log reads as direction on its ticket (CREW-1775)', () => {
+  const tickets = [T({ id: 'h', issue_id: 'ISSUE-9', status: 'in_progress', assignee_id: null })];
+  const cut = { record_id: 'h', event_type: 'interrupted', message: 'the run was cut short | resume', occurred_at: '2026-10-15T21:12:53.000Z' };
+  const out = buildingDigest(input({ tickets, events: [cut], watermark: '2026-10-15T21:00:00Z' }));
+  assert.match(out, /interrupted 2026-10-15T21:12Z — the run was cut short \/ resume/);
+  assert.match(out, /\*\*1 new\*\*/);
+});

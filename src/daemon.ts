@@ -72,7 +72,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName, Route, Ship } from './config.ts';
-import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf } from './config.ts';
+import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, routeSlug } from './config.ts';
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
@@ -88,7 +88,8 @@ import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { Tracker } from './tracker.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
-import { ensureRepoCheckout, resolve as gitResolve, type GitError } from './git.ts';
+import { ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
+import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
@@ -446,6 +447,11 @@ export interface RunOnePassOptions {
    * only correct for a single pass (tests).
    */
   spawnBreaker?: SpawnBreaker;
+  /**
+   * Injected for testing. Defaults to `reconcileForRoute`: adopt or report any
+   * run a previous crew process left behind (CREW-1775).
+   */
+  reconcile?: (ctx: RoleAgentContext, o: RunOnePassOptions) => Promise<void>;
 }
 
 /**
@@ -486,6 +492,15 @@ export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
   const spawn = o.spawnRoleAgent ?? runRoleAgent;
   const breaker = o.spawnBreaker ?? new SpawnBreaker();
   const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit, getSessionStore: o.getSessionStore };
+
+  // CREW-1775: before deciding anything, account for runs a previous process
+  // left behind — a live one keeps its role and capacity slot, a dead one is
+  // reported (and its ticket told) so this pass's digest already shows it.
+  try {
+    await (o.reconcile ?? reconcileForRoute)(ctx, o);
+  } catch (e) {
+    emit.warn(`could not reconcile earlier agent runs: ${(e as Error).message}`, { step: 'agent' });
+  }
 
   const decision = await decide(ctx);
 
@@ -620,6 +635,52 @@ async function publishShipAttention(o: RunOnePassOptions): Promise<void> {
 // re-run its own argv-driven top-level dispatch).
 // ---------------------------------------------------------------------------
 
+/**
+ * `reconcileRuns` wired to this route: the seat's key reports the Agent Log
+ * row, and the follow-up is the tracker work `runRoleAgent` does around a run
+ * it started itself (an interrupted ticket is told so, the seat goes idle, a
+ * completed run's hand-off is checked).
+ */
+async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): Promise<void> {
+  const { route, ship, emit } = ctx;
+  await reconcileRuns({
+    stateDir: ship.stateDir, routeLabel: routeSlug(route.route), emit, state: o.state,
+    maxConcurrentAgents: o.maxConcurrentAgents, inFlight: o.inFlight,
+    agentLogKey: async (role) => (await resolveSeatKey(route, role as RoleName, ctx.getSessionStore)).apiKey,
+    afterRun: async (sc, result) => {
+      const identity = await resolveSeatKey(route, sc.role, ctx.getSessionStore);
+      const tracker = new Tracker(route, ship, { apiKey: identity.apiKey });
+      const memberId = route.resolved?.seats[sc.role];
+      try {
+        if (!sc.ticketRecordId) return;
+        if (result.interrupted) {
+          if (!memberId) return;
+          const t = await tracker.ticket(sc.ticketRecordId);
+          const target = repoTargetFor(route, t.repo_id as string | null | undefined);
+          const num = String(t[tracker.contract.columns.key] ?? '').replace(/^\D+/, '');
+          const wt = target && num ? worktreeForNumber(target.dir, num) : null;
+          let dirty: boolean | null = null;
+          try { if (wt) dirty = gitStatus(wt.path).length > 0; } catch { /* unreadable: say so */ }
+          await tracker.postEvent(sc.ticketRecordId, interruptedComment({
+            branch: wt?.branch ?? null, dirty, reason: result.interrupted === 'daemon-exit' ? 'the crew daemon exited' : 'it exited without a result',
+          }), memberId, 'interrupted');
+        } else {
+          await guardRunHandoff(route, ship, tracker, sc.role, sc.ticketRecordId, emit, sc.spawnedAt);
+        }
+      } finally {
+        if (memberId) {
+          await tracker.setCrewStatus(memberId, 'idle').catch((e: Error) => {
+            emit.warn(`could not clear crew status: ${e.message}`, { step: 'agent' });
+          });
+        }
+        await tracker.beatIdle(ship.name).catch((e: Error) => {
+          emit.warn(`could not beat ship idle: ${e.message}`, { step: 'agent' });
+        });
+      }
+    },
+  });
+}
+
 async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAgentContext): Promise<void> {
   const { route, ship, emit } = ctx;
   // CREW-1603: the lane's own writes (claim, status, hand-off) and the key its
@@ -697,6 +758,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
     environment: await buildEnvironment(route, ship, ticketHint),
     apiKey: identity.apiKey,
     cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
+    ticketRecordId: workingId,
     ...personaPromptOptions(await fetchPersonaPrompt(route, role, { userAgent: ship.userAgent })),
     skillOverrides: await fetchSkillOverrides(route, { userAgent: ship.userAgent }),
     agentPersona: await fetchSeatPersona(route, role, { userAgent: ship.userAgent }),

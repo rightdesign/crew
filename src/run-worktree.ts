@@ -50,6 +50,8 @@ export type RunWorktreePlan =
   | { action: 'recut'; path: string; branch: string; base: string }
   /** Uncommitted changes: someone may be editing it by hand. */
   | { action: 'leave-dirty'; path: string; branch: string | null }
+  /** Uncommitted changes the runner knows are this seat's own, left by a run that was cut short (CREW-1775). */
+  | { action: 'resume-dirty'; path: string; branch: string | null }
   /** Commits that exist nowhere else (never pushed, or diverged from the remote). */
   | { action: 'leave-unpushed'; path: string; branch: string };
 
@@ -60,6 +62,7 @@ export const describeRunWorktreePlan = (p: RunWorktreePlan): string => {
     case 'reset': return `fast-forwarded ${p.path} to the remote tip of ${p.branch}`;
     case 'reuse': return `reusing ${p.path} (${p.branch} is already level with the remote)`;
     case 'recut': return `${p.branch} is gone from the remote and ${p.path} held no work of its own — re-cut it fresh from ${p.base}`;
+    case 'resume-dirty': return `${p.path} has uncommitted changes from this seat's previous run (interrupted) — resuming`;
     case 'leave-dirty': return `left ${p.path} alone: it has uncommitted changes (someone may be editing it by hand)`;
     case 'leave-unpushed': return `left ${p.path} alone: ${p.branch} has commits that are not on the remote`;
   }
@@ -81,6 +84,14 @@ function newBranchName(cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: s
  */
 export function planRunWorktree(
   dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
+  opts: {
+    /**
+     * The runner has an `interrupted` event for this ticket on this seat and no
+     * push since, so a dirty tree is the seat's own unfinished work, not
+     * something someone is editing by hand.
+     */
+    resumeInterrupted?: boolean;
+  } = {},
 ): RunWorktreePlan {
   const { remote, base } = cfg.branch;
   const hasRemote = remoteConfigured(dir, remote);
@@ -93,7 +104,9 @@ export function planRunWorktree(
 
   if (existing && !existing.prunable && existsSync(existing.path)) {
     const branch = existing.branch;
-    if (status(existing.path).length > 0) return { action: 'leave-dirty', path: existing.path, branch };
+    if (status(existing.path).length > 0) {
+      return { action: opts.resumeInterrupted ? 'resume-dirty' : 'leave-dirty', path: existing.path, branch };
+    }
     if (!branch) return { action: 'leave-unpushed', path: existing.path, branch: '(detached HEAD)' };
     if (!hasRemote) return { action: 'reuse', path: existing.path, branch };
 
@@ -131,6 +144,8 @@ export function applyRunWorktree(dir: string, cfg: EffectiveRepoConfig, plan: Ru
     case 'leave-dirty':
     case 'leave-unpushed':
       return null;
+    case 'resume-dirty':
+      return plan.path;
     case 'reuse':
       if (!worktrees(dir).some((w) => w.path === plan.path)) git(dir, ['worktree', 'add', plan.path, plan.branch]);
       return plan.path;

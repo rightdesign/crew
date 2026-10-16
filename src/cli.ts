@@ -40,7 +40,7 @@ import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
 } from './connect-wizard.ts';
-import { planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
+import { unitAbandonsAgents, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
@@ -3498,7 +3498,21 @@ switch (command) {
     const repoWt = (await resolvedRepos(routeWt)).find((r) => r.id === ticketWt.repo_id) ?? (await resolvedRepos(routeWt))[0];
     if (!repoWt) { process.stderr.write('worktree: this route has no repository\n'); process.exit(2); }
     const roleWt = positional.find((p) => p === 'dev' || p === 'design' || p === 'qa');
-    const planWt = planRunWorktree(repoWt.dir, repoWt.config, ticketWt, roleWt);
+    // CREW-1775: uncommitted changes in this ticket's worktree are not a
+    // stranger's when the runner itself recorded that a run on this seat was
+    // cut short there and nothing has been pushed since.
+    let resumeWt = false;
+    try {
+      const trWt = new Tracker(routeWt, cfg.ship);
+      const heldWt = Object.values(routeWt.resolved?.seats ?? {}).includes(ticketWt[trWt.contract.columns.assignee] as string);
+      if (heldWt) {
+        const cut = await trWt.latestEvent(ticketWt.id, 'interrupted');
+        const pushed = await trWt.latestEvent(ticketWt.id, 'pushed');
+        const at = (e?: { occurred_at?: string | null; created_at?: string | null }) => e?.occurred_at ?? e?.created_at ?? '';
+        resumeWt = cut !== undefined && at(cut) > at(pushed);
+      }
+    } catch { /* the event log being unreadable leaves the plan as cautious as before */ }
+    const planWt = planRunWorktree(repoWt.dir, repoWt.config, ticketWt, roleWt, { resumeInterrupted: resumeWt });
     if (dryRun) { emit.emit(`would ${describeRunWorktreePlan(planWt)}`); break; }
     const pathWt = applyRunWorktree(repoWt.dir, repoWt.config, planWt);
     emit.emit(describeRunWorktreePlan(planWt));
@@ -3985,6 +3999,19 @@ switch (command) {
           : 'events log:        ok\n',
       );
     } catch { /* an unreadable state dir is reported elsewhere */ }
+
+    // CREW-1775: a unit installed before agents got their own process group
+    // kills the in-flight run whenever the daemon restarts.
+    if (host !== 'windows') {
+      const unitPlan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), 'run');
+      const abandons = unitAbandonsAgents(unitPlan, (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } });
+      if (abandons === false) {
+        process.stdout.write(
+          'scheduler unit:    WARN the installed unit does not leave agent runs alone when the daemon restarts ' +
+            '(no AbandonProcessGroup / KillMode=process) — a daemon crash or relaunch kills the run in flight; run `crew install`\n',
+        );
+      }
+    }
 
     // CREW-1532: a daemon started before the last crew.yaml / apiKeyFile
     // edit is still running the old config.

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveRepoConfig } from '../src/repo-config.ts';
-import { planRunWorktree, applyRunWorktree, finishRunWorktree } from '../src/run-worktree.ts';
+import { planRunWorktree, applyRunWorktree, finishRunWorktree, planIsUsable, describeRunWorktreePlan } from '../src/run-worktree.ts';
 import type { Ticket } from '../src/tracker.ts';
 
 const sh = (cwd: string, ...args: string[]) =>
@@ -148,4 +148,17 @@ test('a worktree holding commits that are not on the remote is never removed (CR
   const o = await finishRunWorktree(dir, cfg(dir), 'crew-9');
   assert.equal(o.kind, 'kept-unpushed');
   assert.ok(existsSync(path));
+});
+
+test('a dirty worktree is resumed, not left, when the runner recorded an interrupted run on this seat (CREW-1775)', () => {
+  const { dir, other } = fixture();
+  pushFromElsewhere(other);
+  const path = applyRunWorktree(dir, cfg(dir), planRunWorktree(dir, cfg(dir), ticket(), 'dev'))!;
+  writeFileSync(join(path, 'wip.txt'), 'x');
+  const plan = planRunWorktree(dir, cfg(dir), ticket(), 'dev', { resumeInterrupted: true });
+  assert.equal(plan.action, 'resume-dirty');
+  assert.equal(planIsUsable(plan), true);
+  assert.match(describeRunWorktreePlan(plan), /uncommitted changes from this seat's previous run \(interrupted\) — resuming/);
+  assert.equal(applyRunWorktree(dir, cfg(dir), plan), path);
+  assert.ok(existsSync(join(path, 'wip.txt')), 'the uncommitted work is untouched');
 });

@@ -725,3 +725,26 @@ test('configChangedAfter names a file newer than the daemon start, and nothing o
   assert.equal(configChangedAfter([f, join(dir, 'missing')], 6_000_000), null);
   assert.equal(configChangedAfter([f], 4_000_000), f);
 });
+
+test('runOnePass accounts for runs a previous process left behind before it decides anything (CREW-1775)', async () => {
+  const { opts } = rig();
+  const order: string[] = [];
+  await runOnePass({
+    ...opts,
+    reconcile: async () => { order.push('reconcile'); },
+    decide: async () => { order.push('decide'); return fakeDecision([]); },
+    spawnRoleAgent: async () => {},
+  });
+  assert.deepEqual(order, ['reconcile', 'decide']);
+});
+
+test('a reconcile that throws does not stop the pass (CREW-1775)', async () => {
+  const { opts } = rig();
+  const result = await runOnePass({
+    ...opts,
+    reconcile: async () => { throw new Error('boom'); },
+    decide: async () => fakeDecision(['dev']),
+    spawnRoleAgent: async () => {},
+  });
+  assert.deepEqual(result.started, ['dev']);
+});

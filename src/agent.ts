@@ -7,8 +7,9 @@
  * without launching it.
  */
 
-import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, type WriteStream } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWriteStream, openSync, closeSync, readSync, type WriteStream } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { finished } from 'node:stream/promises';
 import type { StreamKindEvent } from './stream.ts';
 import { join, dirname } from 'node:path';
@@ -129,6 +130,12 @@ export interface AgentPlan {
   /** Best-effort — the ticket this run is expected to work, if known yet. */
   ticket?: string;
   /**
+   * The tracker record id of the ticket the runner claimed for this run, when
+   * it claimed one. Recorded in the run's `.pid` sidecar so that a run found
+   * dead after a daemon restart can say which ticket it was holding.
+   */
+  ticketRecordId?: string | null;
+  /**
    * Where to report this run's Agent Log / Agent Log Cycles rows
    * (ISSUE-416/ISSUE-457), when the route has a resolved workspace to
    * report into and a key to report with. Undefined skips reporting
@@ -160,6 +167,8 @@ export interface PlanOptions {
   cycle: string;
   /** Best-effort — the top actionable ticket the poll saw, if any. */
   ticket?: string;
+  /** The claimed ticket's tracker record id; lands in `AgentPlan.ticketRecordId`. */
+  ticketRecordId?: string | null;
   /** Injected for testing; defaults to the real clock. */
   now?: () => number;
   /**
@@ -362,6 +371,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     streamPath: join(streamsDir, `${base}.jsonl`),
     eventsPath: join(streamsDir, `${base}.events.jsonl`),
     ticket: o.ticket,
+    ticketRecordId: o.ticketRecordId ?? null,
     agentLog,
     promptVersion: o.route.resolved?.agentPersonas?.[o.role]?.historyId,
     promptSha,
@@ -392,6 +402,92 @@ export interface RunResult {
   code: number;
   ms: number;
 }
+export interface RunResult {
+  code: number;
+  ms: number;
+}
+
+/**
+ * What survives of a run that outlived the process that spawned it
+ * (CREW-1775): `<stream>.pid`, written at spawn. Everything the finish path
+ * needs to report the run from a different process — and nothing secret: the
+ * Agent Log key is re-resolved by whoever reattaches, never stored.
+ */
+export interface RunSidecar {
+  pid: number;
+  /**
+   * The crew process that spawned it. While that process lives it is the one
+   * finishing the run, so nobody else may adopt it; once it is gone the run
+   * is an orphan (CREW-1775).
+   */
+  ownerPid: number;
+  /** ISO time of the spawn; with `pid` it tells a live run from a recycled pid. */
+  spawnedAt: string;
+  role: RoleName;
+  route: string;
+  ticket: string | null;
+  /** The tracker record id of the ticket the runner claimed for this run, if any. */
+  ticketRecordId: string | null;
+  model: string;
+  toolchain: string;
+  harness: string;
+  provider: string;
+  eventsPath: string;
+  agentLog?: Omit<AgentLogTarget, 'apiKey'>;
+  promptVersion?: string;
+  promptSha: string;
+}
+
+/** The sidecar path for a stream. */
+export const pidPathFor = (streamPath: string): string => `${streamPath}.pid`;
+
+export function readRunSidecar(streamPath: string): RunSidecar | null {
+  try {
+    const sc = JSON.parse(readFileSync(pidPathFor(streamPath), 'utf8')) as Partial<RunSidecar>;
+    return typeof sc.pid === 'number' && typeof sc.spawnedAt === 'string' && typeof sc.role === 'string'
+      ? (sc as RunSidecar)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `pid` is still the process spawned at `spawnedAt`. A bare
+ * `kill(pid, 0)` would adopt any unrelated process that inherited a recycled
+ * pid, so the process's own start time (`ps -o lstart=`, second resolution)
+ * has to agree with the spawn time too.
+ */
+export function runIsAlive(sc: Pick<RunSidecar, 'pid' | 'spawnedAt'>): boolean {
+  try {
+    process.kill(sc.pid, 0);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EPERM') return false;
+  }
+  const ps = spawnSync('ps', ['-o', 'lstart=', '-p', String(sc.pid)], { encoding: 'utf8' });
+  const started = Date.parse(ps.stdout.trim());
+  // No readable start time (a platform without this `ps`): the pid check stands.
+  if (ps.status !== 0 || Number.isNaN(started)) return ps.status === 0;
+  return Math.abs(started - Date.parse(sc.spawnedAt)) < 15_000;
+}
+
+/** Everything the finish path needs from a plan, so a reattached run can be reported without one. */
+type RunIdentity = Pick<RunSidecar, 'role' | 'route' | 'ticket' | 'model' | 'toolchain' | 'harness' | 'provider' | 'eventsPath' | 'agentLog' | 'promptVersion' | 'promptSha'> & {
+  streamPath: string;
+};
+
+function identityOf(plan: AgentPlan, adapterHarness: string): RunIdentity {
+  return {
+    role: plan.role, route: plan.route, ticket: plan.ticket ?? null, model: plan.model,
+    toolchain: plan.toolchain ?? LEGACY_TOOLCHAIN_HARNESS, harness: adapterHarness,
+    provider: plan.provider ?? LEGACY_TOOLCHAIN_PROVIDER,
+    eventsPath: plan.eventsPath, streamPath: plan.streamPath,
+    agentLog: plan.agentLog ? withoutKey(plan.agentLog) : undefined,
+    promptVersion: plan.promptVersion, promptSha: plan.promptSha,
+  };
+}
+
+const withoutKey = ({ apiKey: _apiKey, ...rest }: AgentLogTarget): Omit<AgentLogTarget, 'apiKey'> => rest;
 
 /**
  * Opens a sink for writing, or gives up quietly.
@@ -424,6 +520,244 @@ function endSink(sink: WriteStream | undefined): Promise<void> {
 }
 
 /**
+ * Reads whatever has been appended to a file since the last `poll`.
+ *
+ * The agent's stdout is the stream file itself (see `spawnAgent`), not a pipe
+ * to this process, so this is how the runner sees it — and how a different
+ * process, after a restart, replays a run from the top (`offset` 0).
+ */
+class FileTail {
+  private offset = 0;
+  private readonly decoder = new StringDecoder('utf8');
+  private readonly path: string;
+  constructor(path: string) { this.path = path; }
+
+  poll(): string {
+    let fd: number;
+    try { fd = openSync(this.path, 'r'); } catch { return ''; }
+    try {
+      let text = '';
+      const chunk = Buffer.alloc(64 * 1024);
+      for (;;) {
+        const n = readSync(fd, chunk, 0, chunk.length, this.offset);
+        if (n <= 0) break;
+        this.offset += n;
+        text += this.decoder.write(chunk.subarray(0, n));
+      }
+      return text;
+    } finally {
+      closeSync(fd);
+    }
+  }
+}
+
+const TAIL_POLL_MS = 200;
+
+/**
+ * Turns a run's stream into the crew's own view of it — mapped events, Agent
+ * Log cycles, the final result and ticket attribution — one line at a time.
+ * Shared by the process that spawned the run and by a restarted daemon that
+ * reattaches to it, which replays the stream from the top with `muted` set so
+ * events the first process already wrote are not written twice.
+ */
+class RunObserver {
+  readonly cycles: AgentCycle[] = [];
+  readonly attribution = new TicketAttributionTracker();
+  result: ReturnType<ReturnType<typeof adapterFor>['extractResult']>;
+  /** Set once the stream carries the harness's final result (turn count or cost). */
+  sawResult = false;
+  muted = false;
+  private buf = '';
+  private readonly mapper: { map(p: unknown): StreamKindEvent[]; flush(): StreamKindEvent[] };
+  private readonly id: RunIdentity;
+  private readonly adapter: ReturnType<typeof adapterFor>;
+  private readonly eventsSink: WriteStream | undefined;
+  private readonly emitCycle: string;
+
+  constructor(id: RunIdentity, adapter: ReturnType<typeof adapterFor>, eventsSink: WriteStream | undefined, emitCycle: string) {
+    this.id = id;
+    this.adapter = adapter;
+    this.eventsSink = eventsSink;
+    this.emitCycle = emitCycle;
+    this.mapper = adapter.createStreamMapper?.() ?? { map: (p: unknown) => adapter.mapStreamLine(p), flush: () => [] };
+  }
+
+  feed(text: string): void {
+    this.buf += text;
+    const lines = this.buf.split('\n');
+    this.buf = lines.pop() ?? '';
+    for (const line of lines) this.handleLine(line);
+  }
+
+  end(): void {
+    if (this.buf) this.handleLine(this.buf);
+    this.buf = '';
+    try { this.consume(undefined, this.mapper.flush()); } catch { /* ditto */ }
+  }
+
+  private handleLine(line: string): void {
+    if (!line) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;   // not our schema's stability guarantee — drop and move on
+    }
+    try {
+      // Field by field: Codex reports the session id and a turn's usage on
+      // different lines, and a later line must not erase an earlier field.
+      const got = this.adapter.extractResult(parsed);
+      if (got) {
+        this.result = { ...this.result, ...Object.fromEntries(Object.entries(got).filter(([, v]) => v !== undefined)) };
+        if (got.numTurns !== undefined || got.costUsd !== undefined) this.sawResult = true;
+      }
+      this.consume(parsed, this.mapper.map(parsed));
+    } catch {
+      /* a shape this run's mapping does not expect must not kill the cycle */
+    }
+  }
+
+  // Turns mapped events (and, when there is a source line, its token usage)
+  // into sink writes and buffered cycles. `parsed` is undefined for events
+  // the mapper flushes at end of stream, which have no line of their own.
+  private consume(parsed: unknown, events: StreamKindEvent[]): void {
+    const plan = this.id;
+    let turnText = '';
+    for (const ev of events) {
+      const e = {
+        at: new Date().toISOString(),
+        cycle: this.emitCycle,
+        route: plan.route,
+        step: 'agent' as const,
+        level: 'info' as const,
+        message: ev.kind === 'tool' ? `${ev.tool ?? 'tool'}${ev.target ? ` ${ev.target}` : ''}` : ev.kind,
+        role: plan.role,
+        ...(plan.ticket ? { ticket: plan.ticket } : {}),
+        data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
+      };
+      if (!this.muted) this.eventsSink?.write(`${JSON.stringify(e)}\n`);
+      if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) {
+        turnText += `${ev.text}\n`;
+        const cycleIndex = this.cycles.length;
+        this.cycles.push({
+          cycleIndex,
+          occurredAt: e.at,
+          thinking: ev.text,
+          // A conversational `text` turn is tagged 'assistant' so it's
+          // distinguishable from a thinking block once both share this
+          // buffer (ISSUE-594) — matching the precedent
+          // `agent-chat.service.ts`'s logChatRun (ISSUE-504) already set
+          // for the same column. A `thought` cycle stays untagged, same
+          // as before this change.
+          ...(ev.kind === 'text' ? { role: 'assistant' as const } : {}),
+        });
+        // A second event alongside the raw `thought`/`text` one above
+        // (ISSUE-481) — a live consumer (crew-macos's log window) wants
+        // the same text correlated with the Agent Log Cycle it will end
+        // up as (`cycleIndex`, matching `AgentCycle` above) plus which
+        // seat/persona produced it, not just the bare text the source
+        // event carries. `cycleIndex` only exists here, in the buffer
+        // this function already owns, not in `mapStreamLine` — that
+        // mapper is deliberately a pure, per-line function with no run
+        // state, so it stays the one place deciding "is this a thinking
+        // block or a text turn", and this is the one place that knows which
+        // numbered cycle it became.
+        if (!this.muted) {
+          this.eventsSink?.write(`${JSON.stringify({
+            ...e,
+            message: 'cycle',
+            data: { kind: 'cycle', cycleIndex, text: ev.text },
+          })}\n`);
+        }
+      }
+    }
+    // Only an `assistant` line carries `message.usage` (one real API
+    // call), so this is a no-op for every other line type — including
+    // the tool-only assistant lines already folded into `turnText`
+    // above as an empty string, which `TicketAttributionTracker.add`
+    // treats as "no new mention, keep crediting whatever ticket was
+    // last named."
+    const turnTokens = parsed === undefined ? undefined : this.adapter.extractTurnTokens(parsed);
+    if (turnTokens !== undefined) this.attribution.add(turnText, turnTokens);
+  }
+}
+
+/** How a run ended, as far as the finishing process can tell. */
+interface RunEnd {
+  /** The agent's exit code; null when this process never saw it exit (a reattached run). */
+  code: number | null;
+  /** Why the run stopped short of finishing, when it did (`daemon-exit`: it was found dead after a restart). */
+  interrupted?: string;
+}
+
+/**
+ * Writes the sidecar, the finish (or interrupted) event and the Agent Log row
+ * for a run — the one finish path both `spawnAgent` and a reattach go through.
+ */
+async function finishRun(
+  id: RunIdentity, obs: RunObserver, emit: Emitter, startedAt: string, end: RunEnd, agentLogKey?: string,
+): Promise<{ ms: number; ticket: string | undefined }> {
+  // The ticket the transcript actually spent the most tokens on, falling
+  // back to the pre-run poll hint when the visible text never named one
+  // (e.g. an administrative run with nothing ticket-specific to say).
+  const attributedTicket = obs.attribution.winner(id.ticket ?? undefined);
+  // Which toolchain, harness and provider produced this run (CREW-1516),
+  // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
+  // the sidecar and the event only — the Agent Log carries harness+provider.
+  const identity = { toolchain: id.toolchain, harness: id.harness, provider: id.provider };
+  const { result } = obs;
+  try {
+    writeFileSync(`${id.streamPath}.meta.json`, JSON.stringify({
+      route: id.route, role: id.role, ticket: id.ticket,
+      attributedTicket: attributedTicket ?? null,
+      startedAt, exitCode: end.code, model: id.model,
+      ...(end.interrupted ? { interrupted: end.interrupted } : {}),
+      ...identity,
+      sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
+      totalCostUsd: result?.costUsd ?? null,
+    }));
+  } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
+  const ms = Date.now() - Date.parse(startedAt);
+  emit.emit(end.interrupted ? 'agent run interrupted' : `agent run finished (exit ${end.code ?? 'unknown'})`, {
+    data: {
+      ms, code: end.code,
+      ...(end.interrupted ? { interrupted: end.interrupted } : {}),
+      ...identity,
+      ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
+      ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
+      ...(result?.costUsd !== undefined ? { totalCostUsd: result.costUsd } : {}),
+    },
+  });
+  if (id.agentLog && agentLogKey) {
+    try {
+      await reportAgentRun({ ...id.agentLog, apiKey: agentLogKey }, {
+        ticketReference: attributedTicket,
+        outcome: end.interrupted ? 'interrupted' : end.code === 0 || (end.code === null && obs.sawResult) ? 'success' : 'error',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        cycles: obs.cycles,
+        model: id.model,
+        tokensIn: result?.inputTokens,
+        tokensOut: result?.outputTokens,
+        cacheReadTokens: result?.cacheReadTokens,
+        cacheWriteTokens: result?.cacheWriteTokens,
+        costUsd: result?.costUsd,
+        harness: identity.harness,
+        provider: identity.provider,
+        promptVersion: id.promptVersion,
+        promptSha: id.promptSha,
+      });
+    } catch (e) {
+      // A workspace that has never been provisioned/backfilled (ISSUE-465),
+      // or a plain network hiccup, must not fail the run it is reporting
+      // on — same reasoning as `openSink`'s degrade-quietly contract above.
+      emit.warn(`could not report agent log: ${(e as Error).message}`, { step: 'agent' });
+    }
+  }
+  return { ms, ticket: attributedTicket };
+}
+
+/**
  * Launch it.
  *
  * The prompt goes in on STDIN, never as an argv string. `claude -p` reads it
@@ -433,134 +767,58 @@ function endSink(sink: WriteStream | undefined): Promise<void> {
  * keeps the runner clear of ARG_MAX.
  *
  * Stdout is `--output-format stream-json`: NDJSON, one object per assistant
- * turn/tool-call/tool-result plus a final `{type:"result"}`. It is piped
- * rather than inherited (ISSUE-401) so the crew can both save it verbatim
- * (`plan.streamPath` — the post-mortem artifact) and map it onto the crew's
- * own event model (`plan.eventsPath` — see the module doc on `AgentPlan`
- * for why that is a separate file from the shared `events.jsonl`).
+ * turn/tool-call/tool-result plus a final `{type:"result"}`. It is the stream
+ * file itself (`plan.streamPath` — the post-mortem artifact), opened for
+ * append and handed to the child as its stdout, and this process tails that
+ * file to map it onto the crew's own event model (`plan.eventsPath` — see the
+ * module doc on `AgentPlan` for why that is a separate file from the shared
+ * `events.jsonl`). A pipe here would tie the run to this process: once the
+ * reader is gone the agent's next write fails with EPIPE, so a daemon restart
+ * would kill the run no matter what process group it was in (CREW-1775).
+ *
+ * The child also gets a process group of its own (`detached`), so launchd or
+ * systemd taking down the daemon's group does not take the run with it, and a
+ * `<stream>.pid` sidecar so the next daemon can find it (`reattachRun`).
  */
 export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
   const adapter = adapterFor(plan.harness ?? LEGACY_TOOLCHAIN_HARNESS);
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   for (const w of plan.warnings ?? []) emit.warn(w, { step: 'agent', role: plan.role });
-  const rawSink = openSink(plan.streamPath);
   const eventsSink = openSink(plan.eventsPath);
+  const id = identityOf(plan, adapter.harness);
 
   return new Promise((resolve, reject) => {
+    let streamFd: number;
+    try {
+      mkdirSync(dirname(plan.streamPath), { recursive: true });
+      streamFd = openSync(plan.streamPath, 'a');
+    } catch (e) {
+      void endSink(eventsSink);
+      reject(new AgentSpawnError(`cannot open the stream file ${plan.streamPath}: ${(e as Error).message}`));
+      return;
+    }
     const child = spawn(plan.bin, plan.args, {
       cwd: plan.cwd,
       env: { ...scrubbedEnv(process.env, adapter.harness), ...plan.setEnv },
-      stdio: ['pipe', 'pipe', 'inherit'],
+      stdio: ['pipe', streamFd, 'inherit'],
+      detached: true,
     });
+    closeSync(streamFd);   // the child holds its own copy
 
-    let buf = '';
-    let result: ReturnType<typeof adapter.extractResult>;
-    // One buffered Agent Log Cycle per `thought` block or assistant `text`
-    // turn seen, in order (ISSUE-594 widened this from thinking-only) — the
-    // whole point of Agent Log Cycles (WORKSPACE_AGENTS_PLAN.md) is capturing
-    // a run's visible output, and a turn with neither contributes nothing
-    // worth a row. Flushed against the Agent Log row's id once the run
-    // finishes and that row exists — see the `close` handler below.
-    const cycles: AgentCycle[] = [];
-    // Which ticket this run actually spent its tokens on, independent of
-    // `plan.ticket` (the pre-run poll hint) — see `ticket-attribution.ts`'s
-    // module doc for why the two can diverge.
-    const attribution = new TicketAttributionTracker();
+    if (child.pid !== undefined) {
+      const sidecar: RunSidecar = {
+        pid: child.pid, ownerPid: process.pid, spawnedAt: new Date().toISOString(), role: plan.role, route: plan.route,
+        ticket: plan.ticket ?? null, ticketRecordId: plan.ticketRecordId ?? null, model: plan.model,
+        toolchain: id.toolchain, harness: id.harness, provider: id.provider, eventsPath: plan.eventsPath,
+        agentLog: id.agentLog, promptVersion: plan.promptVersion, promptSha: plan.promptSha,
+      };
+      try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify(sidecar)); } catch { /* a run nobody can find again is no worse than before */ }
+    }
 
-    const mapper = adapter.createStreamMapper?.() ?? { map: (p: unknown) => adapter.mapStreamLine(p), flush: () => [] };
-
-    const handleLine = (line: string) => {
-      if (!line) return;
-      try { rawSink?.write(`${line}\n`); } catch { /* a lost stream copy must not stop the run */ }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        return;   // not our schema's stability guarantee — drop and move on
-      }
-      try {
-        // Field by field: Codex reports the session id and a turn's usage on
-        // different lines, and a later line must not erase an earlier field.
-        const got = adapter.extractResult(parsed);
-        if (got) result = { ...result, ...Object.fromEntries(Object.entries(got).filter(([, v]) => v !== undefined)) };
-        consume(parsed, mapper.map(parsed));
-      } catch {
-        /* a shape this run's mapping does not expect must not kill the cycle */
-      }
-    };
-
-    // Turns mapped events (and, when there is a source line, its token usage)
-    // into sink writes and buffered cycles. `parsed` is undefined for events
-    // the mapper flushes at end of stream, which have no line of their own.
-    const consume = (parsed: unknown, events: StreamKindEvent[]) => {
-      {
-        let turnText = '';
-        for (const ev of events) {
-          const e = {
-            at: new Date().toISOString(),
-            cycle: emit.cycle,
-            route: plan.route,
-            step: 'agent' as const,
-            level: 'info' as const,
-            message: ev.kind === 'tool' ? `${ev.tool ?? 'tool'}${ev.target ? ` ${ev.target}` : ''}` : ev.kind,
-            role: plan.role,
-            ...(plan.ticket ? { ticket: plan.ticket } : {}),
-            data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
-          };
-          eventsSink?.write(`${JSON.stringify(e)}\n`);
-          if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) {
-            turnText += `${ev.text}\n`;
-            const cycleIndex = cycles.length;
-            cycles.push({
-              cycleIndex,
-              occurredAt: e.at,
-              thinking: ev.text,
-              // A conversational `text` turn is tagged 'assistant' so it's
-              // distinguishable from a thinking block once both share this
-              // buffer (ISSUE-594) — matching the precedent
-              // `agent-chat.service.ts`'s logChatRun (ISSUE-504) already set
-              // for the same column. A `thought` cycle stays untagged, same
-              // as before this change.
-              ...(ev.kind === 'text' ? { role: 'assistant' as const } : {}),
-            });
-            // A second event alongside the raw `thought`/`text` one above
-            // (ISSUE-481) — a live consumer (crew-macos's log window) wants
-            // the same text correlated with the Agent Log Cycle it will end
-            // up as (`cycleIndex`, matching `AgentCycle` above) plus which
-            // seat/persona produced it, not just the bare text the source
-            // event carries. `cycleIndex` only exists here, in the buffer
-            // this function already owns, not in `mapStreamLine` — that
-            // mapper is deliberately a pure, per-line function with no run
-            // state (module doc above), so it stays the one place deciding
-            // "is this a thinking block or a text turn", and this is the one
-            // place that knows which numbered cycle it became. `role`,
-            // `route`, `ticket` are already on the envelope via the `e`
-            // spread, which is what a persona display already needs.
-            eventsSink?.write(`${JSON.stringify({
-              ...e,
-              message: 'cycle',
-              data: { kind: 'cycle', cycleIndex, text: ev.text },
-            })}\n`);
-          }
-        }
-        // Only an `assistant` line carries `message.usage` (one real API
-        // call), so this is a no-op for every other line type — including
-        // the tool-only assistant lines already folded into `turnText`
-        // above as an empty string, which `TicketAttributionTracker.add`
-        // treats as "no new mention, keep crediting whatever ticket was
-        // last named."
-        const turnTokens = parsed === undefined ? undefined : adapter.extractTurnTokens(parsed);
-        if (turnTokens !== undefined) attribution.add(turnText, turnTokens);
-      }
-    };
-
-    child.stdout.on('data', (chunk: Buffer) => {
-      buf += chunk.toString('utf8');
-      const lines = buf.split('\n');
-      buf = lines.pop() ?? '';
-      for (const line of lines) handleLine(line);
-    });
+    const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
+    const tail = new FileTail(plan.streamPath);
+    const timer = setInterval(() => obs.feed(tail.poll()), TAIL_POLL_MS);
 
     // Set when `spawn` itself failed. Node still emits `close` after `error`
     // in that case, and the close handler below must not then report a run
@@ -568,71 +826,16 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     let spawnFailed = false;
     child.on('error', (err) => {
       spawnFailed = true;
+      clearInterval(timer);
       reject(new AgentSpawnError(`cannot run ${plan.bin}: ${err.message}`));
     });
     child.on('close', async (code) => {
-      if (buf) handleLine(buf);
-      try { consume(undefined, mapper.flush()); } catch { /* ditto */ }
-      await Promise.all([endSink(rawSink), endSink(eventsSink)]);
+      clearInterval(timer);
+      obs.feed(tail.poll());
+      obs.end();
+      await endSink(eventsSink);
       if (spawnFailed) return;
-      // The ticket the transcript actually spent the most tokens on, falling
-      // back to the pre-run poll hint when the visible text never named one
-      // (e.g. an administrative run with nothing ticket-specific to say).
-      const attributedTicket = attribution.winner(plan.ticket);
-      // Which toolchain, harness and provider produced this run (CREW-1516),
-      // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
-      // the sidecar and the event only — the Agent Log carries harness+provider.
-      const identity = {
-        toolchain: plan.toolchain ?? LEGACY_TOOLCHAIN_HARNESS,
-        harness: adapter.harness,
-        provider: plan.provider ?? LEGACY_TOOLCHAIN_PROVIDER,
-      };
-      try {
-        writeFileSync(`${plan.streamPath}.meta.json`, JSON.stringify({
-          route: plan.route, role: plan.role, ticket: plan.ticket ?? null,
-          attributedTicket: attributedTicket ?? null,
-          startedAt, exitCode: code ?? 1, model: plan.model,
-          ...identity,
-          sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
-          totalCostUsd: result?.costUsd ?? null,
-        }));
-      } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
-      const ms = Date.now() - started;
-      emit.emit(`agent run finished (exit ${code ?? 1})`, {
-        data: {
-          ms, code: code ?? 1,
-          ...identity,
-          ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
-          ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
-          ...(result?.costUsd !== undefined ? { totalCostUsd: result.costUsd } : {}),
-        },
-      });
-      if (plan.agentLog) {
-        try {
-          await reportAgentRun(plan.agentLog, {
-            ticketReference: attributedTicket,
-            outcome: (code ?? 1) === 0 ? 'success' : 'error',
-            startedAt,
-            finishedAt: new Date().toISOString(),
-            cycles,
-            model: plan.model,
-            tokensIn: result?.inputTokens,
-            tokensOut: result?.outputTokens,
-            cacheReadTokens: result?.cacheReadTokens,
-            cacheWriteTokens: result?.cacheWriteTokens,
-            costUsd: result?.costUsd,
-            harness: identity.harness,
-            provider: identity.provider,
-            promptVersion: plan.promptVersion,
-            promptSha: plan.promptSha,
-          });
-        } catch (e) {
-          // A workspace that has never been provisioned/backfilled (ISSUE-465),
-          // or a plain network hiccup, must not fail the run it is reporting
-          // on — same reasoning as `openSink`'s degrade-quietly contract above.
-          emit.warn(`could not report agent log: ${(e as Error).message}`, { step: 'agent' });
-        }
-      }
+      const { ms } = await finishRun(id, obs, emit, startedAt, { code: code ?? 1 }, plan.agentLog?.apiKey);
       resolve({ code: code ?? 1, ms });
     });
     // An agent that exits (or closes stdin) before the prompt is fully written
@@ -641,9 +844,72 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     // trace (CREW-983) — instead of the run being reported, as it should be,
     // by the `close` handler above, which sees the child's real exit code
     // either way. So the write failing is noted, never fatal.
-    child.stdin.on('error', (err) => {
+    child.stdin?.on('error', (err) => {
       emit.warn(`agent closed stdin before the prompt was delivered: ${err.message}`, { step: 'agent' });
     });
-    child.stdin.end(plan.prompt);
+    child.stdin?.end(plan.prompt);
   });
+}
+
+export interface ReattachOptions {
+  /** The key to report the Agent Log row with; without one the row is skipped. */
+  agentLogKey?: string;
+  /** Injected for tests; defaults to `runIsAlive`. */
+  isAlive?: (sc: RunSidecar) => boolean;
+  pollMs?: number;
+  /** Called once the run is known to be live, before waiting on it. */
+  onAdopted?: () => void;
+}
+
+export interface ReattachResult {
+  /** Which way it went: still running when found, or already dead. */
+  adopted: boolean;
+  interrupted?: string;
+  ms: number;
+  /** The ticket the transcript most credited, falling back to the run's hint. */
+  ticket: string | undefined;
+}
+
+/**
+ * Picks up a run whose spawning process is gone (CREW-1775).
+ *
+ * The stream file is the transcript, so the run is rebuilt by replaying it
+ * (muted: the events file already holds what the first process mapped). A
+ * live process is waited for and then finished exactly as `spawnAgent` would
+ * have; one that is already dead is finished at once as `interrupted` — unless
+ * its stream shows the harness's final result, in which case it did complete
+ * and only the bookkeeping was lost.
+ */
+export async function reattachRun(
+  streamPath: string, sc: RunSidecar, emit: Emitter, o: ReattachOptions = {},
+): Promise<ReattachResult> {
+  const adapter = adapterFor(sc.harness);
+  const isAlive = o.isAlive ?? runIsAlive;
+  const id: RunIdentity = { ...sc, streamPath };
+  const eventsSink = openSink(sc.eventsPath);
+  const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
+  const tail = new FileTail(streamPath);
+
+  obs.muted = true;
+  obs.feed(tail.poll());
+  obs.muted = false;
+
+  const adopted = isAlive(sc);
+  if (adopted) {
+    o.onAdopted?.();
+    const pollMs = o.pollMs ?? TAIL_POLL_MS;
+    while (isAlive(sc)) {
+      obs.feed(tail.poll());
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+  obs.feed(tail.poll());
+  obs.end();
+  await endSink(eventsSink);
+
+  const interrupted = obs.sawResult ? undefined : adopted ? 'no-result' : 'daemon-exit';
+  const { ms, ticket } = await finishRun(
+    id, obs, emit, sc.spawnedAt, { code: null, ...(interrupted ? { interrupted } : {}) }, o.agentLogKey,
+  );
+  return { adopted, ...(interrupted ? { interrupted } : {}), ms, ticket };
 }
