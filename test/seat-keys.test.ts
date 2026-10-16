@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionStore, StoredSession } from '@tablation/client';
 import type { Route } from '../src/config.ts';
-import { mintMissingSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
+import { describeMintOutcome, mintMissingSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
 
 delete process.env.CREW_API_KEY;
 
@@ -140,4 +140,35 @@ test('CREW-1797: a member key\'s seat-identity reasons name the admin step, an a
   admin.resolved!.role = 'WORKSPACE_ADMIN';
   const adminNoKey = await resolveSeatKey(admin, 'dev', () => store);
   assert.match((adminNoKey as { reason: string }).reason, /run `crew agents sync`/);
+});
+
+test('a keychain write failure never prints the key, and the minted key is revoked', async () => {
+  const store = memoryStore();
+  let first = true;
+  store.set = async (_h, _s, v) => {
+    if (first) { first = false; return; } // the probe succeeds
+    throw new Error(`Command failed: security add-generic-password -w {"apiKey":"${v.apiKey}"}\nUser interaction is not allowed.`);
+  };
+  const deletes: string[] = [];
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    if (init.method === 'DELETE') { deletes.push(url); return new Response(null, { status: 204 }); }
+    return new Response(JSON.stringify({ key: 'sk_secret', id: 'key-1' }), { status: 201 });
+  }) as unknown as typeof fetch;
+  const out = await mintMissingSeatKeys(route({ dev: 'agent-dev' }), { getStore: () => store, fetchImpl });
+  const printed = out.map(describeMintOutcome).join('\n');
+  assert.doesNotMatch(printed, /sk_secret|-w|Command failed/);
+  assert.match(printed, /revoked/);
+  assert.match(printed, /User interaction is not allowed/);
+  assert.equal(deletes.length, 1);
+  assert.match(deletes[0]!, /agents\/agent-dev\/api-keys\/key-1$/);
+});
+
+test('a failing keychain probe mints nothing', async () => {
+  const store = memoryStore();
+  store.set = async () => { throw new Error('Command failed: security -w sk_x\nUser interaction is not allowed.'); };
+  let calls = 0;
+  const fetchImpl = (async () => { calls++; return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+  const out = await mintMissingSeatKeys(route(), { getStore: () => store, fetchImpl });
+  assert.equal(calls, 0);
+  assert.ok(out.every((o) => o.action === 'failed' && !/sk_x|-w/.test(o.detail ?? '')));
 });
