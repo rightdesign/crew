@@ -3412,7 +3412,7 @@ switch (command) {
     // (ISSUE-969: the default template itself changed under some tickets).
     const branch = found.branch ?? branchForIssue(target.dir, `ISSUE-${n}`, {
       name: target.config.branch.name, push: target.config.branch.push,
-    }, (t) => renderBranchName(t, { key: `ISSUE-${n}` }));
+    }, (t) => renderBranchName(t, { key: `ISSUE-${n}`, lowercase: target.config.branch.lowercase }));
     const pids = pidsInWorktree(wt, num);
     if (pids.length) {
       emit.emit(`${dryRun ? 'would kill' : 'killing'} processes still inside ${wt}: ${pids.join(' ')}`);

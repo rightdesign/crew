@@ -507,3 +507,11 @@ test('resolveRepoConfig carries release.ship from the repo only (CREW-1384)', ()
   assert.equal(resolveRepoConfig(repo, undefined, '/x').release.ship, 'Mini');
   assert.equal(resolveRepoConfig(null, undefined, '/x').release.ship, null);
 });
+
+// CREW-1807
+test('branch.name accepts {issue}; branch.lowercase must be a boolean', () => {
+  const MINI = 'version: 1\nhooks:\n  test: t\n  build: b\n  deploy: d\n';
+  assert.equal(parseRepoConfig(`${MINI}branch:\n  name: "{issue}"\n  lowercase: true\n`, 'f').branch.lowercase, true);
+  assert.throws(() => parseRepoConfig(`${MINI}branch:\n  name: "{issue}"\n  lowercase: yes please\n`, 'f'), /lowercase must be true or false/);
+  assert.throws(() => parseRepoConfig(`${MINI}branch:\n  name: "{dir}"\n`, 'f'), /names no placeholder/);
+});

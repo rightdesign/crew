@@ -91,9 +91,9 @@ export function reviewProblems(repo: EffectiveRepoConfig, contract: Contract): s
   if (!reviewApplies(repo, contract)) return [];
   const problems: string[] = [];
   const template = repo.branch.push ?? repo.branch.name;
-  if (!/\{(key|number|tag)\}/.test(template)) {
+  if (!/\{(key|number|tag|issue)\}/.test(template)) {
     problems.push(
-      `branch.push "${template}" names none of {key}, {number} or {tag} — with release.mode "external" and a ` +
+      `branch.push "${template}" names none of {key}, {number}, {tag} or {issue} — with release.mode "external" and a ` +
       'reviewing status, the pushed branch is the only link back to its ticket',
     );
   }

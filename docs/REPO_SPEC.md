@@ -55,7 +55,11 @@ platform: unix
 # ticket's own project prefix, lowercased — "tabl", "crew" — empty when the
 # ticket carries no Issue Tag), {tag} (that same project's tag, as the
 # workspace cases it — "TABL-326"; empty under the same condition as
-# {prefix}). An explicit `branch.name` here always wins outright over the
+# {prefix}), {issue} (the tag lowercased — "rav-57" — or the lowercased key
+# when the ticket has no tag). Prefer {issue} / {tag} over {prefix}-{number}
+# when the tag is what the team talks about: with a Jira-synced workspace
+# `issue_tag` can be `RAV-57` while `issue_id` is `ISSUE-204`, and
+# {prefix}-{number} would render `issue-204`. An explicit `branch.name` here always wins outright over the
 # derived per-ticket default (below) — set it only when this repo's
 # convention must not follow a ticket's own tag. `worktrees.prefix` is a
 # separate override, for the worktree DIRECTORY rather than the branch —
@@ -65,6 +69,7 @@ branch:
   name: "issue-{number}"     # the local working branch
   push: "crew/{key}"         # what it is called on the remote, if different
   remote: origin
+  lowercase: false           # true lowercases the whole rendered name and push
 
 # The interpreter the hooks are written for. Defaults to bash on macOS and
 # Linux, PowerShell on Windows. The crew never parses a hook — it hands the
@@ -178,6 +183,7 @@ release:
 | `branch.name` | no | `issue-{number}`, or `{prefix}-{number}` for a ticket carrying a project tag | Local working branch. Must name at least one placeholder. Set explicitly here only to override the per-ticket default (ISSUE-969) — an explicit value always wins over a ticket's own tag. |
 | `branch.push` | no | `branch.name` | Name on the remote — useful to namespace crew branches in a PR list. |
 | `branch.remote` | no | `origin` | Where a review branch is pushed. |
+| `branch.lowercase` | no | `false` | Lowercases the whole rendered `branch.name` and `branch.push` after substitution — `feature/{tag}-{slug}` becomes `feature/rav-57-add-widget` instead of `feature/RAV-57-add-widget`. Applies everywhere a branch name is rendered or looked up. A route's `branch:` block may set it per repo as a fallback. `{issue}` (the lowercased tag) is valid in `branch.name`/`branch.push` as well as `worktrees.name`. |
 | `shell` | no | per platform | Interpreter for the hooks. |
 | `hooks.test` | for building | — | Test suite. Non-zero blocks a release. |
 | `hooks.build` | for building | — | Build. |

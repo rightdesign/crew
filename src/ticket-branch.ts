@@ -24,9 +24,9 @@ export type BranchLookupTicket = Pick<Ticket, 'issue_id' | 'issue_tag' | 'projec
 };
 
 /** Renders a branch template for this ticket — `{prefix}`, `{tag}`, `{slug}` and all. */
-export function branchRenderer(t: BranchLookupTicket, role?: string): (template: string) => string {
+export function branchRenderer(t: BranchLookupTicket, role?: string, lowercase?: boolean): (template: string) => string {
   const { tag, prefix } = ticketBranchContext(t as Ticket);
-  return (template) => renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role, tag, prefix });
+  return (template) => renderBranchName(template, { key: t.issue_id, title: t.title ?? undefined, role, tag, prefix, lowercase });
 }
 
 /**
@@ -38,7 +38,7 @@ export function branchRenderer(t: BranchLookupTicket, role?: string): (template:
  */
 export function worktreeForTicket(dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string {
   const { prefix } = ticketBranchContext(t as Ticket);
-  const branchName = branchRenderer(t, role)(effectiveBranchTemplate(cfg, prefix));
+  const branchName = branchRenderer(t, role, cfg.branch.lowercase)(effectiveBranchTemplate(cfg, prefix));
   const number = t.issue_id.replace(/^\D+/, '');
   const { tag } = ticketBranchContext(t as Ticket);
   return effectiveWorktreeDirName(cfg, dir, branchName, number, (template) => renderWorktreeName(template, {
@@ -59,14 +59,14 @@ function branchTemplates(cfg: EffectiveRepoConfig, t: BranchLookupTicket) {
  * which is not the local branch's name when the repo sets a `push` template.
  */
 export function pushedBranchForTicket(cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string {
-  return branchRenderer(t, role)(branchTemplates(cfg, t).push);
+  return branchRenderer(t, role, cfg.branch.lowercase)(branchTemplates(cfg, t).push);
 }
 
 /** The ticket's branch on THIS ship only. What a lane resuming its own worktree wants. */
 export function existingBranchForTicket(
   dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
 ): string | null {
-  return branchForIssue(dir, t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role));
+  return branchForIssue(dir, t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role, cfg.branch.lowercase));
 }
 
 export interface LocatedBranch {
@@ -98,7 +98,7 @@ export function locateBranchForTicket(
     fetchedDirs.add(dir);
     fetchRemote(dir, remote);
   }
-  const found = remoteBranchForIssue(dir, remote, t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role));
+  const found = remoteBranchForIssue(dir, remote, t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role, cfg.branch.lowercase));
   return found ? { branch: found, where: 'remote' } : null;
 }
 

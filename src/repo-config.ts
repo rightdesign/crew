@@ -206,6 +206,13 @@ export interface BranchNaming {
   push: string;
   /** Where a review branch is pushed. */
   remote: string;
+  /**
+   * Lowercase the whole rendered `name` and `push` after substitution
+   * (CREW-1807), for a template mixing `{tag}`/`{key}`/`{slug}` with literal
+   * text. Absent means false. Applies to every place a branch name is
+   * rendered or looked up, so the local, pushed and searched-for names agree.
+   */
+  lowercase?: boolean;
 }
 
 /**
@@ -328,8 +335,8 @@ export type BumpSize = (typeof BUMP_SIZES)[number];
 const TOP_LEVEL = new Set([
   'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release',
 ]);
-const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote']);
-const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag)\}/g;
+const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote', 'lowercase']);
+const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag|issue)\}/g;
 /** What a `worktrees.name` template may use: the branch placeholders plus the two that only make sense for a directory. */
 export const WORKTREE_PLACEHOLDERS = ['dir', 'issue', 'number', 'key', 'slug', 'role', 'prefix', 'tag'] as const;
 
@@ -440,7 +447,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     PLACEHOLDER.lastIndex = 0;
     throw new RepoConfigError(
       `${file}: branch.name ("${branchName}") names no placeholder — every ticket ` +
-        'would get the same branch. Use at least one of {key} {number} {slug} {role}.',
+        'would get the same branch. Use at least one of {key} {number} {slug} {role} {prefix} {tag} {issue}.',
     );
   }
   PLACEHOLDER.lastIndex = 0;
@@ -449,6 +456,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     name: branchName,
     push: String(raw.branch?.push ?? branchName),
     remote: String(raw.branch?.remote ?? 'origin'),
+    ...(raw.branch?.lowercase !== undefined ? { lowercase: parseLowercase(raw.branch.lowercase, file) } : {}),
   };
 
   const copyRaw = raw.worktrees?.copy;
@@ -705,6 +713,11 @@ export function slugify(title: string, maxLength = 40): string {
   return s || 'work';
 }
 
+function parseLowercase(v: unknown, where: string): boolean {
+  if (typeof v !== 'boolean') throw new RepoConfigError(`${where}: branch.lowercase must be true or false`);
+  return v;
+}
+
 export interface BranchContext {
   key: string;
   title?: string;
@@ -713,11 +726,13 @@ export interface BranchContext {
   tag?: string;
   /** The tag's prefix, lowercased (`tabl`) — usually derived from `tag`. */
   prefix?: string;
+  /** Lowercase the rendered result (`branch.lowercase`). */
+  lowercase?: boolean;
 }
 
 export function renderBranchName(template: string, ctx: BranchContext): string {
   const number = ctx.key.replace(/^\D+/, '');
-  return template.replace(PLACEHOLDER, (_m, name: string) => {
+  const rendered = template.replace(PLACEHOLDER, (_m, name: string) => {
     switch (name) {
       case 'key': return ctx.key;
       case 'number': return number;
@@ -725,15 +740,16 @@ export function renderBranchName(template: string, ctx: BranchContext): string {
       case 'role': return ctx.role ?? '';
       case 'tag': return ctx.tag ?? ctx.key;
       case 'prefix': return ctx.prefix ?? '';
+      case 'issue': return (ctx.tag ?? ctx.key).toLowerCase();
       default: return '';
     }
   });
+  return ctx.lowercase ? rendered.toLowerCase() : rendered;
 }
 
-/** Renders a `worktrees.name` template: `{dir}`/`{issue}` here, everything else as a branch name. */
+/** Renders a `worktrees.name` template: `{dir}` here, everything else (`{issue}` included) as a branch name. */
 export function renderWorktreeName(template: string, ctx: BranchContext & { dir: string }): string {
-  const issue = (ctx.tag ?? ctx.key).toLowerCase();
-  return renderBranchName(template.replace(/\{dir\}/g, ctx.dir).replace(/\{issue\}/g, issue), ctx);
+  return renderBranchName(template.replace(/\{dir\}/g, ctx.dir), ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -904,6 +920,8 @@ export function resolveRepoConfig(
         ship?.branch?.push, repo?.branch.name ?? 'issue-{number}'),
       remote: pick('branch.remote', repo?.branch.remote === 'origin' ? undefined : repo?.branch.remote,
         ship?.branch?.remote, 'origin'),
+      ...(pick('branch.lowercase', repo?.branch.lowercase, ship?.branch?.lowercase, false)
+        ? { lowercase: true } : {}),
     },
     // Unlike every other field here, platform has no ship-level fallback: what
     // a repo needs of a host is a fact about that repo alone (its build

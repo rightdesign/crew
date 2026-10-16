@@ -174,7 +174,7 @@ function repoPrefix(repo: EffectiveRepoConfig): string | undefined {
 function branchExample(repo: EffectiveRepoConfig, key: string): string {
   const prefix = repoPrefix(repo);
   const template = effectiveBranchTemplate(repo, prefix);
-  return renderBranchName(template, { key, title: 'Fix the widget', role: 'dev', prefix });
+  return renderBranchName(template, { key, title: 'Fix the widget', role: 'dev', prefix, lowercase: repo.branch.lowercase });
 }
 
 /**

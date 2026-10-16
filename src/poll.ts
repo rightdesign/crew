@@ -360,7 +360,7 @@ export function writeDigest(
     // `effectiveBranchTemplate`/`ticketBranchContext`, never cached
     // alongside the repo config itself.
     type BranchTicket = { issue_id: string; title?: string | null; issue_tag?: string | null; project_issue_prefix?: string | null };
-    const render = (t: BranchTicket) => branchRenderer(t, role);
+    const render = (t: BranchTicket, lowercase?: boolean) => branchRenderer(t, role, lowercase);
 
     const input = {
       dirFor,
@@ -368,7 +368,7 @@ export function writeDigest(
       branchFor: (t: BranchTicket & { repo_id?: string | null }) => {
         const cfg = repoFor(dirFor(t) ?? o.route.dir);
         const { prefix } = ticketBranchContext(t as Ticket);
-        return render(t)(effectiveBranchTemplate(cfg, prefix));
+        return render(t, cfg.branch.lowercase)(effectiveBranchTemplate(cfg, prefix));
       },
       // ISSUE-1028: the agent previously had to derive this itself from the
       // Environment section's own worked example, which is rendered before

@@ -75,7 +75,7 @@ export const planIsUsable = (p: RunWorktreePlan): boolean =>
 /** The name a NEW branch for this ticket gets: the rendered template, nothing located. */
 function newBranchName(cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string {
   const { prefix } = ticketBranchContext(t as Ticket);
-  return branchRenderer(t, role)(effectiveBranchTemplate(cfg, prefix));
+  return branchRenderer(t, role, cfg.branch.lowercase)(effectiveBranchTemplate(cfg, prefix));
 }
 
 /**

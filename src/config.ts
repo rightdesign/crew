@@ -541,7 +541,7 @@ function parseWorktreeName(v: unknown, where: string, file: string): string {
 }
 
 const REPO_ENTRY_KEYS = new Set(['dir', 'hooks', 'labels', 'release', 'branch', 'hostPassengers', 'worktreeName', 'toolchain']);
-const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote']);
+const BRANCH_OVERRIDE_KEYS = new Set(['base', 'name', 'push', 'remote', 'lowercase']);
 // `versionFile` (singular) is a ship-level-only alias for a one-entry
 // `versionFiles` — never accepted in a repo's own `.crew.yaml`, only here.
 const RELEASE_OVERRIDE_KEYS = new Set([
@@ -655,8 +655,12 @@ function parseBranchOverride(raw: any, where: string, file: string): Partial<Bra
   const name = raw.name !== undefined ? String(raw.name) : undefined;
   const push = raw.push !== undefined ? String(raw.push) : undefined;
   const remote = raw.remote !== undefined ? String(raw.remote) : undefined;
-  if (base === undefined && name === undefined && push === undefined && remote === undefined) return undefined;
-  return { base, name, push, remote };
+  if (raw.lowercase !== undefined && typeof raw.lowercase !== 'boolean') {
+    throw new ConfigError(`${file}: ${where}.branch.lowercase must be true or false`);
+  }
+  const lowercase = raw.lowercase as boolean | undefined;
+  if (base === undefined && name === undefined && push === undefined && remote === undefined && lowercase === undefined) return undefined;
+  return { base, name, push, remote, ...(lowercase !== undefined ? { lowercase } : {}) };
 }
 
 /**

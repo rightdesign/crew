@@ -73,3 +73,35 @@ test('worktrees.name is validated at load, naming the valid placeholders', () =>
   }
   assert.throws(() => parseRepoConfig(`${MIN}worktrees:\n  name: "{bogus}-{number}"\n`, 'f'), /\{dir\} \{issue\}/);
 });
+
+// CREW-1807: `{issue}` in branch templates, and `branch.lowercase`.
+
+import { pushedBranchForTicket } from '../src/ticket-branch.ts';
+
+const RAV: BranchLookupTicket = { issue_id: 'ISSUE-204', issue_tag: 'RAV-57', project_issue_prefix: 'RAV', title: 'Add widget' };
+const branchCfg = (branch: string) =>
+  resolveRepoConfig(parseRepoConfig(`${MIN}branch:\n${branch}`, 'f'), undefined, '/w/raven');
+
+test('branch.name {issue} renders the lowercased tag for branch, push and worktree', () => {
+  const cfg = branchCfg('  name: "{issue}"\n');
+  assert.equal(pushedBranchForTicket(cfg, RAV), 'rav-57');
+  assert.equal(worktreeForTicket('/w/raven', cfg, RAV), 'raven-rav-57');
+});
+
+test('{issue} falls back to the lowercased key when the ticket has no tag', () => {
+  const cfg = branchCfg('  name: "{issue}"\n');
+  assert.equal(pushedBranchForTicket(cfg, { issue_id: 'ISSUE-204' }), 'issue-204');
+});
+
+test('branch.lowercase lowercases the whole rendered name; off by default', () => {
+  const on = branchCfg('  name: "feature/{tag}-{slug}"\n  lowercase: true\n');
+  const off = branchCfg('  name: "feature/{tag}-{slug}"\n');
+  assert.equal(pushedBranchForTicket(on, RAV), 'feature/rav-57-add-widget');
+  assert.equal(pushedBranchForTicket(off, RAV), 'feature/RAV-57-add-widget');
+});
+
+test('a ship-level branch.lowercase is a fallback the repo can speak over', () => {
+  const repo = parseRepoConfig(`${MIN}branch:\n  name: "x/{tag}"\n`, 'f');
+  const cfg = resolveRepoConfig(repo, { branch: { lowercase: true } }, '/w/raven');
+  assert.equal(pushedBranchForTicket(cfg, RAV), 'x/rav-57');
+});
