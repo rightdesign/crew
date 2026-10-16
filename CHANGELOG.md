@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.53.1] — 2026-10-16
+
+- ISSUE-1811 The digest labels a public reporter's reply as "(public reporter)" instead of attributing it to the operator.
+
 ## [0.53.0] — 2026-10-16
 
 - CREW-1807 `{issue}` is now valid in branch.name / branch.push, and a new `branch.lowercase` switch lowercases rendered branch names.
