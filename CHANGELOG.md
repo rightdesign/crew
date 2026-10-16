@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.50.0] — 2026-10-16
+
+- ISSUE-1775 A daemon exit no longer takes the in-flight agent run down with it: agents run in their own process group, a restarted daemon adopts or reports them (interrupted event on the ticket, meta and Agent Log row), and `crew worktree` resumes the seat's own dirty worktree.
+
 ## [0.49.6] — 2026-10-16
 
 - ISSUE-1774 The crew daemon no longer exits when a tracker read fails with a 502 or an HTML error page; the pass degrades, logs a warning and the next pass runs.
