@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.50.1] — 2026-10-16
+
+- ISSUE-1776 Run streams and the meta sidecar follow the ticket a run actually claims instead of the poll's hint, and an interrupted run still leaves a sidecar naming it.
+- ISSUE-1776 Test expectation follows the stream mapper's new tool input field.
+- ISSUE-1776 Run streams and meta sidecars are labelled with the ticket the run actually claimed, with a hint-to-claimed marker, and the sidecar is written at spawn so interrupted runs are still attributable.
+
 ## [0.50.0] — 2026-10-16
 
 - ISSUE-1775 A daemon exit no longer takes the in-flight agent run down with it: agents run in their own process group, a restarted daemon adopts or reports them (interrupted event on the ticket, meta and Agent Log row), and `crew worktree` resumes the seat's own dirty worktree.
