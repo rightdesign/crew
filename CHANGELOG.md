@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.52.0] — 2026-10-16
+
+- ISSUE-1802 Non-admin keys with the "Mint agent keys" capability can now mint seat keys from `crew agents sync`; a refused mint is reported once, `--revoke-seat-keys` rotates a ship's keys, and `crew doctor` shows whether the key can mint.
+
 ## [0.51.1] — 2026-10-16
 
 - ISSUE-1800 Seat key minting no longer prints raw API keys when the keychain write fails; the keychain is probed before minting and a key that cannot be stored is revoked.
