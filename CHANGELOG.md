@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.53.0] — 2026-10-16
+
+- CREW-1807 `{issue}` is now valid in branch.name / branch.push, and a new `branch.lowercase` switch lowercases rendered branch names.
+
 ## [0.52.0] — 2026-10-16
 
 - ISSUE-1802 Non-admin keys with the "Mint agent keys" capability can now mint seat keys from `crew agents sync`; a refused mint is reported once, `--revoke-seat-keys` rotates a ship's keys, and `crew doctor` shows whether the key can mint.
