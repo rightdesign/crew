@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.51.0] — 2026-10-16
+
+- ISSUE-1798 `crew connect` now links your own Crew row to your account (or creates one) instead of leaving `user_id` for `crew doctor` to flag.
+
 ## [0.50.3] — 2026-10-16
 
 - ISSUE-1797 `crew agents sync` no longer fails for a non-admin key: it links seats to the workspace's existing persona rows and reports what an admin must sync; `crew doctor` shows the key role and role-aware hints.
