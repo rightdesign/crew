@@ -122,3 +122,22 @@ test('the release seat falls back to the ship key when unlinked, unkeyed or the 
   const noAgent = await mintMissingSeatKeys(releaseRoute(), { getStore: () => store, dryRun: true });
   assert.equal(noAgent.find((o) => o.role === 'release')?.action, 'no_agent');
 });
+
+test('CREW-1797: a member key\'s seat-identity reasons name the admin step, an admin key\'s keep the old wording', async () => {
+  const store = memoryStore();
+  const member = route({});
+  member.resolved!.role = 'WORKSPACE_USER';
+  const noRow = await resolveSeatKey(member, 'dev', () => store);
+  assert.equal(noRow.kind, 'ship');
+  assert.match((noRow as { reason: string }).reason, /a workspace admin's `crew agents sync` creates the persona rows; run it here afterwards/);
+
+  const linked = route();
+  linked.resolved!.role = 'WORKSPACE_USER';
+  const noKey = await resolveSeatKey(linked, 'dev', () => store);
+  assert.match((noKey as { reason: string }).reason, /minting needs a workspace admin key/);
+
+  const admin = route();
+  admin.resolved!.role = 'WORKSPACE_ADMIN';
+  const adminNoKey = await resolveSeatKey(admin, 'dev', () => store);
+  assert.match((adminNoKey as { reason: string }).reason, /run `crew agents sync`/);
+});

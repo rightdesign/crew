@@ -858,3 +858,95 @@ test('currentPersonaPrompt prints the composed text, additions included', async 
   const route = makeRoute({ dev: { agentId: 'row-dev', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, { dev: 'seat-dev' }, promptsDir);
   assert.equal(await currentPersonaPrompt(route, 'dev', {}), `COMMON\nLANE-DEV\n\n\n${PROMPT_ADDITIONS_SEPARATOR}\n\nHOUSE RULES`);
 });
+
+// CREW-1797: a non-admin key links seats to the rows that exist and writes nothing to Agents.
+const SEATS = { dev: 'seat-dev', design: 'seat-design', qa: 'seat-qa', triage: 'seat-triage' };
+const seatGets = Object.fromEntries(
+  Object.values(SEATS).map((id) => [`GET /api/data-models/crew-model/records/${id}`, () => ({ status: 200, body: { id } })]),
+);
+
+test('CREW-1797: a read-only sync links the seats to the existing rows and writes nothing to Agents', async (t) => {
+  const promptsDir = makePromptsDir();
+  const patched: Record<string, unknown> = {};
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
+    'GET /api/data-models/crew-model': () => ({ status: 200, body: CREW_MODEL_WITH_FIELD }),
+    ...seatGets,
+    ...Object.fromEntries(Object.entries(SEATS).map(([role, id]) => [
+      `PATCH /api/data-models/crew-model/records/${id}`, (body: unknown) => { patched[role] = body; return { status: 200, body: {} }; },
+    ])),
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(undefined, SEATS, promptsDir), { readOnly: true });
+  assert.equal(result.readOnly, true);
+  assert.ok(result.outcomes.filter((o) => o.role !== 'pair').every((o) => o.action === 'adopted'));
+  assert.equal(result.agentPersonas.dev?.agentId, 'row-dev');
+  assert.ok(result.crewLinks.filter((o) => o.role !== 'pair').every((o) => o.action === 'linked'));
+  assert.equal(calls.filter((c) => c.key.startsWith('POST') || (c.key.startsWith('PATCH') && c.key.includes('agents-model-1'))).length, 0);
+});
+
+test('CREW-1797: a read-only sync of a never-synced workspace reports each missing row and writes nothing', async (t) => {
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(undefined, SEATS), { readOnly: true });
+  assert.ok(result.outcomes.every((o) => o.action === 'missing'));
+  assert.match(describeSyncOutcome(result.outcomes[0]!), /no Agents row in this workspace — writes as the ship until a workspace admin runs `crew agents sync`/);
+  assert.ok(result.crewLinks.filter((o) => o.role !== 'pair').every((o) => o.action === 'no_agents_row'));
+  assert.deepEqual(calls.filter((c) => !c.key.startsWith('GET')), []);
+});
+
+test('CREW-1797: a read-only sync whose Crew table lacks the Agent field (POST 403) reports it and leaves seats unlinked', async (t) => {
+  const promptsDir = makePromptsDir();
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
+    'GET /api/data-models/crew-model': () => ({ status: 200, body: CREW_MODEL_NO_FIELD }),
+    'GET /api/workspaces/ws-1/field-types': () => ({ status: 200, body: FIELD_TYPES }),
+    'POST /api/data-models/crew-model/fields': () => ({ status: 403, body: { message: 'No WRITE access to this model' } }),
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(undefined, SEATS, promptsDir), { readOnly: true });
+  assert.ok(result.crewLinks.filter((o) => o.role !== 'pair').every((o) => o.action === 'no_agent_field'));
+  assert.match(describeCrewLink(result.crewLinks[0]!), /Crew table has no Agent field yet — a workspace admin's `crew agents sync` adds it/);
+});
+
+test('CREW-1797: a read-only sync with a release seat but no Release agent row reports it instead of creating one', async (t) => {
+  const promptsDir = makePromptsDir();
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
+    'GET /api/data-models/crew-model': () => ({ status: 200, body: CREW_MODEL_WITH_FIELD }),
+    ...seatGets,
+    ...Object.fromEntries(Object.values(SEATS).map((id) => [`PATCH /api/data-models/crew-model/records/${id}`, () => ({ status: 200, body: {} })])),
+  });
+  t.after(restore);
+
+  const route = makeRoute(undefined, SEATS, promptsDir);
+  route.resolved!.releaseSeat = 'seat-release';
+  const result = await syncPersonas(route, { readOnly: true });
+  assert.match(result.releaseNote ?? '', /no "Release agent" Agents row/);
+  assert.equal(result.releaseAgentId, undefined);
+  assert.equal(calls.filter((c) => c.key.startsWith('POST')).length, 0);
+});
+
+test('CREW-1797: an admin sync whose Release-agent create 403s reports it rather than throwing', async (t) => {
+  const promptsDir = makePromptsDir();
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
+    'POST /api/data-models/agents-model-1/records': () => ({ status: 403, body: { message: 'No WRITE access to this model' } }),
+  });
+  t.after(restore);
+
+  const route = makeRoute(undefined, {}, promptsDir);
+  route.resolved!.releaseSeat = 'seat-release';
+  const result = await syncPersonas(route, {});
+  assert.match(result.releaseNote ?? '', /could not create the "Release agent" Agents row/);
+});

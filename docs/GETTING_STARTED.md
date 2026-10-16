@@ -162,6 +162,15 @@ are left alone, and a row a workspace admin edited by hand is reported
 `diverged` rather than overwritten. `crew skills sync my-workspace/
 my-product` does the skills half alone, if you only touched `skills/`.
 
+The persona and skill rows, and the seat keys below, belong to a **workspace
+admin**: only an admin key writes the `Agents` / `Agent Skills` tables or mints
+agent keys. A member's `crew agents sync` therefore does the one part a member
+can: it links this ship's seats (and the release seat) to whichever persona rows
+already exist, prints that personas, skills and seat keys were not synced, and
+exits 0. A missing row, or a Crew table with no `Agent` field yet, is reported
+(the seat keeps writing as the ship) and fixed by an admin's sync; run yours
+again afterwards to link. `crew doctor` prints the key's role (`api key role:`).
+
 ### 2.6 Register the Tablation MCP server
 
 The polled seats (dev/design/QA/triage) talk to the tracker entirely
@@ -313,7 +322,7 @@ log records `actor_kind: agent` and table rules can tell a seat from a person.
 The ship key stays for connect, admin commands and Pair sessions. A seat with no
 stored key (an older install, a refused mint, no keychain) still runs as the
 ship, with a warning line on the run log naming why. `crew doctor` prints the
-identity each seat will write as. The agent's workspace membership needs a role
+identity each seat will write as. Minting is a workspace admin's step: a member key's seats stay on the ship key until an admin has synced and minted, and doctor says so. The agent's workspace membership needs a role
 on the project, assigned once by a workspace admin the same way as for a
 human member.
 

@@ -422,7 +422,40 @@ interface FieldTypeSummary {
   isMultiple?: boolean;
 }
 
-export type PersonaSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'forced' | 'overridden';
+export type PersonaSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'forced' | 'overridden'
+  /** CREW-1797, read-only (non-admin) sync only: the workspace's existing row is used as it is. */
+  | 'adopted'
+  /** CREW-1797, read-only sync only: the workspace has no row for this persona, and this key may not create one. */
+  | 'missing';
+
+/** Whether a `/auth/me` role is one that may write the workspace-level Agents / Agent Skills tables and mint agent keys. An unknown role counts as admin: that is today's behaviour, and the 403 backstop catches the rest. */
+export function isAdminRole(role: string | undefined): boolean {
+  return role === undefined || role === 'WORKSPACE_ADMIN' || role === 'PLATFORM_ADMIN';
+}
+
+/**
+ * This key's own role in the route's workspace (`/auth/me?workspaceId=`, the
+ * one "am I an admin here" a plain member's key can ask without a 403), or
+ * undefined when it could not be read.
+ */
+export async function fetchKeyRole(route: Route, userAgent?: string): Promise<string | undefined> {
+  if (!route.resolved) return undefined;
+  try {
+    const res = await fetch(`${route.baseUrl.replace(/\/+$/, '')}/api/auth/me?workspaceId=${route.resolved.workspaceId}`, {
+      headers: { Authorization: `Bearer ${resolveApiKey(route)}`, 'User-Agent': userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' },
+    });
+    if (!res.ok) return undefined;
+    const me = (await res.json()) as { role?: string };
+    return typeof me.role === 'string' ? me.role : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True for the 403 a key without write access to a model gets back. */
+export function isForbidden(e: unknown): boolean {
+  return e instanceof TablationApiError && e.status === 403;
+}
 
 /**
  * TABL-1540: the columns a source writes alongside a prompt so the server's
@@ -472,7 +505,11 @@ export interface PersonaSyncOutcome {
 }
 
 /** Whether this role's Crew row (`route.resolved.seats[role]`) got pointed at its Agents row this pass. */
-export type CrewLinkAction = 'linked' | 'already_linked' | 'no_seat' | 'persona_diverged';
+export type CrewLinkAction = 'linked' | 'already_linked' | 'no_seat' | 'persona_diverged'
+  /** CREW-1797: the Crew table has no `Agent` field and this key may not add one. */
+  | 'no_agent_field'
+  /** CREW-1797: no Agents row exists for this role to link (read-only sync). */
+  | 'no_agents_row';
 
 export interface CrewLinkOutcome {
   role: RoleName;
@@ -502,6 +539,10 @@ export interface SyncPersonasResult {
    * previously known one on a dry run; absent when the route has no release seat.
    */
   releaseAgentId?: string;
+  /** CREW-1797: a line for the release seat when it could not be linked, for `crew agents sync`'s stdout. */
+  releaseNote?: string;
+  /** CREW-1797: true when this pass wrote nothing to Agents (a non-admin key). */
+  readOnly?: boolean;
 }
 
 export const RELEASE_AGENT_NAME = 'Release agent';
@@ -515,7 +556,7 @@ const RELEASE_AGENT_PROMPT =
  */
 export async function syncPersonas(
   route: Route,
-  opts: { userAgent?: string; dryRun?: boolean; force?: boolean },
+  opts: { userAgent?: string; dryRun?: boolean; force?: boolean; readOnly?: boolean },
 ): Promise<SyncPersonasResult> {
   if (!route.resolved) {
     throw new AgentsSyncError(`route "${route.route}" has no resolved ids — run \`crew connect\` first`);
@@ -549,6 +590,16 @@ export async function syncPersonas(
     const name = PERSONA_NAME[role];
     const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
     const row = rows.find((r) => r.name === name);
+
+    if (opts.readOnly) {
+      // CREW-1797: this key may not write the workspace-level Agents table.
+      // Use whatever row exists, link seats to it, change nothing.
+      if (!row) { outcomes.push({ role, action: 'missing', agentId: '' }); continue; }
+      const prior = cache[role]?.agentId === row.id ? cache[role] : undefined;
+      agentPersonas[role] = { agentId: row.id, lastSyncedUpdatedAt: prior?.lastSyncedUpdatedAt ?? row.updated_at, ...(prior?.historyId ? { historyId: prior.historyId } : {}) };
+      outcomes.push({ role, action: 'adopted', agentId: row.id });
+      continue;
+    }
 
     if (!row) {
       if (opts.dryRun) { outcomes.push({ role, action: 'created', agentId: '(dry run)' }); continue; }
@@ -689,13 +740,18 @@ export async function syncPersonas(
 
   const crewLinks = opts.dryRun
     ? []
-    : await linkCrewSeats(route, client, agentsModel.id, agentPersonas, opts.userAgent);
+    : await linkCrewSeats(route, client, agentsModel.id, agentPersonas, opts.userAgent, opts.readOnly === true);
 
-  const releaseAgentId = opts.dryRun
-    ? route.resolved.releaseAgentId
-    : await linkReleaseSeat(route, client, agentsModel, opts.userAgent);
+  const release = opts.dryRun
+    ? { agentId: route.resolved.releaseAgentId }
+    : await linkReleaseSeat(route, client, agentsModel, opts.userAgent, opts.readOnly === true);
 
-  return { outcomes, agentPersonas, crewLinks, ...(releaseAgentId ? { releaseAgentId } : {}) };
+  return {
+    outcomes, agentPersonas, crewLinks,
+    ...(release.agentId ? { releaseAgentId: release.agentId } : {}),
+    ...(release.note ? { releaseNote: release.note } : {}),
+    ...(opts.readOnly ? { readOnly: true } : {}),
+  };
 }
 
 /**
@@ -708,21 +764,42 @@ async function linkReleaseSeat(
   client: TablationClient,
   agentsModel: Awaited<ReturnType<TablationClient['dataModels']['get']>>,
   userAgent: string | undefined,
-): Promise<string | undefined> {
+  readOnly: boolean,
+): Promise<{ agentId?: string; note?: string }> {
   const seatId = route.resolved!.releaseSeat;
-  if (!seatId) return undefined;
+  if (!seatId) return {};
   const rows = await client.records.list<AgentRow>(agentsModel.id, { limit: 200 });
-  const agentId = rows.find((r) => r.name === RELEASE_AGENT_NAME)?.id
-    ?? (await client.records.create<AgentRow>(agentsModel.id, {
-      name: RELEASE_AGENT_NAME, prompt: RELEASE_AGENT_PROMPT, ...promptSourceFields(agentsModel, RELEASE_AGENT_PROMPT),
-    })).id;
+  let agentId = rows.find((r) => r.name === RELEASE_AGENT_NAME)?.id;
+  if (!agentId) {
+    if (readOnly) return { note: `Release: no "${RELEASE_AGENT_NAME}" Agents row in this workspace — writes as the ship until a workspace admin runs \`crew agents sync\`` };
+    try {
+      agentId = (await client.records.create<AgentRow>(agentsModel.id, {
+        name: RELEASE_AGENT_NAME, prompt: RELEASE_AGENT_PROMPT, ...promptSourceFields(agentsModel, RELEASE_AGENT_PROMPT),
+      })).id;
+    } catch (e) {
+      if (isForbidden(e)) return { note: `Release: could not create the "${RELEASE_AGENT_NAME}" Agents row (${NO_WRITE_NOTE}) — writes as the ship` };
+      throw e;
+    }
+  }
   const crewModelId = route.resolved!.models.crew;
   const crewModel = await client.dataModels.get(crewModelId);
-  const columnName = await ensureCrewAgentField(route, client, crewModel, agentsModel.id, userAgent);
+  let columnName: string;
+  try {
+    columnName = await ensureCrewAgentField(route, client, crewModel, agentsModel.id, userAgent);
+  } catch (e) {
+    if (e instanceof CrewAgentFieldMissing) return { note: `Release: ${CREW_FIELD_MISSING_NOTE}` };
+    throw e;
+  }
   const seatRow = await client.records.get<CrewRow>(crewModelId, seatId);
   if (seatRow[CREW_AGENT_COLUMN] !== agentId) await client.records.update<CrewRow>(crewModelId, seatId, { [columnName]: agentId });
-  return agentId;
+  return { agentId };
 }
+
+const NO_WRITE_NOTE = 'this key has no write access to the Agents table';
+const CREW_FIELD_MISSING_NOTE = "Crew table has no Agent field yet — a workspace admin's `crew agents sync` adds it";
+
+/** The Crew table lacks its `Agent` field and this key may not add it (CREW-1797): a reported state, not a failure. */
+class CrewAgentFieldMissing extends Error {}
 
 /**
  * Provisions the `Agent` REFERENCE field on the tracker's own Crew table
@@ -740,10 +817,12 @@ async function linkCrewSeats(
   agentsModelId: string,
   agentPersonas: SyncPersonasResult['agentPersonas'],
   userAgent: string | undefined,
+  readOnly: boolean,
 ): Promise<CrewLinkOutcome[]> {
   const seats = route.resolved!.seats;
   const rolesWithSeats = ROLE_NAMES.filter((role) => seats[role] && agentPersonas[role]);
   if (rolesWithSeats.length === 0) {
+    if (readOnly) return ROLE_NAMES.map((role) => ({ role, action: seats[role] ? 'no_agents_row' as const : 'no_seat' as const }));
     // Distinguish "no seat configured" from "seat configured, but this
     // role's persona diverged this pass" (see CrewLinkAction's `persona_diverged`)
     // even when nothing qualifies for linking at all — a role with a seat
@@ -753,14 +832,22 @@ async function linkCrewSeats(
 
   const crewModelId = route.resolved!.models.crew;
   const crewModel = await client.dataModels.get(crewModelId);
-  const columnName = await ensureCrewAgentField(route, client, crewModel, agentsModelId, userAgent);
+  let columnName: string;
+  try {
+    columnName = await ensureCrewAgentField(route, client, crewModel, agentsModelId, userAgent);
+  } catch (e) {
+    if (e instanceof CrewAgentFieldMissing) {
+      return ROLE_NAMES.map((role) => ({ role, action: seats[role] ? 'no_agent_field' as const : 'no_seat' as const }));
+    }
+    throw e;
+  }
 
   const outcomes: CrewLinkOutcome[] = [];
   for (const role of ROLE_NAMES) {
     const seatId = seats[role];
     const agentId = agentPersonas[role]?.agentId;
     if (!seatId) { outcomes.push({ role, action: 'no_seat' }); continue; }
-    if (!agentId) { outcomes.push({ role, action: 'persona_diverged' }); continue; }
+    if (!agentId) { outcomes.push({ role, action: readOnly ? 'no_agents_row' : 'persona_diverged' }); continue; }
 
     const seatRow = await client.records.get<CrewRow>(crewModelId, seatId);
     if (seatRow[CREW_AGENT_COLUMN] === agentId) { outcomes.push({ role, action: 'already_linked' }); continue; }
@@ -815,6 +902,7 @@ async function ensureCrewAgentField(
       description: "The Agents-table row backing this seat's persona — set by `crew agents sync` (ISSUE-416), never edited by hand.",
     }),
   });
+  if (createRes.status === 403) throw new CrewAgentFieldMissing();
   if (!createRes.ok) throw new AgentsSyncError(`creating the Crew table's Agent field failed: ${createRes.status} ${createRes.statusText}`);
   const created = (await createRes.json()) as { columnName: string };
   return created.columnName;
@@ -829,6 +917,8 @@ export function describeSyncOutcome(o: PersonaSyncOutcome): string {
     case 'unchanged': return `${label}: already in sync`;
     case 'diverged': return `${label}: HAS LOCAL EDITS — crew's default is newer but was NOT applied; review ${o.agentId} in the app before syncing again`;
     case 'overridden': return `${label}: override in place — prompt not synced (clear "Customize prompt" on the Agents row to resume)`;
+    case 'adopted': return `${label}: using the workspace's existing Agents row (${o.agentId})`;
+    case 'missing': return `${label}: no Agents row in this workspace — writes as the ship until a workspace admin runs \`crew agents sync\``;
     case 'forced': return `${label}: --force overwrote local edits (previous prompt was: ${JSON.stringify(o.previousPrompt ?? '')})`;
   }
 }
@@ -840,6 +930,8 @@ export function describeCrewLink(o: CrewLinkOutcome): string {
     case 'linked': return `${label}: Crew row now references its Agents row`;
     case 'already_linked': return `${label}: Crew row already references its Agents row`;
     case 'no_seat': return `${label}: no seat configured for this role — skipped linking`;
+    case 'no_agent_field': return `${label}: ${CREW_FIELD_MISSING_NOTE}`;
+    case 'no_agents_row': return `${label}: no Agents row to link yet — a workspace admin's \`crew agents sync\` creates it; run it here afterwards to link this seat`;
     case 'persona_diverged': return `${label}: persona has local edits and was not synced this pass — skipped linking until it's resolved`;
   }
 }

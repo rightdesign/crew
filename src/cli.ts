@@ -73,7 +73,7 @@ import {
   type SessionStore,
 } from '@tablation/client';
 import { mintMissingSeatKeys, describeMintOutcome, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
-import { syncPersonas, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
@@ -2386,9 +2386,22 @@ switch (command) {
       process.stderr.write(`crew agents sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
       process.exit(2);
     }
+    // CREW-1797: the persona/skill rows and seat keys are a workspace admin's.
+    // A non-admin key links this ship's seats to whatever rows exist and
+    // writes nothing else; a 403 from any admin-only write is reported the
+    // same way instead of thrown. An unreadable role keeps today's behaviour.
+    const keyRole = target.resolved.role ?? await fetchKeyRole(target, cfg.ship.userAgent);
+    let readOnly = !isAdminRole(keyRole);
     let personaResult: Awaited<ReturnType<typeof syncPersonas>>;
+    const runPersonas = (ro: boolean) => syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun, force, readOnly: ro });
     try {
-      personaResult = await syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun, force });
+      try {
+        personaResult = await runPersonas(readOnly);
+      } catch (e) {
+        if (readOnly || !isForbidden(e)) throw e;
+        readOnly = true;
+        personaResult = await runPersonas(true);
+      }
     } catch (e) {
       if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;
@@ -2396,6 +2409,7 @@ switch (command) {
     process.stdout.write(`route: ${target.route}\n`);
     for (const o of personaResult.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
     for (const o of personaResult.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
+    if (personaResult.releaseNote) process.stdout.write(`${personaResult.releaseNote}\n`);
     // CREW-1534: a brief's `{{skill: Name}}` include of a skill this preset
     // does not ship would refuse every run of that seat, so say so here.
     const briefs = Object.fromEntries(ROLE_NAMES.map((r) => [r, personaDefaultPrompt(target.promptsDir, r)]));
@@ -2405,14 +2419,17 @@ switch (command) {
     // available on its own when an operator wants to push skill changes
     // without touching personas, but this is the one command a person
     // reaches for after editing anything under prompts/<promptSet>/.
-    let skillResult: Awaited<ReturnType<typeof syncSkills>>;
-    try {
-      skillResult = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun, force });
-    } catch (e) {
-      if (e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
-      throw e;
+    let skillResult: Awaited<ReturnType<typeof syncSkills>> | undefined;
+    if (!readOnly) {
+      try {
+        skillResult = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun, force });
+      } catch (e) {
+        if (isForbidden(e)) readOnly = true;
+        else if (e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
+        else throw e;
+      }
     }
-    for (const o of skillResult.outcomes) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
+    for (const o of skillResult?.outcomes ?? []) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
     if (!dryRun) {
       // Persist `agentPersonas` and `agentSkills` into this route's resolved
       // state file — same merge-not-clobber shape `connect`'s own
@@ -2422,26 +2439,31 @@ switch (command) {
       const resolvedPath = resolvedPathFor(cfg.ship.stateDir, target.route);
       const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
       raw.agentPersonas = personaResult.agentPersonas;
-      raw.agentSkills = skillResult.agentSkills;
+      if (skillResult) raw.agentSkills = skillResult.agentSkills;
       if (personaResult.releaseAgentId) raw.releaseAgentId = personaResult.releaseAgentId;
       mkdirSync(dirOf(resolvedPath), { recursive: true });
       writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
     }
-    // CREW-1603: each seat persona now linked to an Agents row gets its own
-    // agent API key, minted once with the ship key and kept in the keychain.
     if (!dryRun) {
       target.resolved.agentPersonas = personaResult.agentPersonas;
       if (personaResult.releaseAgentId) target.resolved.releaseAgentId = personaResult.releaseAgentId;
     }
-    for (const o of await mintMissingSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
-      process.stdout.write(`${describeMintOutcome(o)}\n`);
+    if (readOnly) {
+      process.stdout.write("personas and skills: not synced (this key is not a workspace admin; the workspace's rows are used as they are)\n");
+      process.stdout.write('seat keys: not minted (needs a workspace admin key)\n');
+    } else {
+      // CREW-1603: each seat persona now linked to an Agents row gets its own
+      // agent API key, minted once with the ship key and kept in the keychain.
+      for (const o of await mintMissingSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
+        process.stdout.write(`${describeMintOutcome(o)}\n`);
+      }
     }
     // A diverged persona or skill is not this run's failure, but it IS
     // something an operator needs to act on (review the row, or re-sync
     // once they have) — a nonzero exit is what makes that visible to
     // whatever invoked this (a scheduler job's log, a person's own shell)
     // without erroring the whole command.
-    if (personaResult.outcomes.some((o) => o.action === 'diverged') || skillResult.outcomes.some((o) => o.action === 'diverged')) {
+    if (personaResult.outcomes.some((o) => o.action === 'diverged') || (skillResult?.outcomes.some((o) => o.action === 'diverged') ?? false)) {
       process.exitCode = 1;
     }
     break;
@@ -2916,6 +2938,7 @@ switch (command) {
             agentPersonas?: unknown;
             agentSkills?: unknown;
             releaseAgentId?: string;
+            role?: string;
           }
         | undefined;
       const hadPreviousFile = existsSync(resolvedPath);
@@ -2990,6 +3013,7 @@ switch (command) {
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(found.releaseSeat ? { releaseSeat: found.releaseSeat } : {}),
+        ...((found.role ?? previous?.role) ? { role: found.role ?? previous?.role } : {}),
         ...(operator ? { operator } : {}),
         ...(contract ? { contract } : {}),
         ...(reviewedStatuses.length > 0 ? { reviewedStatuses } : {}),
@@ -4102,17 +4126,23 @@ switch (command) {
         : 'release seat:    none — release comments are credited to the dev seat; run `crew connect` once the Crew table has this ship\'s row\n',
     );
 
+    // CREW-1797: the key's role decides which hints below make sense. A
+    // route connected before it was recorded asks `/auth/me` once.
+    const keyRole = route.resolved?.role ?? await fetchKeyRole(route, cfg.ship.userAgent);
+    const roleRoute: Route = route.resolved && keyRole ? { ...route, resolved: { ...route.resolved, role: keyRole } } : route;
+    process.stdout.write(`api key role:     ${keyRole ?? 'unknown'}\n`);
+
     // CREW-1603: which principal each seat will write as.
     for (const role of SEAT_KEY_ROLES) {
       if (!route.resolved?.seats[role]) continue;
-      const id = await resolveSeatKey(route, role);
+      const id = await resolveSeatKey(roleRoute, role);
       process.stdout.write(
         `seat identity:    ${role} writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
       );
     }
 
     if (route.resolved?.releaseSeat) {
-      const id = await resolveReleaseKey(route);
+      const id = await resolveReleaseKey(roleRoute);
       process.stdout.write(
         `seat identity:    release writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
       );

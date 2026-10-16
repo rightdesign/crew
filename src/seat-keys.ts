@@ -22,6 +22,19 @@ import { ROLE_NAMES, resolveApiKey, splitRoute, type RoleName, type Route } from
 /** `pair` stays on the ship key: a Pair session is a person's, and must keep writing as `user`. */
 export const SEAT_KEY_ROLES: readonly RoleName[] = ROLE_NAMES.filter((r) => r !== 'pair');
 
+/**
+ * CREW-1797: the persona/skill rows and seat keys belong to a workspace admin,
+ * so a non-admin key's doctor hints must not tell it to run what only an admin
+ * can finish. An unrecorded role is treated as admin (the old wording).
+ */
+function keyIsAdmin(route: Route): boolean {
+  const role = route.resolved?.role;
+  return role === undefined || role === 'WORKSPACE_ADMIN' || role === 'PLATFORM_ADMIN';
+}
+
+const MEMBER_NO_ROW = "has no linked Agents row — a workspace admin's `crew agents sync` creates the persona rows; run it here afterwards to link this ship's seats";
+const MEMBER_NO_KEY = 'no agent key for this seat — minting needs a workspace admin key';
+
 export type SeatIdentity =
   /** The seat writes as its own agent principal. */
   | { kind: 'agent'; apiKey: string; agentId: string }
@@ -55,11 +68,11 @@ export async function resolveReleaseKey(
 ): Promise<SeatIdentity> {
   const ship = (reason: string): SeatIdentity => ({ kind: 'ship', apiKey: resolveApiKey(route), reason });
   const agentId = route.resolved?.releaseAgentId;
-  if (!agentId) return ship('release seat has no linked Agents row (run `crew agents sync`)');
+  if (!agentId) return ship(keyIsAdmin(route) ? 'release seat has no linked Agents row (run `crew agents sync`)' : `release seat ${MEMBER_NO_ROW}`);
   try {
     const session = await getStore().get(hostFromUrl(route.baseUrl), slugFor(route, agentId));
     if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
-    return ship('no agent key stored for the release seat (run `crew agents sync`)');
+    return ship(keyIsAdmin(route) ? 'no agent key stored for the release seat (run `crew agents sync`)' : MEMBER_NO_KEY);
   } catch {
     return ship('OS keychain unavailable');
   }
@@ -78,11 +91,11 @@ export async function resolveSeatKey(
   const ship = (reason: string): SeatIdentity => ({ kind: 'ship', apiKey: resolveApiKey(route), reason });
   if (!SEAT_KEY_ROLES.includes(role)) return ship(`${role} always writes as the ship`);
   const agentId = seatAgentId(route, role);
-  if (!agentId) return ship('seat has no linked Agents row (run `crew agents sync`)');
+  if (!agentId) return ship(keyIsAdmin(route) ? 'seat has no linked Agents row (run `crew agents sync`)' : `seat ${MEMBER_NO_ROW}`);
   try {
     const session = await getStore().get(hostFromUrl(route.baseUrl), slugFor(route, agentId));
     if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
-    return ship('no agent key stored for this seat (run `crew agents sync`)');
+    return ship(keyIsAdmin(route) ? 'no agent key stored for this seat (run `crew agents sync`)' : MEMBER_NO_KEY);
   } catch {
     return ship('OS keychain unavailable');
   }

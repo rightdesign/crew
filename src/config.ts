@@ -153,6 +153,8 @@ export interface ResolvedIds {
    * phase can write as its own agent principal rather than the ship's key.
    */
   releaseAgentId?: string;
+  /** This key's own role in the workspace (`/auth/me`), stamped by `crew connect` (CREW-1797): non-admin keys never write the Agents / Agent Skills tables. */
+  role?: string;
   operator: string;
   holds: HoldConfig[];
   /**
@@ -887,6 +889,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     contract: raw.contract ?? undefined,
     ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}),
     ...(typeof raw.releaseAgentId === 'string' && raw.releaseAgentId ? { releaseAgentId: raw.releaseAgentId } : {}),
+    ...(typeof raw.role === 'string' && raw.role ? { role: raw.role } : {}),
     ...(Object.keys(agentPersonas).length > 0 ? { agentPersonas } : {}),
     ...(Object.keys(agentSkills).length > 0 ? { agentSkills } : {}),
   };
