@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.50.2] — 2026-10-16
+
+- ISSUE-1796 `crew doctor` now reports a repo directory that is missing on disk (and any base-branch check that fails) instead of aborting with `spawnSync git ENOENT`.
+
 ## [0.50.1] — 2026-10-16
 
 - ISSUE-1776 Run streams and the meta sidecar follow the ticket a run actually claims instead of the poll's hint, and an interrupted run still leaves a sidecar naming it.
