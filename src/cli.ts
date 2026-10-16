@@ -72,7 +72,7 @@ import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
-import { mintMissingSeatKeys, describeMintOutcome, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
+import { mintMissingSeatKeys, describeMintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -316,7 +316,7 @@ function usage(): never {
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block (--no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
-  crew agents sync [route] [--force]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
+  crew agents sync [route] [--force] [--revoke-seat-keys]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
@@ -2383,7 +2383,7 @@ switch (command) {
       break;
     }
     if (sub !== 'sync') {
-      process.stderr.write('crew agents sync [route] [--force]    push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)\n');
+      process.stderr.write('crew agents sync [route] [--force]    push crew\'s personas (Developer/Design/QA/Triage/Pair) AND skill files (e.g. grill-me) into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt; --revoke-seat-keys deletes this ship\'s seat keys server-side and from the keychain, so the next sync mints fresh ones)\n');
       process.stderr.write(`crew agents prompt <role> [route]     print a persona's current prompt (roles: ${ROLE_NAMES.join(', ')})\n`);
       process.exit(2);
     }
@@ -2462,10 +2462,17 @@ switch (command) {
     }
     if (readOnly) {
       process.stdout.write("personas and skills: not synced (this key is not a workspace admin; the workspace's rows are used as they are)\n");
-      process.stdout.write('seat keys: not minted (needs a workspace admin key)\n');
+    }
+    if (flag('revoke-seat-keys')) {
+      // CREW-1802: rotate this ship's keys; a following sync mints fresh ones.
+      for (const o of await revokeSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun })) {
+        process.stdout.write(`${describeRevokeOutcome(o)}\n`);
+      }
     } else {
       // CREW-1603: each seat persona now linked to an Agents row gets its own
       // agent API key, minted once with the ship key and kept in the keychain.
+      // CREW-1802: minting is gated by the server (an admin, or the "Mint agent
+      // keys" capability), so a member key attempts it and reads a 403.
       for (const o of await mintMissingSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
         process.stdout.write(`${describeMintOutcome(o)}\n`);
       }
@@ -4151,6 +4158,8 @@ switch (command) {
     const keyRole = route.resolved?.role ?? await fetchKeyRole(route, cfg.ship.userAgent);
     const roleRoute: Route = route.resolved && keyRole ? { ...route, resolved: { ...route.resolved, role: keyRole } } : route;
     process.stdout.write(`api key role:     ${keyRole ?? 'unknown'}\n`);
+    const canMint = await canMintAgentKeys(roleRoute, { userAgent: cfg.ship.userAgent });
+    process.stdout.write(`can mint agent keys: ${canMint === undefined ? 'unknown' : canMint ? 'yes' : 'no'}\n`);
 
     // CREW-1603: which principal each seat will write as.
     for (const role of SEAT_KEY_ROLES) {

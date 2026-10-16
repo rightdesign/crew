@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionStore, StoredSession } from '@tablation/client';
 import type { Route } from '../src/config.ts';
-import { describeMintOutcome, mintMissingSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
+import { canMintAgentKeys, describeMintOutcome, mintMissingSeatKeys, revokeSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
 
 delete process.env.CREW_API_KEY;
 
@@ -69,13 +69,13 @@ test('mintMissingSeatKeys mints once per linked seat, skips stored keys and pair
   assert.equal(calls.length, 2);
 });
 
-test('a refused mint is reported, stores nothing, and does not throw', async () => {
+test('a refused (403) mint is reported once, stores nothing, and does not throw', async () => {
   const store = memoryStore();
   const out = await mintMissingSeatKeys(route({ dev: 'agent-dev' }), {
     getStore: () => store,
     fetchImpl: async () => new Response('no', { status: 403, statusText: 'Forbidden' }),
   });
-  assert.deepEqual(out.map((o) => [o.role, o.action]), [['dev', 'failed'], ['qa', 'no_agent']]);
+  assert.deepEqual(out.map((o) => [o.role, o.action]), [['dev', 'forbidden']]);
   assert.equal(store.data.size, 0);
 });
 
@@ -134,7 +134,7 @@ test('CREW-1797: a member key\'s seat-identity reasons name the admin step, an a
   const linked = route();
   linked.resolved!.role = 'WORKSPACE_USER';
   const noKey = await resolveSeatKey(linked, 'dev', () => store);
-  assert.match((noKey as { reason: string }).reason, /minting needs a workspace admin key/);
+  assert.match((noKey as { reason: string }).reason, /needs the "Mint agent keys" capability/);
 
   const admin = route();
   admin.resolved!.role = 'WORKSPACE_ADMIN';
@@ -171,4 +171,77 @@ test('a failing keychain probe mints nothing', async () => {
   const out = await mintMissingSeatKeys(route(), { getStore: () => store, fetchImpl });
   assert.equal(calls, 0);
   assert.ok(out.every((o) => o.action === 'failed' && !/sk_x|-w/.test(o.detail ?? '')));
+});
+
+test('a 403 from the mint endpoint is one forbidden outcome, with no further mints and nothing stored (CREW-1802)', async () => {
+  const store = memoryStore();
+  let calls = 0;
+  const out = await mintMissingSeatKeys(route(), {
+    getStore: () => store,
+    fetchImpl: async () => { calls++; return new Response('{}', { status: 403 }); },
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(out.map((o) => o.action), ['forbidden']);
+  assert.match(describeMintOutcome(out[0]!), /does not grant "Mint agent keys"/);
+  assert.equal(store.data.size, 0);
+});
+
+test('a member key that is granted the capability mints and stores every seat key (CREW-1802)', async () => {
+  const store = memoryStore();
+  const r = route();
+  r.resolved!.role = 'WORKSPACE_USER';
+  let n = 0;
+  const out = await mintMissingSeatKeys(r, {
+    getStore: () => store,
+    fetchImpl: async () => new Response(JSON.stringify({ key: `sk_${++n}`, id: `kid-${n}` }), { status: 201 }),
+  });
+  assert.deepEqual(out.map((o) => o.action), ['minted', 'minted']);
+  assert.equal((await resolveSeatKey(r, 'dev', () => store)).kind, 'agent');
+  assert.equal((await resolveSeatKey(r, 'qa', () => store)).kind, 'agent');
+});
+
+test('a non-admin seat with no key is told to run sync and which capability it needs (CREW-1802)', async () => {
+  const r = route();
+  r.resolved!.role = 'WORKSPACE_USER';
+  const id = await resolveSeatKey(r, 'dev', () => memoryStore());
+  assert.equal(id.kind, 'ship');
+  if (id.kind === 'ship') assert.match(id.reason, /crew agents sync.*Mint agent keys/);
+});
+
+test('revokeSeatKeys deletes each stored key server-side and clears it, then a sync mints fresh ones (CREW-1802)', async () => {
+  const store = memoryStore();
+  let n = 0;
+  await mintMissingSeatKeys(route(), {
+    getStore: () => store,
+    fetchImpl: async () => new Response(JSON.stringify({ key: `sk_${++n}`, id: `kid-${n}` }), { status: 201 }),
+  });
+  const deleted: string[] = [];
+  const out = await revokeSeatKeys(route(), {
+    getStore: () => store,
+    fetchImpl: async (url, init) => { assert.equal(init?.method, 'DELETE'); deleted.push(String(url).split('/').slice(-3).join('/')); return new Response(null, { status: 204 }); },
+  });
+  assert.deepEqual(out.map((o) => o.action), ['revoked', 'revoked']);
+  assert.deepEqual(deleted, ['agent-dev/api-keys/kid-1', 'agent-qa/api-keys/kid-2']);
+  assert.equal((await resolveSeatKey(route(), 'dev', () => store)).kind, 'ship');
+  const again = await mintMissingSeatKeys(route(), {
+    getStore: () => store,
+    fetchImpl: async () => new Response(JSON.stringify({ key: 'sk_new', id: 'kid-9' }), { status: 201 }),
+  });
+  assert.deepEqual(again.map((o) => o.action), ['minted', 'minted']);
+});
+
+test('revokeSeatKeys keeps the keychain entry when the server refuses or no key id was recorded (CREW-1802)', async () => {
+  const store = memoryStore();
+  store.data.set('example.test/issues#agent:agent-dev', { apiKey: 'sk_old', shipId: '', workspaceId: 'ws-1', identityId: 'agent-dev', createdAt: 'x' });
+  const noId = await revokeSeatKeys(route({ dev: 'agent-dev' }), { getStore: () => store, fetchImpl: async () => new Response(null, { status: 204 }) });
+  assert.equal(noId[0]!.action, 'failed');
+  assert.equal(store.data.size, 1);
+});
+
+test('canMintAgentKeys reads 200 as yes, 403 as no, anything else as unknown (CREW-1802)', async () => {
+  const at = (status: number) => canMintAgentKeys(route(), { fetchImpl: async () => new Response('[]', { status }) });
+  assert.equal(await at(200), true);
+  assert.equal(await at(403), false);
+  assert.equal(await at(500), undefined);
+  assert.equal(await canMintAgentKeys({ ...route(), resolved: undefined } as Route), undefined);
 });

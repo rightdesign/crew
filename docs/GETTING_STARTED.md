@@ -334,7 +334,7 @@ log records `actor_kind: agent` and table rules can tell a seat from a person.
 The ship key stays for connect, admin commands and Pair sessions. A seat with no
 stored key (an older install, a refused mint, no keychain) still runs as the
 ship, with a warning line on the run log naming why. `crew doctor` prints the
-identity each seat will write as. Minting needs an unlocked login keychain (run from the console session, or `security unlock-keychain` first over SSH): the keychain is probed before any key is minted, and a key that cannot be stored is revoked rather than left live. Minting is a workspace admin's step: a member key's seats stay on the ship key until an admin has synced and minted, and doctor says so. The agent's workspace membership needs a role
+identity each seat will write as. Minting needs an unlocked login keychain (run from the console session, or `security unlock-keychain` first over SSH): the keychain is probed before any key is minted, and a key that cannot be stored is revoked rather than left live. Seat keys are minted by whoever runs `crew agents sync` on that ship, with either a workspace admin key or a project role that grants the "Mint agent keys" capability; the server decides, and a refused mint is reported once ("your role does not grant Mint agent keys") with the seats staying on the ship key. Each ship holds its own keys, and `crew agents sync --revoke-seat-keys` revokes them server-side and clears the keychain so the next sync mints fresh ones. `crew doctor` prints `can mint agent keys: yes/no`. The agent's workspace membership needs a role
 on the project, assigned once by a workspace admin the same way as for a
 human member.
 
