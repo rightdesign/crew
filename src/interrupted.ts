@@ -13,7 +13,7 @@
  * Streams written before the sidecar existed have none and are left alone.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { reattachRun, readRunSidecar, runIsAlive, type ReattachOptions, type ReattachResult, type RunSidecar } from './agent.ts';
 import type { Emitter } from './events.ts';
@@ -66,7 +66,17 @@ const pidAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
 };
 
-/** Stream files in `<stateDir>/streams` that carry a sidecar and no meta. */
+/**
+ * A meta sidecar written at spawn or on a claim carries `running: true`
+ * (CREW-1776); only the finish path writes one without it.
+ */
+function runFinished(streamPath: string): boolean {
+  const path = `${streamPath}.meta.json`;
+  if (!existsSync(path)) return false;
+  try { return (JSON.parse(readFileSync(path, 'utf8')) as { running?: boolean }).running !== true; } catch { return true; }
+}
+
+/** Stream files in `<stateDir>/streams` that carry a sidecar and no finished meta. */
 export function orphanedStreams(o: Pick<ReconcileOptions, 'stateDir' | 'routeLabel' | 'isOwnerAlive'>): Array<{ streamPath: string; sidecar: RunSidecar }> {
   const dir = join(o.stateDir, 'streams');
   if (!existsSync(dir)) return [];
@@ -75,7 +85,7 @@ export function orphanedStreams(o: Pick<ReconcileOptions, 'stateDir' | 'routeLab
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.jsonl') || name.endsWith('.events.jsonl')) continue;
     const streamPath = join(dir, name);
-    if (existsSync(`${streamPath}.meta.json`)) continue;
+    if (runFinished(streamPath)) continue;
     const sidecar = readRunSidecar(streamPath);
     if (!sidecar || sidecar.route !== o.routeLabel) continue;
     if (ownerAlive(sidecar.ownerPid)) continue;   // its own process is still finishing it

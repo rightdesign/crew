@@ -14,6 +14,7 @@ import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
 const FAKE_CLAUDE_MULTITICKET = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-multiticket.mjs');
+const FAKE_CLAUDE_CLAIM = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-claim.mjs');
 const FAKE_CLAUDE_PLAIN = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-plain.mjs');
 const FAKE_CLAUDE_LARGE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-large.mjs');
 
@@ -667,4 +668,40 @@ test('personaAdditions follow a diverged prompt, and may include a {{skill:}} ma
   });
   assert.match(plan.prompt, /CUSTOM[\s\S]*Additional instructions from this workspace[\s\S]*FILING BODY/);
   assert.ok(!plan.prompt.includes('{{skill:'));
+});
+
+test('spawnAgent relabels stream events with the ticket the run claims, marks the switch, and keeps the hint in the sidecar (CREW-1776)', async () => {
+  const { state, route, ship } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'ISSUE-1764',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_CLAIM];
+  plan.cwd = state;
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  const pending = spawnAgent(plan, emit);
+  // The sidecar exists before the child exits, with no exit code yet.
+  const early = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
+  assert.equal(early.exitCode, null);
+  assert.equal(early.hint, 'ISSUE-1764');
+  assert.equal(early.ticket, 'ISSUE-1764');
+  await pending;
+
+  const events = readFileSync(plan.eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const markers = events.filter((e) => e.data.kind === 'ticket');
+  assert.equal(markers.length, 1);
+  assert.deepEqual([markers[0].data.from, markers[0].data.to], ['ISSUE-1764', 'TABL-1763']);
+  const at = events.indexOf(markers[0]);
+  for (const e of events.slice(0, at)) assert.equal(e.ticket, 'ISSUE-1764');
+  for (const e of events.slice(at)) assert.equal(e.ticket, 'TABL-1763');
+  assert.ok(events.slice(at + 1).some((e) => e.data.tool === 'Bash'), 'events after the claim carry the claimed ticket');
+
+  const meta = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
+  assert.equal(meta.hint, 'ISSUE-1764');
+  assert.equal(meta.ticket, 'TABL-1763');
+  assert.equal(meta.exitCode, 0);
+  assert.equal(meta.sessionId, 'sess-claim');
 });

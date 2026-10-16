@@ -39,6 +39,15 @@ export class TicketAttributionTracker {
   #tokensByTicket = new Map<string, number>();
   #current: string | undefined;
 
+  /** The ticket key most recently named in the transcript, or undefined before any. */
+  get current(): string | undefined { return this.#current; }
+
+  /** Record the mentions in `text` without crediting tokens (a claim needs "which ticket" before the turn's usage line arrives). */
+  note(text: string): void {
+    const mentions = ticketMentions(text);
+    if (mentions.length > 0) this.#current = mentions[mentions.length - 1];
+  }
+
   /** One assistant turn: its combined visible text (thinking + text blocks) and its own token cost. */
   add(text: string, tokens: number): void {
     const mentions = ticketMentions(text);
@@ -61,4 +70,17 @@ export class TicketAttributionTracker {
     }
     return best;
   }
+}
+
+/**
+ * Whether a tool call is the run claiming a ticket: a tracker record update
+ * that sets `status` to `in_progress` (the claim step in every lane brief).
+ * The call carries only a record uuid, not the ticket key, so the caller
+ * pairs this with `TicketAttributionTracker.current` — the key the agent
+ * last named, which it does when announcing the claim.
+ */
+export function isClaimWrite(tool: string | undefined, input: Record<string, unknown> | undefined): boolean {
+  if (!tool || !/records_controller_update$/.test(tool)) return false;
+  const body = input?.body;
+  return typeof body === 'object' && body !== null && (body as Record<string, unknown>).status === 'in_progress';
 }

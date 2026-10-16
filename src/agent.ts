@@ -23,7 +23,7 @@ import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-lo
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
 import { appendAdditions } from './prompt-additions.ts';
-import { TicketAttributionTracker } from './ticket-attribution.ts';
+import { TicketAttributionTracker, isClaimWrite } from './ticket-attribution.ts';
 
 /**
  * A digest older than this is treated as absent. Acting on a stale queue is
@@ -567,6 +567,13 @@ class RunObserver {
   /** Set once the stream carries the harness's final result (turn count or cost). */
   sawResult = false;
   muted = false;
+  /**
+   * The label stamped on events. Starts as the poll hint and switches to the
+   * ticket the run actually claims (CREW-1776); `id.ticket` stays the hint.
+   */
+  liveTicket: string | undefined;
+  /** Called after `liveTicket` changes, so the sidecar can be rewritten. */
+  onClaim?: () => void;
   private buf = '';
   private readonly mapper: { map(p: unknown): StreamKindEvent[]; flush(): StreamKindEvent[] };
   private readonly id: RunIdentity;
@@ -579,6 +586,7 @@ class RunObserver {
     this.adapter = adapter;
     this.eventsSink = eventsSink;
     this.emitCycle = emitCycle;
+    this.liveTicket = id.ticket ?? undefined;
     this.mapper = adapter.createStreamMapper?.() ?? { map: (p: unknown) => adapter.mapStreamLine(p), flush: () => [] };
   }
 
@@ -623,7 +631,24 @@ class RunObserver {
   private consume(parsed: unknown, events: StreamKindEvent[]): void {
     const plan = this.id;
     let turnText = '';
+    // Names in this message's text come before its tool calls, so a claim in
+    // the same message as "claiming TABL-1763" resolves to that key.
+    for (const ev of events) if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) this.attribution.note(ev.text);
     for (const ev of events) {
+      if (ev.kind === 'tool' && isClaimWrite(ev.tool, ev.input)) {
+        const claimed = this.attribution.current;
+        if (claimed && claimed !== this.liveTicket) {
+          if (!this.muted) {
+            this.eventsSink?.write(`${JSON.stringify({
+              at: new Date().toISOString(), cycle: this.emitCycle, route: plan.route, step: 'agent', level: 'info',
+              message: `ticket: ${this.liveTicket ?? 'none'} → ${claimed}`, role: plan.role, ticket: claimed,
+              data: { kind: 'ticket', from: this.liveTicket ?? null, to: claimed },
+            })}\n`);
+          }
+          this.liveTicket = claimed;
+          if (!this.muted) this.onClaim?.();
+        }
+      }
       const e = {
         at: new Date().toISOString(),
         cycle: this.emitCycle,
@@ -632,7 +657,7 @@ class RunObserver {
         level: 'info' as const,
         message: ev.kind === 'tool' ? `${ev.tool ?? 'tool'}${ev.target ? ` ${ev.target}` : ''}` : ev.kind,
         role: plan.role,
-        ...(plan.ticket ? { ticket: plan.ticket } : {}),
+        ...(this.liveTicket ? { ticket: this.liveTicket } : {}),
         data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
       };
       if (!this.muted) this.eventsSink?.write(`${JSON.stringify(e)}\n`);
@@ -682,6 +707,26 @@ class RunObserver {
   }
 }
 
+/**
+ * Writes `<stream>.meta.json`. Called at spawn (`exitCode: null`), on a claim
+ * and on close, so a run killed before `close` still names the ticket it was
+ * on (CREW-1776). `hint` is the poll's pre-run guess, `ticket` the live label.
+ */
+function writeRunMeta(
+  id: RunIdentity, startedAt: string, liveTicket: string | undefined, extra: Record<string, unknown>,
+): void {
+  try {
+    writeFileSync(`${id.streamPath}.meta.json`, JSON.stringify({
+      route: id.route, role: id.role, hint: id.ticket, ticket: liveTicket ?? id.ticket,
+      startedAt, model: id.model,
+      toolchain: id.toolchain, harness: id.harness, provider: id.provider,
+      exitCode: null,
+      running: true,
+      ...extra,
+    }));
+  } catch { /* the sidecar is a convenience, not load-bearing */ }
+}
+
 /** How a run ended, as far as the finishing process can tell. */
 interface RunEnd {
   /** The agent's exit code; null when this process never saw it exit (a reattached run). */
@@ -700,22 +745,21 @@ async function finishRun(
   // The ticket the transcript actually spent the most tokens on, falling
   // back to the pre-run poll hint when the visible text never named one
   // (e.g. an administrative run with nothing ticket-specific to say).
-  const attributedTicket = obs.attribution.winner(id.ticket ?? undefined);
+  const attributedTicket = obs.attribution.winner(obs.liveTicket);
   // Which toolchain, harness and provider produced this run (CREW-1516),
   // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
   // the sidecar and the event only — the Agent Log carries harness+provider.
   const identity = { toolchain: id.toolchain, harness: id.harness, provider: id.provider };
   const { result } = obs;
   try {
-    writeFileSync(`${id.streamPath}.meta.json`, JSON.stringify({
-      route: id.route, role: id.role, ticket: id.ticket,
+    writeRunMeta(id, startedAt, obs.liveTicket, {
       attributedTicket: attributedTicket ?? null,
-      startedAt, exitCode: end.code, model: id.model,
+      running: undefined,
+      exitCode: end.code,
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
-      ...identity,
       sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
       totalCostUsd: result?.costUsd ?? null,
-    }));
+    });
   } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
   const ms = Date.now() - Date.parse(startedAt);
   emit.emit(end.interrupted ? 'agent run interrupted' : `agent run finished (exit ${end.code ?? 'unknown'})`, {
@@ -817,6 +861,11 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
     }
 
     const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
+    // Written at spawn and rewritten on claim and on close, so an interrupted
+    // run (no `close`) still leaves a sidecar naming the ticket it was on (CREW-1776).
+    const meta = { pid: child.pid ?? null };
+    obs.onClaim = () => writeRunMeta(id, startedAt, obs.liveTicket, meta);
+    if (child.pid !== undefined) writeRunMeta(id, startedAt, obs.liveTicket, meta);
     const tail = new FileTail(plan.streamPath);
     const timer = setInterval(() => obs.feed(tail.poll()), TAIL_POLL_MS);
 

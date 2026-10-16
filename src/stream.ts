@@ -16,6 +16,8 @@ export interface StreamKindEvent {
   tool?: string;
   /** Present when `kind === 'tool'` — the path or the command's first word. */
   target?: string;
+  /** Present when `kind === 'tool'` — the call's raw arguments, for in-process inspection only; never written to a sink (a tracker body can be large). */
+  input?: Record<string, unknown>;
 }
 
 export interface StreamResult {
@@ -94,7 +96,7 @@ export function mapStreamLine(line: unknown): StreamKindEvent[] {
     if (block.type === 'thinking') out.push({ kind: 'thought', text: block.thinking });
     else if (block.type === 'text') out.push({ kind: 'text', text: block.text });
     else if (block.type === 'tool_use') {
-      out.push({ kind: 'tool', tool: block.name, target: toolTarget(block.name, block.input) });
+      out.push({ kind: 'tool', tool: block.name, target: toolTarget(block.name, block.input), input: block.input });
     }
   }
   return out;

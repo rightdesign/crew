@@ -17,7 +17,7 @@ test('a tool_use block carries the tool name and a short target', () => {
     type: 'assistant',
     message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } }] },
   };
-  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Bash', target: 'ls' }]);
+  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Bash', target: 'ls', input: { command: 'ls -la' } }]);
 });
 
 test('an Edit tool_use targets the file path, not the command', () => {
@@ -25,7 +25,7 @@ test('an Edit tool_use targets the file path, not the command', () => {
     type: 'assistant',
     message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/a/b.ts', old_string: 'x' } }] },
   };
-  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Edit', target: '/a/b.ts' }]);
+  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Edit', target: '/a/b.ts', input: { file_path: '/a/b.ts', old_string: 'x' } }]);
 });
 
 test('a message with several blocks yields several events, in order', () => {
@@ -42,7 +42,7 @@ test('a message with several blocks yields several events, in order', () => {
   };
   assert.deepEqual(mapStreamLine(line), [
     { kind: 'thought', text: 'ok' },
-    { kind: 'tool', tool: 'Read', target: '/x.ts' },
+    { kind: 'tool', tool: 'Read', target: '/x.ts', input: { file_path: '/x.ts' } },
     { kind: 'text', text: 'done' },
   ]);
 });
