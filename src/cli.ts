@@ -7,6 +7,7 @@
  * until an operator arms it deliberately.
  */
 
+import { doctorBaseReport } from './doctor-repo.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
@@ -4071,11 +4072,10 @@ switch (command) {
       for (const p2 of validateEffective(config)) {
         process.stdout.write(`                   - ${p2}\n`);
       }
-      const bh = baseHealth(r);
-      if (bh.action !== 'not-applicable') {
-        process.stdout.write(`                   base ${config.branch.base}: ${bh.unsafe ? 'ERROR — ' : ''}${bh.detail}\n`);
-        if (bh.unsafe) process.exitCode = 1;
-      }
+      const dh = doctorBaseReport(r, config.branch.base, baseHealth);
+      process.stdout.write(dh.text);
+      if (dh.failed) process.exitCode = 1;
+      if (dh.skipRest) continue;
       // Who releases this repo (CREW-1384): the named ship, or a warning when
       // a locally-released repo names none and several ships could race.
       if (config.release.ship) {
