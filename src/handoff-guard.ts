@@ -32,7 +32,7 @@ import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, type Route, type Ship, type RoleName } from './config.ts';
 import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
-import type { Ticket, Tracker } from './tracker.ts';
+import type { RunnerEvent, Ticket, Tracker } from './tracker.ts';
 import { finishRunWorktree } from './run-worktree.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
@@ -107,6 +107,8 @@ export interface HandoffWriter {
   ticket(id: string): Promise<Ticket>;
   updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
   postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
+  /** Event-log reader (CREW-1973); absent in a writer that cannot read it, which then skips the takeover check. */
+  events?(type: string): Promise<RunnerEvent[]>;
 }
 
 export interface HandoffLog {
@@ -134,7 +136,22 @@ export interface HandoffGuardInput {
   /** This ship's name and Ships row (`undefined` when the workspace has no hold column). */
   shipName?: string;
   hold?: { column: string; shipId: string };
+  /** ISO time this run started: a `taken_over` event newer than it, naming another ship, means this run no longer owns the ticket. */
+  since?: string;
   log: HandoffLog;
+}
+
+/** Whether another ship took this ticket over after `since` (CREW-1973). */
+async function takenOverSince(i: HandoffGuardInput, ticketRow: string): Promise<boolean> {
+  if (!i.since || !i.writer.events) return false;
+  const from = Date.parse(i.since);
+  const evs = await i.writer.events('taken_over');
+  return evs.some((e) => {
+    if (e.record_id !== ticketRow) return false;
+    if (Date.parse(e.occurred_at ?? e.created_at ?? '') < from) return false;
+    const by = / by (.+?); /.exec(e.message ?? '')?.[1];
+    return !!by && by !== i.shipName;
+  });
 }
 
 /**
@@ -173,7 +190,24 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       return { kind: 'failed', why: v.reason };
     }
 
+    // CREW-1973: a bounce is only this ship's to write while it is still the
+    // holder. A stale run whose hold was taken over must not undo the new
+    // holder's hand-off (TABL-1967), and a ship with no local branch has
+    // nothing of its own to compare against origin; the shape the bounce text
+    // was written for is a local tip that is missing from, or ahead of, origin.
     const heldBy = i.hold ? t[i.hold.column] : undefined;
+    if (i.hold && heldBy && heldBy !== i.hold.shipId) {
+      i.log.warn(`${t.issue_id} is held by another ship now — this run's hand-off check is stale, left alone`, log);
+      return { kind: 'unverified', why: 'ticket is held by another ship' };
+    }
+    if (await takenOverSince(i, t.id)) {
+      i.log.warn(`${t.issue_id} was taken over by another ship during this run — left alone`, log);
+      return { kind: 'unverified', why: 'ticket was taken over during this run' };
+    }
+    if (!v.local) {
+      i.log.warn(`${t.issue_id} has no local branch on this ship, so it is not this ship's hand-off to bounce: ${v.reason}`, log);
+      return { kind: 'unverified', why: 'no local branch on this ship' };
+    }
     await i.writer.updateTicket(t.id, {
       status: i.contract.statuses.building,
       ...(t.assignee_id ? {} : { assignee_id: i.seatId }),
@@ -219,7 +253,7 @@ export async function guardRunHandoff(
     const affinity = await tracker.claimAffinity();
     const outcome = await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
-      seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, log,
+      seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
     });
     if (outcome.kind === 'pushed') await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
     if (since) await guardRunStrays(route, ship, tracker, role, workingId, since, log);

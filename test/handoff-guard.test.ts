@@ -127,9 +127,53 @@ test('enforce: an unpushed fixed ticket goes back to in_progress, held by this s
 
 test('enforce: assignee and hold the session left in place are not overwritten', async () => {
   const f = fixture();
-  const h = harness(ticket({ assignee_id: 'other', held_by_ship_id: 'ship-B' }));
+  const h = harness(ticket({ assignee_id: 'other', held_by_ship_id: 'ship-A' }));
   await enforceHandoff(input(f, h));
   assert.deepEqual(h.patches, [{ status: 'in_progress' }]);
+});
+
+test('enforce: a ticket held by another ship is not bounced by a stale run (CREW-1973)', async () => {
+  const f = fixture();
+  const h = harness(ticket({ held_by_ship_id: 'ship-B' }));
+  assert.equal((await enforceHandoff(input(f, h))).kind, 'unverified');
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+  assert.equal(h.warns.length, 1);
+});
+
+test('enforce: a takeover by another ship during the run blocks the bounce (CREW-1973)', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  h.w.events = async () => [{
+    record_id: 'row-9', event_type: 'taken_over', occurred_at: '2026-01-01T01:00:00Z',
+    message: 'Taken over from Mini (not seen recently) by Other; continuing from `abc1234` on origin.',
+  }];
+  const out = await enforceHandoff({ ...input(f, h), since: '2026-01-01T00:00:00Z' });
+  assert.equal(out.kind, 'unverified');
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+});
+
+test('enforce: a takeover before the run, or by this ship, still bounces an unpushed tip (CREW-1973)', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  h.w.events = async () => [
+    { record_id: 'row-9', event_type: 'taken_over', occurred_at: '2025-12-31T00:00:00Z', message: 'Taken over from X (not seen recently) by Other; no branch.' },
+    { record_id: 'row-9', event_type: 'taken_over', occurred_at: '2026-01-01T01:00:00Z', message: 'Taken over from X (not seen recently) by Studio; no branch.' },
+  ];
+  const out = await enforceHandoff({ ...input(f, h), since: '2026-01-01T00:00:00Z' });
+  assert.equal(out.kind, 'bounced');
+});
+
+test('enforce: a ship with no local branch never bounces another ship\'s hand-off (CREW-1973)', async () => {
+  const f = fixture();
+  sh(f.dir, 'worktree', 'remove', '--force', f.wt);
+  sh(f.dir, 'branch', '-D', 'crew-9');
+  const h = harness(ticket());
+  assert.equal((await enforceHandoff(input(f, h))).kind, 'unverified');
+  assert.deepEqual(h.patches, []);
+  assert.deepEqual(h.notes, []);
+  assert.equal(h.warns.length, 1);
 });
 
 test('enforce: a ticket not at fixed is not this guard\'s business', async () => {
