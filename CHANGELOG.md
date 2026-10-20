@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.54.0] — 2026-10-20
+
+- ISSUE-2132 crew connect accepts the `<primary>:<slug>` workspace segment for secondary workspaces.
+
 ## [0.53.7] — 2026-10-20
 
 - ISSUE-2148 Lane agents now check whether a tracker create that failed with a session or transport error actually landed before filing or posting it again, so a restart no longer produces duplicate tickets and comments.
