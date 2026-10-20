@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.53.6] — 2026-10-20
+
+- ISSUE-2142 Crew tracker posts open with a styled callout header instead of an HTML-comment marker that showed as raw text.
+
 ## [0.53.5] — 2026-10-20
 
 - ISSUE-2120 The Grill-Me skill sets a Map to planning while an interview runs, draft once the PRD is written and abandoned when work on it stops.
