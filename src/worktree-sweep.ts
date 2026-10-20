@@ -39,6 +39,8 @@ import { worktreeHoldsUnpushed } from './run-worktree.ts';
 import type { RepoTarget } from './config.ts';
 import type { Contract } from './contract.ts';
 import type { Ticket } from './tracker.ts';
+import type { State } from './state.ts';
+import { noteHeldWorktree } from './ship-attention.ts';
 
 export interface SweepAction {
   ticket: Ticket;
@@ -177,9 +179,20 @@ export function orphanedWorktreeDirs(target: RepoTarget, tickets: Ticket[], cont
   return siblingWorktreeDirs(target).filter((d) => deployed.has(d.number)).map((d) => d.path);
 }
 
-export function warnOrphanedWorktreeDirs(paths: string[], log: SweepLog): void {
+/**
+ * Warns about orphaned directories. With `held`, each is recorded like a
+ * refused worktree (CREW-2051), so it warns once and then lives on as a ship
+ * attention item instead of repeating every cycle.
+ */
+export function warnOrphanedWorktreeDirs(paths: string[], log: SweepLog, held?: { state: State; repo: string }): void {
   for (const p of paths) {
-    log.warn(`orphaned directory ${p}: its ticket is deployed but it is not a registered worktree; the sweep will not delete it — remove it by hand`, { step: 'worktree' });
+    const number = DIR_NUMBER_SUFFIXED.exec(basename(p))?.[1];
+    const when = held && number
+      ? noteHeldWorktree(held.state, { repo: held.repo, path: p, ticket: number, status: 'deployed', reason: 'orphaned directory' })
+      : 'first';
+    if (when) {
+      log.warn(`orphaned directory ${p}: its ticket is deployed but it is not a registered worktree; the sweep will not delete it — remove it by hand`, { step: 'worktree' });
+    }
   }
 }
 
@@ -197,7 +210,22 @@ export interface SweepLog {
  */
 export async function applyWorktreeSweep(
   cwd: string, actions: SweepAction[], dryRun: boolean, log: SweepLog, remote = 'origin', base?: string,
-): Promise<{ removed: number; keptBranches: number }> {
+  held?: { state: State; repo: string },
+): Promise<{ removed: number; keptBranches: number; refused: string[] }> {
+  const refused: string[] = [];
+  // CREW-2051: a refusal warns once, then lives on as a ship attention item.
+  const refuse = (a: SweepAction, reason: string, detail: string): void => {
+    refused.push(a.path);
+    const when = held
+      ? noteHeldWorktree(held.state, { repo: held.repo, path: a.path, ticket: a.ticket.issue_id, status: a.ticket.status, reason })
+      : 'first';
+    if (when) {
+      log.warn(
+        `not removing worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}): ${detail}`,
+        { ticket: a.ticket.issue_id, step: 'worktree' },
+      );
+    }
+  };
   let removed = 0;
   let keptBranches = 0;
   for (const a of actions) {
@@ -219,19 +247,13 @@ export async function applyWorktreeSweep(
       let dirty = false;
       try { dirty = status(a.path).length > 0; } catch { /* unreadable: treat as clean, same as before */ }
       if (dirty) {
-        log.warn(
-          `not removing worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}): it has uncommitted changes`,
-          { ticket: a.ticket.issue_id, step: 'worktree' },
-        );
+        refuse(a, 'uncommitted changes', 'it has uncommitted changes');
         continue;
       }
     }
     if (!dryRun && a.requirePushed && a.branch && existsSync(a.path)
       && remoteConfigured(cwd, remote) && worktreeHoldsUnpushed(a.path, remote)) {
-      log.warn(
-        `not removing worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}): ${a.branch} has commits that are not on ${remote}`,
-        { ticket: a.ticket.issue_id, step: 'worktree' },
-      );
+      refuse(a, 'unpushed commits', `${a.branch} has commits that are not on ${remote}`);
       continue;
     }
     const n = Number(a.ticket.issue_id.replace(/^\D+/, ''));
@@ -259,7 +281,7 @@ export async function applyWorktreeSweep(
     // CREW-2050: a removal that fails (a locked file, a synced folder) is not a
     // removal; leave the worktree and its branch for the next cycle.
     try { git(cwd, ['worktree', 'remove', '--force', a.path]); } catch (e) {
-      log.warn(`could not remove worktree ${a.path} for ${a.ticket.issue_id}: ${(e as Error).message}`, { ticket: a.ticket.issue_id, step: 'worktree' });
+      refuse(a, 'removal failed', `could not remove it: ${(e as Error).message}`);
       continue;
     }
     if (!a.keepBranch && a.branch) {
@@ -278,7 +300,7 @@ export async function applyWorktreeSweep(
     removed++;
   }
   if (!dryRun && actions.length) gitOk(cwd, ['worktree', 'prune']);
-  return { removed, keptBranches };
+  return { removed, keptBranches, refused };
 }
 
 /**

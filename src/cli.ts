@@ -105,7 +105,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
-import { openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention } from './ship-attention.ts';
 import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -1206,6 +1206,7 @@ async function sweepClosedTickets(
     // The idle path runs every cycle, so it skips the tracker reads when the
     // checkout has nothing local to sweep. After a release the pushed-branch
     // cleanup below must still run: it exists for a ship with no local trace.
+    if (!dryRun) reconcileHeldWorktrees(state, target.name, remit);
     if (idle && !sweepCandidatesExist(target.dir, branch.base)) return;
     // CREW-1593: resolve only the tickets this repo has a worktree, a local
     // branch or a pushed branch for, instead of paging a global closed-ticket
@@ -1218,12 +1219,14 @@ async function sweepClosedTickets(
     ]);
     const scoped = ticketsByRepo(c, await tracker.ticketsByNumbers([...nums], truncated)).byRepo.get(target.name) ?? [];
     const actions = planWorktreeSweep(target, scoped, tracker.contract);
-    warnOrphanedWorktreeDirs(orphanedWorktreeDirs(target, scoped, tracker.contract), remit);
+    const orphanDirs = orphanedWorktreeDirs(target, scoped, tracker.contract);
+    warnOrphanedWorktreeDirs(orphanDirs, remit, dryRun ? undefined : { state, repo: target.name });
     if (actions.length) {
       remit.enter('worktree');
-      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote, branch.base);
+      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote, branch.base, { state, repo: target.name });
       remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
-    }
+      if (!dryRun) reconcileHeldWorktrees(state, target.name, remit, new Set([...r.refused, ...orphanDirs]));
+    } else if (!dryRun) reconcileHeldWorktrees(state, target.name, remit, new Set(orphanDirs));
     // After the worktrees, so a branch freed by the removal above is seen.
     const orphaned = planLocalBranchCleanup(target.dir, branch.base, scoped, tracker.contract);
     if (orphaned.length) applyLocalBranchCleanup(target.dir, orphaned, dryRun, remit);
@@ -3335,12 +3338,17 @@ switch (command) {
         route, await tracker.ticketsByNumbers(remoteBranchTicketNumbers(r.dir, r.config.branch.remote, r.config.branch.base), truncated),
       ).byRepo.get(r.name) ?? [];
       const actions = planWorktreeSweep(r, wtTickets, tracker.contract);
-      warnOrphanedWorktreeDirs(orphanedWorktreeDirs(r, wtTickets, tracker.contract), emit);
+      const orphanDirs = orphanedWorktreeDirs(r, wtTickets, tracker.contract);
+      warnOrphanedWorktreeDirs(orphanDirs, emit, dryRun ? undefined : { state, repo: r.name });
       const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, brTickets, tracker.contract);
       if (stale.length) { anything = true; applyRemoteBranchCleanup(r.dir, r.config.branch.remote, stale, dryRun, emit); }
-      if (!actions.length) continue;
+      if (!actions.length) {
+        if (!dryRun) reconcileHeldWorktrees(state, r.name, emit, new Set(orphanDirs));
+        continue;
+      }
       anything = true;
-      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote, r.config.branch.base);
+      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote, r.config.branch.base, { state, repo: r.name });
+      if (!dryRun) reconcileHeldWorktrees(state, r.name, emit, new Set([...res.refused, ...orphanDirs]));
       emit.emit(
         `swept ${res.removed} worktree(s) for ${r.name}, kept ${res.keptBranches} branch(es)`,
         { step: 'worktree' },
@@ -3947,6 +3955,13 @@ switch (command) {
             // Additive (CREW-1379): `unsafe` means a ship must not cut a
             // worktree or release from this base. `version` stays 1.
             baseBranch: baseHealth(r),
+            // Additive (CREW-2051): worktrees the sweep refuses to remove.
+            heldWorktrees: openShipAttention(state)
+              .filter((i) => i.kind === 'worktree_held' && i.held?.repo === r.name)
+              .map((i) => ({
+                path: i.held!.path, ticket: i.held!.ticket, status: i.held!.status,
+                reason: i.held!.reason, firstSeenAt: i.held!.firstSeenAt,
+              })),
             worktreePrefix: r.config.worktrees.prefix,
             // A repo with no explicit `worktrees.prefix` no longer names its
             // worktrees `<prefix><number>` (ISSUE-969) — the checkout's own

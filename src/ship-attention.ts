@@ -19,12 +19,12 @@ import type { Emitter } from './events.ts';
 import { repoTargetFor, reposOf, type Route, type Ship } from './config.ts';
 import { notify } from './notify.ts';
 import { INTERVAL_SECONDS, findOnPath, pathFor, dockerPathProblem } from './install.ts';
-import { statfsSync } from 'node:fs';
+import { existsSync, statfsSync } from 'node:fs';
 import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -33,6 +33,21 @@ export interface ShipAttentionItem {
   message: string;
   /** ISO time the condition was first raised; kept across re-raises of the same key. */
   since: string;
+  /** Present on `worktree_held` items: the refused worktree, for `crew status --json`. */
+  held?: HeldWorktree;
+}
+
+/** A worktree the sweep refused to remove (CREW-2051). */
+export interface HeldWorktree {
+  repo: string;
+  path: string;
+  ticket: string;
+  status: string;
+  /** Short and stable (`uncommitted changes`, `unpushed commits`): a change of it re-announces. */
+  reason: string;
+  firstSeenAt: string;
+  /** When the sweep last logged a warning for it; the daily reminder is measured from here. */
+  lastWarnedAt: string;
 }
 
 /** The release timer is stale once it has not run for this many intervals. */
@@ -263,6 +278,67 @@ export function recheckBaseStops(state: State, route: Route): string[] {
     }
   }
   return cleared;
+}
+
+/** The key of a refused worktree's item; one per path. */
+export const heldWorktreeKey = (repo: string, path: string): string => `worktree_held:${repo}:${path}`;
+
+/** A held worktree is re-warned about this often while it stays held. */
+export const HELD_WORKTREE_REMINDER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Records that the sweep refused a worktree (CREW-2051) and says whether this
+ * cycle should log a warning for it: the first time, when the reason changes,
+ * and once per `HELD_WORKTREE_REMINDER_MS` thereafter. The sweep runs every
+ * cycle, so anything more frequent drowns the event stream (a ship logged 366
+ * identical warnings overnight); the open item on `crew status` is what keeps
+ * the condition visible in between.
+ */
+export function noteHeldWorktree(
+  state: State, h: Pick<HeldWorktree, 'repo' | 'path' | 'ticket' | 'status' | 'reason'>, nowMs = Date.now(),
+): 'first' | 'changed' | 'reminder' | null {
+  const store = state.shipAttention();
+  const previous = store.previous();
+  const key = heldWorktreeKey(h.repo, h.path);
+  const existing = previous.find((i) => i.key === key)?.held;
+  const nowIso = new Date(nowMs).toISOString();
+  const lastWarned = existing ? Date.parse(existing.lastWarnedAt) : NaN;
+  const warn = !existing ? 'first'
+    : existing.reason !== h.reason ? 'changed'
+      : !(nowMs - lastWarned < HELD_WORKTREE_REMINDER_MS) ? 'reminder'
+        : null;
+  const held: HeldWorktree = {
+    ...h, firstSeenAt: existing?.firstSeenAt ?? nowIso, lastWarnedAt: warn ? nowIso : existing!.lastWarnedAt,
+  };
+  const n = h.ticket.replace(/^\D+/, '');
+  const item: ShipAttentionItem = {
+    kind: 'worktree_held', key, since: held.firstSeenAt, held,
+    message: `${h.repo}: worktree ${h.path} for ${h.ticket} (${h.status}) is not swept: ${h.reason}. Fix by hand: \`crew drop ${n}\`, or commit/push or discard what is in it`,
+  };
+  if (!existing || existing.reason !== h.reason || warn) store.persist(upsert(previous, item));
+  return warn;
+}
+
+/**
+ * Clears the `worktree_held` items of `repo` that no longer hold, logging one
+ * `info` per clear. An item clears when its directory is gone, or — when the
+ * sweep ran and passes the paths it refused (`stillRefused`) — when the sweep
+ * no longer refuses it (removed, committed, or the ticket reopened).
+ */
+export function reconcileHeldWorktrees(
+  state: State, repo: string, log: { emit(msg: string, extra?: Record<string, unknown>): unknown },
+  stillRefused?: ReadonlySet<string>,
+): void {
+  for (const i of state.shipAttention().previous()) {
+    if (i.kind !== 'worktree_held' || !i.held || i.held.repo !== repo) continue;
+    const gone = !existsSync(i.held.path);
+    if (!gone && !(stillRefused && !stillRefused.has(i.held.path))) continue;
+    clearShipAttention(state, i.key);
+    log.emit(
+      gone ? `worktree ${i.held.path} is gone; clearing the hold` : `worktree ${i.held.path} is no longer held; clearing the hold`,
+      { ticket: i.held.ticket, step: 'worktree' },
+    );
+  }
 }
 
 /** Every open item: the persisted ones plus the derived `release_stale`. */

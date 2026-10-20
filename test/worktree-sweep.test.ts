@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planWorktreeSweep, applyWorktreeSweep, planLocalBranchCleanup, applyLocalBranchCleanup,
-  sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, type SweepLog,
+  sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, type SweepLog,
 } from '../src/worktree-sweep.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -51,7 +51,7 @@ test('a deployed ticket: the worktree is removed AND the branch deleted', async 
   assert.equal(actions[0]!.keepBranch, false);
 
   const r = await applyWorktreeSweep(dir, actions, false, silentLog);
-  assert.deepEqual(r, { removed: 1, keptBranches: 0 });
+  assert.deepEqual(r, { removed: 1, keptBranches: 0, refused: [] });
   assert.ok(!existsSync(wt));
   assert.ok(!branchesOf(dir).includes('issue-9'));
 });
@@ -65,7 +65,7 @@ test('closed_wont_fix: the worktree goes but the branch is kept — it holds wor
   assert.equal(actions[0]!.keepBranch, true);
 
   const r = await applyWorktreeSweep(dir, actions, false, silentLog);
-  assert.deepEqual(r, { removed: 1, keptBranches: 1 });
+  assert.deepEqual(r, { removed: 1, keptBranches: 1, refused: [] });
   assert.ok(!existsSync(wt));
   assert.ok(branchesOf(dir).includes('issue-10'));
 });
@@ -153,7 +153,7 @@ test('dry run reports what it would do and touches nothing', async () => {
   const messages: string[] = [];
   const r = await applyWorktreeSweep(dir, actions, true, { emit: (m) => messages.push(m), warn: () => {} });
 
-  assert.deepEqual(r, { removed: 0, keptBranches: 0 });
+  assert.deepEqual(r, { removed: 0, keptBranches: 0, refused: [] });
   assert.ok(existsSync(wt));
   assert.ok(branchesOf(dir).includes('issue-15'));
   assert.ok(messages.some((m) => /would remove worktree/.test(m) && /deleting branch/.test(m)));
@@ -219,6 +219,61 @@ test('a clean worktree of a deployed ticket is swept even though this ship relea
   await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog);
   assert.ok(!existsSync(wt));
   assert.ok(!branchesOf(dir).includes('issue-24'));
+});
+
+// CREW-2051: a refused worktree warns once, then lives on as a ship attention item.
+test('a refused worktree warns once, stays an open item, and clears when it disappears', async () => {
+  const { State } = await import('../src/state.ts');
+  const { reconcileHeldWorktrees, openShipAttention } = await import('../src/ship-attention.ts');
+  const { rmSync } = await import('node:fs');
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 21);
+  writeFileSync(join(wt, 'dirty.txt'), 'x');
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  const t = ticket({ issue_id: 'ISSUE-21', status: 'closed_deployed' });
+  const warns: string[] = [];
+  const infos: string[] = [];
+  const log: SweepLog = { emit: (m) => infos.push(m), warn: (m) => warns.push(m) };
+  const sweep = () => applyWorktreeSweep(
+    dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, log, 'origin', undefined, { state, repo: 'proj' },
+  );
+
+  const first = await sweep();
+  assert.equal(first.refused.length, 1);
+  const wtPath = first.refused[0]!; // git reports the realpath (/private/var on macOS)
+  assert.equal(warns.length, 1);
+  await sweep();
+  await sweep();
+  assert.equal(warns.length, 1, 'repeat refusals are silent');
+
+  const open = openShipAttention(state).filter((i) => i.kind === 'worktree_held');
+  assert.equal(open.length, 1);
+  assert.equal(open[0]!.held!.ticket, 'ISSUE-21');
+  assert.equal(open[0]!.held!.reason, 'uncommitted changes');
+  assert.match(open[0]!.message, /crew drop 21/);
+
+  // Still refused: reconcile keeps it.
+  reconcileHeldWorktrees(state, 'proj', log, new Set([wtPath]));
+  assert.equal(openShipAttention(state).length, 1);
+
+  rmSync(wt, { recursive: true, force: true });
+  reconcileHeldWorktrees(state, 'proj', log);
+  assert.equal(openShipAttention(state).filter((i) => i.kind === 'worktree_held').length, 0);
+  assert.equal(infos.filter((m) => /is gone; clearing the hold/.test(m)).length, 1);
+});
+
+test('a held worktree re-warns when its reason changes and once per day', async () => {
+  const { State } = await import('../src/state.ts');
+  const { noteHeldWorktree, HELD_WORKTREE_REMINDER_MS } = await import('../src/ship-attention.ts');
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  const h = { repo: 'proj', path: '/tmp/x-1', ticket: 'ISSUE-1', status: 'closed_deployed', reason: 'uncommitted changes' };
+  const t0 = Date.parse('2026-10-20T00:00:00Z');
+  assert.equal(noteHeldWorktree(state, h, t0), 'first');
+  assert.equal(noteHeldWorktree(state, h, t0 + 120_000), null);
+  assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 240_000), 'changed');
+  assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 360_000), null);
+  assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 240_000 + HELD_WORKTREE_REMINDER_MS), 'reminder');
+  assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 240_000 + HELD_WORKTREE_REMINDER_MS + 1000), null);
 });
 
 // CREW-2050: crew's own hand-back merge, suffixed/detached worktrees, failed removals.
@@ -317,7 +372,7 @@ test('a failing worktree remove warns, is not counted and keeps the branch', asy
   assert.equal(r.removed, 0);
   assert.ok(existsSync(wt));
   assert.ok(branchesOf(dir).includes('issue-53'));
-  assert.match(warnings.join('\n'), /could not remove worktree/);
+  assert.match(warnings.join('\n'), /not removing worktree .*could not remove it/);
   assert.ok(!emitted.some((m) => /removed worktree/.test(m)));
 });
 
@@ -335,4 +390,31 @@ test('an unregistered sibling directory of a deployed ticket is reported, not de
   const tickets = [ticket({ issue_id: 'TABL-60', status: 'closed_deployed' }), ticket({ issue_id: 'TABL-61', status: 'in_progress' })];
   assert.deepEqual(orphanedWorktreeDirs(target, tickets, DEFAULT_CONTRACT), [orphan]);
   assert.ok(existsSync(orphan));
+});
+
+// CREW-2051: the CREW-2050 warn sites (failed removal, orphaned directory) are once-then-silent too.
+test('a failing remove and an orphaned directory warn once, not every cycle', async () => {
+  const { State } = await import('../src/state.ts');
+  const { openShipAttention } = await import('../src/ship-attention.ts');
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 54);
+  g('worktree', 'lock', wt);
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  const t = ticket({ issue_id: 'ISSUE-54', status: 'closed_deployed' });
+  const warns: string[] = [];
+  const log: SweepLog = { emit: () => undefined, warn: (m) => warns.push(m) };
+  for (let i = 0; i < 3; i++) {
+    const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, log, 'origin', undefined, { state, repo: 'proj' });
+    assert.equal(r.refused.length, 1);
+  }
+  assert.equal(warns.length, 1);
+  assert.equal(openShipAttention(state).find((i) => i.kind === 'worktree_held')!.held!.reason, 'removal failed');
+
+  const orphan = join(dirname(dir), `${basename(dir)}-tabl-55`);
+  mkdirSync(orphan);
+  const owarns: string[] = [];
+  const olog: SweepLog = { emit: () => undefined, warn: (m) => owarns.push(m) };
+  for (let i = 0; i < 3; i++) warnOrphanedWorktreeDirs([orphan], olog, { state, repo: 'proj' });
+  assert.equal(owarns.length, 1);
+  assert.equal(openShipAttention(state).filter((i) => i.kind === 'worktree_held').length, 2);
 });
