@@ -31,9 +31,23 @@ prior conversation history exists.
    on the Maps table), ordered by `version`. If one exists with
    `status: active`, that's the current settled PRD — treat this session
    as a **revision** interview, not a fresh one (see §5). If the most
-   recent one is `status: draft` and was never promoted, you're likely
-   continuing or restarting that same attempt — ask the interviewee
-   which they intend.
+   recent one is `status: draft` (never promoted) or `status: planning`
+   (an interview that was interrupted), you're likely continuing or
+   restarting that same attempt — ask the interviewee which they intend.
+   Ignore `abandoned` Maps when picking what to continue; they still count
+   when you compute the next `version`.
+4. Before your first question, make sure a Map record for this session
+   exists and is at `status: planning`, so a grill in progress is visible
+   on the Maps table:
+   - Fresh grill: create the Map now (`epic_id`, a short `title`, the
+     `version` from §3 step 1, empty `content` and `conversation`) at
+     `planning`.
+   - Continuing a `draft` or an interrupted `planning` Map: set that same
+     record to `planning`.
+   - Restarting instead: set the old Map to `abandoned`, then create a new
+     version at `planning`.
+   - Revising an `active` Map: create the next version at `planning` now.
+     Leave the active one as it is until promotion.
 
 ## 2. Run the interview
 
@@ -52,11 +66,13 @@ and don't manufacture more questions once you've genuinely converged.
 
 Once you've reached mutual agreement the session is done:
 
-1. Compute the new Map's `version`: default to
+1. Compute the Map's `version`: default to
    `max(existing versions for this epic_id) + 1`. If the interviewee
    wants a different version label (e.g. a deliberate jump for a major
-   revision), use what they say instead.
-2. Write a new Maps record:
+   revision), use what they say instead. (You normally settled this when
+   you created the record in §1; change it there if the interviewee asks.)
+2. Fill in the Maps record you created in §1 — update that same record,
+   do not create a second one:
    - `epic_id` → this Epic
    - `title` → short, human-readable
    - `content` → the PRD itself, in Markdown. Write this as a real
@@ -66,8 +82,8 @@ Once you've reached mutual agreement the session is done:
      actual back-and-forth (questions asked, answers given, points where
      you changed your recommendation based on pushback). This is the
      record of *how* you got to the PRD, not a duplicate of it.
-   - `status` → always `draft` on creation. Never create a Map as
-     `active` directly.
+   - `status` → `draft`, now that the PRD is written. Never create a Map
+     as `active` directly, and never leave a finished PRD at `planning`.
 
 ## 4. Proposing child tickets
 
@@ -93,6 +109,9 @@ Alongside the draft Map, propose the child Issues implied by the PRD:
 
 Before ending the session, ask the interviewee directly: **should this
 Map go active now, or stay a draft?**
+
+Only a `draft` Map can be promoted. A Map still at `planning` is an
+unfinished interview and is never activated.
 
 - **If they say stay draft:** leave everything as-is. Nothing else to
   do. A later session (yours or someone else's) picks this back up.
@@ -123,6 +142,26 @@ Map go active now, or stay a draft?**
 
 Do all of this yourself via direct MCP writes. There is no automation
 watching for this — if you don't do it, it doesn't happen.
+
+## 6. Abandoning a Map
+
+A Map moves through `planning` (interview running) → `draft` (PRD written,
+awaiting the promotion decision) → `active` (promoted) → `superseded` (a
+later version went active). `abandoned` is the terminal state for a Map
+that never got that far.
+
+If the interviewee says to stop working on a Map that is at `planning` or
+`draft`:
+
+1. Set that Map to `status: abandoned`.
+2. Ask whether its `draft` Issues should go to `closed_obsolete`, and
+   recommend yes. Apply their answer; leave Issues that have already left
+   `draft` alone.
+3. Leave the Epic's status alone.
+
+An abandoned Map is never reactivated. If work on the Epic resumes later,
+that is a new Map at the next `version`. Do these writes directly via MCP,
+as in §5.
 
 ## What this mode is never responsible for
 
