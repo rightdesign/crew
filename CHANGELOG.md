@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.53.3] — 2026-10-20
+
+- ISSUE-2050 The worktree sweep now clears hand-back merges and suffixed QA worktrees of deployed tickets, reports failed removals, and warns about orphaned worktree directories.
+
 ## [0.53.2] — 2026-10-18
 
 - ISSUE-1973 A run that lost its ticket to another ship (taken over) or never built it no longer bounces that ship's valid hand-off back to in_progress.
