@@ -87,7 +87,7 @@ import {
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
-import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
+import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
@@ -1218,9 +1218,10 @@ async function sweepClosedTickets(
     ]);
     const scoped = ticketsByRepo(c, await tracker.ticketsByNumbers([...nums], truncated)).byRepo.get(target.name) ?? [];
     const actions = planWorktreeSweep(target, scoped, tracker.contract);
+    warnOrphanedWorktreeDirs(orphanedWorktreeDirs(target, scoped, tracker.contract), remit);
     if (actions.length) {
       remit.enter('worktree');
-      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote);
+      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote, branch.base);
       remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
     }
     // After the worktrees, so a branch freed by the removal above is seen.
@@ -3334,11 +3335,12 @@ switch (command) {
         route, await tracker.ticketsByNumbers(remoteBranchTicketNumbers(r.dir, r.config.branch.remote, r.config.branch.base), truncated),
       ).byRepo.get(r.name) ?? [];
       const actions = planWorktreeSweep(r, wtTickets, tracker.contract);
+      warnOrphanedWorktreeDirs(orphanedWorktreeDirs(r, wtTickets, tracker.contract), emit);
       const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, brTickets, tracker.contract);
       if (stale.length) { anything = true; applyRemoteBranchCleanup(r.dir, r.config.branch.remote, stale, dryRun, emit); }
       if (!actions.length) continue;
       anything = true;
-      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote);
+      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote, r.config.branch.base);
       emit.emit(
         `swept ${res.removed} worktree(s) for ${r.name}, kept ${res.keptBranches} branch(es)`,
         { step: 'worktree' },

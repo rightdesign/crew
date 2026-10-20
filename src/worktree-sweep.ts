@@ -31,9 +31,9 @@
  * what to delete.
  */
 
-import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
-import { worktrees, gitOk, status, remoteConfigured, deleteRemoteBranch } from './git.ts';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { worktrees, git, gitOk, status, remoteConfigured, deleteRemoteBranch, type WorktreeInfo } from './git.ts';
 import { pidsInWorktree, killGently } from './ports.ts';
 import { worktreeHoldsUnpushed } from './run-worktree.ts';
 import type { RepoTarget } from './config.ts';
@@ -74,10 +74,9 @@ export function planWorktreeSweep(
   const verified = contract.statuses.verified;
   const byNumber = new Map(tickets.map((t) => [t.issue_id.replace(/^\D+/, ''), t]));
   const actions: SweepAction[] = [];
-  for (const w of worktrees(target.dir)) {
-    const m = /(?:^|-)(\d+)$/.exec(basename(w.path));
-    if (!m) continue;
-    const ticket = byNumber.get(m[1]!);
+  // Entry 0 is the primary checkout, which is never a ticket's worktree.
+  for (const w of worktrees(target.dir).slice(1)) {
+    const ticket = ticketForWorktree(w, byNumber, contract);
     if (!ticket) continue;
     const isVerified = ticket.status === verified;
     if (!isVerified && !terminal.has(ticket.status)) continue;
@@ -90,18 +89,98 @@ export function planWorktreeSweep(
   return actions;
 }
 
+/** `(?:^|-)<n>` at the end of a directory name: the scheme every worktree name has used. */
+const DIR_NUMBER = /(?:^|-)(\d+)$/;
+/** CREW-2050: the same, with a short suffix a hand-cut worktree carries (`…-1871-qa`). */
+const DIR_NUMBER_SUFFIXED = /(?:^|-)(\d+)(?:-[a-z0-9]{1,8})?$/;
+/** A ticket branch with any `owner/` directory and `-<slug>` tail removed: `bc/issue-16-old` → `issue-16`. */
+const BRANCH_STEM = /^(?:.*\/)?([^/]+?-\d+)(?:-.*)?$/;
+
+/**
+ * Which ticket a worktree belongs to (CREW-2050). In order: the checked-out
+ * branch (one of the ticket's own stems, whatever the directory is called),
+ * the directory's trailing ticket number, and — for a DETACHED worktree only,
+ * which has no branch to lose — the number followed by a short suffix. The
+ * suffixed form is further limited to a deployed ticket: a detached HEAD can
+ * carry commits no branch points at, which only a deployed ticket makes safe
+ * to discard.
+ */
+function ticketForWorktree(
+  w: WorktreeInfo, byNumber: Map<string, Ticket>, contract: Contract,
+): Ticket | undefined {
+  if (w.branch) {
+    const stem = BRANCH_STEM.exec(w.branch)?.[1];
+    const num = stem && /-(\d+)$/.exec(stem)?.[1];
+    const t = num ? byNumber.get(num) : undefined;
+    if (t && ticketStems(t).has(stem!)) return t;
+  }
+  const dir = basename(w.path);
+  const m = DIR_NUMBER.exec(dir);
+  if (m && byNumber.has(m[1]!)) return byNumber.get(m[1]!);
+  if (!w.branch) {
+    const t = byNumber.get(DIR_NUMBER_SUFFIXED.exec(dir)?.[1] ?? '');
+    if (t && t.status === contract.statuses.deployed) return t;
+  }
+  return undefined;
+}
+
 /**
  * Ticket numbers of the worktrees that exist in `target` — what the sweep
  * resolves through the tracker, so its cost follows the worktrees on disk and
- * not the size of the closed-ticket backlog (CREW-1593).
+ * not the size of the closed-ticket backlog (CREW-1593). Includes the numbers
+ * of sibling directories that look like this checkout's worktrees but are not
+ * registered (`orphanedWorktreeDirs`), so those tickets are looked up too.
  */
 export function worktreeTicketNumbers(target: RepoTarget): string[] {
   const nums = new Set<string>();
-  for (const w of worktrees(target.dir)) {
-    const m = /(?:^|-)(\d+)$/.exec(basename(w.path));
+  for (const w of worktrees(target.dir).slice(1)) {
+    if (w.branch) {
+      const n = /-(\d+)$/.exec(BRANCH_STEM.exec(w.branch)?.[1] ?? '')?.[1];
+      if (n) nums.add(n);
+    }
+    const m = DIR_NUMBER_SUFFIXED.exec(basename(w.path));
     if (m) nums.add(m[1]!);
   }
+  for (const d of siblingWorktreeDirs(target)) nums.add(d.number);
   return [...nums];
+}
+
+/**
+ * Directories beside the checkout named like one of its default-scheme
+ * worktrees (`<checkout dir>-<anything>-<n>[-suffix]`) that git does not know.
+ */
+function siblingWorktreeDirs(target: RepoTarget): { path: string; number: string }[] {
+  const parent = dirname(target.dir.replace(/[/\\]+$/, ''));
+  const stem = `${basename(target.dir.replace(/[/\\]+$/, ''))}-`;
+  const registered = new Set(worktrees(target.dir).map((w) => resolve(w.path)));
+  let names: string[];
+  try { names = readdirSync(parent); } catch { return []; }
+  const out: { path: string; number: string }[] = [];
+  for (const name of names) {
+    if (!name.startsWith(stem)) continue;
+    const m = DIR_NUMBER_SUFFIXED.exec(name);
+    const path = join(parent, name);
+    if (m && !registered.has(resolve(path))) out.push({ path, number: m[1]! });
+  }
+  return out;
+}
+
+/**
+ * Unregistered sibling directories of a deployed ticket — what a
+ * `worktree remove` that failed partway leaves behind (CREW-2050). Reported,
+ * never deleted: with no `.git` link there is no way to tell what is in them.
+ */
+export function orphanedWorktreeDirs(target: RepoTarget, tickets: Ticket[], contract: Contract): string[] {
+  const deployed = new Set(
+    tickets.filter((t) => t.status === contract.statuses.deployed).map((t) => t.issue_id.replace(/^\D+/, '')),
+  );
+  return siblingWorktreeDirs(target).filter((d) => deployed.has(d.number)).map((d) => d.path);
+}
+
+export function warnOrphanedWorktreeDirs(paths: string[], log: SweepLog): void {
+  for (const p of paths) {
+    log.warn(`orphaned directory ${p}: its ticket is deployed but it is not a registered worktree; the sweep will not delete it — remove it by hand`, { step: 'worktree' });
+  }
 }
 
 export interface SweepLog {
@@ -117,11 +196,22 @@ export interface SweepLog {
  * the same problem `reap` exists for on the orphan-process side.
  */
 export async function applyWorktreeSweep(
-  cwd: string, actions: SweepAction[], dryRun: boolean, log: SweepLog, remote = 'origin',
+  cwd: string, actions: SweepAction[], dryRun: boolean, log: SweepLog, remote = 'origin', base?: string,
 ): Promise<{ removed: number; keptBranches: number }> {
   let removed = 0;
   let keptBranches = 0;
   for (const a of actions) {
+    // CREW-2050: crew's own conflict hand-back leaves a half-finished merge of
+    // the base here by design. Once the ticket has deployed anyway, nothing is
+    // coming back to resolve it; abort it so what remains is only real work.
+    if (!dryRun && base && !a.keepBranch && existsSync(a.path) && isHandBackMerge(a.path, base)) {
+      if (gitOk(a.path, ['merge', '--abort']) !== null) {
+        log.emit(
+          `abandoned the hand-back merge of ${base} in ${a.path}: ${a.ticket.issue_id} deployed without it`,
+          { ticket: a.ticket.issue_id, step: 'worktree' },
+        );
+      }
+    }
     // CREW-1364: a worktree with uncommitted work is reported, never removed
     // — on a ship that only ever TESTED the ticket this is rare, but `--force`
     // would destroy whatever a person left there.
@@ -166,7 +256,12 @@ export async function applyWorktreeSweep(
       );
       continue;
     }
-    gitOk(cwd, ['worktree', 'remove', '--force', a.path]);
+    // CREW-2050: a removal that fails (a locked file, a synced folder) is not a
+    // removal; leave the worktree and its branch for the next cycle.
+    try { git(cwd, ['worktree', 'remove', '--force', a.path]); } catch (e) {
+      log.warn(`could not remove worktree ${a.path} for ${a.ticket.issue_id}: ${(e as Error).message}`, { ticket: a.ticket.issue_id, step: 'worktree' });
+      continue;
+    }
     if (!a.keepBranch && a.branch) {
       gitOk(cwd, ['branch', '-D', a.branch]);
       // Deployed means the squash is on the base, so the pushed copy has
@@ -182,7 +277,23 @@ export async function applyWorktreeSweep(
     );
     removed++;
   }
+  if (!dryRun && actions.length) gitOk(cwd, ['worktree', 'prune']);
   return { removed, keptBranches };
+}
+
+/**
+ * A merge in progress whose message is the one `refreshBranch` (conflict.ts)
+ * writes when it merges `base` into a ticket branch: `Merge branch 'main' into
+ * …` or `Merge remote-tracking branch 'origin/main' into …`.
+ */
+function isHandBackMerge(path: string, base: string): boolean {
+  if (gitOk(path, ['rev-parse', '-q', '--verify', 'MERGE_HEAD']) === null) return false;
+  const msgPath = gitOk(path, ['rev-parse', '--git-path', 'MERGE_MSG']);
+  if (!msgPath) return false;
+  let first: string;
+  try { first = readFileSync(resolve(path, msgPath), 'utf8').split('\n')[0] ?? ''; } catch { return false; }
+  const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^Merge (?:remote-tracking )?branch '(?:[^']+/)?${escaped}'`).test(first);
 }
 
 /**
@@ -232,11 +343,17 @@ function deployedBranchStems(tickets: Ticket[], contract: Contract): Set<string>
   const stems = new Set<string>();
   for (const t of tickets) {
     if (t.status !== contract.statuses.deployed) continue;
-    const num = t.issue_id.replace(/^\D+/, '');
-    const unpadded = String(Number.parseInt(num, 10));
-    const prefixes = ['issue', t.project_issue_prefix?.toLowerCase()].filter((p): p is string => !!p);
-    for (const p of prefixes) { stems.add(`${p}-${num}`); stems.add(`${p}-${unpadded}`); }
+    for (const st of ticketStems(t)) stems.add(st);
   }
+  return stems;
+}
+
+function ticketStems(t: Ticket): Set<string> {
+  const stems = new Set<string>();
+  const num = t.issue_id.replace(/^\D+/, '');
+  const unpadded = String(Number.parseInt(num, 10));
+  const prefixes = ['issue', t.project_issue_prefix?.toLowerCase()].filter((p): p is string => !!p);
+  for (const p of prefixes) { stems.add(`${p}-${num}`); stems.add(`${p}-${unpadded}`); }
   return stems;
 }
 
@@ -256,7 +373,8 @@ function isTicketBranch(name: string, base: string, stems: Set<string>): boolean
  */
 export function sweepCandidatesExist(cwd: string, base: string): boolean {
   const linked = worktrees(cwd).slice(1);
-  if (linked.some((w) => /(?:^|-)\d+$/.test(basename(w.path)))) return true;
+  if (linked.some((w) => DIR_NUMBER_SUFFIXED.test(basename(w.path)) || (w.branch && BRANCH_STEM.test(w.branch)))) return true;
+  if (siblingWorktreeDirs({ name: '', dir: cwd }).length) return true;
   return localBranches(cwd).some((b) => b !== base && /-\d+(?:-.*)?$/.test(b));
 }
 

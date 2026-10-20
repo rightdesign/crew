@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planWorktreeSweep, applyWorktreeSweep, planLocalBranchCleanup, applyLocalBranchCleanup,
-  sweepCandidatesExist, worktreeTicketNumbers, type SweepLog,
+  sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, type SweepLog,
 } from '../src/worktree-sweep.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -219,4 +219,120 @@ test('a clean worktree of a deployed ticket is swept even though this ship relea
   await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog);
   assert.ok(!existsSync(wt));
   assert.ok(!branchesOf(dir).includes('issue-24'));
+});
+
+// CREW-2050: crew's own hand-back merge, suffixed/detached worktrees, failed removals.
+
+/** Leaves `wt` mid-merge of `main` into its branch, conflicted, as refreshBranch does. */
+function handBackMerge(dir: string, g: (...a: string[]) => Buffer, wt: string, branch: string) {
+  const gw = (...a: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=T', ...a], { cwd: wt, stdio: 'pipe' });
+  writeFileSync(join(wt, 'README.md'), 'branch side'); gw('commit', '-qam', 'branch');
+  writeFileSync(join(dir, 'README.md'), 'main side'); g('-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-qam', 'main moved');
+  assert.throws(() => gw('merge', '--no-edit', 'main'));
+  assert.ok(readFileSync(join(wt, 'README.md'), 'utf8').includes('<<<<<<<'));
+  void branch;
+}
+
+test('a deployed ticket\'s hand-back merge is aborted and the worktree removed', async () => {
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 40);
+  handBackMerge(dir, g, wt, 'issue-40');
+  const t = ticket({ issue_id: 'ISSUE-40', status: 'closed_deployed' });
+  const messages: string[] = [];
+  const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false,
+    { emit: (m) => messages.push(m), warn: () => {} }, 'origin', 'main');
+  assert.equal(r.removed, 1);
+  assert.ok(!existsSync(wt));
+  assert.ok(messages.some((m) => /abandoned the hand-back merge/.test(m)));
+});
+
+test('a deployed ticket\'s hand-back merge with an earlier uncommitted edit is refused after the abort', async () => {
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 41);
+  writeFileSync(join(wt, 'mine.txt'), 'uncommitted');
+  const gw = (...a: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=T', ...a], { cwd: wt, stdio: 'pipe' });
+  writeFileSync(join(wt, 'README.md'), 'branch side'); gw('commit', '-qam', 'branch');
+  writeFileSync(join(dir, 'README.md'), 'main side'); g('-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-qam', 'main moved');
+  assert.throws(() => gw('merge', '--no-edit', 'main'));
+  const warnings: string[] = [];
+  const t = ticket({ issue_id: 'ISSUE-41', status: 'closed_deployed' });
+  const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false,
+    { emit: () => {}, warn: (m) => warnings.push(m) }, 'origin', 'main');
+  assert.equal(r.removed, 0);
+  assert.ok(existsSync(join(wt, 'mine.txt')));
+  assert.match(warnings.join('\n'), /uncommitted changes/);
+});
+
+test('a verified ticket\'s hand-back merge is left alone', async () => {
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 42);
+  handBackMerge(dir, g, wt, 'issue-42');
+  const t = ticket({ issue_id: 'ISSUE-42', status: 'verified' });
+  const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog, 'origin', 'main');
+  assert.equal(r.removed, 0);
+  assert.ok(existsSync(wt));
+  assert.ok(readFileSync(join(wt, 'README.md'), 'utf8').includes('<<<<<<<'));
+});
+
+test('a clean detached worktree with a -qa suffix is swept for a deployed ticket only', async () => {
+  const { dir, g } = repo();
+  const parent = mkdtempSync(join(tmpdir(), 'crew-sweep-parent-'));
+  const done = join(parent, 'proj-issue-50-qa');
+  const open = join(parent, 'proj-issue-51-qa');
+  g('worktree', 'add', '-q', '--detach', done); g('worktree', 'add', '-q', '--detach', open);
+  const target = { name: 'proj', dir };
+  const tickets = [
+    ticket({ issue_id: 'ISSUE-50', status: 'closed_deployed' }),
+    ticket({ issue_id: 'ISSUE-51', status: 'in_progress' }),
+  ];
+  assert.deepEqual(worktreeTicketNumbers(target).sort(), ['50', '51']);
+  const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, tickets, DEFAULT_CONTRACT), false, silentLog);
+  assert.equal(r.removed, 1);
+  assert.ok(!existsSync(done));
+  assert.ok(existsSync(open));
+});
+
+test('a worktree on the ticket\'s branch is swept whatever its directory is called', async () => {
+  const { dir, g } = repo();
+  const parent = mkdtempSync(join(tmpdir(), 'crew-sweep-parent-'));
+  const wt = join(parent, 'scratch');
+  g('worktree', 'add', '-q', '-b', 'issue-52', wt);
+  const target = { name: 'proj', dir };
+  assert.deepEqual(worktreeTicketNumbers(target), ['52']);
+  const t = ticket({ issue_id: 'ISSUE-52', status: 'closed_deployed' });
+  const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog);
+  assert.equal(r.removed, 1);
+  assert.ok(!existsSync(wt));
+});
+
+test('a failing worktree remove warns, is not counted and keeps the branch', async () => {
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 53);
+  const t = ticket({ issue_id: 'ISSUE-53', status: 'closed_deployed' });
+  const actions = planWorktreeSweep(target, [t], DEFAULT_CONTRACT);
+  // Locked worktrees are refused by a single --force.
+  g('worktree', 'lock', wt);
+  const warnings: string[] = []; const emitted: string[] = [];
+  const r = await applyWorktreeSweep(dir, actions, false, { emit: (m) => emitted.push(m), warn: (m) => warnings.push(m) });
+  assert.equal(r.removed, 0);
+  assert.ok(existsSync(wt));
+  assert.ok(branchesOf(dir).includes('issue-53'));
+  assert.match(warnings.join('\n'), /could not remove worktree/);
+  assert.ok(!emitted.some((m) => /removed worktree/.test(m)));
+});
+
+test('an unregistered sibling directory of a deployed ticket is reported, not deleted', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'crew-sweep-orphan-'));
+  const dir = join(parent, 'proj');
+  mkdirSync(dir);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  const orphan = join(parent, 'proj-tabl-60'); mkdirSync(orphan);
+  mkdirSync(join(parent, 'proj-tabl-61'));
+  mkdirSync(join(parent, 'other-tabl-60'));
+  const target = { name: 'proj', dir };
+  assert.deepEqual(worktreeTicketNumbers(target).sort(), ['60', '61']);
+  assert.equal(sweepCandidatesExist(dir, 'main'), true);
+  const tickets = [ticket({ issue_id: 'TABL-60', status: 'closed_deployed' }), ticket({ issue_id: 'TABL-61', status: 'in_progress' })];
+  assert.deepEqual(orphanedWorktreeDirs(target, tickets, DEFAULT_CONTRACT), [orphan]);
+  assert.ok(existsSync(orphan));
 });
