@@ -98,6 +98,37 @@ pass a project explicitly (`crew connect my-workspace/my-product`, or
 `--project`) when you deliberately want a different, non-default tracker
 project.
 
+#### A secondary workspace
+
+A workspace nested under another one (a secondary) is addressed as
+`<primary>:<slug>`: the primary workspace's slug, a colon, then the
+secondary's own slug.
+
+```sh
+crew connect acme:design-team
+crew connect acme:design-team/my-product   # with an explicit project
+```
+
+Everything `connect` derives from the workspace carries that full address:
+
+- **Route.** The route is `<primary>:<slug>/<project>`, for example
+  `acme:design-team/issues`. Only `/` separates the project, so the colon is
+  part of the workspace half.
+- **Keychain entry.** The credential is stored in the OS keychain under the
+  tracker host and the full address (`<host>/acme:design-team`), separate from
+  any entry for the primary itself. Connecting to both keeps two independent
+  keys.
+- **Repos directory.** On a first run the wizard sets the route's directory to
+  `~/Crew/<primary>:<slug>`, and each repo's checkout goes under it as
+  `~/Crew/<primary>:<slug>/<repo>`. The colon is a literal character in the
+  directory name.
+- **Finder.** Finder shows that colon as a slash, so the folder reads
+  `acme/design-team`. In a terminal, and in `crew.yaml`, the name keeps the
+  colon. Don't rename the folder from Finder to "fix" it.
+- **`--dir`.** `crew connect --dir PATH` overrides the directory in the route
+  block, for a secondary or a primary alike. Use it to keep checkouts somewhere
+  without a colon in the path.
+
 The template's Issues table carries status rules: a close as won't fix, can't
 reproduce or completed needs a resolution note, and a close as duplicate needs
 a duplicate target. A write a rule refuses comes back as a 422 whose `message`

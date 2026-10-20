@@ -8,7 +8,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew connect [workspace[/project]]` | Resolve a workspace's ids into `crew.yaml`; on a first run, a setup wizard. |
+| `crew connect [workspace[/project]]` | Resolve a workspace's ids into `crew.yaml`; on a first run, a setup wizard. A secondary workspace is `<primary>:<slug>`; see [Getting started](/getting-started#a-secondary-workspace). |
 | `crew repos add ROUTE PATH` | Attach a local checkout to a route in `crew.yaml` Creates the Repos row when the tracker has none (`--name`, `--project`, `--no-create`; `--dry-run` previews). |
 | `crew repos list ROUTE` | The checkouts a route has, with the Repos row each matches. |
 | `crew reload [--now]` | Make the running `crew daemon` pick up a changed `crew.yaml`. The daemon also notices an edit to `crew.yaml` or a route's `apiKeyFile` on its own and relaunches on its next idle pass. `reload` writes a `reload-requested` marker in the state directory so a busy daemon finishes its in-flight run first; `--now` also restarts the unit immediately, interrupting any run in progress. With no daemon unit running it says so and exits 0. `crew doctor` warns when the config is newer than the daemon's start. |
