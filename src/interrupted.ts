@@ -18,9 +18,10 @@ import { join } from 'node:path';
 import { reattachRun, readRunSidecar, runIsAlive, type ReattachOptions, type ReattachResult, type RunSidecar } from './agent.ts';
 import type { Emitter } from './events.ts';
 import type { State } from './state.ts';
+import { calloutHeader } from './callout.ts';
 
 /** The `interrupted` event posted on the ticket a dead run was holding. */
-export const INTERRUPTED_MARKER = '<!-- crew:interrupted -->';
+export const INTERRUPTED_MARKER = calloutHeader('NOTE', 'Interrupted');
 
 export interface InterruptedBody {
   branch: string | null;
@@ -35,7 +36,7 @@ export function interruptedComment(b: InterruptedBody): string {
     b.dirty === null ? 'The worktree could not be checked.'
     : b.dirty ? 'The worktree has uncommitted changes — they are this seat\'s own, from that run.'
     : 'The worktree is clean.';
-  return `${INTERRUPTED_MARKER}\n` +
+  return `${INTERRUPTED_MARKER}\n\n` +
     `The agent run on this ticket was cut short (${b.reason}) before it handed on` +
     `${b.branch ? `; its branch is \`${b.branch}\`` : ''}. ${tree} ` +
     'The next run on this seat resumes from the worktree rather than starting over.';

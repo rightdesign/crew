@@ -26,9 +26,10 @@ import { worktreeForBranch } from './conflict.ts';
 import type { ConflictWriter, ConflictLog } from './conflict.ts';
 import type { Contract } from './contract.ts';
 import type { Ticket } from './tracker.ts';
+import { calloutHeader } from './callout.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
-export const BUILD_FAILURE_MARKER = '<!-- crew:build-failure -->';
+export const BUILD_FAILURE_MARKER = calloutHeader('CAUTION', 'Build Failure');
 
 /**
  * Repo-relative file paths named in a failing hook's output: tsc
@@ -104,6 +105,7 @@ export function buildFailureComment(b: BuildFailureBounce): string {
     ? `The failing output names files that only \`${b.branch}\` changed among the branches in that release.`
     : `Built alone on the previous \`${b.base}\`, \`${b.branch}\` fails the same hook.`;
   return `${BUILD_FAILURE_MARKER}
+
 **Back with the dev lane — this branch builds on its own but not on current \`${b.base}\`.**
 
 \`${b.branch}\` was verified, but the release's \`${b.hook}\` hook failed once it was merged with the other branches in the same release. ${how}

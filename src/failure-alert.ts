@@ -17,11 +17,11 @@
  * per route and per failure kind (`"route: build FAILED"` etc).
  */
 
+import { calloutHeader } from './callout.ts';
 import type { Notification } from './notify.ts';
 import { displayKey, type Ticket } from './tracker.ts';
 
-/** A marker in the ticket body, so a repeat is recognisable as this path's. */
-export const FAILURE_ALERT_MARKER = '<!-- crew:failure-alert -->';
+export const FAILURE_ALERT_MARKER = calloutHeader('CAUTION', 'Failure Alert');
 
 export interface FailureAlertWriter {
   /** `memberId` is the seat filing the ticket, stamped as `filed_by_id` (CREW-1371). */
@@ -45,7 +45,7 @@ export function findOpenFailureAlert(tickets: Ticket[], headline: string): Ticke
 }
 
 function ticketBody(n: Notification, route: string): string {
-  return `${FAILURE_ALERT_MARKER}\n${n.detail ?? n.headline}\n\nFiled automatically — no ` +
+  return `${FAILURE_ALERT_MARKER}\n\n${n.detail ?? n.headline}\n\nFiled automatically — no ` +
     `\`notify\` hook is configured for route \`${route}\`, so this is the crew's built-in ` +
     'fallback rather than a silent log line. Configure `hooks.notify` on this route to replace it.';
 }
@@ -81,7 +81,7 @@ export async function applyFailureAlert(
       return { kind: 'commented', issueId: label };
     }
     try {
-      await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\nStill failing: ${n.detail ?? n.headline}`, memberId, 'failure_alert');
+      await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\n\nStill failing: ${n.detail ?? n.headline}`, memberId, 'failure_alert');
       log.warn(`release failure recurring — commented on ${label}`, { step: 'release' });
       return { kind: 'commented', issueId: label };
     } catch (e) {

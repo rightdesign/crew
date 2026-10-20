@@ -34,9 +34,10 @@ import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import type { RunnerEvent, Ticket, Tracker } from './tracker.ts';
 import { finishRunWorktree } from './run-worktree.ts';
+import { calloutHeader } from './callout.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
-export const HANDOFF_BOUNCED_MARKER = '<!-- crew:handoff-bounced -->';
+export const HANDOFF_BOUNCED_MARKER = calloutHeader('WARNING', 'Hand-off Bounced');
 
 /** The fixed shape QA reads: `pushed <full sha> to origin/<branch>`. */
 export const pushedEventBody = (sha: string, remote: string, branch: string): string =>
@@ -95,6 +96,7 @@ export function inspectHandoff(
 
 export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, shipName: string | undefined): string {
   return `${HANDOFF_BOUNCED_MARKER}
+
 **Hand-off bounced: the branch is not on \`${v.remote}\` at the tip this ticket was built to.**
 
 ${shipName ? `Ship: ${shipName}\n` : ''}Local HEAD: ${v.local ? `\`${v.local}\`` : '(no local branch)'}
@@ -304,7 +306,7 @@ function repoConfigFor(route: Route, t: Ticket) {
   return { target, cfg };
 }
 
-export const STRAY_HANDOFF_MARKER = '<!-- crew:stray-handoff -->';
+export const STRAY_HANDOFF_MARKER = calloutHeader('WARNING', 'Stray Hand-off');
 
 export interface StrayGuardInput {
   writer: HandoffWriter;
@@ -349,7 +351,7 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
       if (holder && holder !== i.myShipId) {
         await i.writer.updateTicket(t.id, { status: st.building });
         await i.writer.postEvent(t.id,
-          `${STRAY_HANDOFF_MARKER}\n**Hand-off bounced: this ticket is held by another ship.**\n\n${i.shipName ? `${i.shipName}'s ` : 'A '}${i.role} run set it to \`${st.handoff}\` without having claimed it. Set back to \`${st.building}\`; the holding ship's own hand-off is the one that counts.`,
+          `${STRAY_HANDOFF_MARKER}\n\n**Hand-off bounced: this ticket is held by another ship.**\n\n${i.shipName ? `${i.shipName}'s ` : 'A '}${i.role} run set it to \`${st.handoff}\` without having claimed it. Set back to \`${st.building}\`; the holding ship's own hand-off is the one that counts.`,
           i.seatId, 'bounced').catch(() => i.log.warn('bounced, but the note failed to post', at));
         i.log.warn(`${t.issue_id} was handed off by a run that did not claim it, while held by another ship — bounced to ${st.building}`, at);
         continue;

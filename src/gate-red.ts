@@ -17,7 +17,12 @@
 import type { RunnerEvent, Ticket } from './tracker.ts';
 import type { MergeCandidate } from './release.ts';
 
-export const GATE_RED_MARKER = '<!-- crew:test-gate-red';
+import { calloutHeader } from './callout.ts';
+
+export const GATE_RED_MARKER = calloutHeader('CAUTION', 'Test Gate Red');
+
+/** The fixed visible line carrying the head's short sha; `alreadyReported` matches on it. */
+const shaLine = (g: { sha: string }): string => `Head \`${g.sha.slice(0, 8)}\`.`;
 
 /** Consecutive failures on one head before the board is told. */
 export const GATE_RED_AFTER = 3;
@@ -47,7 +52,9 @@ export function gateRedTickets(merged: MergeCandidate[], merges: MergeCandidate[
 }
 
 export function gateRedComment(g: GateRed): string {
-  return `${GATE_RED_MARKER} ${g.sha.slice(0, 8)} -->
+  return `${GATE_RED_MARKER}
+> ${shaLine(g)}
+
 **This ticket is merged on the base, but the release test gate is red — nothing has shipped.**
 
 The \`test\` hook (\`${g.hook}\`) has failed ${g.count} cycles running on the same head (\`${g.sha.slice(0, 8)}\`). The ticket's commit is on the base and will ship once the gate passes; it is not stranded, and re-setting it to \`verified\` will not help. Last lines of the hook's output:
@@ -61,4 +68,4 @@ ${g.tail}
 /** Whether this head's note is already on the ticket (belt and braces to the state file). */
 export const alreadyReported = (ticket: Ticket, g: GateRed, events: RunnerEvent[]): boolean =>
   events.some((e) => e.record_id === ticket.id && e.event_type === 'gate_red'
-    && (e.message ?? '').includes(`${GATE_RED_MARKER} ${g.sha.slice(0, 8)}`));
+    && (e.message ?? '').includes(shaLine(g)));

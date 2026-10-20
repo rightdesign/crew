@@ -120,7 +120,7 @@ test('enforce: an unpushed fixed ticket goes back to in_progress, held by this s
   const out = await enforceHandoff(input(f, h));
   assert.equal(out.kind, 'bounced');
   assert.deepEqual(h.patches, [{ status: 'in_progress', assignee_id: 'seat-dev', held_by_ship_id: 'ship-A' }]);
-  assert.match(h.notes[0]!, new RegExp(HANDOFF_BOUNCED_MARKER));
+  assert.ok(h.notes[0]!.includes(HANDOFF_BOUNCED_MARKER));
   assert.match(h.notes[0]!, /Studio/);
   assert.match(h.notes[0]!, /never pushed/);
 });
@@ -221,7 +221,7 @@ test('stray: a fixed ticket held by another ship goes back to in_progress, hold 
   const h = harness(ticket());
   await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: 'ship-B' })));
   assert.deepEqual(h.patches, [{ status: 'in_progress' }]);
-  assert.match(h.notes[0]!, new RegExp(STRAY_HANDOFF_MARKER));
+  assert.ok(h.notes[0]!.includes(STRAY_HANDOFF_MARKER));
   assert.ok(h.warns.some((w) => /did not claim it/.test(w)));
 });
 
@@ -239,7 +239,7 @@ test('stray: an unheld fixed ticket whose branch is unpushed is bounced', async 
   const h = harness(ticket());
   await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: null })));
   assert.deepEqual(h.patches, [{ status: 'in_progress', assignee_id: 'seat-dev' }]);
-  assert.match(h.notes[0]!, new RegExp(HANDOFF_BOUNCED_MARKER));
+  assert.ok(h.notes[0]!.includes(HANDOFF_BOUNCED_MARKER));
 });
 
 test('stray: an unheld fixed ticket whose local branch is stale (origin ahead) is left alone', async () => {

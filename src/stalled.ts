@@ -28,6 +28,7 @@
  * only memory, so one stall produces one comment however many cycles it lasts.
  */
 
+import { calloutHeader, calloutLabelLine } from './callout.ts';
 import type { Contract } from './contract.ts';
 import type { Comment, RunnerEvent, ShipRow, Ticket } from './tracker.ts';
 import { shipName, ticketHolderShipId } from './ship-affinity.ts';
@@ -43,7 +44,7 @@ export const STALLED_AFTER_CYCLES = 30;
 const CYCLE_MS = 120 * 1000;
 export const STALLED_AFTER_MS = STALLED_AFTER_CYCLES * CYCLE_MS;
 
-export const STALLED_MARKER = '<!-- crew:stalled -->';
+export const STALLED_MARKER = calloutHeader('WARNING', 'Stalled');
 
 /** The key of a ticket's ship-attention item. */
 export const stalledKey = (issueId: string): string => `stalled:${issueId}`;
@@ -96,7 +97,7 @@ export function planStalled(
       .map((e) => ms(e.occurred_at ?? e.created_at ?? '')));
     const lastActivityAt = Math.max(
       ms(t.updated_at),
-      ...mine.filter((c) => !(c.body ?? '').includes(STALLED_MARKER)).map((c) => ms(c.created_at)),
+      ...mine.filter((c) => !(c.body ?? '').includes(calloutLabelLine('Stalled'))).map((c) => ms(c.created_at)),
     );
     if (now - lastActivityAt < STALLED_AFTER_MS) continue;
     if (ships.some((s) => s.engaged && s.engaged_ticket_id === t.id)) continue;
@@ -113,6 +114,7 @@ export function stalledComment(s: Stalled, ships: ShipRow[], now: number = Date.
     ? `Held by ${shipName(ships, s.holderShipId)}, which is not engaged on it. That ship has an attention item open; the ticket is otherwise left as it is, and resumes the moment the ship picks it back up.`
     : `No ship holds it and none is engaged on it. It is waiting for the next ship that polls its lane; its status and assignee are left as they are.`;
   return `${STALLED_MARKER}
+
 **Stalled — no activity on \`${s.ticket.issue_id}\` for ${mins} minutes (\`${s.ticket.status}\`).**
 
 ${who}`;

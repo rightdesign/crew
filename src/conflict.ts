@@ -40,9 +40,10 @@ import { git, gitOk, worktrees, isAncestor, GitError } from './git.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
 import type { Ticket, RunnerEvent } from './tracker.ts';
+import { calloutHeader } from './callout.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
-export const BOUNCE_MARKER = '<!-- crew:merge-conflict -->';
+export const BOUNCE_MARKER = calloutHeader('WARNING', 'Merge Conflict');
 
 export interface ConflictBounce {
   ticket: Ticket;
@@ -163,6 +164,7 @@ export function refreshBranch(
 export function handBackComment(b: ConflictBounce, merged: boolean): string {
   const list = b.paths.length ? b.paths.map((p) => `\`${p}\``).join(', ') : 'files this branch and the base both changed';
   return `${BOUNCE_MARKER}
+
 **Back with the dev lane — this branch no longer merges.**
 
 \`${b.branch}\` was verified, but squash-merging it into \`${b.base}\` conflicts in ${list}. Work that landed on \`${b.base}\` after this branch was cut has changed the same lines.
@@ -176,6 +178,7 @@ Nothing was written to \`${b.base}\`: the failed merge was rewound, and the rest
 
 export function escalateComment(b: ConflictBounce): string {
   return `${BOUNCE_MARKER}
+
 **Conflicting again after a hand-back — stopping rather than looping.**
 
 \`${b.branch}\` was handed back once for a merge conflict, verified again, and conflicts against \`${b.base}\` a second time${b.paths.length ? ` (${b.paths.map((p) => `\`${p}\``).join(', ')})` : ''}.
