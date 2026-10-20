@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.54.1] — 2026-10-20
+
+- ISSUE-2149 Docs now explain connecting to a secondary workspace with `crew connect <primary>:<slug>`, including its route, keychain entry, repos directory, how Finder displays the colon and the `--dir` override.
+
 ## [0.54.0] — 2026-10-20
 
 - ISSUE-2132 crew connect accepts the `<primary>:<slug>` workspace segment for secondary workspaces.
