@@ -87,7 +87,7 @@ export interface UnrecognizedStatus {
 
 export interface Discovered {
   workspaceId: string;
-  /** The canonical slug, whatever form (slug/uuid) `workspace` was given in. */
+  /** The canonical address (`path` when the server sends one, else `slug`), whatever form (segment/slug/uuid) `workspace` was given in. */
   workspaceSlug: string;
   workspaceName?: string;
   /** This key's own role in the workspace — `/auth/me` — for the
@@ -326,10 +326,10 @@ export async function installTemplate(
  * lists literally every workspace and is platform-admin-only).
  */
 export async function listWorkspaces(o: AuthOptions): Promise<WorkspaceOption[]> {
-  const res = await get<{ workspaces: Array<{ slug: string; name: string; role: string }> }>(
+  const res = await get<{ workspaces: Array<{ slug: string; path?: string; name: string; role: string }> }>(
     o, '/auth/my-workspaces',
   );
-  return res.workspaces.map((w) => ({ slug: w.slug, name: w.name, role: w.role }));
+  return res.workspaces.map((w) => ({ slug: w.path ?? w.slug, name: w.name, role: w.role }));
 }
 
 const eq = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.trim().toLowerCase();
@@ -354,9 +354,12 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   const provisioning: string[] = [];
   // `GET /workspaces/:idOrSlug` resolves either form to the real uuid — the
   // rest of this function, and everything downstream, works in ids only.
-  const ws = await get<{ id: string; slug: string; name?: string }>(o, `/workspaces/${o.workspace}`);
+  // `path` is the `<primary>:<slug>` segment a secondary workspace is
+  // addressed by (EPIC-051); a server that predates the field sends only
+  // `slug`, which is the whole address of a primary.
+  const ws = await get<{ id: string; slug: string; path?: string; name?: string }>(o, `/workspaces/${encodeURIComponent(o.workspace).replace(/%3A/gi, ':')}`);
   const out: Discovered = {
-    workspaceId: ws.id, workspaceSlug: ws.slug, workspaceName: ws.name,
+    workspaceId: ws.id, workspaceSlug: ws.path ?? ws.slug, workspaceName: ws.name,
     models: {}, seats: {}, holds: [], problems, provisioning,
   };
 

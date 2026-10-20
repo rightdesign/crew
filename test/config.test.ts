@@ -6,7 +6,7 @@ import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
   resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo, passengerRepoTargets,
-  passengerCheckoutDir, passengerCheckoutTargets, releaseSeat,
+  passengerCheckoutDir, passengerCheckoutTargets, releaseSeat, splitRoute,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -942,4 +942,8 @@ test('ship.pair defaults to claude, accepts known harnesses, rejects unknown one
   assert.deepEqual(loadConfig(w.dir, w.file).ship.pair, ['claude', 'codex', 'gemini']);
   const bad = withConfig(ONE.replace('ship:\n', 'ship:\n  pair: [vim]\n'));
   assert.throws(() => loadConfig(bad.dir, bad.file), /ship\.pair "vim"/);
+});
+
+test('splitRoute accepts a <primary>:<slug> workspace segment', () => {
+  assert.deepEqual(splitRoute('paradium:issues/issues'), ['paradium:issues', 'issues']);
 });

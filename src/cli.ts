@@ -12,7 +12,7 @@ import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { pickWorktreeRoute, positionalArgs, splitWorktreeArgs } from './argv.ts';
+import { pickWorktreeRoute, positionalArgs, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers,
@@ -2739,7 +2739,7 @@ switch (command) {
     // slug — `discover()` accepts either) and `--project` remain for
     // scripting and for a project named rather than slugged.
     const arg = positional[1];
-    const [argWorkspace, argProject] = arg?.includes('/') ? arg.split(/\/(.*)/s) : [arg, undefined];
+    const [argWorkspace, argProject] = splitConnectArg(arg);
     let workspace = argWorkspace ?? value('workspace-id') ?? value('workspace');
     const project = argProject ?? value('project');
     const baseUrl = value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL;
@@ -2848,10 +2848,14 @@ switch (command) {
       // scoped to — no reason to make the operator retype what there was
       // no ambiguity in, the same reasoning as the single-workspace
       // shortcut below.
-      if (!workspace) workspace = result.workspace.slug;
+      // The client's typed workspace predates `path` (the secondary's
+      // `<primary>:<slug>` segment); take it when the server sent it.
+      const deviceWorkspace = 'path' in result.workspace && typeof result.workspace.path === 'string'
+        ? result.workspace.path : result.workspace.slug;
+      if (!workspace) workspace = deviceWorkspace;
       if (store) {
         try {
-          await store.set(hostFromUrl(baseUrl), result.workspace.slug, {
+          await store.set(hostFromUrl(baseUrl), deviceWorkspace, {
             apiKey: result.apiKey.key,
             shipId: getOrCreateShipId(),
             workspaceId: result.workspace.id,
@@ -2860,7 +2864,7 @@ switch (command) {
           });
           keychainBacked = true;
           process.stderr.write(
-            `API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${result.workspace.slug}.\n`,
+            `API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${deviceWorkspace}.\n`,
           );
         } catch (e) {
           process.stderr.write(

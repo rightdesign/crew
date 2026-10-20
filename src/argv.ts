@@ -73,3 +73,15 @@ export function pickWorktreeRoute(
       (found.length ? `; found it only on ${found.join(', ')}, which has no checkout for its repo` : ''),
   };
 }
+
+/**
+ * `crew connect`'s positional: `<workspace>[/<project>]`, split on the first
+ * `/`. The workspace part may itself contain a colon — a secondary workspace
+ * is addressed as `<primary>:<slug>` (EPIC-051) — and is passed through
+ * verbatim; only `/` separates the project.
+ */
+export function splitConnectArg(arg: string | undefined): [string | undefined, string | undefined] {
+  if (!arg?.includes('/')) return [arg, undefined];
+  const i = arg.indexOf('/');
+  return [arg.slice(0, i), arg.slice(i + 1)];
+}

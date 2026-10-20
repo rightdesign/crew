@@ -177,6 +177,13 @@ reality: the checkouts, the tools on PATH, the agent binary, the repo's hooks,
 and whether the board answers. Nothing writes, wakes an agent or deploys until
 a route has `enabled: true`.
 
+A secondary workspace is addressed as `<primary>:<slug>`:
+`crew connect paradium:issues` (or `paradium:issues/<project>`, or
+`--workspace-id paradium:issues`) connects to it, and the route, keychain
+entry, seat-key name and repos directory all carry that segment verbatim
+(`paradium:issues/issues`, `~/Crew/paradium:issues/<repo>`). Finder shows
+the colon in that directory as a slash; `--dir` overrides the location.
+
 Then install it as a real service:
 
 ```sh

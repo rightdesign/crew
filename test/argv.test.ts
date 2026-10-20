@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { positionalArgs } from '../src/argv.ts';
+import { positionalArgs, splitConnectArg } from '../src/argv.ts';
 
 test('agents sync --force <route> and <route> --force resolve the same route (CREW-1539)', () => {
   assert.deepEqual(positionalArgs(['agents', 'sync', '--force', 'paradium/issues']), ['agents', 'sync', 'paradium/issues']);
@@ -49,4 +49,11 @@ test('pickWorktreeRoute chooses the route that has the ticket and serves its rep
   assert.doesNotMatch(none.error, /found it only/);
   // single candidate takes its hit regardless of served repos
   assert.deepEqual(pickWorktreeRoute(7, [{ route: 'a/issues', hit: { repoId: null }, servedRepoIds: [] }]), { route: 'a/issues' });
+});
+
+test('splitConnectArg keeps a colon in the workspace part and splits only on the first slash', () => {
+  assert.deepEqual(splitConnectArg('a:b'), ['a:b', undefined]);
+  assert.deepEqual(splitConnectArg('a:b/c'), ['a:b', 'c']);
+  assert.deepEqual(splitConnectArg('a/c'), ['a', 'c']);
+  assert.deepEqual(splitConnectArg(undefined), [undefined, undefined]);
 });

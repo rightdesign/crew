@@ -1052,3 +1052,31 @@ test('discover() under --dry-run says what it would do and writes nothing (CREW-
   assert.equal(calls.filter((c) => c.method !== 'GET').length, 0);
   assert.ok(found.provisioning.some((p) => /^would (create|link) Crew row/.test(p)));
 });
+
+test('discover() addresses a secondary by its <primary>:<slug> segment and reports the server path', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/paradium:issues': { id: 'ws-2', slug: 'issues', path: 'paradium:issues', name: 'Issues' },
+    '/api/auth/me?workspaceId=ws-2': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-2': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'issues-model', name: 'Issues' },
+      { id: 'crew-model', name: 'Crew' },
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+  });
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'paradium:issues', project: 'bar' });
+  assert.equal(found.workspaceSlug, 'paradium:issues');
+});
+
+test('discover() falls back to slug when the server sends no path', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1', slug: 'issues', name: 'Issues' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [{ id: 'issues-model', name: 'Issues' }, { id: 'crew-model', name: 'Crew' }],
+    '/api/data-models/crew-model/records?limit=200': [],
+  });
+  t.after(restore);
+  assert.equal((await discover({ ...BASE, workspace: 'issues', project: 'bar' })).workspaceSlug, 'issues');
+});
