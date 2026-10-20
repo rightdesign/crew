@@ -207,3 +207,14 @@ for (const preset of ['default', 'dev-qa']) {
     assert.match(skill, /`uuid` and `filename`/);
   });
 }
+
+// CREW-2148: a tracker create that fails with a transport error may have
+// landed; the lane looks for the row before writing it again.
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} lane policy checks for a landed write before retrying (CREW-2148)`, () => {
+    const text = readFileSync(join(PROMPTS, preset, 'skills', 'crew-lane-agent.md'), 'utf8');
+    assert.match(text, /fails at the transport level[^]*may have landed/);
+    assert.match(text, /list the target table for a row with the same title[^]*same opening line[^]*last two\s+minutes/);
+    assert.match(text, /A validation error[^]*is a real failure/);
+  });
+}
