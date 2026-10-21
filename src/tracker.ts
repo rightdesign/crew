@@ -466,6 +466,28 @@ export class Tracker {
     return this.client.records.create<{ id: string }>(model, fields);
   }
 
+  /** Every `Repos` row as `{ id, name }`, for finding one by name. */
+  async repoRows(): Promise<Array<{ id: string; name?: string }>> {
+    const model = this.route.resolved?.reposModelId;
+    if (!model) return [];
+    return this.client.records.list<{ id: string; name?: string }>(model, { limit: 200 });
+  }
+
+  /** Delete a `Repos` row (`crew sample-ticket --remove`). */
+  async deleteRepoRow(id: string): Promise<void> {
+    const model = this.route.resolved?.reposModelId;
+    if (!model) throw new Error('this workspace has no Repos table');
+    await this.client.records.remove(model, id);
+  }
+
+  /** Every ticket filed against one `Repos` row, any status. */
+  async ticketsForRepo(repoId: string): Promise<Ticket[]> {
+    return this.client.records.list<Ticket>(this.models.issues, {
+      filters: encodeFilters([{ columnName: this.contract.columns.repo, operator: 'EQ', value: repoId }]),
+      limit: 200,
+    });
+  }
+
   /**
    * The Ships rows of this workspace, if it has a Ships table.
    *

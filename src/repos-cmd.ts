@@ -207,6 +207,35 @@ export function planRepoAdd(i: AddInput): AddPlan {
   return { text: String(doc), mode, name, block: renderBlock(m), warning, unmatched: !matched };
 }
 
+/**
+ * Plan detaching the checkout at `path` from `route` (the inverse of
+ * `planRepoAdd`, CREW-2242). A `repos:` map left with one entry collapses back
+ * to `dir:`, and an emptied one is dropped, so the route reads as it did before
+ * the add. Throws `ReposError` when the path is not configured on the route.
+ */
+export function planRepoRemove(text: string, base: string, route: string, path: string): { text: string; name: string } {
+  const doc = parseDocument(text);
+  if (doc.errors.length > 0) throw new ReposError(`config is not valid YAML — ${doc.errors[0]!.message}`);
+  const m = routeMapOf(doc, route);
+  const target = expandDir(path, base);
+  const existing = configuredRepos(text, route, base);
+  const hit = existing.find((e) => e.dir === target);
+  if (!hit) throw new ReposError(`${target} is not configured on route ${route}`);
+  const repos = m.get('repos', true);
+  if (isMap(repos)) {
+    repos.delete(hit.name);
+    const left = existing.filter((e) => e !== hit);
+    if (left.length === 1) {
+      const pair = m.items.find((p) => (p.key as { value?: unknown }).value === 'repos')!;
+      pair.key = doc.createNode('dir');
+      pair.value = doc.createNode(String(repos.get(left[0]!.name)));
+    } else if (left.length === 0) m.delete('repos');
+  } else {
+    m.delete('dir');
+  }
+  return { text: String(doc), name: hit.name };
+}
+
 function renderBlock(m: YAMLMap): string {
   return stringify([m.toJSON()]).trimEnd();
 }

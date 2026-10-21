@@ -80,7 +80,8 @@ import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatK
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
+import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
@@ -93,7 +94,7 @@ import {
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
@@ -314,6 +315,7 @@ function usage(): never {
   crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
   crew doctor [route] [--fix]    preflight; --fix enables clean routes and offers crew install
   crew selftest [route] [--toolchain NAME] [--json]   launch each toolchain as a run would and prove it reaches the tracker
+  crew sample-ticket [route] [--remove] [--dry-run] [--json]   file one ticket on a throwaway repo that walks the dev, QA and release loop
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
@@ -4025,6 +4027,125 @@ switch (command) {
     } catch {
       process.stdout.write(`no log yet at ${cfg.ship.logFile}\n`);
     }
+    break;
+  }
+
+  case 'sample-ticket': {
+    // CREW-2242: a sandbox repo (no remote, always-green hooks, integrate
+    // release) plus one approved ticket against it. Creating it is idempotent:
+    // a second run reuses the checkout, the route entry and the Repos row and
+    // files another ticket. `--remove` undoes all four.
+    const json = flag('json');
+    const say = (event: string, extra: Record<string, unknown>, human: string) =>
+      process.stdout.write(json ? `${JSON.stringify({ event, ...extra })}\n` : `${human}\n`);
+    const fail = (msg: string): never => {
+      if (json) process.stdout.write(`${JSON.stringify({ event: 'error', message: msg })}\n`);
+      else process.stderr.write(`crew sample-ticket: ${msg}\n`);
+      return process.exit(2);
+    };
+    if (!route.resolved) fail(`route ${route.route} is not connected — run \`crew connect\` first`);
+    const tracker = new Tracker(route, cfg.ship);
+    const configText = readFileSync(cfg.configFile, 'utf8');
+    const cfgBase = dirname(cfg.configFile);
+    const configured = configuredRepos(configText, route.route, cfgBase);
+    const dir = configured.find((r) => r.name === SAMPLE_REPO)?.dir
+      ?? sampleDir(configured.map((r) => r.dir), route.reposBasePath, route.route.split('/')[0]!);
+    const resolvedFile = resolvedPathFor(cfg.ship.stateDir, route.route);
+    const rows = await tracker.repoRows();
+    const row = rows.find((r) => r.name === SAMPLE_REPO);
+
+    if (flag('remove')) {
+      const closed: string[] = [];
+      if (row) {
+        const wontFix = tracker.contract.statuses.wontFix;
+        const resolved = new Set(tracker.contract.statuses.resolved);
+        for (const t of await tracker.ticketsForRepo(row.id)) {
+          if (resolved.has(t.status) || !isSampleTicket((t as { description?: string | null }).description)) continue;
+          if (!dryRun) {
+            await tracker.updateTicket(t.id, {
+              [tracker.contract.columns.status]: wontFix,
+              [tracker.contract.columns.resolutionNote]: 'Sample ticket removed by `crew sample-ticket --remove`; obsolete.',
+            });
+          }
+          closed.push(t.issue_tag ?? t.issue_id);
+        }
+      }
+      if (dryRun) {
+        say('dry-run', { dir, row: row?.id ?? null, closed }, `would close ${closed.join(', ') || 'no tickets'}, delete the Repos row, detach and delete ${dir}`);
+        break;
+      }
+      // Detach from the route first: a config still naming a deleted directory is the worse half-state.
+      if (configured.some((r) => r.dir === dir)) {
+        try {
+          writeFileSync(cfg.configFile, planRepoRemove(configText, cfgBase, route.route, dir).text);
+        } catch (e) {
+          if (e instanceof ReposError) fail(e.message);
+          throw e;
+        }
+      }
+      if (row) {
+        await tracker.deleteRepoRow(row.id);
+        if (existsSync(resolvedFile)) {
+          const raw = JSON.parse(readFileSync(resolvedFile, 'utf8')) as RepoRemotes & Record<string, unknown>;
+          if (raw.repoNames) delete raw.repoNames[row.id];
+          if (raw.repoRemotes) delete raw.repoRemotes[row.id];
+          writeFileSync(resolvedFile, `${JSON.stringify(raw, null, 2)}\n`);
+        }
+      }
+      // Only ever delete a directory this command made: its name, a git checkout, and nothing but sample files.
+      if (existsSync(join(dir, '.git')) && basename(dir) === SAMPLE_REPO) rmSync(dir, { recursive: true, force: true });
+      say('removed', { dir, closed }, `removed the sample repo${closed.length ? `, closed ${closed.join(', ')}` : ''}`);
+      break;
+    }
+
+    const projectId = route.resolved!.areaId
+      ?? resolveRepoProject(await tracker.projectRows(), value('project'));
+    const fresh = !existsSync(join(dir, '.git'));
+    if (existsSync(dir) && fresh && readdirSync(dir).length > 0) fail(`${dir} exists and is not a git checkout — move it aside`);
+    if (dryRun) {
+      say('dry-run', { dir, newCheckout: fresh, repoRow: row?.id ?? null }, `would ${fresh ? 'create' : 'reuse'} ${dir}${row ? '' : ', create the Repos row'}, and file one ${tracker.contract.statuses.approved} ticket`);
+      break;
+    }
+    if (fresh) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'README.md'), SAMPLE_README);
+      writeFileSync(join(dir, '.crew.yaml'), SAMPLE_CREW_YAML);
+      const g = (...a: string[]) => {
+        const r = spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
+        if (r.status !== 0) fail(`git ${a[0]} failed in ${dir}: ${(r.stderr || r.stdout).trim()}`);
+      };
+      g('init', '-b', 'main');
+      g('add', '.');
+      g('-c', 'user.name=crew', '-c', 'user.email=crew@localhost', 'commit', '-m', 'Initial commit');
+    }
+    let repoId = row?.id;
+    if (!repoId) {
+      const payload = planRepoRow({
+        name: SAMPLE_REPO, origin: SAMPLE_REMOTE, projectId,
+        spec: { platform: 'unix', releaseMode: 'integrate', ciProvider: 'none' },
+      });
+      repoId = (await tracker.createRepoRow(payload)).id;
+      if (existsSync(resolvedFile)) {
+        const raw = JSON.parse(readFileSync(resolvedFile, 'utf8')) as RepoRemotes & Record<string, unknown>;
+        raw.repoNames = { ...raw.repoNames, [repoId]: SAMPLE_REPO };
+        raw.repoRemotes = { ...raw.repoRemotes, [repoId]: SAMPLE_REMOTE };
+        writeFileSync(resolvedFile, `${JSON.stringify(raw, null, 2)}\n`);
+      }
+    }
+    if (!configured.some((r) => r.dir === dir)) {
+      try {
+        writeFileSync(cfg.configFile, planRepoAdd({ text: configText, base: cfgBase, route: route.route, path: dir, name: SAMPLE_REPO }).text);
+      } catch (e) {
+        if (e instanceof ReposError) fail(e.message);
+        throw e;
+      }
+    }
+    const ticket = await tracker.fileTicket(
+      planSampleTicket({ projectId, repoId, approvedStatus: tracker.contract.statuses.approved }),
+      route.resolved!.seats.dev ?? '',
+    );
+    const tag = ticket.issue_tag ?? ticket.issue_id;
+    say('filed', { ticket: tag, id: ticket.id, dir, repoId }, `filed ${tag} against ${dir}; follow it with \`crew watch\``);
     break;
   }
 
