@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAddArgs, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
+import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
 import { parse } from 'yaml';
 
 const BASE = '/cfg';
@@ -147,4 +147,42 @@ test('parseAddArgs: a route-shaped first arg that is not configured is an error'
 test('planRepoAdd names an unmatched checkout after its remote repo, not its folder', () => {
   const plan = planRepoAdd({ text: empty, base: BASE, route: 'acme/product', path: '/src/checkout-dir', origin: 'git@github.com:acme/widget.git' });
   assert.equal(plan.name, 'widget');
+});
+
+test('parseCloneArgs takes an optional route and exactly one name', () => {
+  assert.deepEqual(parseCloneArgs(['acme/product', 'crew'], ['acme/product', 'other/thing']), { route: 'acme/product', name: 'crew' });
+  assert.deepEqual(parseCloneArgs(['crew'], ['acme/product']), { route: 'acme/product', name: 'crew' });
+  assert.throws(() => parseCloneArgs(['crew'], ['a/b', 'c/d']), ReposError);
+  assert.throws(() => parseCloneArgs(['nope/x', 'crew'], ['a/b']), ReposError);
+  assert.throws(() => parseCloneArgs([], ['a/b']), ReposError);
+});
+
+test('clone plans a checkout under the route directory and records it as dir', () => {
+  const p = planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'Crew', resolved });
+  assert.equal(p.remote, 'acme/crew');
+  assert.equal(p.name, 'crew');
+  assert.equal(p.mode, 'dir');
+  assert.match(p.target, /\/Crew\/acme\/crew$/);
+  assert.equal(route(p.text, 'acme/product').dir, p.target);
+});
+
+test('clone honors --dir and the route reposBasePath', () => {
+  assert.equal(planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'crew', resolved, dir: '/src/mine' }).target, '/src/mine');
+  const text = empty.replace('  - route: acme/product\n', '  - route: acme/product\n    reposBasePath: /work\n');
+  assert.equal(planRepoClone({ text, base: BASE, route: 'acme/product', name: 'crew', resolved }).target, '/work/acme/crew');
+});
+
+test('a second clone moves the route to repos', () => {
+  const first = planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'crew', resolved, dir: '/src/crew' });
+  const second = planRepoClone({ text: first.text, base: BASE, route: 'acme/product', name: 'synthesis', resolved, dir: '/src/synthesis' });
+  assert.equal(second.mode, 'repos');
+  assert.deepEqual(route(second.text, 'acme/product').repos, { crew: '/src/crew', synthesis: '/src/synthesis' });
+});
+
+test('clone refuses a row with no remote, an unknown row, and an already-attached repo', () => {
+  const noRemote = { repoNames: { r1: 'crew' }, repoRemotes: {} };
+  assert.throws(() => planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'crew', resolved: noRemote }), /no remote to clone from/);
+  assert.throws(() => planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'ghost', resolved }), /no Repos row named "ghost"/);
+  const first = planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'crew', resolved, dir: '/src/crew' });
+  assert.throws(() => planRepoClone({ text: first.text, base: BASE, route: 'acme/product', name: 'crew', resolved }), /already has a checkout named "crew"/);
 });

@@ -80,7 +80,7 @@ import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatK
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { parseAddArgs, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
@@ -93,7 +93,7 @@ import {
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
@@ -331,6 +331,7 @@ function usage(): never {
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
+  crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
@@ -2600,10 +2601,10 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos list <workspace/project>\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project>\n');
       process.exit(2);
     };
-    if (sub !== 'add' && sub !== 'list') usage();
+    if (sub !== 'add' && sub !== 'list' && sub !== 'clone') usage();
     const configText = readFileSync(cfg.configFile, 'utf8');
     let routeName = positional[2];
     let addPath = '.';
@@ -2613,6 +2614,15 @@ switch (command) {
       try {
         const a = parseAddArgs(positional.slice(2), routeNamesOf(configText), (p) => existsSync(resolvePath(p.replace(/^~(?=\/|$)/, homedir()))));
         routeName = a.route; addPath = a.path; addName = a.name;
+      } catch (e) {
+        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        throw e;
+      }
+    }
+    if (sub === 'clone') {
+      try {
+        const a = parseCloneArgs(positional.slice(2), routeNamesOf(configText));
+        routeName = a.route; addName = a.name;
       } catch (e) {
         if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
         throw e;
@@ -2638,6 +2648,37 @@ switch (command) {
             : `no Repos row matches ${normalizeRemote(origin) ?? 'this checkout (no origin remote)'}`;
           process.stdout.write(`${r.name}\t${r.dir}\t${note}\n`);
         }
+        break;
+      }
+      if (sub === 'clone') {
+        const json = flag('json');
+        const say = (event: string, extra: Record<string, unknown>, human: string) =>
+          process.stdout.write(json ? `${JSON.stringify({ event, ...extra })}\n` : `${human}\n`);
+        const plan = planRepoClone({ text, base, route: routeName!, name: addName!, resolved: resolvedRemotes, dir: value('dir') });
+        if (existsSync(plan.target) && (existsSync(`${plan.target}/.git`) || readdirSync(plan.target).length > 0)) {
+          throw new ReposError(
+            existsSync(`${plan.target}/.git`)
+              ? `${plan.target} is already a checkout — attach it with \`crew repos add ${routeName} ${plan.name} ${plan.target}\``
+              : `${plan.target} exists and is not empty — pass --dir to clone somewhere else`,
+          );
+        }
+        if (dryRun) {
+          say('dry-run', { remote: plan.remote, target: plan.target }, `would clone ${plan.remote} into ${plan.target}`);
+          if (!json) process.stdout.write(`${plan.block}\n`);
+          break;
+        }
+        say('cloning', { remote: plan.remote, target: plan.target }, `cloning ${plan.remote} into ${plan.target}`);
+        try {
+          ensureRepoCheckout(plan.target, plan.remote, { scheme: cfg.ship.cloneScheme ?? 'https' });
+        } catch (e) {
+          if (!(e instanceof GitError)) throw e;
+          const authHint = /authentication failed|could not read (username|password)|permission denied|terminal prompts disabled|repository not found/i.test(e.message)
+            ? '\n  hint: git could not authenticate — run `gh auth login` (or add an SSH key and set ship.cloneScheme: ssh), then re-run'
+            : '';
+          throw new ReposError(`${e.message}${authHint}\n  crew.yaml was not changed`);
+        }
+        writeFileSync(cfg.configFile, plan.text);
+        say('attached', { route: routeName, name: plan.name, dir: plan.target, mode: plan.mode }, `cloned and attached ${plan.target} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}`);
         break;
       }
       const target = resolvePath(addPath.replace(/^~(?=\/|$)/, homedir()));

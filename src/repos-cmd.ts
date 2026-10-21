@@ -1,6 +1,7 @@
 /**
- * `crew repos add|list` (CREW-1287): attach a local checkout to a route
- * without hand-editing `crew.yaml`.
+ * `crew repos add|list|clone` (CREW-1287, CREW-2237): attach a local checkout
+ * to a route (or clone a Repos row's remote and attach it) without
+ * hand-editing `crew.yaml`.
  *
  * Works on the route's RAW yaml, not a parsed `Route`: a freshly connected
  * route that names no `dir`/`repos` yet fails `loadConfig`'s validation and is
@@ -13,7 +14,7 @@
  */
 
 import { homedir } from 'node:os';
-import { basename, dirname, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { isMap, isSeq, parseDocument, stringify, type Document, type YAMLMap } from 'yaml';
 
 export class ReposError extends Error {}
@@ -272,4 +273,73 @@ export function resolveRepoProject(projects: ProjectChoice[], opt: string | unde
     `cannot tell which project the new Repos row belongs to — pass --project <name>` +
       ` (have: ${projects.map((p) => p.name ?? p.id).join(', ') || 'none'}), or --no-create to skip creating it`,
   );
+}
+
+export interface CloneArgs { route: string; name: string }
+
+/** `crew repos clone [route] <name>`: a leading arg naming a configured route is the route (omitted: the only route, else an error listing them). */
+export function parseCloneArgs(args: string[], routes: string[]): CloneArgs {
+  const rest = [...args];
+  let route: string | undefined;
+  if (rest.length > 1 && routes.includes(rest[0]!)) route = rest.shift();
+  else if (rest.length > 1) throw new ReposError(`no route "${rest[0]}" in the config (have: ${routes.join(', ') || 'none'})`);
+  if (!route) {
+    if (routes.length === 1) route = routes[0];
+    else throw new ReposError(routes.length === 0 ? 'the config has no routes — run `crew connect` first' : `several routes are configured; name one: ${routes.join(', ')}`);
+  }
+  if (rest.length !== 1) throw new ReposError('expected [route] <name> — the Repos row to clone (see `crew repos list`)');
+  return { route: route!, name: rest[0]! };
+}
+
+export interface ClonePlan extends AddPlan {
+  /** The Repos row's `owner/repo`. */
+  remote: string;
+  /** Where the clone goes. */
+  target: string;
+}
+
+export interface CloneInput {
+  text: string;
+  base: string;
+  route: string;
+  /** The Repos row to clone, by name (case-insensitive). */
+  name: string;
+  resolved?: RepoRemotes;
+  /** `--dir`: the clone destination, instead of `<reposBasePath>/<workspace>/<name>`. */
+  dir?: string;
+}
+
+/**
+ * Plan cloning a Repos row's remote and attaching it. Pure: refuses a row the
+ * tracker does not know or that carries no `remote`, and a repo already
+ * attached (by name or by destination), before anything touches disk. The
+ * attach itself is `planRepoAdd`, so the first checkout lands as `dir:` and
+ * later ones under `repos:` exactly as `crew repos add` would record them.
+ */
+export function planRepoClone(i: CloneInput): ClonePlan {
+  const names = i.resolved?.repoNames ?? {};
+  const id = Object.keys(names).find((k) => names[k]!.toLowerCase() === i.name.toLowerCase());
+  if (!id) {
+    const known = Object.values(names);
+    throw new ReposError(`the tracker has no Repos row named "${i.name}" for route ${i.route}${known.length ? ` (known: ${known.join(', ')})` : ' — run `crew connect` to refresh them'}`);
+  }
+  const name = names[id]!;
+  const remote = normalizeRemote(i.resolved?.repoRemotes?.[id]);
+  if (!remote) {
+    throw new ReposError(
+      `the Repos row "${name}" has no remote to clone from — attach an existing checkout with ` +
+        `\`crew repos add ${i.route} ${name} <path>\`, or set the row's remote in the tracker and re-run \`crew connect\``,
+    );
+  }
+  const doc = parseDocument(i.text);
+  const m = routeMapOf(doc, i.route);
+  const existing = configuredRepos(i.text, i.route, i.base);
+  if (existing.some((e) => e.name.toLowerCase() === name.toLowerCase())) {
+    throw new ReposError(`route ${i.route} already has a checkout named "${name}" — nothing to clone`);
+  }
+  const ship = doc.get('ship', true);
+  const basePath = String(m.get('reposBasePath') ?? (isMap(ship) ? ship.get('reposBasePath') : undefined) ?? '~/Crew');
+  const target = i.dir ? expandDir(i.dir, i.base) : join(expandDir(basePath, i.base), i.route.split('/')[0]!, name);
+  const add = planRepoAdd({ text: i.text, base: i.base, route: i.route, path: target, origin: remote, resolved: i.resolved, name });
+  return { ...add, remote, target };
 }
