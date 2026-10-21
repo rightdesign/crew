@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.60.0] — 2026-10-21
+
+- ISSUE-2238 `crew repos hooks <name>` proposes test/build (and version/bump) hooks for a checkout without a `.crew.yaml`, and can write them to `crew.yaml` (`--write route`) or as a starter `.crew.yaml` (`--write repo`).
+
 ## [0.59.0] — 2026-10-21
 
 - ISSUE-2239 crew doctor probes push auth per repo and reports gh, Node and Docker with install hints; a repo with an invalid .crew.yaml is reported as failed instead of dropping the other repos' results.
