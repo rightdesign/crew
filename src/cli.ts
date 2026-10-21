@@ -82,6 +82,7 @@ import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPro
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
+import { parseHooksArgs, repoDirOf, suggestHooks, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
 import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
@@ -337,6 +338,7 @@ function usage(): never {
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
+  crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--write route|repo, --json)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
@@ -2556,11 +2558,53 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project>\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project>\ncrew repos hooks [workspace/project] <name> [--suggest] [--write route|repo] [--json]\n');
       process.exit(2);
     };
-    if (sub !== 'add' && sub !== 'list' && sub !== 'clone') usage();
+    if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks') usage();
     const configText = readFileSync(cfg.configFile, 'utf8');
+    if (sub === 'hooks') {
+      // `crew repos hooks` (CREW-2238): propose hooks for a checkout and
+      // optionally write them route-level or as a starter `.crew.yaml`.
+      try {
+        const a = parseHooksArgs(positional.slice(2), routeNamesOf(configText));
+        const dir = repoDirOf(configText, dirname(cfg.configFile), a.route, a.name);
+        if (!existsSync(dir)) throw new ReposError(`${dir} does not exist on disk`);
+        const files = { exists: (r: string) => existsSync(resolvePath(dir, r)), read: (r: string) => { try { return readFileSync(resolvePath(dir, r), 'utf8'); } catch { return undefined; } } };
+        const suggestion = suggestHooks(files);
+        const write = value('write');
+        if (write !== undefined && write !== 'route' && write !== 'repo') throw new ReposError(`--write takes "route" or "repo" (got "${write}")`);
+        let written: { target: 'route' | 'repo'; file: string; hooks: string[]; kept: string[] } | undefined;
+        if (write && suggestion.source === null) throw new ReposError(`nothing to write: ${suggestion.notes[0]}`);
+        if (write === 'route') {
+          const plan = planRouteHooks(configText, a.route, a.name, suggestion.hooks);
+          writeFileSync(cfg.configFile, plan.text);
+          written = { target: 'route', file: cfg.configFile, hooks: plan.written, kept: plan.kept };
+        } else if (write === 'repo') {
+          const have = existingRepoConfig(files);
+          if (have) throw new ReposError(`${resolvePath(dir, have)} already exists; not overwriting it`);
+          const file = resolvePath(dir, '.crew.yaml');
+          writeFileSync(file, starterRepoConfig(suggestion.hooks), { flag: 'wx' });
+          written = { target: 'repo', file, hooks: Object.keys(suggestion.hooks), kept: [] };
+        }
+        if (flag('json')) {
+          process.stdout.write(`${JSON.stringify({ route: a.route, repo: a.name, dir, ...suggestion, written: written ?? null })}\n`);
+        } else {
+          if (suggestion.source) process.stdout.write(`${a.name}: proposed from ${suggestion.source}\n`);
+          for (const [k, v] of Object.entries(suggestion.hooks)) process.stdout.write(`  ${k}: ${v}\n`);
+          for (const n of suggestion.notes) process.stdout.write(`note: ${n}\n`);
+          if (written) {
+            process.stdout.write(`wrote ${written.hooks.join(', ') || 'nothing new'} to ${written.file}\n`);
+            if (written.kept.length) process.stdout.write(`kept existing route hooks: ${written.kept.join(', ')}\n`);
+            if (written.target === 'repo') process.stdout.write('review it and commit it to the repository\n');
+          }
+        }
+      } catch (e) {
+        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        throw e;
+      }
+      break;
+    }
     let routeName = positional[2];
     let addPath = '.';
     let addName: string | undefined;

@@ -7,7 +7,7 @@
 export const VALUE_FLAGS: ReadonlySet<string> = new Set([
   'agent-bin', 'area', 'base-url', 'choose', 'dir', 'extra-path', 'harness', 'key', 'level', 'limit', 'max-roles', 'mcp',
   'member', 'name', 'project', 'repo', 'role', 'route', 'ship-name', 'tail', 'ticket', 'workspace',
-  'workspace-id',
+  'workspace-id', 'write',
 ]);
 
 /** argv minus every `--flag` and the value of each value-taking flag. */

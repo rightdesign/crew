@@ -505,6 +505,13 @@ warn-only behaviour, for a Repos table you manage by hand.
   Repos row each checkout matches, so you can confirm the add.
 
 Neither command adds hooks: a repo's own `.crew.yaml` still supplies those.
+For a checkout that has none, `crew repos hooks [workspace/project] <name>`
+reads its `package.json`, `Package.swift`, `pyproject.toml` or `Makefile` and
+prints proposed `test`/`build` hooks (plus `version`/`bump` for an npm package).
+`--write route` stores them in `crew.yaml` for this machine, keeping any hook
+the route already sets; `--write repo` writes a starter `.crew.yaml` into the
+checkout for you to review and commit, which is the durable choice, and it
+will not overwrite an existing file.
 
 ## Connecting a repo that has no `.crew.yaml`
 
