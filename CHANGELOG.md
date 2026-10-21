@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.57.0] — 2026-10-21
+
+- ISSUE-2235 `crew connect` can run without a terminal: wizard answers as flags, `--json` progress events, and `--choose` to answer the questions it would have asked.
+- ISSUE-2236 `crew selftest` launches each configured toolchain as a real run would and proves it can read the workspace through the tracker, naming the failure class when it cannot; `crew doctor` shows the last result.
+- ISSUE-2237 `crew repos clone [route] <name>` clones a Repos row's remote into the route directory and attaches it to crew.yaml (`--dir`, `--dry-run`, `--json`).
+
 ## [0.56.0] — 2026-10-21
 
 - ISSUE-2234 Tagged releases now attach compiled crew binaries (darwin and linux, arm64 and x64) and a SHA256SUMS file to the GitHub Release; scripts/publish-binaries.sh does the same by hand.
