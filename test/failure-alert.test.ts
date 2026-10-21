@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyFailureAlert, findOpenFailureAlert, FAILURE_ALERT_MARKER,
+  applyFailureAlert, applyFailureRecovery, findOpenFailureAlert, FAILURE_ALERT_MARKER,
   type FailureAlertWriter, type FailureAlertLog,
 } from '../src/failure-alert.ts';
 import type { Ticket } from '../src/tracker.ts';
-import type { Notification } from '../src/notify.ts';
+import { recoveredFailureHeadlines, type Notification } from '../src/notify.ts';
+import { DEFAULT_CONTRACT } from '../src/contract.ts';
 
 const silent: FailureAlertLog = { emit: () => {}, warn: () => {} };
 
@@ -98,4 +99,65 @@ test('placement: omitted, the ticket is filed without repo or project', async ()
   await applyFailureAlert(w, n, 'proj', [], 'seat', silent, false);
   assert.ok(!('repo_id' in filed[0]!));
   assert.ok(!('project_id' in filed[0]!));
+});
+
+function recoveryWriter() {
+  const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const notes: Array<{ id: string; body: string }> = [];
+  return {
+    updates, notes,
+    w: {
+      updateTicket: async (id: string, patch: Record<string, unknown>) => { updates.push({ id, patch }); },
+      postEvent: async (id: string, body: string) => { notes.push({ id, body }); },
+    },
+  };
+}
+
+const testsFailed = 'proj: release blocked — tests failed';
+
+test('recovery closes an unclaimed alert with a note, clearing assignee and hold', async () => {
+  for (const status of ['new', 'accepted', 'needs_info']) {
+    const { w, updates, notes } = recoveryWriter();
+    const alert = ticket({ id: `a-${status}`, title: testsFailed, status });
+    const out = await applyFailureRecovery(w, [testsFailed], [alert], DEFAULT_CONTRACT, 'seat', 'proj released v1.2.3', silent, false);
+    assert.deepEqual(out.closed, ['ISSUE-999']);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0]!.body, /Passed: proj released v1\.2\.3/);
+    assert.deepEqual(updates[0]!.patch, {
+      status: 'closed_completed', resolution_note: 'Resolved automatically: proj released v1.2.3.',
+      assignee_id: null, held_by_ship_id: null,
+    });
+  }
+});
+
+test('recovery leaves an in_progress alert open and only posts the event', async () => {
+  const { w, updates, notes } = recoveryWriter();
+  const alert = ticket({ title: testsFailed, status: 'in_progress' });
+  const out = await applyFailureRecovery(w, [testsFailed], [alert], DEFAULT_CONTRACT, 'seat', 'passed', silent, false);
+  assert.deepEqual(out.noted, ['ISSUE-999']);
+  assert.equal(updates.length, 0);
+  assert.equal(notes.length, 1);
+});
+
+test('recovery of one headline does not touch another kind on the same route', async () => {
+  const { w, updates, notes } = recoveryWriter();
+  const deploy = ticket({ id: 'd', title: 'proj: deploy FAILED' });
+  const headlines = recoveredFailureHeadlines({ stopped: 'build failed' }, 'proj');
+  await applyFailureRecovery(w, headlines, [deploy], DEFAULT_CONTRACT, 'seat', 'passed', silent, false);
+  assert.equal(updates.length, 0);
+  assert.equal(notes.length, 0);
+});
+
+test('recovery dry run writes nothing', async () => {
+  const { w, updates, notes } = recoveryWriter();
+  await applyFailureRecovery(w, [testsFailed], [ticket({ title: testsFailed })], DEFAULT_CONTRACT, 'seat', 'passed', silent, true);
+  assert.equal(updates.length + notes.length, 0);
+});
+
+test('recoveredFailureHeadlines follows the stages a release got past', () => {
+  assert.deepEqual(recoveredFailureHeadlines({ stopped: 'tests failed' }, 'proj'), []);
+  assert.equal(recoveredFailureHeadlines({ stopped: 'deploy failed' }, 'proj').includes('proj: deploy FAILED'), false);
+  assert.equal(recoveredFailureHeadlines({ stopped: 'deploy failed' }, 'proj').includes('proj: build FAILED'), true);
+  assert.equal(recoveredFailureHeadlines({ deployed: true }, 'proj').includes('proj: deploy FAILED'), true);
+  assert.equal(recoveredFailureHeadlines({ integrated: true }, 'proj').includes(testsFailed), true);
 });

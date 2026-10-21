@@ -20,6 +20,7 @@
 import { calloutHeader } from './callout.ts';
 import { headLine } from './test-evidence.ts';
 import type { Notification } from './notify.ts';
+import type { Contract } from './contract.ts';
 import { displayKey, type RunnerEvent, type Ticket } from './tracker.ts';
 
 export const FAILURE_ALERT_MARKER = calloutHeader('CAUTION', 'Failure Alert');
@@ -127,4 +128,81 @@ export async function applyFailureAlert(
   } catch (e) {
     return { kind: 'failed', why: (e as Error).message };
   }
+}
+
+export interface FailureRecoveryWriter {
+  updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
+}
+
+/** What a later passing cycle did to the alerts it found. */
+export type FailureRecoveryOutcome = { closed: string[]; noted: string[]; failed: string[] };
+
+/**
+ * The status a resolved alert closes to: `closed_completed` where the
+ * contract has it. `wontFix` would misstate it and `deployed` implies a
+ * change shipped from the ticket. A contract without a fitting terminal
+ * leaves the alert open (it still gets the event) rather than guessing.
+ */
+export function alertResolvedStatus(c: Contract): string | undefined {
+  return c.statuses.resolved.find((s) => s === 'closed_completed');
+}
+
+/**
+ * The route's release now passes the stage an open alert reported on: close
+ * the alert and say so, so the trail reads failed, failed, passed, closed.
+ *
+ * Only an alert nobody has picked up (`new`, `accepted`, `needs_info`) is
+ * closed. One in `in_progress` or later may be a person's working ticket to
+ * fix forward from (TABL-1631, TABL-1537), so it only gets the passed event.
+ * Matched on the exact headline, so a failure of another kind on the same
+ * route keeps its own ticket. Never throws, like `applyFailureAlert`.
+ */
+export async function applyFailureRecovery(
+  writer: FailureRecoveryWriter,
+  headlines: string[],
+  openTickets: Ticket[],
+  contract: Contract,
+  memberId: string,
+  passed: string,
+  log: FailureAlertLog,
+  dryRun: boolean,
+): Promise<FailureRecoveryOutcome> {
+  const out: FailureRecoveryOutcome = { closed: [], noted: [], failed: [] };
+  const closedStatus = alertResolvedStatus(contract);
+  const closable = new Set(['new', contract.statuses.approved, contract.statuses.needsHuman]);
+  for (const headline of headlines) {
+    const alert = findOpenFailureAlert(openTickets, headline);
+    if (!alert) continue;
+    const label = displayKey(alert);
+    const willClose = closedStatus !== undefined && closable.has(alert.status);
+    if (dryRun) {
+      log.emit(`would ${willClose ? 'close' : 'note on'} ${label} — ${passed}`, { step: 'release' });
+      continue;
+    }
+    try {
+      await writer.postEvent(
+        alert.id, `${FAILURE_ALERT_MARKER}\n\nPassed: ${passed}.${willClose ? ' Closing this alert.' : ''}`,
+        memberId, 'failure_alert',
+      );
+      if (willClose) {
+        const col = contract.columns;
+        await writer.updateTicket(alert.id, {
+          [contract.columns.status]: closedStatus,
+          [col.resolutionNote]: `Resolved automatically: ${passed}.`,
+          [col.assignee]: null,
+          [col.heldBy]: null,
+        });
+        out.closed.push(label);
+        log.emit(`${label} closed — ${passed}`, { step: 'release' });
+      } else {
+        out.noted.push(label);
+        log.emit(`${label} left open — ${passed}`, { step: 'release' });
+      }
+    } catch (e) {
+      out.failed.push(label);
+      log.warn(`could not resolve failure alert ${label}: ${(e as Error).message}`, { step: 'release' });
+    }
+  }
+  return out;
 }

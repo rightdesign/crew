@@ -180,3 +180,38 @@ export function describeRelease(o: {
   // worth interrupting anyone for.
   return null;
 }
+
+/**
+ * Which failure headlines a release outcome proves are over (CREW-2211).
+ *
+ * The release is a pipeline — setup, tests, build, deploy — and each stage a
+ * release got past is evidence that stage's failure alert is stale, even when
+ * a later stage then failed: a tests-failed alert is recovered by a release
+ * that went on to fail its build, but the build-failed alert is not. Only a
+ * release that shipped (`deployed`/`integrated`) also clears the blocked-
+ * checkout alerts. These are exactly the headlines `describeRelease` emits at
+ * `level: 'fail'`, so the failure alert's exact-headline match finds them.
+ */
+export function recoveredFailureHeadlines(o: {
+  deployed?: boolean; integrated?: boolean; stopped?: string;
+}, route: string): string[] {
+  const setup = `${route}: release blocked — setup failed`;
+  const tests = `${route}: release blocked — tests failed`;
+  const build = `${route}: build FAILED`;
+  const deploy = `${route}: deploy FAILED`;
+  if (o.deployed || o.integrated) {
+    return [
+      setup, tests, build, deploy,
+      `${route}: release blocked — checkout is not on the base branch`,
+      `${route}: release blocked — working tree is not clean`,
+    ];
+  }
+  switch (o.stopped) {
+    case 'build failed':
+    case 'deploy failed':
+    case 'tag push failed':
+      return o.stopped === 'deploy failed' ? [setup, tests, build] : [setup, tests];
+    default:
+      return [];
+  }
+}

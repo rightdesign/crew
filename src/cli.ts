@@ -50,8 +50,8 @@ import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
 import { renderEnvironment } from './environment.ts';
-import { notify, describeRelease } from './notify.ts';
-import { applyFailureAlert } from './failure-alert.ts';
+import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
+import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
@@ -1541,6 +1541,20 @@ async function releasePhase(
           remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
       }
+    }
+
+    // The other direction (CREW-2211): a stage this release got past is a
+    // failure alert for that stage now stale. Non-fatal for the same reason.
+    const recovered = recoveredFailureHeadlines(outcome, scope);
+    if (recovered.length) {
+      const passed = outcome.version
+        ? `${scope} released ${outcome.version}`
+        : outcome.deployed || outcome.integrated ? `${scope} release passed` : `${scope} release got past this stage`;
+      await applyFailureRecovery(
+        tracker, recovered, all, tracker.contract, releaseSeat(c), passed, remit, dryRun,
+      ).catch((e) => {
+        remit.warn(`could not resolve failure tickets: ${(e as Error).message}`, { step: 'release' });
+      });
     }
 
     // A verified branch that would not merge, or a verified ticket with

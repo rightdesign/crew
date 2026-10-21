@@ -85,6 +85,8 @@ export interface ContractColumns {
    * hand-off and `verified` clear it. Optional like `ship`.
    */
   heldBy: string;
+  /** Why a ticket was closed (the workspace's rule asks for one on a resolved close). */
+  resolutionNote: string;
   /**
    * The branch head QA verified (`verified_sha`) — written by QA with the move
    * to `verified`, and what the review hand-off compares the branch against
@@ -275,6 +277,7 @@ export const DEFAULT_CONTRACT: Contract = {
     author: 'filed_by_id',
     ship: 'ship_id',
     heldBy: 'held_by_ship_id',
+    resolutionNote: 'resolution_note',
     verifiedSha: 'verified_sha',
     prRef: 'pr_ref',
     position: 'position',
