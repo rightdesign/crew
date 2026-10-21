@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.54.2] — 2026-10-21
+
+- ISSUE-2209 The lane digest now surfaces a build_failed hand-back from the release gate as direction until a push answers it, and shows gate_red as status only.
+
 ## [0.54.1] — 2026-10-20
 
 - ISSUE-2149 Docs now explain connecting to a secondary workspace with `crew connect <primary>:<slug>`, including its route, keychain entry, repos directory, how Finder displays the colon and the `--dir` override.
