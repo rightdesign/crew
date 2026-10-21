@@ -23,6 +23,7 @@ export const CHOICE_EXIT_CODE = 3;
 export const CONNECT_EVENTS = [
   'device_code', 'signed_in', 'workspace_resolved', 'project_options', 'template_missing', 'template_installed',
   'ship_row', 'operator_row', 'seat', 'mcp_registered', 'pair_installed', 'capabilities',
+  'agents_synced', 'seat_key',
   'choice', 'problem', 'done',
 ] as const;
 export type ConnectEventName = typeof CONNECT_EVENTS[number];

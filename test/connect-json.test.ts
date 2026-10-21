@@ -33,7 +33,13 @@ test('every documented event name is in the registry exactly once', () => {
   assert.equal(new Set(CONNECT_EVENTS).size, CONNECT_EVENTS.length);
   for (const e of ['device_code', 'signed_in', 'workspace_resolved', 'project_options', 'template_missing',
     'template_installed', 'ship_row', 'operator_row', 'seat', 'mcp_registered', 'pair_installed', 'capabilities',
-    'choice', 'problem', 'done']) assert.ok((CONNECT_EVENTS as readonly string[]).includes(e), e);
+    'agents_synced', 'seat_key', 'choice', 'problem', 'done']) assert.ok((CONNECT_EVENTS as readonly string[]).includes(e), e);
+});
+
+test('agents_synced and seat_key come before done in the event registry (CREW-2241)', () => {
+  const order = CONNECT_EVENTS as readonly string[];
+  assert.ok(order.indexOf('agents_synced') < order.indexOf('done'));
+  assert.ok(order.indexOf('seat_key') < order.indexOf('done'));
 });
 
 test('parseChoices: repeatable, both spellings, value may contain =, last one wins', () => {

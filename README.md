@@ -71,7 +71,11 @@ demand. `crew agents sync [route]` pushes both personas and skills in one
 run — "agents" here means every agent-shaped resource crew owns, not just
 the Agents table; `crew skills sync [route]` is the same create/update/
 diverged sync narrowed to skills alone, for when you've only touched
-`skills/`. Example use — a Pair session invoked via an Epic's
+`skills/`. `crew connect` runs this same sync (then the seat key mint) at the
+end for an admin key, so a fresh workspace needs no second command; a member
+key links seats to the existing rows and is told an admin has to run it once.
+`--no-agents-sync` skips it, and `--json` adds `agents_synced` and `seat_key`
+events on stdout. Example use — a Pair session invoked via an Epic's
 `grill_link` looks up the `Grill-Me` skill through the Tablation MCP tool
 `agent_skills_controller_get_skill` and follows it. `prompts/default/skills/
 grill-me.md` is one shipped example; the rest are the building lanes'

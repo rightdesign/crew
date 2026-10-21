@@ -79,6 +79,7 @@ import {
 } from '@tablation/client';
 import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
+import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
@@ -329,7 +330,7 @@ function usage(): never {
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
-  crew connect                  resolve a workspace's ids into a crew.yaml block (--no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
+  crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
   crew agents sync [route] [--force] [--revoke-seat-keys]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
@@ -2464,71 +2465,18 @@ switch (command) {
       process.stderr.write(`crew agents sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
       process.exit(2);
     }
-    // CREW-1797: the persona/skill rows and seat keys are a workspace admin's.
-    // A non-admin key links this ship's seats to whatever rows exist and
-    // writes nothing else; a 403 from any admin-only write is reported the
-    // same way instead of thrown. An unreadable role keeps today's behaviour.
-    const keyRole = target.resolved.role ?? await fetchKeyRole(target, cfg.ship.userAgent);
-    let readOnly = !isAdminRole(keyRole);
-    let personaResult: Awaited<ReturnType<typeof syncPersonas>>;
-    const runPersonas = (ro: boolean) => syncPersonas(target, { userAgent: cfg.ship.userAgent, dryRun, force, readOnly: ro });
+    let run: Awaited<ReturnType<typeof runAgentsSync>>;
     try {
-      try {
-        personaResult = await runPersonas(readOnly);
-      } catch (e) {
-        if (readOnly || !isForbidden(e)) throw e;
-        readOnly = true;
-        personaResult = await runPersonas(true);
-      }
+      run = await runAgentsSync(target, {
+        userAgent: cfg.ship.userAgent, stateDir: cfg.ship.stateDir, dryRun, force,
+        say: (l) => process.stdout.write(`${l}\n`),
+        warn: (l) => process.stderr.write(`crew agents sync: ${l}\n`),
+      });
     } catch (e) {
-      if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
+      if (e instanceof AgentsSyncError || e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
       throw e;
     }
-    process.stdout.write(`route: ${target.route}\n`);
-    for (const o of personaResult.outcomes) process.stdout.write(`${describeSyncOutcome(o)}\n`);
-    for (const o of personaResult.crewLinks) process.stdout.write(`${describeCrewLink(o)}\n`);
-    if (personaResult.releaseNote) process.stdout.write(`${personaResult.releaseNote}\n`);
-    // CREW-1534: a brief's `{{skill: Name}}` include of a skill this preset
-    // does not ship would refuse every run of that seat, so say so here.
-    const briefs = Object.fromEntries(ROLE_NAMES.map((r) => [r, personaDefaultPrompt(target.promptsDir, r)]));
-    for (const w of skillMarkerWarnings(target.promptsDir, briefs)) process.stderr.write(`crew agents sync: warning: ${w}\n`);
-    // "Agents" here means every agent-shaped resource crew owns — personas
-    // AND skills — not just the Agents table; `crew skills sync` remains
-    // available on its own when an operator wants to push skill changes
-    // without touching personas, but this is the one command a person
-    // reaches for after editing anything under prompts/<promptSet>/.
-    let skillResult: Awaited<ReturnType<typeof syncSkills>> | undefined;
-    if (!readOnly) {
-      try {
-        skillResult = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun, force });
-      } catch (e) {
-        if (isForbidden(e)) readOnly = true;
-        else if (e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
-        else throw e;
-      }
-    }
-    for (const o of skillResult?.outcomes ?? []) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
-    if (!dryRun) {
-      // Persist `agentPersonas` and `agentSkills` into this route's resolved
-      // state file — same merge-not-clobber shape `connect`'s own
-      // `contract`/`reviewedStatuses` writes use, since a hand-authored
-      // `contract` block or another field this command knows nothing about
-      // must survive untouched.
-      const resolvedPath = resolvedPathFor(cfg.ship.stateDir, target.route);
-      const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
-      raw.agentPersonas = personaResult.agentPersonas;
-      if (skillResult) raw.agentSkills = skillResult.agentSkills;
-      if (personaResult.releaseAgentId) raw.releaseAgentId = personaResult.releaseAgentId;
-      mkdirSync(dirOf(resolvedPath), { recursive: true });
-      writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);
-    }
-    if (!dryRun) {
-      target.resolved.agentPersonas = personaResult.agentPersonas;
-      if (personaResult.releaseAgentId) target.resolved.releaseAgentId = personaResult.releaseAgentId;
-    }
-    if (readOnly) {
-      process.stdout.write("personas and skills: not synced (this key is not a workspace admin; the workspace's rows are used as they are)\n");
-    }
+    const { personaResult, skillResult } = run;
     if (flag('revoke-seat-keys')) {
       // CREW-1802: rotate this ship's keys; a following sync mints fresh ones.
       for (const o of await revokeSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun })) {
@@ -2548,9 +2496,7 @@ switch (command) {
     // once they have) — a nonzero exit is what makes that visible to
     // whatever invoked this (a scheduler job's log, a person's own shell)
     // without erroring the whole command.
-    if (personaResult.outcomes.some((o) => o.action === 'diverged') || (skillResult?.outcomes.some((o) => o.action === 'diverged') ?? false)) {
-      process.exitCode = 1;
-    }
+    if (run.diverged) process.exitCode = 1;
     break;
   }
 
@@ -3413,6 +3359,53 @@ switch (command) {
           `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there\n` +
           `  already), set operator in ${resolvedPath}, then: crew doctor ${route}\n`,
         );
+      }
+      // CREW-2241: a fresh workspace has no Agents rows until `agents sync`
+      // runs, so an admin's connect does it now (the same sync, then the seat
+      // key mint). A member's key links this ship's seats to whatever rows
+      // exist and is told what an admin still has to do.
+      if (!dryRun && !flag('no-agents-sync')) {
+        const skip = (why: string) => {
+          process.stderr.write(`\n  agents sync: skipped (${why})\n`);
+          connectEvents.emit('agents_synced', `agents sync skipped: ${why}`, { route, skipped: why });
+        };
+        let syncRoute: Route | undefined;
+        try {
+          const reloaded = loadConfig(CREW_HOME, wizard?.configPath ?? cfg.configFile, { allowNoRoutes: true });
+          syncRoute = reloaded.routes.find((r) => r.route === route);
+          if (syncRoute) await hydrateApiKeys([syncRoute]);
+        } catch (e) {
+          skip(`config did not load: ${(e as Error).message}`);
+        }
+        if (syncRoute?.resolved) {
+          try {
+            process.stderr.write('\n');
+            const run = await runAgentsSync(syncRoute, {
+              userAgent: cfg.ship.userAgent, stateDir: cfg.ship.stateDir,
+              say: (l) => process.stderr.write(`  ${l}\n`),
+              warn: (l) => process.stderr.write(`  agents sync: ${l}\n`),
+            });
+            const minted = await mintMissingSeatKeys(syncRoute, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
+            for (const m of minted) process.stderr.write(`  ${describeMintOutcome(m)}\n`);
+            if (run.readOnly) {
+              const missing = run.personaResult.outcomes.some((p) => p.action === 'missing');
+              process.stderr.write(missing
+                ? "  A workspace admin has to open the Crew app or run `crew agents sync` once before this ship's seats can run.\n"
+                : "  Seats are linked to the workspace's existing personas.\n");
+            }
+            connectEvents.emit('agents_synced', run.readOnly ? 'agents linked (read-only key)' : 'agents synced', {
+              route, admin: !run.readOnly, personas: run.personaResult.outcomes,
+              skills: run.skillResult?.outcomes ?? [], diverged: run.diverged,
+            });
+            for (const m of minted) connectEvents.emit('seat_key', describeMintOutcome(m), { route, ...m });
+            if (run.diverged) process.exitCode = 1;
+          } catch (e) {
+            if (e instanceof AgentsSyncError || e instanceof SkillSyncError) skip(e.message);
+            else throw e;
+          }
+        } else if (!syncRoute) {
+          skip(`"${route}" is not in crew.yaml yet; add the block above, then run \`crew agents sync\``);
+        }
       }
       connectEvents.emit('done', `connected ${route}`, {
         route, resolvedPath: dryRun ? undefined : resolvedPath, configPath: wroteConfig ? wizard!.configPath : undefined,
