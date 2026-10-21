@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.54.3] — 2026-10-21
+
+- ISSUE-2208 A release with a single verified branch that fails the test or build gate now hands that branch back to the dev lane instead of failing the whole release.
+
 ## [0.54.2] — 2026-10-21
 
 - ISSUE-2209 The lane digest now surfaces a build_failed hand-back from the release gate as direction until a push answers it, and shows gate_red as status only.
