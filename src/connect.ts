@@ -174,6 +174,16 @@ export interface Discovered {
    * provisioning a machine is never a silent write.
    */
   provisioning: string[];
+  /**
+   * The Ships row this machine resolved to and whether this pass created it,
+   * for `crew connect --json`'s `ship_row` event (CREW-2235). Unset whenever
+   * `provisioning` skipped the Ships row.
+   */
+  shipRow?: { id: string; name: string; action: 'created' | 'matched' };
+  /** Per-seat outcome of the Crew-row provisioning, for the `seat` events. */
+  seatRows?: Array<{ role: string; id: string; action: 'matched' | 'claimed' | 'created' }>;
+  /** How `operator` was settled, for the `operator_row` event. */
+  operatorAction?: 'matched' | 'linked' | 'created';
 }
 
 /**
@@ -610,6 +620,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     }
     if (mine.length === 1) {
       shipRowId = mine[0]!.id;
+      out.shipRow = { id: shipRowId, name: o.ship.name, action: 'matched' };
       const patchBody: Record<string, unknown> = {};
       if ((mine[0]!.host_passengers ?? false) !== hostPassengers) patchBody.host_passengers = hostPassengers;
       if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
@@ -631,6 +642,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         ...(ownerId !== undefined ? { owner_id: ownerId } : {}),
       });
       shipRowId = created.id;
+      out.shipRow = { id: shipRowId, name: o.ship.name, action: 'created' };
       provisioning.push(`created Ships row "${o.ship.name}"`);
     } else {
       problems.push(`${mine.length} Ships rows named "${o.ship.name}" — which one is this machine?`);
@@ -674,11 +686,13 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
       const searchTerm = role === 'dev' ? 'develop' : role;
       let id = seatFor(scoped, searchTerm);
+      let seatAction: 'matched' | 'claimed' | 'created' = 'matched';
       if (!id && shipRowId) {
         const legacyId = seatFor(unclaimed, searchTerm);
         if (legacyId) {
           await patch(o, `/data-models/${out.models.crew}/records/${legacyId}`, { ship_id: shipRowId });
           id = legacyId;
+          seatAction = 'claimed';
           provisioning.push(`claimed existing Crew row for the ${role} seat`);
         } else {
           const created = await post<{ id: string }>(o, `/data-models/${out.models.crew}/records`, {
@@ -687,11 +701,14 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
             ...(agentIdFor(role) ? { agent_id: agentIdFor(role) } : {}),
           });
           id = created.id;
+          seatAction = 'created';
           provisioning.push(`created Crew row for the ${role} seat`);
         }
       }
-      if (id) out.seats[role] = id;
-      else problems.push(`no Crew row looking like the ${role} seat — create one, or omit that role`);
+      if (id) {
+        out.seats[role] = id;
+        (out.seatRows ??= []).push({ role, id, action: seatAction });
+      } else problems.push(`no Crew row looking like the ${role} seat — create one, or omit that role`);
     }
     // `pair` is optional and best-effort, unlike the four polled seats above:
     // a workspace with no interactive-session row yet is not a problem, just
@@ -749,6 +766,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       const pick = mine ?? (byEmail.length === 1 ? byEmail[0] : only);
       if (pick) {
         out.operator = pick.id;
+        out.operatorAction = pick.user_id === out.meId ? 'matched' : 'linked';
         // Like the Ships/Crew provisioning above, writes need a `ship`: a bare
         // `discover()` stays a read-only lookup.
         if (pick.user_id !== out.meId && o.ship) await linkOperatorRow(o, out, pick);
@@ -807,6 +825,7 @@ export async function createOperatorRow(o: AuthOptions & { dryRun?: boolean }, f
       name, ...(found.meEmail ? { email: found.meEmail } : {}), user_id: found.meId,
     });
     found.operator = created.id;
+    found.operatorAction = 'created';
     found.holds.push({ id: created.id, name, email: found.meEmail, user_id: found.meId });
     found.provisioning.push(`created Crew row "${name}" for you`);
   } catch (e) {

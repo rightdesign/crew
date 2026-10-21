@@ -41,6 +41,9 @@ import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
 } from './connect-wizard.ts';
+import {
+  CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
+} from './connect-json.ts';
 import { unitAbandonsAgents, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
@@ -72,7 +75,7 @@ import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
-import { mintMissingSeatKeys, describeMintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
+import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
@@ -255,6 +258,8 @@ async function pickResolvedStatuses(unrecognized: Array<{ value: string; label?:
 async function offerTemplateInstall(
   authOpts: { baseUrl: string; apiKey: string; userAgent?: string },
   workspaceId: string,
+  /** Set when the answer came from `--choose install-template=` rather than a terminal: no prompt is shown. */
+  decided?: boolean,
 ): Promise<string | undefined> {
   const templates = await listLibraryTemplates(authOpts);
   const template = templates.find((t) => t.identifier === ISSUES_TEMPLATE_IDENTIFIER);
@@ -262,16 +267,20 @@ async function offerTemplateInstall(
     process.stderr.write(`\n  No template with identifier "${ISSUES_TEMPLATE_IDENTIFIER}" is published to the Library yet — nothing to offer to install.\n`);
     return undefined;
   }
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  let answer: string;
-  try {
-    answer = (await rl.question(
-      `\nNo project here has what a route needs. Install the "${template.name}" library template into a new project? [y/N] `,
-    )).trim();
-  } finally {
-    rl.close();
+  if (decided === undefined) {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    let answer: string;
+    try {
+      answer = (await rl.question(
+        `\nNo project here has what a route needs. Install the "${template.name}" library template into a new project? [y/N] `,
+      )).trim();
+    } finally {
+      rl.close();
+    }
+    if (!/^y/i.test(answer)) return undefined;
+  } else if (!decided) {
+    return undefined;
   }
-  if (!/^y/i.test(answer)) return undefined;
 
   const preview = await previewTemplateInstall(authOpts, template.id, workspaceId);
   if (preview.hasUnresolvedConflicts) {
@@ -327,6 +336,7 @@ function usage(): never {
   crew install                  write and load this platform's scheduler unit
   crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
+     --json  --ship-name N --agent-bin PATH --extra-path DIRS --host-passengers --no-wizard --choose KEY=VALUE   (non-interactive: docs/commands.md)
 
 Options:
   --dry-run      decide everything, perform nothing
@@ -356,6 +366,9 @@ const value = (name: string) => {
 };
 const positional = positionalArgs(argv);
 const command = positional[0];
+// `crew connect --json` (CREW-2235): events on stdout, human text stays on stderr.
+const connectEvents = createEmitter(command === 'connect' && flag('json'), (l) => { process.stdout.write(l); });
+const connectChoices = parseChoices(argv);
 if (!command) usage();
 
 /**
@@ -454,9 +467,32 @@ let cfg: ReturnType<typeof loadConfig>;
 // crew would look) asks the `ship:` questions itself and loads that answer
 // in-memory — the file is written only once the connection resolves.
 let firstRun: { answers: WizardAnswers; configPath: string } | undefined;
+// CREW-2235: answers came from flags, so the key must be persisted for the file to be written.
+let firstRunFromFlags = false;
 try {
-  if (command === 'connect' && !flag('dry-run') && shouldRunWizard({
-    isTTY: !!(process.stdin.isTTY && process.stdout.isTTY), crewHome: CREW_HOME,
+  const connectIsTTY = !!(process.stdin.isTTY && process.stdout.isTTY);
+  const wizardFlags = {
+    shipName: value('ship-name'), agentBin: value('agent-bin'), extraPath: value('extra-path'),
+    hostPassengers: flag('host-passengers'), noWizard: flag('no-wizard'),
+  };
+  if (command === 'connect' && !flag('dry-run') && usesFlagAnswers(wizardFlags, connectIsTTY)
+    && shouldRunWizard({ isTTY: true, crewHome: CREW_HOME })) {
+    // CREW-2235: every answer comes from a flag, so no terminal is needed.
+    const flagged = flagWizardAnswers(wizardFlags, {
+      hostname: hostname(), platform: hostPlatform(), pathEnv: process.env.PATH ?? '',
+      nodePath: process.execPath, dockerAvailable: dockerAvailable(),
+    });
+    if ('error' in flagged) {
+      connectEvents.emit('problem', flagged.error, { stage: 'wizard' });
+      process.stderr.write(`crew connect: ${flagged.error}\n`);
+      process.exit(2);
+    }
+    const configPath = firstRunConfigPath();
+    firstRun = { answers: flagged.answers, configPath };
+    firstRunFromFlags = true;
+    cfg = loadConfig(CREW_HOME, configPath, { text: renderShipBlock(flagged.answers), allowNoRoutes: true });
+  } else if (command === 'connect' && !flag('dry-run') && shouldRunWizard({
+    isTTY: connectIsTTY, crewHome: CREW_HOME,
   })) {
     // Closed in a finally: an open readline on stdin keeps the event loop (and
     // so the process) alive, and later prompts open their own interface.
@@ -2753,9 +2789,21 @@ switch (command) {
     // slug — `discover()` accepts either) and `--project` remain for
     // scripting and for a project named rather than slugged.
     const arg = positional[1];
+    // CREW-2235: `--json` never prompts — a decision becomes a `choice` event
+    // (exit CHOICE_EXIT_CODE) the caller answers with `--choose key=value`.
+    const canAsk = !!(process.stdin.isTTY && process.stdout.isTTY) && !connectEvents.json;
+    const stopForChoice = (key: string, message: string, options: ChoiceOption[]): never => {
+      connectEvents.emit('choice', message, choiceData(key, options));
+      process.stderr.write(`crew connect: ${message}\n  Re-run with --choose ${key}=<${options.map((o) => o.value).join('|')}>\n`);
+      return process.exit(CHOICE_EXIT_CODE);
+    };
+    const stopWithProblem = (message: string, stage: string): never => {
+      connectEvents.emit('problem', message, { stage });
+      return process.exit(2);
+    };
     const [argWorkspace, argProject] = splitConnectArg(arg);
-    let workspace = argWorkspace ?? value('workspace-id') ?? value('workspace');
-    const project = argProject ?? value('project');
+    let workspace = argWorkspace ?? value('workspace-id') ?? value('workspace') ?? connectChoices.workspace;
+    const project = argProject ?? value('project') ?? connectChoices.project;
     const baseUrl = value('base-url') ?? cfg.routes[0]?.baseUrl ?? DEFAULT_BASE_URL;
     // No bare `cfg.ship.apiKey` to read here — it's only a fallback SOURCE the
     // route parser merges in, not a field of its own on `Ship`. Any
@@ -2811,8 +2859,9 @@ switch (command) {
     // names no `apiKey`/`apiKeyFile` at all for that route, and
     // `hydrateApiKeys` resolves it from the keychain on every future run.
     let mintedFromDevice = false;
+    let signedInEmitted = false;
     if (!apiKey) {
-      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      if (!canAsk && !connectEvents.json && !flag('no-wizard')) {
         process.stderr.write(
           'crew connect [<workspace>[/<project>]] --key K (or CREW_CONNECT_KEY, or ship.apiKey in crew.yaml)\n' +
           '  workspace/project may be slugs, ids, or (project) a name. Omit workspace to list them.\n' +
@@ -2837,6 +2886,10 @@ switch (command) {
           // A bare `crew connect` has none and passes nothing.
           ...(workspace ? { workspaceSlug: workspace } : {}),
           onCode: (info) => {
+            connectEvents.emit('device_code', 'approve this device in a browser', {
+              userCode: info.userCode, verificationUri: info.verificationUri,
+              verificationUriComplete: info.verificationUriComplete, expiresIn: info.expiresIn,
+            });
             process.stderr.write(
               'No API key given — approve this device from a browser you\'re already signed into Tablation with:\n\n' +
               `  ${info.verificationUriComplete}\n\n` +
@@ -2846,11 +2899,9 @@ switch (command) {
         });
       } catch (e) {
         process.stderr.write('\n');
-        if (e instanceof DeviceLoginError) {
-          process.stderr.write(`crew connect: ${e.message}\n`);
-        } else {
-          process.stderr.write(`crew connect: device authorization failed — ${(e as Error).message}\n`);
-        }
+        const why = e instanceof DeviceLoginError ? e.message : `device authorization failed — ${(e as Error).message}`;
+        process.stderr.write(`crew connect: ${why}\n`);
+        connectEvents.emit('problem', why, { stage: 'device_login' });
         process.exit(2);
       }
       process.stderr.write(
@@ -2858,6 +2909,11 @@ switch (command) {
       );
       apiKey = result.apiKey.key;
       mintedFromDevice = true;
+      signedInEmitted = true;
+      connectEvents.emit('signed_in', `signed in as ${result.identity.email}`, {
+        identity: { id: result.identity.id, email: result.identity.email },
+        workspaces: [{ slug: result.workspace.slug, name: result.workspace.name }],
+      });
       // The device flow just said exactly which workspace this key is
       // scoped to — no reason to make the operator retype what there was
       // no ambiguity in, the same reasoning as the single-workspace
@@ -2927,17 +2983,49 @@ switch (command) {
     };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
-      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun, interactive: !!(process.stdin.isTTY && process.stdout.isTTY) });
-      if (!found.projectId && found.offerTemplateInstall && process.stdin.isTTY && process.stdout.isTTY) {
-        const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId);
-        if (installedSlug) {
-          found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun, interactive: !!(process.stdin.isTTY && process.stdout.isTTY) });
+      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json });
+      if (!signedInEmitted && found.meId) {
+        signedInEmitted = true;
+        connectEvents.emit('signed_in', `key belongs to ${found.meEmail ?? found.meId}`, {
+          identity: { id: found.meId, email: found.meEmail, name: found.meName },
+          workspaces: [{ slug: found.workspaceSlug, name: found.workspaceName, role: found.role }],
+        });
+      }
+      connectEvents.emit('workspace_resolved', `workspace ${found.workspaceSlug}`, {
+        workspaceId: found.workspaceId, slug: found.workspaceSlug, name: found.workspaceName, role: found.role,
+      });
+      if (found.projectOptions) {
+        connectEvents.emit('project_options', `${found.projectOptions.length} projects qualify`, { options: found.projectOptions });
+        if (connectEvents.json) {
+          stopForChoice('project', `${found.projectOptions.length} projects in ${found.workspaceSlug} qualify — which one?`,
+            found.projectOptions.map((p) => ({ value: p.slug ?? p.id, label: p.name })));
+        }
+      }
+      if (!found.projectId && found.offerTemplateInstall !== undefined) {
+        const canInstall = found.offerTemplateInstall === true;
+        connectEvents.emit('template_missing', 'no project has the tables a route needs', { canInstall });
+        // A terminal is asked; `--json` is told by `--choose install-template=yes|no`.
+        const decided = connectEvents.json ? connectChoices['install-template'] : undefined;
+        if (canInstall && connectEvents.json && decided === undefined) {
+          stopForChoice('install-template', 'Install the Issues library template into a new project?', [
+            { value: 'yes', label: 'Install it' }, { value: 'no', label: 'Do not install' },
+          ]);
+        }
+        if (canInstall && (canAsk || decided === 'yes')) {
+          const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId, canAsk ? undefined : true);
+          if (installedSlug) {
+            connectEvents.emit('template_installed', `installed project ${installedSlug}`, { projectSlug: installedSlug });
+            found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json });
+          }
         }
       }
       if (!found.projectId) {
         process.stderr.write(`crew connect ${ws}: unresolved —\n`);
-        for (const p of found.problems) process.stderr.write(`  - ${p}\n`);
+        for (const p of found.problems) { process.stderr.write(`  - ${p}\n`); connectEvents.emit('problem', p, { stage: 'discover' }); }
         process.exit(2);
+      }
+      if (found.shipRow) {
+        connectEvents.emit('ship_row', `Ships row "${found.shipRow.name}" ${found.shipRow.action}`, found.shipRow);
       }
       // The route's own identity, built from the SLUGS `discover()` resolved
       // — never from a display name, which may hold spaces/mixed case a
@@ -2963,7 +3051,7 @@ switch (command) {
       // (or ambiguous) AND there is a person on the other end of a terminal
       // to ask — a script piping stdin gets the old file-editing fallback.
       let operator = found.operator;
-      if (!operator && found.holds.length > 0 && process.stdin.isTTY && process.stdout.isTTY) {
+      if (!operator && found.holds.length > 0 && canAsk) {
         const picked = await pickOperator(found.holds, { id: found.meId, name: found.meName, email: found.meEmail });
         if (picked === NEW_OPERATOR_ROW) {
           await createOperatorRow({ ...authOpts, dryRun }, found);
@@ -2999,6 +3087,33 @@ switch (command) {
       // picker (blank answer, or no TTY to ask at all) must not wipe an
       // operator a prior run or a hand-edit already resolved.
       if (!operator) operator = previous?.operator;
+      if (connectEvents.json && !operator && found.holds.length > 0) {
+        const answer = connectChoices.operator;
+        if (answer === 'new') {
+          await createOperatorRow({ ...authOpts, dryRun }, found);
+          operator = found.operator;
+        } else if (answer !== undefined) {
+          const row = found.holds.find((h) => h.id === answer);
+          if (!row) stopWithProblem(`--choose operator=${answer} is not one of this workspace's Crew rows`, 'operator');
+          operator = row!.id;
+          found.operatorAction = 'matched';
+          if (found.meId && row!.user_id !== found.meId) {
+            await linkOperatorRow({ ...authOpts, dryRun }, found, row!);
+            found.operatorAction = 'linked';
+          }
+        } else {
+          const mine = found.holds.filter((h) => !h.user_id || h.user_id === found.meId);
+          stopForChoice('operator', 'Which Crew row is you?', [
+            ...mine.map((h) => ({ value: h.id, label: h.name || h.id })),
+            ...(found.meId ? [{ value: 'new', label: `Create a new Crew row for ${found.meName ?? found.meEmail ?? 'me'}` }] : []),
+          ]);
+        }
+      }
+      if (operator) {
+        connectEvents.emit('operator_row', `operator ${found.holds.find((h) => h.id === operator)?.name ?? operator}`, {
+          id: operator, action: found.operatorAction ?? 'previous',
+        });
+      }
       // CREW-978: a non-interactive `connect` with no previous file and no
       // operator resolvable (several holds, none matching this key's email)
       // used to write a resolved file with no `operator` key at all — which
@@ -3015,19 +3130,37 @@ switch (command) {
           `  Re-run from a real terminal to pick one, or pass --key for a key whose own\n` +
           `  identity email matches exactly one Crew row.\n`,
         );
-        process.exit(2);
+        stopWithProblem(`cannot determine the operator — ${found.holds.length} Crew row(s) could be it`, 'operator');
       }
       const alreadyReviewed = new Set(previous?.reviewedStatuses ?? []);
       const stillUnrecognized = (found.unrecognizedStatuses ?? []).filter((s) => !alreadyReviewed.has(s.value));
-      const canPrompt = stillUnrecognized.length > 0 && process.stdin.isTTY && process.stdout.isTTY;
-      const newlyResolved = canPrompt ? await pickResolvedStatuses(stillUnrecognized) : [];
+      const canPrompt = stillUnrecognized.length > 0 && canAsk;
+      // `--json`: each value is answered with `--choose status.<value>=yes|no`.
+      const statusAnswer = (v: string) => connectChoices[`status.${v}`];
+      const jsonClassified = connectEvents.json && stillUnrecognized.length > 0;
+      if (jsonClassified) {
+        const pending = stillUnrecognized.filter((s) => statusAnswer(s.value) === undefined);
+        if (pending.length > 0) {
+          for (const s of pending.slice(1)) {
+            connectEvents.emit('choice', `Does status "${s.value}" mean the ticket is done?`, choiceData(`status.${s.value}`, [
+              { value: 'yes', label: 'Resolved / terminal' }, { value: 'no', label: 'Not resolved' },
+            ]));
+          }
+          stopForChoice(`status.${pending[0]!.value}`, `Does status "${pending[0]!.value}" mean the ticket is done?`, [
+            { value: 'yes', label: 'Resolved / terminal' }, { value: 'no', label: 'Not resolved' },
+          ]);
+        }
+      }
+      const newlyResolved = canPrompt
+        ? await pickResolvedStatuses(stillUnrecognized)
+        : jsonClassified ? stillUnrecognized.filter((s) => /^y/i.test(statusAnswer(s.value) ?? '')).map((s) => s.value) : [];
       // Every value actually ASKED about — asked-and-declined counts as
       // reviewed too, so a `draft`-like status answered "no" isn't asked
       // about again and again on every future connect. A script run
       // (piped/non-interactive) never asked, so it must not mark them
       // reviewed — that would silently bury them until someone edits the
       // state file by hand, the same trap `operator` already avoids above.
-      const reviewedStatuses = canPrompt
+      const reviewedStatuses = canPrompt || jsonClassified
         ? [...new Set([...(previous?.reviewedStatuses ?? []), ...stillUnrecognized.map((s) => s.value)])].sort()
         : (previous?.reviewedStatuses ?? []);
       // Only the CUSTOM values, not the whole previously-written array — that
@@ -3098,14 +3231,20 @@ switch (command) {
       }
       // CREW-1603: seats already linked to Agents rows get their agent keys now;
       // a first connect has none linked yet, and `crew agents sync` mints them.
+      let mintOutcomes: MintOutcome[] = [];
       if (!dryRun && previous?.agentPersonas && existingRoute?.resolved) {
         try {
-          for (const o of await mintMissingSeatKeys({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name })) {
-            process.stderr.write(`${describeMintOutcome(o)}\n`);
-          }
+          mintOutcomes = await mintMissingSeatKeys({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
+          for (const o of mintOutcomes) process.stderr.write(`${describeMintOutcome(o)}\n`);
         } catch (e) {
           process.stderr.write(`seat keys: skipped (${(e as Error).message})\n`);
         }
+      }
+      for (const sr of found.seatRows ?? []) {
+        const minted = mintOutcomes.find((m) => m.role === sr.role);
+        connectEvents.emit('seat', `${sr.role} seat ${sr.action}`, {
+          role: sr.role, id: sr.id, action: sr.action, key: minted?.action ?? 'none', ...(minted?.detail ? { detail: minted.detail } : {}),
+        });
       }
       // A device-authorization key that made it into the OS keychain
       // (ISSUE-966) needs no file at all — `hydrateApiKeys` resolves it from
@@ -3120,7 +3259,7 @@ switch (command) {
       // this ran. 0600: this file holds a live credential.
       let apiKeyFile: string | undefined;
       const apiKeyVar = 'CREW_API_KEY';
-      if (mintedFromDevice && !keychainBacked) {
+      if ((mintedFromDevice || firstRunFromFlags) && !keychainBacked) {
         apiKeyFile = apiKeyPathFor(cfg.ship.stateDir, route);
         if (dryRun) {
           process.stderr.write(`(dry run) would write the minted API key to ${apiKeyFile}\n`);
@@ -3151,7 +3290,8 @@ switch (command) {
         wroteConfig = writeNewConfig(wizard.configPath, renderFullConfig(wizard.answers, routeBlock));
         if (!wroteConfig) process.stderr.write(`(${wizard.configPath} appeared while connecting — leaving it alone)\n`);
       }
-      if (!wroteConfig) process.stdout.write(routeBlock);
+      // Under `--json` stdout is the event stream; the block goes to stderr with the rest of the prose.
+      if (!wroteConfig) (connectEvents.json ? process.stderr : process.stdout).write(routeBlock);
       // CREW-1378: give interactive Claude Code sessions the tablation MCP tools.
       if (!flag('no-mcp') && apiKey) {
         const replace = value('mcp') === 'replace';
@@ -3162,12 +3302,16 @@ switch (command) {
           const id = `${tc.harness}\0${tc.bin}`;
           if (seen.has(id)) continue;
           seen.add(id);
-          process.stderr.write(`${adapterFor(tc.harness).ensureMcp({ bin: tc.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun })}\n`);
+          const line = adapterFor(tc.harness).ensureMcp({ bin: tc.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun });
+          connectEvents.emit('mcp_registered', line, { harness: tc.harness, bin: tc.bin });
+          process.stderr.write(`${line}\n`);
         }
         // CREW-1517: Pair for the other harnesses `ship.pair` lists. Claude's is
         // the registration just done above, so it is not repeated here.
         for (const h of shipPair(cfg.ship).filter((x) => x !== 'claude')) {
-          process.stderr.write(`${pairInstallerFor(h).installPair({ url: mcpUrlFor(baseUrl), replace, dryRun })}\n`);
+          const line = pairInstallerFor(h).installPair({ url: mcpUrlFor(baseUrl), replace, dryRun });
+          connectEvents.emit('pair_installed', line, { harness: h });
+          process.stderr.write(`${line}\n`);
         }
       }
       // CREW-1390: name every hold resolved, so a missing operator is visible now
@@ -3184,9 +3328,9 @@ switch (command) {
       }
       if (found.problems.length) {
         process.stderr.write('\n  Unresolved — fix these before arming it:\n');
-        for (const p of found.problems) process.stderr.write(`    - ${p}\n`);
+        for (const p of found.problems) { process.stderr.write(`    - ${p}\n`); connectEvents.emit('problem', p, { stage: 'discover' }); }
       }
-      if (!canPrompt && stillUnrecognized.length > 0) {
+      if (!canPrompt && !jsonClassified && stillUnrecognized.length > 0) {
         // Nowhere to ask (piped/non-interactive) — same reasoning as the
         // operator fallback below. Left unclassified rather than guessed;
         // a blocker sitting at one of these won't be recognised as resolved
@@ -3218,6 +3362,10 @@ switch (command) {
           `  already), set operator in ${resolvedPath}, then: crew doctor ${route}\n`,
         );
       }
+      connectEvents.emit('done', `connected ${route}`, {
+        route, resolvedPath: dryRun ? undefined : resolvedPath, configPath: wroteConfig ? wizard!.configPath : undefined,
+        wroteConfig, operator, dryRun, unresolved: found.problems.length,
+      });
     };
 
     try {
@@ -3225,13 +3373,17 @@ switch (command) {
         const workspaces = await listWorkspaces(authOpts);
         if (workspaces.length === 0) {
           process.stderr.write('crew connect: this key\'s identity has no workspace memberships.\n');
-          process.exit(2);
+          stopWithProblem('this key\'s identity has no workspace memberships', 'workspace');
         } else if (workspaces.length === 1) {
           // Only one candidate — same reasoning as an unnamed route with only
           // one enabled: nothing to disambiguate, so proceed with it directly
           // rather than making the operator retype what there was no choice in.
           await runConnect(workspaces[0]!.slug, project);
         } else {
+          if (connectEvents.json) {
+            stopForChoice('workspace', `${workspaces.length} workspaces reachable by this key — which one?`,
+              workspaces.map((w) => ({ value: w.slug, label: `${w.name} (${w.role})` })));
+          }
           process.stderr.write(
             `${workspaces.length} workspaces reachable by this key — name one:\n` +
             workspaces.map((w) => `  ${w.slug.padEnd(24)} ${w.name} (${w.role})\n`).join(''),
@@ -3245,6 +3397,7 @@ switch (command) {
       // A bad key/workspace pairing is an operator mistake, not a crash —
       // same reasoning as the crew.yaml ConfigError handling above main().
       if (e instanceof ConnectHttpError) {
+        connectEvents.emit('problem', e.message, { stage: 'http', status: e.status, path: e.path });
         if (e.status === 401 || e.status === 403) {
           process.stderr.write(
             `crew connect: ${e.path} — ${e.status} ${e.status === 401 ? '(bad or expired key)' : '(this key is not a member of that workspace)'}\n` +

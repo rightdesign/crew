@@ -8,7 +8,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew connect [workspace[/project]]` | Resolve a workspace's ids into `crew.yaml`; on a first run, a setup wizard. A secondary workspace is `<primary>:<slug>`; see [Getting started](/getting-started#a-secondary-workspace). |
+| `crew connect [workspace[/project]]` | Resolve a workspace's ids into `crew.yaml`; on a first run, a setup wizard. A secondary workspace is `<primary>:<slug>`; see [Getting started](/getting-started#a-secondary-workspace). Scriptable with [wizard flags and `--json`](#non-interactive-crew-connect). |
 | `crew repos add ROUTE PATH` | Attach a local checkout to a route in `crew.yaml` Creates the Repos row when the tracker has none (`--name`, `--project`, `--no-create`; `--dry-run` previews). |
 | `crew repos list ROUTE` | The checkouts a route has, with the Repos row each matches. |
 | `crew reload [--now]` | Make the running `crew daemon` pick up a changed `crew.yaml`. The daemon also notices an edit to `crew.yaml` or a route's `apiKeyFile` on its own and relaunches on its next idle pass. `reload` writes a `reload-requested` marker in the state directory so a busy daemon finishes its in-flight run first; `--now` also restarts the unit immediately, interrupting any run in progress. With no daemon unit running it says so and exits 0. `crew doctor` warns when the config is newer than the daemon's start. |
@@ -67,6 +67,54 @@ A row's "Additional instructions" (`prompt_additions`) are appended, after a fix
 | `crew rotate-passenger-url [route]` | Force the tunnel to reconnect with a fresh public URL. |
 
 See [Host Passengers](/host-passengers).
+
+## Non-interactive `crew connect`
+
+A first-run connect needs no terminal when every answer is a flag, and `--json` turns its progress into events a program can read. This is how the Crew app drives setup, and the scriptable path on Linux and CI. The interactive wizard is unchanged for a person at a terminal.
+
+**Wizard answers as flags** (used on a first run, when no `crew.yaml` exists anywhere crew looks):
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `--ship-name NAME` | How this machine appears on the board | the hostname |
+| `--agent-bin PATH` | Absolute path to the agent binary | the `claude` on `PATH` |
+| `--extra-path DIRS` | `ship.extraPath` for scheduled runs | derived from where `node`, `pnpm` and (with Host Passengers) `docker` live |
+| `--host-passengers` | Host Passengers on this machine | off |
+| `--no-wizard` | Never prompt: take every answer from flags and defaults | |
+
+On a terminal the wizard still runs unless `--no-wizard` is given. Off a terminal, any one of the answer flags selects the flag path. An agent binary that cannot be found or is not executable is a `problem` event and exit 2, never a prompt. With a `--key`, the key is written to a 0600 key file (there is no sign-in to put it in the keychain) so `crew.yaml` can name it.
+
+**`--json`** writes one JSON object per line on stdout, each `{event, message, ...data}`; all human text stays on stderr (including the route block). Device authorization needs no terminal under `--json`: the code arrives as a `device_code` event and crew keeps polling.
+
+| Event | Data |
+| --- | --- |
+| `device_code` | `userCode`, `verificationUri`, `verificationUriComplete`, `expiresIn` (seconds) |
+| `signed_in` | `identity` (`id`, `email`, `name` when known), `workspaces` |
+| `workspace_resolved` | `workspaceId`, `slug`, `name`, `role` |
+| `project_options` | `options`: each qualifying project (`id`, `name`, `slug`) when several qualify |
+| `template_missing` | `canInstall`: no project has the tables a route needs; `true` when the key's role can install the Issues template |
+| `template_installed` | `projectSlug` |
+| `ship_row` | `id`, `name`, `action` (`created` or `matched`) |
+| `operator_row` | `id`, `action` (`matched`, `linked`, `created`, or `previous` for one carried from an earlier connect) |
+| `seat` | one per lane: `role`, `id`, `action` (`matched`, `claimed`, `created`), `key` (the seat-key outcome: `minted`, `already_stored`, `no_agent`, `failed`, `forbidden`, or `none` when none was attempted) |
+| `mcp_registered` | `harness`, `bin`; `message` is the line crew prints |
+| `pair_installed` | `harness`; `message` is the line crew prints |
+| `capabilities` | reserved for the member capability checklist (ISSUE-2240) |
+| `choice` | `key`, `options` (`value`, `label`), `answer`: a decision a terminal would have asked; see below |
+| `problem` | `stage` and, for an HTTP failure, `status` and `path`; the run is stopping, or (stage `discover`) the route is written with a gap |
+| `done` | `route`, `resolvedPath`, `configPath`, `wroteConfig`, `operator`, `dryRun`, `unresolved` (count) |
+
+**Choices.** Where the wizard would ask, crew emits a `choice` event and exits **3** without writing anything past what is already idempotent. The caller asks, then runs the same command again adding `--choose KEY=VALUE` (repeatable). Re-running is safe: provisioning finds the rows it made.
+
+| Key | Asked when | Values |
+| --- | --- | --- |
+| `workspace` | no workspace named and the key sees several | a workspace slug |
+| `project` | several projects have the tables a route needs | a project slug |
+| `install-template` | no project qualifies and the key can install the Issues template | `yes` or `no` |
+| `operator` | no Crew row matches the key's identity | a Crew row id, or `new` to create one |
+| `status.<value>` | the Issues table has a status the default contract does not know; one event per value | `yes` (resolved/terminal) or `no` |
+
+Exit codes: 0 connected, 2 stopped on a problem, 3 stopped on a `choice`.
 
 ## Options on every command
 
