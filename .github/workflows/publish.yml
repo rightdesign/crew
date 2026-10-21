@@ -54,3 +54,47 @@ jobs:
 
       - name: Publish
         run: pnpm publish --access public --provenance --no-git-checks
+
+  # Compiled standalone binaries for machines without Node (the Crew macOS app
+  # bundles the darwin ones and updates from this release feed). Needs
+  # contents: write to attach assets, so it is its own job rather than widening
+  # the npm job's token. scripts/publish-binaries.sh is the manual equivalent.
+  binaries:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check package version matches the tag
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(node -p "require('./package.json').version")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::package.json is at $actual but the tag is v$expected"
+            exit 1
+          fi
+
+      - run: scripts/build-binaries.sh
+      - run: scripts/package-binaries.sh
+
+      - name: Attach to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --verify-tag --notes "Release $GITHUB_REF_NAME"
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist-release/* --clobber

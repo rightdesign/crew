@@ -10,6 +10,7 @@ crew.config.sh
 node_modules/
 dist/
 dist-bin/
+dist-release/
 crew.yaml
 
 .DS_Store
