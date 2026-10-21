@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.58.0] — 2026-10-21
+
+- ISSUE-2242 Add `crew sample-ticket`, a throwaway sandbox repo and one ticket that walks the full dev, QA and release loop.
+
 ## [0.57.0] — 2026-10-21
 
 - ISSUE-2235 `crew connect` can run without a terminal: wizard answers as flags, `--json` progress events, and `--choose` to answer the questions it would have asked.
