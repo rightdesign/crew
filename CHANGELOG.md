@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.56.0] — 2026-10-21
+
+- ISSUE-2234 Tagged releases now attach compiled crew binaries (darwin and linux, arm64 and x64) and a SHA256SUMS file to the GitHub Release; scripts/publish-binaries.sh does the same by hand.
+
 ## [0.55.0] — 2026-10-21
 
 - ISSUE-2211 A release failure alert now closes itself when the same route's release next passes the stage that failed.
