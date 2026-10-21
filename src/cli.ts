@@ -8,6 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,7 +91,7 @@ import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } 
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
-  ensureRepoCheckout, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
+  ensureRepoCheckout, originUrlOf, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -313,7 +314,8 @@ function usage(): never {
   crew status [route] [--json]   paused/running state; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
   crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
-  crew doctor [route] [--fix]    preflight; --fix enables clean routes and offers crew install
+  crew doctor [route] [--fix] [--offline] [--json]   preflight; --fix enables clean routes and offers crew install;
+                                 --offline skips push probes; --json prints push-auth and tool checks only
   crew selftest [route] [--toolchain NAME] [--json]   launch each toolchain as a run would and prove it reaches the tracker
   crew sample-ticket [route] [--remove] [--dry-run] [--json]   file one ticket on a throwaway repo that walks the dev, QA and release loop
   crew ports [route]             which checkout owns which ports, and what is up
@@ -1123,7 +1125,12 @@ function baseHealth(r: { dir: string; config: { branch: { remote: string; base: 
  * so saw only the first repo of an area that has several.
  */
 async function resolvedRepos(c: typeof route) {
-  return Promise.all(reposOf(c).map(async (t) => {
+  return Promise.all(reposOf(c).map((t) => resolveOneRepo(c, t)));
+}
+
+/** One repo of a route, resolved on its own so a caller can survive a bad contract in a sibling. */
+async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[number]) {
+  {
     const id = repoIdForName(c, t.name);
     // This repo's own entry under `repos:` (if it named hooks/labels/release
     // of its own) sits between the route-wide fallback and the repo's own
@@ -1151,7 +1158,7 @@ async function resolvedRepos(c: typeof route) {
         worktrees: { prefix: shipWorktreePrefixFor(c) ?? await areaWorktreePrefix(c, id), nameOverride: o?.worktreeName },
       }, t.dir),
     };
-  }));
+  }
 }
 
 /** Where this route's worktrees live, per repository. */
@@ -4443,6 +4450,42 @@ switch (command) {
 
   case 'doctor': {
     const host = hostPlatform();
+    // CREW-2239: push auth per checkout, and gh/node/docker as soft checks.
+    // Computed once; the text report prints them, `--json` prints only them.
+    const doctorSchedulerPath = pathFor(cfg.ship);
+    const pushAuth: Array<{ route: string; repo: string; result: PushAuthResult }> = [];
+    const toolRows: ToolCheck[] = [];
+    {
+      const prBased = new Set<string>();
+      let mentionNode = false;
+      for (const c of [route]) {
+        // Each repo resolves on its own: one invalid `.crew.yaml` must not hide
+        // the others' results, and under --json nothing else reports it.
+        const { settled: repos, errors } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
+        for (const e of errors) {
+          pushAuth.push({ route: c.route, repo: e.repo, result: { state: 'failed', detail: `could not resolve this repo's configuration: ${e.detail}`, hint: "fix the repo's .crew.yaml" } });
+        }
+        for (const r of repos) {
+          const remote = r.config.branch.remote;
+          if (existsSync(r.dir)) {
+            pushAuth.push({
+              route: c.route, repo: r.name,
+              result: probePushAuth({ dir: r.dir, remote, remoteUrl: originUrlOf(r.dir, remote), offline: flag('offline') }),
+            });
+          }
+          if (isPrBased(r.config.hooks)) prBased.add(r.name);
+          if (Object.values(r.config.hooks).some((h) => typeof h === 'string' && mentionsNode(h))) mentionNode = true;
+        }
+      }
+      toolRows.push(...toolChecks(
+        { prBased: prBased.size > 0, hostPassengers: cfg.routes.some((x) => x.enabled && x.hostPassengers), hooksMentionNode: mentionNode },
+        (bin) => findOnPath(bin, doctorSchedulerPath),
+      ));
+    }
+    if (flag('json')) {
+      process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows }, null, 2)}\n`);
+      break;
+    }
     process.stdout.write(
       `ship:              ${cfg.ship.name} (${host})\n` +
         `routes:            ${cfg.routes.map((c) => c.route).join(', ')}\n`,
@@ -4715,6 +4758,8 @@ switch (command) {
     for (const [repoName, ov] of Object.entries(route.repoOverrides)) {
       if (ov.toolchain) process.stdout.write(`repo toolchain:    ${repoName} → ${ov.toolchain} (binary and MCP checked above, as for every ship toolchain)\n`);
     }
+    for (const p of pushAuth) process.stdout.write(formatPushAuth(`${p.repo}`, p.result));
+    for (const t of toolRows) process.stdout.write(formatToolCheck(t));
     process.stdout.write(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
     if (!allBinsFound || !gitPath) {
       process.stdout.write(
