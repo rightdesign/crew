@@ -238,6 +238,7 @@ crew deploy [route]            release now, even with nothing new to merge
 crew watch [route]             live view of what the crew is doing
 crew status [route]            paused/running state, led by what the operator owes (needs_info assigned to them, needs_planning, ships needing attention)
 crew doctor [route] [--fix]    preflight; --fix enables clean routes, offers crew install
+crew selftest [route] [--toolchain NAME] [--json]   launch each toolchain as a run would and prove it reaches the tracker
 crew ports [route]             which checkout owns which ports, and what is up
 crew reap [route]              kill servers left behind by removed worktrees
 crew drop [route] NNN          remove a merged ticket's worktree and branch

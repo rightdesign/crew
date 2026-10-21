@@ -8,6 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
+import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
@@ -312,6 +313,7 @@ function usage(): never {
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
   crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
   crew doctor [route] [--fix]    preflight; --fix enables clean routes and offers crew install
+  crew selftest [route] [--toolchain NAME] [--json]   launch each toolchain as a run would and prove it reaches the tracker
   crew ports [route]             which checkout owns which ports, and what is up
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
@@ -3985,6 +3987,62 @@ switch (command) {
     break;
   }
 
+  case 'selftest': {
+    // CREW-2236: launch each configured toolchain the way a run would and ask it
+    // to read the workspace's name through the tracker MCP tool. Writes nothing
+    // to the tracker; the only thing stored is the result, in the state dir.
+    const wanted = value('toolchain');
+    const all = shipToolchains(cfg.ship);
+    const chosen = wanted ? all.filter((t) => t.name === wanted) : all;
+    if (chosen.length === 0) {
+      process.stderr.write(`crew selftest: no toolchain "${wanted}" (have: ${all.map((t) => t.name).join(', ')})\n`);
+      process.exit(2);
+    }
+    if (!route.resolved) {
+      process.stderr.write(`crew selftest: route ${route.route} is not connected — run \`crew connect\` first\n`);
+      process.exit(2);
+    }
+    const seatKey = await resolveSeatKey(route, 'dev');
+    const keychainDown = seatKey.kind === 'ship' && /keychain/i.test(seatKey.reason);
+    const apiKey = keychainDown ? undefined : seatKey.apiKey;
+    const baseUrl = route.baseUrl || DEFAULT_BASE_URL;
+    // The tracker is asked for the name up front: it is the expected answer,
+    // and a 401/403 here is the "seat key refused" class without a launch.
+    let workspaceName = '';
+    let upfront: Pick<SelftestResult, 'failure' | 'detail'> | undefined;
+    if (apiKey) {
+      try {
+        const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/workspaces/${route.resolved.workspaceId}`, {
+          headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': cfg.ship.userAgent },
+        });
+        if (res.status === 401 || res.status === 403) {
+          upfront = { failure: 'key-refused', detail: `the tracker returned ${res.status} to the dev seat's key — ${REMEDY['key-refused']}` };
+        } else if (!res.ok) {
+          upfront = { failure: 'wrong-answer', detail: `the tracker answered ${res.status} when asked for the workspace's name` };
+        } else {
+          workspaceName = ((await res.json()) as { name?: string }).name ?? '';
+          if (!workspaceName) upfront = { failure: 'wrong-answer', detail: 'the tracker returned a workspace with no name' };
+        }
+      } catch (e) {
+        upfront = { failure: 'wrong-answer', detail: `could not reach ${baseUrl}: ${(e as Error).message}` };
+      }
+    }
+    const results: SelftestResult[] = [];
+    for (const tc of chosen) {
+      const stub = { toolchain: tc.name, harness: tc.harness, model: tc.model, ms: 0, ranAt: new Date().toISOString() };
+      if (upfront) { results.push({ ...stub, ok: false, ...upfront }); continue; }
+      results.push(await runSelftest({
+        ship: cfg.ship, toolchain: tc, baseUrl, workspaceId: route.resolved.workspaceId, apiKey,
+        keyProblem: keychainDown ? `${seatKey.kind === 'ship' ? seatKey.reason : ''} — ${REMEDY['keychain-locked']}` : undefined,
+        workspaceName,
+      }));
+    }
+    recordSelftest(cfg.ship.stateDir, results);
+    process.stdout.write(flag('json') ? `${JSON.stringify(results, null, 2)}\n` : `${results.map(formatResult).join('\n')}\n`);
+    if (results.some((r) => !r.ok)) process.exitCode = 1;
+    break;
+  }
+
   case 'projects': {
     // CREW-1502: the Projects rows each route's connection can read. Works
     // across every route unless one is named (`--route R` or positionally).
@@ -4655,6 +4713,11 @@ switch (command) {
           `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
       }
+    }
+    // CREW-2236: the last stored `crew selftest` result per toolchain; doctor
+    // reports it and never launches a harness itself.
+    for (const l of doctorSelftestLines(readSelftest(cfg.ship.stateDir), shipToolchains(cfg.ship).map((t) => t.name))) {
+      process.stdout.write(`${l}\n`);
     }
     // CREW-1288: the opt-in action phase. `--fix` is itself the consent (so it
     // also works unattended); a plain run only ever offers, and only on a real
