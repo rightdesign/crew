@@ -326,6 +326,27 @@ test('an interrupted run in the event log reads as direction on its ticket (CREW
   assert.match(out, /\*\*1 new\*\*/);
 });
 
+test('a build_failed hand-back reads as direction until a push answers it (CREW-2209)', () => {
+  const tickets = [T({ id: 'h', issue_id: 'ISSUE-9', status: 'in_progress', assignee_id: null })];
+  const failed = { record_id: 'h', event_type: 'build_failed', message: 'tsc error TS2304 | merge main', occurred_at: '2026-10-21T10:00:00.000Z' };
+  const open = buildingDigest(input({ tickets, events: [failed], watermark: '2026-10-21T09:00:00Z' }));
+  assert.match(open, /build_failed 2026-10-21T10:00Z — tsc error TS2304 \/ merge main/);
+  assert.match(open, /\*\*1 new\*\*/);
+  const answered = buildingDigest(input({
+    tickets,
+    events: [failed, { record_id: 'h', event_type: 'pushed', occurred_at: '2026-10-21T11:00:00.000Z' }],
+  }));
+  assert.doesNotMatch(answered, /build_failed 2026/);
+});
+
+test('a gate_red event shows as status, not as work (CREW-2209)', () => {
+  const tickets = [T({ id: 'h', issue_id: 'ISSUE-9', status: 'in_progress', assignee_id: null })];
+  const red = { record_id: 'h', event_type: 'gate_red', message: 'lint failed', occurred_at: '2026-10-21T10:00:00.000Z' };
+  const out = buildingDigest(input({ tickets, events: [red], watermark: '2026-10-21T09:00:00Z' }));
+  assert.match(out, /gate_red 2026-10-21T10:00Z \(status only, nothing to build\) — lint failed/);
+  assert.doesNotMatch(out, /\*\*1 new\*\*/);
+});
+
 test('a public reporter\'s reply is never attributed to the view creator who ran the form (CREW-1811)', () => {
   const linked = buildRoster(MEMBERS, [
     ...ROWS.filter((r) => r.id !== 'op-1'),

@@ -21,7 +21,7 @@ import {
 } from './select.ts';
 import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } from './epics.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
-import { buildingDigest, DIRECTION_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
+import { buildingDigest, DIRECTION_EVENT_TYPES, STATUS_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
 import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
@@ -116,7 +116,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     tracker.events('stalled'),
   ]);
   // CREW-1761: the runner's own directions live in the event log, not Comments.
-  const directionEvents = (await Promise.all([...DIRECTION_EVENT_TYPES, 'pushed'].map((t) => tracker.events(t)))).flat();
+  const directionEvents = (await Promise.all([...DIRECTION_EVENT_TYPES, ...STATUS_EVENT_TYPES, 'pushed'].map((t) => tracker.events(t)))).flat();
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
   });

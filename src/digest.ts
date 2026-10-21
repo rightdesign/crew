@@ -71,10 +71,25 @@ export interface DigestEvent {
  * reads as an `in_progress`, unassigned ticket with nothing new on it.
  * `pushed` is not one of these: it is the marker that a direction was acted on.
  */
-export const DIRECTION_EVENT_TYPES = ['conflict_handed_back', 'requeued', 'bounced', 'conflict_escalated', 'interrupted'] as const;
+export const DIRECTION_EVENT_TYPES = [
+  'conflict_handed_back',
+  'requeued',
+  'bounced',
+  'conflict_escalated',
+  'interrupted',
+  // The release gate's isolation path hands a ticket back as `build_failed`: it builds alone but not merged with the base.
+  'build_failed',
+] as const;
+
+/**
+ * Event types shown in the `runner direction` cell as status only: the ticket
+ * is merged and waiting on a red gate, so there is nothing for a lane to do on
+ * the branch. They never count as new and never outrank a real direction.
+ */
+export const STATUS_EVENT_TYPES = ['gate_red'] as const;
 
 export interface DigestInput {
-  /** Runner events from the event log: the direction types above plus `pushed`. */
+  /** Runner events from the event log: the direction and status types above plus `pushed`. */
   events?: DigestEvent[];
   /**
    * How this repo names branches, rendered per ticket by the crew.
@@ -264,9 +279,21 @@ function pendingDirection(i: DigestInput, ticketId: string): DigestEvent | undef
 /** The `last comment` cell's companion: what the runner last told this lane to do. */
 function directionCell(i: DigestInput, ticketId: string): string {
   const d = pendingDirection(i, ticketId);
-  if (!d) return '—';
+  if (!d) return statusCell(i, ticketId);
   const msg = (d.message ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
   return `${d.event_type} ${eventAt(d).slice(0, 16)}Z${msg ? ` — ${msg}` : ''}`.replace(/\|/g, '/');
+}
+
+/** A status-only event (`gate_red`) newer than the last push, labelled so it reads as information, not work. */
+function statusCell(i: DigestInput, ticketId: string): string {
+  const mine = (i.events ?? []).filter((e) => e.record_id === ticketId);
+  const pushed = mine.filter((e) => e.event_type === 'pushed').map(eventAt).sort().pop() ?? '';
+  const s = mine
+    .filter((e) => (STATUS_EVENT_TYPES as readonly string[]).includes(e.event_type) && eventAt(e) > pushed)
+    .sort((a, b) => (eventAt(a) < eventAt(b) ? 1 : -1))[0];
+  if (!s) return '—';
+  const msg = (s.message ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
+  return `${s.event_type} ${eventAt(s).slice(0, 16)}Z (status only, nothing to build)${msg ? ` — ${msg}` : ''}`.replace(/\|/g, '/');
 }
 
 /**
@@ -386,7 +413,7 @@ export function buildingDigest(i: DigestInput): string {
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
-    '\n"runner direction" is the newest instruction the crew itself posted to the\nevent log (not Comments) that no push has answered yet: `conflict_handed_back`\n(merge the base into the branch and resolve), `requeued`, `bounced`,\n`conflict_escalated`, `interrupted` (an earlier run on this seat was cut short; its\nuncommitted worktree is yours, resume it). It is direction, same as a comment from a hold: act on it.\n',
+    '\n"runner direction" is the newest instruction the crew itself posted to the\nevent log (not Comments) that no push has answered yet: `conflict_handed_back`\n(merge the base into the branch and resolve), `requeued`, `bounced`,\n`conflict_escalated`, `interrupted` (an earlier run on this seat was cut short; its\nuncommitted worktree is yours, resume it), `build_failed` (the release gate found the branch builds alone but\nnot merged with the current base: merge the base in, fix, push, hand back to QA; the output is quoted). It is\ndirection, same as a comment from a hold: act on it. `gate_red` is status only: the ticket is merged and the\ngate is red, so there is nothing to build on the branch.\n',
     '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` and `worktree` columns verbatim.** They are that\nrepository\'s own naming convention, rendered for THIS ticket — cut the\nworktree at `<repo>/../<worktree>`, on branch `<branch>`. Do not derive\neither yourself, and prefer these over the Environment section\'s own worked\nexample if the two ever disagree — that example is illustrative only,\nrendered before any ticket is picked.\n',
     ...(i.workModes && [...i.workModes.modes.values()].some((m) => m !== 'automatic')
       ? ['\n**Manual / hybrid projects.** Some projects on this board are not fully automatic. In a `manual` project no lane touches any ticket, and a ticket with no project is treated the same way, so none appear below. In a `hybrid` project a ticket appears below only when it is assigned to an agent. An `accepted` ticket that is absent for either reason is not yours to claim — do not go looking for it.\n']
