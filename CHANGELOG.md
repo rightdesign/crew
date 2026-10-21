@@ -17,6 +17,13 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.59.0] — 2026-10-21
+
+- ISSUE-2239 crew doctor probes push auth per repo and reports gh, Node and Docker with install hints; a repo with an invalid .crew.yaml is reported as failed instead of dropping the other repos' results.
+- CREW-2239 crew doctor now checks push auth per repo and reports gh, Node and Docker with install hints; --offline and --json added.
+- ISSUE-2241 crew connect runs agents sync for an admin automatically; members get a plain next step, and its --json events are emitted before done.
+- ISSUE-2241 `crew connect` runs the persona/skill sync and seat key mint for an admin key; members get a plain next step; `--no-agents-sync` skips it.
+
 ## [0.58.0] — 2026-10-21
 
 - ISSUE-2242 Add `crew sample-ticket`, a throwaway sandbox repo and one ticket that walks the full dev, QA and release loop.
