@@ -37,6 +37,7 @@ import {
   reviewApplies, reviewProblems, runReview, type ReviewColumns, type ReviewItem, type ReviewOutcome, type ReviewRequeue,
 } from './review.ts';
 import { GATE_RED_AFTER, lastLines, type GateRed } from './gate-red.ts';
+import { failureSummary, type GateComposition } from './test-evidence.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
@@ -193,6 +194,8 @@ export interface ReleaseOutcome {
    * on another machine can see which command failed without this ship's log.
    */
   hookFailure?: { hook: string; label: string; tail: string };
+  /** On a failed test gate: what it ran on (base, candidate head, merged branches), for the alert. */
+  composition?: GateComposition;
   /**
    * Merged branches a failed build/test was pinned on and left out of this
    * release (CREW-1581). The caller hands each back to the dev lane; the rest
@@ -1375,7 +1378,16 @@ async function mergeAndRelease(
         const gateRed = count >= GATE_RED_AFTER && !o.state?.testGateReported?.(sha)
           ? { sha, count, hook: hookLabel(o.repo, 'test'), tail: lastLines(r.output, 15) }
           : undefined;
-        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed };
+        const composition: GateComposition = {
+          head: sha, base: preMerge,
+          branches: merged.filter((c) => c.branch).map((c) => ({
+            key: c.ticket.issue_tag ?? c.ticket.issue_id, branch: c.branch!, tip: resolve(o.cwd, c.branch!) ?? '',
+          })),
+        };
+        const hookFailure = {
+          hook: 'test', label: hookLabel(o.repo, 'test'), tail: failureSummary(r.output, HOOK_FAILURE_TAIL_LINES),
+        };
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed, hookFailure, composition };
       }
       o.state?.clearTestGateFailed?.();
     }

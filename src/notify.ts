@@ -19,6 +19,7 @@
 
 import type { Route, Ship } from './config.ts';
 import type { Emitter } from './events.ts';
+import { describeComposition, type GateComposition } from './test-evidence.ts';
 import { runScript, resolveShell } from './shell.ts';
 
 export type NotifyLevel = 'ok' | 'warn' | 'fail';
@@ -29,6 +30,8 @@ export interface Notification {
   headline: string;
   /** One line. Why, or what to do about it. May be empty. */
   detail?: string;
+  /** The candidate head the failure was seen on; a recurrence on a new head repeats the full evidence. */
+  head?: string;
 }
 
 /**
@@ -93,6 +96,7 @@ export function describeRelease(o: {
   version?: string; tag?: string; merged: unknown[]; stopped?: string;
   blockedCycles?: number; blockKind?: 'branch' | 'dirty';
   hookFailure?: { hook: string; label: string; tail: string };
+  composition?: GateComposition;
 }, route: string): Notification | null {
   if (o.integrated) {
     // Worth saying: something shipped, in the only sense this repo ships.
@@ -118,7 +122,13 @@ export function describeRelease(o: {
     return {
       level: 'fail',
       headline: `${route}: release blocked — tests failed`,
-      detail: 'the target stays on the previous release',
+      detail: withHookTail(
+        o.composition
+          ? `the target stays on the previous release\n\n${describeComposition(o.composition)}`
+          : 'the target stays on the previous release',
+        o.hookFailure,
+      ),
+      ...(o.composition ? { head: o.composition.head } : {}),
     };
   }
   if (o.stopped === 'setup failed') {

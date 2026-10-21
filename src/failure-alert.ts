@@ -18,14 +18,17 @@
  */
 
 import { calloutHeader } from './callout.ts';
+import { headLine } from './test-evidence.ts';
 import type { Notification } from './notify.ts';
-import { displayKey, type Ticket } from './tracker.ts';
+import { displayKey, type RunnerEvent, type Ticket } from './tracker.ts';
 
 export const FAILURE_ALERT_MARKER = calloutHeader('CAUTION', 'Failure Alert');
 
 export interface FailureAlertWriter {
   /** `memberId` is the seat filing the ticket, stamped as `filed_by_id` (CREW-1371). */
   fileTicket(fields: Record<string, unknown>, memberId: string): Promise<Ticket>;
+  /** Earlier events of a type; absent means every recurrence repeats the full detail. */
+  events?(type: string): Promise<RunnerEvent[]>;
   postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
 }
 
@@ -81,7 +84,16 @@ export async function applyFailureAlert(
       return { kind: 'commented', issueId: label };
     }
     try {
-      await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\n\nStill failing: ${n.detail ?? n.headline}`, memberId, 'failure_alert');
+      // Evidence is tied to the head it was seen on: a recurrence on a head
+      // already shown says so briefly; a new head repeats the full block.
+      let body = n.detail ?? n.headline;
+      if (n.head && writer.events) {
+        const line = headLine(n.head);
+        const shown = (await writer.events('failure_alert')).some((e) =>
+          e.record_id === existing.id && (e.message ?? '').includes(line));
+        if (shown) body = `${n.headline} — ${line}`;
+      }
+      await writer.postEvent(existing.id, `${FAILURE_ALERT_MARKER}\n\nStill failing: ${body}`, memberId, 'failure_alert');
       log.warn(`release failure recurring — commented on ${label}`, { step: 'release' });
       return { kind: 'commented', issueId: label };
     } catch (e) {
@@ -104,6 +116,12 @@ export async function applyFailureAlert(
       ...(placement.project_id ? { project_id: placement.project_id } : {}),
     }, memberId);
     const label = created.issue_id ? displayKey(created) : created.id;
+    // The description is not readable back from the ticket list, so leave a
+    // short event naming the head it carries; a recurrence matches on it.
+    if (n.head) {
+      await writer.postEvent(created.id, `${FAILURE_ALERT_MARKER}\n\nFiled with the evidence above. ${headLine(n.head)}`, memberId, 'failure_alert')
+        .catch(() => {});
+    }
     log.warn(`release failure — filed ${label}`, { step: 'release' });
     return { kind: 'filed', issueId: label };
   } catch (e) {
