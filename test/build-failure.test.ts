@@ -105,11 +105,32 @@ test('a build that passes on every branch alone blames nobody', async () => {
   assert.equal(out.stopped, 'build failed');
 });
 
-test('a single merged branch is never isolated', async () => {
-  const { dir, repo } = release({ loud: true });
-  const out = await runRelease({
+const runOnly = (dir: string, repo: ReturnType<typeof release>['repo']) =>
+  runRelease({
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-8')], emit: emitter(), dryRun: false,
   });
+
+test('a lone merged branch that fails the gate is blamed, with no failure alert (CREW-2208)', async () => {
+  const { dir, repo } = release({ loud: false });
+  const out = await runOnly(dir, repo);
+  assert.deepEqual(out.buildCulprits?.map((c) => [c.ticket.issue_id, c.how]), [['ISSUE-8', 'solo']]);
+  assert.match(out.buildCulprits![0]!.tail, /something broke/);
+  assert.equal(out.hookFailure, undefined);
+  assert.equal(out.deployed, false);
+  assert.equal(out.stopped, 'nothing to release');
+  assert.ok(!existsSync(join(dir, 'f8.txt')));
+});
+
+test('a lone branch whose failure names its file is blamed by the files', async () => {
+  const { dir, repo } = release({ loud: true });
+  const out = await runOnly(dir, repo);
+  assert.deepEqual(out.buildCulprits?.map((c) => [c.ticket.issue_id, c.how]), [['ISSUE-8', 'files']]);
+  assert.equal(out.hookFailure, undefined);
+});
+
+test('a lone branch is still not blamed when isolation is off', async () => {
+  const { dir, repo } = release({ loud: true, extra: 'release:\n  isolateFailures: { maxCandidates: 0 }\n' });
+  const out = await runOnly(dir, repo);
   assert.equal(out.buildCulprits, undefined);
   assert.equal(out.stopped, 'build failed');
 });

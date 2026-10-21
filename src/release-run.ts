@@ -1110,7 +1110,7 @@ const isolateCap = (o: ReleaseRunOptions): number =>
  * A combined `test`/`build` just failed with several branches merged: find the
  * branch(es) responsible (CREW-1581, see build-failure.ts). Returns the
  * outcome of re-running the release WITHOUT them, or null when nothing could
- * be pinned down (one branch merged, isolation off, over the cap, every
+ * be pinned down (isolation off, over the cap, every
  * branch passes alone) — the caller then fails the release exactly as before.
  *
  * The checkout is rewound to `preMerge` either way, so a null return is
@@ -1130,7 +1130,7 @@ async function isolateAndRetry(
 ): Promise<ReleaseOutcome | null> {
   const applied = merged.filter((c) => c.sha && c.branch);
   const cap = isolateCap(o);
-  if (o.dryRun || !preMerge || applied.length < 2 || cap === 0) return null;
+  if (o.dryRun || !preMerge || applied.length < 1 || cap === 0) return null;
   const head = headSha(o.cwd);
 
   // 1. The failure names files. Cheap: nothing is rebuilt.
@@ -1145,6 +1145,24 @@ async function isolateAndRetry(
   if (byFile) {
     o.emit.warn(`${name} failed; its output names files only ${byFile.c.branch} changed — treating it as the culprit`, { ticket: byFile.c.ticket.issue_id });
     culprits.push({ c: byFile.c, how: 'files', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) });
+  } else if (applied.length === 1) {
+    // The combined tree is the base plus this one branch, and the base passed
+    // its last gate (the previous release), so the branch is the likely
+    // culprit: building it alone again would only repeat this run. The usual
+    // case is a clean textual merge that breaks at runtime against work that
+    // landed on the base after the branch was cut (CREW-2208). The one thing
+    // worth confirming is that the base itself is not red (or the hook not
+    // crashing for its own reasons), which no hand-back could fix.
+    const only = applied[0]!;
+    gitOk(o.cwd, ['reset', '--hard', preMerge]);
+    const baseRun = await hook(o, name);
+    if (baseRun && baseRun.code !== 0) {
+      o.emit.warn(`${name} fails on the base without ${only.branch} — not blaming the branch`, { ticket: only.ticket.issue_id });
+      gitOk(o.cwd, ['reset', '--hard', head]);
+      return null;
+    }
+    o.emit.warn(`${name} failed with only ${only.branch} merged and passes without it — treating it as the culprit`, { ticket: only.ticket.issue_id });
+    culprits.push({ c: only, how: 'solo', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) });
   } else if (applied.length > cap) {
     o.emit.warn(`${name} failed with ${applied.length} branches merged, over release.isolateFailures.maxCandidates (${cap}) — not isolating`);
     return null;
@@ -1390,7 +1408,7 @@ async function mergeAndRelease(
   if (o.repo.hooks.build) {
     if (o.dryRun) {
       o.emit.emit(`would run: ${hookLabel(o.repo, 'build')}`);
-      if (applied > 1) {
+      if (applied >= 1) {
         o.emit.emit(
           `if it fails, would find the one of ${applied} merged branches that broke it (by the files it names, ` +
             `else by building each alone, up to ${isolateCap(o)}), hand that back to the dev lane and ship the rest`,
