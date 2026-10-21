@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.55.0] — 2026-10-21
+
+- ISSUE-2211 A release failure alert now closes itself when the same route's release next passes the stage that failed.
+
 ## [0.54.4] — 2026-10-21
 
 - CREW-2210 The tests-failed failure alert now shows the failing test names, output, candidate and base shas and merged branches.
