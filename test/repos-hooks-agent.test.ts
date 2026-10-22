@@ -15,7 +15,7 @@ const tree = (files: Record<string, string>): CheckoutFiles => ({
   list: (r) => Object.keys(files).filter((k) => k.startsWith(`${r}/`)).map((k) => k.slice(r.length + 1).split('/')[0]!),
 });
 
-test('a workflows directory yields the release recipe (default on) and an advisory CI-status recipe', () => {
+test('a workflows directory yields the release recipe (default on) and a CI-status recipe', () => {
   const s = suggestHooks(tree({ '.github/workflows/release.yml': 'on: push', '.github/workflows/ci.yaml': '', '.github/workflows/notes.md': '' }));
   assert.deepEqual(s.recipes.map((r) => r.id), ['github-actions-release', 'github-actions-ci-status']);
   const [rel, ci] = s.recipes;
@@ -23,11 +23,12 @@ test('a workflows directory yields the release recipe (default on) and an adviso
   assert.equal(rel!.release!.mode, 'ci_auto');
   assert.match(rel!.hooks.released!, /^gh release view --json tagName/);
   assert.ok(rel!.defaultOn && rel!.writable);
-  assert.ok(!ci!.defaultOn && !ci!.writable && ci!.check);
+  assert.ok(!ci!.defaultOn && ci!.writable);
+  assert.match(ci!.hooks.ci_status!, /gh run list --branch "\$CREW_BRANCH"/);
   assert.deepEqual(suggestHooks(tree({ 'package.json': '{}' })).recipes, []);
 });
 
-test('selectRecipes: none unless named; sniffed hooks win; unknown and advisory ids are errors', () => {
+test('selectRecipes: none unless named; sniffed hooks win; unknown ids are errors', () => {
   const pkg = JSON.stringify({ scripts: { test: 't' } });
   const s = suggestHooks(tree({ 'package.json': pkg, '.github/workflows/r.yml': '' }));
   assert.deepEqual(selectRecipes(s, []), { hooks: { test: 'npm test' } });
@@ -36,7 +37,7 @@ test('selectRecipes: none unless named; sniffed hooks win; unknown and advisory 
   assert.equal(sel.hooks.test, 'npm test');
   assert.match(sel.hooks.released!, /gh release view/);
   assert.throws(() => selectRecipes(s, ['nope']), ReposError);
-  assert.throws(() => selectRecipes(s, ['github-actions-ci-status']), /cannot be written/);
+  assert.match(selectRecipes(s, ['github-actions-ci-status']).hooks.ci_status!, /gh run list/);
 });
 
 test('starterRepoConfig with the release recipe parses and carries ci_auto', () => {

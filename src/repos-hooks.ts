@@ -26,6 +26,7 @@ export interface SuggestedHooks {
   version?: string;
   bump?: string;
   released?: string;
+  ci_status?: string;
 }
 
 /** What a recipe asks of `release:`; `ci` and `verifyMatch` are what the mode needs to pass the repo-spec parser. */
@@ -38,8 +39,8 @@ export interface RecipeRelease {
 /**
  * A named, deterministic bundle detected from the checkout (CREW-2317): what it
  * saw, and the exact values accepting it would set. `writable: false` marks a
- * recipe whose check has no home in the repo spec yet; it is reported so a
- * wizard can show it, and `--write` refuses it by id rather than dropping it.
+ * recipe with no home in the repo spec; it is reported so a wizard can show
+ * it, and `--write` refuses it by id rather than dropping it.
  */
 export interface HookRecipe {
   id: string;
@@ -50,8 +51,6 @@ export interface HookRecipe {
   hooks: SuggestedHooks;
   /** The `release:` block the recipe sets, when it sets one (repo-level `.crew.yaml` only). */
   release?: RecipeRelease;
-  /** A command with no hook slot to land in: advisory text, never written. */
-  check?: string;
   writable: boolean;
   defaultOn: boolean;
 }
@@ -155,11 +154,11 @@ export function detectRecipes(f: CheckoutFiles): HookRecipe[] {
     {
       id: 'github-actions-ci-status',
       title: 'Check CI status before hand-off',
-      description: 'Ask GitHub whether the latest run on the branch passed before a ticket is handed to QA. The repo spec has no hook for this yet, so it is reported but cannot be written.',
+      description: 'Ask GitHub whether the latest run on the branch passed before a ticket is handed to QA (`hooks.ci_status`).',
       evidence,
-      hooks: {},
-      check: 'gh run list --branch "$CREW_BRANCH" --limit 1 --json conclusion -q \'.[0].conclusion == "success"\'',
-      writable: false,
+      // `gh` prints the conclusion and exits 0 either way, so the test is on the text.
+      hooks: { ci_status: 'test "$(gh run list --branch "$CREW_BRANCH" --limit 1 --json conclusion -q \'.[0].conclusion\')" = success' },
+      writable: true,
       defaultOn: false,
     },
   ];

@@ -91,6 +91,16 @@ export interface RepoHooks {
    */
   handoff?: string;
   /**
+   * Is CI green for the pushed branch? Exit 0 = yes, non-zero = no (or not yet).
+   *
+   * Receives `CREW_TICKET` and `CREW_BRANCH`. The dev lane runs it after
+   * pushing and before setting a ticket to the hand-off status: a failure
+   * means fix and push again, and a run still pending is reported in the
+   * progress comment rather than hidden. A hook because the repo knows its CI
+   * provider and the crew must not. Optional; without it nothing is checked.
+   */
+  ci_status?: string;
+  /**
    * Prints this repo's current version, on one line. Where a version lives is
    * entirely a repo's business — package.json, Cargo.toml, pyproject.toml, a
    * VERSION file, `git describe --tags`.
@@ -326,7 +336,7 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff',
+  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'ci_status',
   'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */

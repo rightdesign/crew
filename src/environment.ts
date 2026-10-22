@@ -107,6 +107,7 @@ const HOOK_PURPOSE: Array<[keyof RepoHooks, string]> = [
   ['handoff', 'leave the operator able to open what you built; put its output in your progress comment'],
   ['test', 'run the suite'],
   ['build', 'build it'],
+  ['ci_status', 'after you push and before you hand off: exit 0 means CI is green for your branch; on failure fix and push again, and say in your progress comment if it is still pending'],
 ];
 
 function hookTable(repo: EffectiveRepoConfig): string {
