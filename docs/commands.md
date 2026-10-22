@@ -95,7 +95,7 @@ On a terminal the wizard still runs unless `--no-wizard` is given. Off a termina
 | Event | Data |
 | --- | --- |
 | `device_code` | `userCode`, `verificationUri`, `verificationUriComplete`, `expiresIn` (seconds) |
-| `signed_in` | `identity` (`id`, `email`, `name` when known), `workspaces` |
+| `signed_in` | `identity` (`id`, `email`, `name` when known), `workspaces`, `session` (`device` for a fresh approval, `keychain` for a resumed one, `key` for a key given on the command line). With `--dry-run` and no workspace named, a keychain session stored by an earlier run on this host is reused when the server still accepts it, so no `device_code` event is emitted; a missing or rejected one falls back to device approval |
 | `workspace_resolved` | `workspaceId`, `slug`, `name`, `role` |
 | `project_options` | `options`: each qualifying project (`id`, `name`, `slug`) when several qualify |
 | `template_missing` | `canInstall`: no project has the tables a route needs; `true` when the key's role can install the Issues template |

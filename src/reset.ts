@@ -144,7 +144,7 @@ function removeCheckout(dir: string, dryRun: boolean, fx: ResetEffects): ResetSt
  */
 function removeState(stateDir: string, dryRun: boolean): ResetStep[] {
   const out: ResetStep[] = [];
-  const targets = [join(stateDir, 'resolved'), join(stateDir, 'keys'), clonedCheckoutsFile(stateDir), join(stateDir, 'reload-requested'), join(stateDir, 'daemon.started')];
+  const targets = [join(stateDir, 'resolved'), join(stateDir, 'keys'), clonedCheckoutsFile(stateDir), join(stateDir, 'connect-session.json'), join(stateDir, 'reload-requested'), join(stateDir, 'daemon.started')];
   try {
     for (const name of readdirSync(stateDir)) {
       if (name.startsWith('.') && statSync(join(stateDir, name)).isFile()) targets.push(join(stateDir, name));

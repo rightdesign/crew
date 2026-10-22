@@ -25,6 +25,7 @@ import {
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
+import { resumeKeychainSession, rememberSession } from './connect-resume.ts';
 import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
@@ -73,7 +74,7 @@ import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, wo
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
-  discover, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
+  discover, get as connectGet, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIER,
 } from './connect.ts';
 import {
@@ -336,7 +337,7 @@ function usage(): never {
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
-  crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one; --dry-run works with no crew.yaml and writes none: no file, no rows, no seat keys — the device approval and workspace credential behave as in a real run)
+  crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one; --dry-run works with no crew.yaml and writes none: no file, no rows, no seat keys — the device approval and workspace credential behave as in a real run; with no workspace named it first reuses the keychain session a previous dry-run stored for the host, falling back to device approval when that is missing or rejected, and the signed_in event's session field says which)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
   crew disconnect --reset [--remove-checkouts] [--dry-run] [--json]   remove everything connect and install wrote on this machine: scheduler units, Pair/MCP entries, seat keys, keychain credential, resolved state, then crew.yaml (--remove-checkouts also deletes checkouts crew cloned, never one with local changes)
   crew agents sync [route] [--force] [--revoke-seat-keys]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
@@ -2904,6 +2905,26 @@ switch (command) {
         // ever been stored.
       }
     }
+    // CREW-2315: a dry-run with no workspace named is the macOS wizard's
+    // sign-in step. If a previous dry-run already stored a keychain session
+    // for this host, and the server still accepts it, resume from it instead
+    // of making the operator approve a device again.
+    let signInSource: 'keychain' | 'device' | 'key' = apiKey ? 'key' : 'device';
+    if (!apiKey && !workspace && dryRun && store) {
+      const resumed = await resumeKeychainSession({
+        store, stateDir: cfg.ship.stateDir, host: hostFromUrl(baseUrl),
+        verify: async (k) => {
+          try { await connectGet({ baseUrl, apiKey: k, userAgent: cfg.ship.userAgent }, '/auth/me'); return true; } catch { return false; }
+        },
+      });
+      if (resumed) {
+        apiKey = resumed.apiKey;
+        workspace = resumed.workspace;
+        keychainBacked = true;
+        signInSource = 'keychain';
+        process.stderr.write(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.\n`);
+      }
+    }
     // Set only when THIS run minted the key via device-login and could NOT
     // store it in the OS keychain — `runConnect` below uses this to fall
     // back to writing the key to apiKeyPathFor and print real
@@ -2967,6 +2988,7 @@ switch (command) {
       connectEvents.emit('signed_in', `signed in as ${result.identity.email}`, {
         identity: { id: result.identity.id, email: result.identity.email },
         workspaces: [{ slug: result.workspace.slug, name: result.workspace.name }],
+        session: 'device',
       });
       // The device flow just said exactly which workspace this key is
       // scoped to — no reason to make the operator retype what there was
@@ -2987,6 +3009,7 @@ switch (command) {
             createdAt: result.apiKey.createdAt,
           });
           keychainBacked = true;
+          rememberSession(cfg.ship.stateDir, hostFromUrl(baseUrl), deviceWorkspace);
           process.stderr.write(
             `API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${deviceWorkspace}.\n`,
           );
@@ -3051,6 +3074,7 @@ switch (command) {
         connectEvents.emit('signed_in', `key belongs to ${found.meEmail ?? found.meId}`, {
           identity: { id: found.meId, email: found.meEmail, name: found.meName },
           workspaces: [{ slug: found.workspaceSlug, name: found.workspaceName, role: found.role }],
+          session: signInSource,
         });
       }
       connectEvents.emit('workspace_resolved', `workspace ${found.workspaceSlug}`, {
