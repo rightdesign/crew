@@ -433,6 +433,20 @@ export interface ReleaseOptions {
 /** The subject `runRelease` gives its own version commit: "Release v1.2.3". */
 const RELEASE_COMMIT_SUBJECT = /^Release \S+$/;
 
+/**
+ * What has landed on HEAD since a commit a deploy failed on (CREW-2349).
+ * `null` when `sha` is not an ancestor of HEAD (history was rewritten or the
+ * sha is unknown), otherwise the subjects of the commits after it.
+ */
+export function subjectsSince(cwd: string, sha: string): string[] | null {
+  if (!isAncestor(cwd, sha, 'HEAD')) return null;
+  return (gitOk(cwd, ['log', '--format=%h %s', `${sha}..HEAD`]) ?? '').split('\n').filter(Boolean);
+}
+
+/** True for a "Release vX" commit line from `subjectsSince` (`<sha> <subject>`). */
+export const isReleaseCommitLine = (line: string): boolean =>
+  RELEASE_COMMIT_SUBJECT.test(line.replace(/^\S+ /, ''));
+
 export function decideRelease(
   cwd: string, tickets: Ticket[], contract: Contract, opts: ReleaseOptions = {},
 ): ReleaseDecision {

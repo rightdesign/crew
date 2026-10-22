@@ -566,6 +566,33 @@ test('a failed deploy is remembered, and not retried on the next cycle', async (
   assert.ok(lines.some((l) => /not retrying until a new commit lands/.test(l)));
 });
 
+test('a release commit from another ship does not lift the failed-deploy guard (CREW-2349)', async () => {
+  const { dir, repo } = project(LOCAL.replace('deploy: exit 0', 'deploy: exit 3'));
+  const state = memory();
+  const first = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false, state,
+  });
+  assert.equal(first.stopped, 'deploy failed');
+  // The other ship's failed release lands on the base: a bump, no real work.
+  writeFileSync(join(dir, 'other.txt'), 'v');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'Release v9.9.9'], { cwd: dir });
+  const second = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], emit: emitter(), dryRun: false, state,
+  });
+  assert.equal(second.stopped, 'previous deploy failed on this commit');
+  assert.ok(lines.some((l) => /release commit\(s\) from elsewhere/.test(l)));
+
+  // A real fix-forward commit lifts it.
+  writeFileSync(join(dir, 'fix.txt'), 'f');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'Fix the migration'], { cwd: dir });
+  const third = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [], emit: emitter(), dryRun: false, state,
+  });
+  assert.notEqual(third.stopped, 'previous deploy failed on this commit');
+});
+
 test('`crew deploy` forces past a remembered failure', async () => {
   const { dir, repo } = project(LOCAL);
   const state = memory();

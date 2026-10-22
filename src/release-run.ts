@@ -20,7 +20,7 @@ import {
 } from './git.ts';
 import type { BlockerInfo } from './blocked.ts';
 import {
-  decideRelease, insertChangelogSection, renderChangelogSection, renderTag,
+  decideRelease, subjectsSince, isReleaseCommitLine, insertChangelogSection, renderChangelogSection, renderTag,
   type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
@@ -1035,13 +1035,25 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[])
   // A commit a deploy already failed on is not retried until something
   // changes. Otherwise a broken deploy repeats every cycle forever, and the
   // original failure is buried under identical ones.
+  // A "Release vX" commit from another ship is bookkeeping, not a fix: with
+  // two ships on one route each failed deploy minted a version that lifted
+  // the other ship's guard, every few minutes (CREW-2349). Only a commit that
+  // is not a release commit lifts it.
   const failedAt = o.state?.deployFailedSha();
-  if (!o.force && failedAt && failedAt === decision.head) {
-    o.emit.warn(
-      `a deploy already failed on ${failedAt.slice(0, 8)} — not retrying until a new commit lands ` +
-        '(force it with `crew deploy`)',
-    );
-    return { merged: [], deployed: false, stopped: 'previous deploy failed on this commit', decision };
+  if (!o.force && failedAt) {
+    const since = failedAt === decision.head ? [] : subjectsSince(o.cwd, failedAt);
+    const real = since?.filter((l) => !isReleaseCommitLine(l)) ?? null;
+    if (real && real.length === 0) {
+      o.emit.warn(
+        `a deploy already failed on ${failedAt.slice(0, 8)} — not retrying until a new commit lands ` +
+          (since!.length > 0 ? `(${since!.length} release commit(s) from elsewhere since do not count: ${since!.join('; ')}) ` : '') +
+          '(force it with `crew deploy`)',
+      );
+      return { merged: [], deployed: false, stopped: 'previous deploy failed on this commit', decision };
+    }
+    if (real) {
+      o.emit.emit(`deploy guard lifted by ${real.length} new commit(s) since ${failedAt.slice(0, 8)}: ${real.join('; ')}`);
+    }
   }
 
   // `external` means the crew is not the thing that releases. It must not
