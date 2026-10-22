@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.64.0] — 2026-10-22
+
+- ISSUE-2317 `crew repos hooks --suggest` lists recipes and gains an optional read-only `--agent` review mode; `--write` accepts `--recipes ID,ID` and Ctrl-C cancels `--agent`.
+- CREW-2317 crew repos hooks --suggest now returns detected recipes (GitHub Actions release) and an optional read-only --agent review mode.
+
 ## [0.63.2] — 2026-10-22
 
 - ISSUE-2315 `crew connect --dry-run` with no workspace named now reuses the keychain session from an earlier dry-run sign-in instead of asking for a new device approval, so the macOS wizard can resume after a relaunch.
