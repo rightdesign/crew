@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.63.1] — 2026-10-22
+
+- ISSUE-2313 `crew connect --dry-run` now works on a machine with no crew.yaml, so the macOS app can run device approval and discovery before anything is written.
+
 ## [0.63.0] — 2026-10-22
 
 - ISSUE-2249 crew connect finds this machine's Ships row by a stable hashed machine id before its name, so a renamed host no longer creates a second ship; crew doctor reports which way the row matched.
