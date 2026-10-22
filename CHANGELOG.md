@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.61.0] — 2026-10-22
+
+- ISSUE-2240 crew connect reports which permissions the signed-in member is missing before provisioning, and crew doctor repeats them until granted.
+- CREW-2243 `crew disconnect --reset` removes everything connect and install wrote on this machine (scheduler units, Pair/MCP entries, seat keys, keychain credential, resolved state, crew.yaml), with --remove-checkouts, --dry-run and --json.
+
 ## [0.60.0] — 2026-10-21
 
 - ISSUE-2238 `crew repos hooks <name>` proposes test/build (and version/bump) hooks for a checkout without a `.crew.yaml`, and can write them to `crew.yaml` (`--write route`) or as a starter `.crew.yaml` (`--write repo`).
