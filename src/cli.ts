@@ -336,7 +336,7 @@ function usage(): never {
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
-  crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
+  crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one; --dry-run works with no crew.yaml and writes none: no file, no rows, no seat keys — the device approval and workspace credential behave as in a real run)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
   crew disconnect --reset [--remove-checkouts] [--dry-run] [--json]   remove everything connect and install wrote on this machine: scheduler units, Pair/MCP entries, seat keys, keychain credential, resolved state, then crew.yaml (--remove-checkouts also deletes checkouts crew cloned, never one with local changes)
   crew agents sync [route] [--force] [--revoke-seat-keys]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
@@ -491,7 +491,7 @@ try {
     shipName: value('ship-name'), agentBin: value('agent-bin'), extraPath: value('extra-path'),
     hostPassengers: flag('host-passengers'), noWizard: flag('no-wizard'),
   };
-  if (command === 'connect' && !flag('dry-run') && usesFlagAnswers(wizardFlags, connectIsTTY)
+  if (command === 'connect' && usesFlagAnswers(wizardFlags, connectIsTTY)
     && shouldRunWizard({ isTTY: true, crewHome: CREW_HOME })) {
     // CREW-2235: every answer comes from a flag, so no terminal is needed.
     const flagged = flagWizardAnswers(wizardFlags, {
@@ -507,7 +507,7 @@ try {
     firstRun = { answers: flagged.answers, configPath };
     firstRunFromFlags = true;
     cfg = loadConfig(CREW_HOME, configPath, { text: renderShipBlock(flagged.answers), allowNoRoutes: true });
-  } else if (command === 'connect' && !flag('dry-run') && shouldRunWizard({
+  } else if (command === 'connect' && shouldRunWizard({
     isTTY: connectIsTTY, crewHome: CREW_HOME,
   })) {
     // Closed in a finally: an open readline on stdin keeps the event loop (and

@@ -264,3 +264,35 @@ test('an unusable --agent-bin is a problem event and exit 2, never a prompt', { 
   assert.equal(r.code, 2);
   assert.deepEqual(names(r), ['problem']);
 });
+
+test('--dry-run with no crew.yaml takes the first-run flag-answers path and writes nothing (CREW-2313)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    const dry = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--agent-bin', '$CLAUDE', '--dir', '/tmp/crew-json-checkout'], dir);
+    assert.equal(dry.code, 0, dry.stderr);
+    assert.ok(!dry.stderr.includes('no config found'), dry.stderr);
+    assert.equal(names(dry)[names(dry).length - 1], 'done');
+    assert.equal(dry.events.find((e) => e.event === 'done')!.wroteConfig, false);
+    assert.ok(!existsSync(join(dir, 'crew.yaml')));
+    assert.ok(!m.posts.some((p) => p.includes('/records')), m.posts.join(','));
+    // The same machine then connects for real: the first-run path still writes the file.
+    const real = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--ship-name', 'test-ship', '--agent-bin', '$CLAUDE', '--no-mcp', '--dir', '/tmp/crew-json-checkout'], dir);
+    assert.equal(real.code, 0, real.stderr);
+    assert.ok(existsSync(join(dir, 'crew.yaml')));
+    // And a dry run on the now-configured machine still works.
+    const again = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--no-mcp'], dir);
+    assert.equal(again.code, 0, again.stderr);
+    assert.equal(again.events.find((e) => e.event === 'done')!.wroteConfig, false);
+  } finally { await m.close(); }
+});
+
+test('--dry-run with no crew.yaml reaches device authorization before anything else (CREW-2313)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'] });
+  try {
+    const r = await runConnect(['ws', '--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--agent-bin', '$CLAUDE']);
+    assert.equal(names(r)[0], 'device_code');
+    assert.ok(!r.stderr.includes('no config found'), r.stderr);
+    assert.ok(!existsSync(join(r.dir, 'crew.yaml')));
+  } finally { await m.close(); }
+});
