@@ -960,7 +960,20 @@ export function ensureRepoCheckout(
     const why = [err.stderr, err.stdout].map(streamText).filter(Boolean).join(' / ');
     throw new GitError(`git clone ${url} ${dir}: ${why || err.message.trim()}`);
   }
+  cloneRecorder?.(dir);
   return true;
+}
+
+let cloneRecorder: ((dir: string) => void) | undefined;
+
+/**
+ * CREW-2243: `crew disconnect --reset --remove-checkouts` may only delete a
+ * checkout crew itself cloned, never one an operator attached. The CLI
+ * registers a recorder at startup; `ensureRepoCheckout` calls it only when it
+ * actually clones, so an existing `.git` is never recorded.
+ */
+export function setCloneRecorder(fn: ((dir: string) => void) | undefined): void {
+  cloneRecorder = fn;
 }
 
 // ---------------------------------------------------------------------------

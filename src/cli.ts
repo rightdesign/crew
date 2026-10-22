@@ -14,16 +14,18 @@ import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { parse as parseYaml } from 'yaml';
 import { pickWorktreeRoute, positionalArgs, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
-  ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat, shipPair,
+  splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat, shipPair,
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
+import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
@@ -94,11 +96,11 @@ import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } 
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
-  ensureRepoCheckout, originUrlOf, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
+  ensureRepoCheckout, originUrlOf, setCloneRecorder, status as gitWorkingTreeStatus, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
+import { realpathSync, readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
@@ -334,6 +336,7 @@ function usage(): never {
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
   crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
+  crew disconnect --reset [--remove-checkouts] [--dry-run] [--json]   remove everything connect and install wrote on this machine: scheduler units, Pair/MCP entries, seat keys, keychain credential, resolved state, then crew.yaml (--remove-checkouts also deletes checkouts crew cloned, never one with local changes)
   crew agents sync [route] [--force] [--revoke-seat-keys]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
@@ -523,7 +526,7 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    cfg = loadConfig(CREW_HOME, undefined, command === 'repos' ? { allowNoRoutes: true } : {});
+    cfg = loadConfig(CREW_HOME, undefined, command === 'repos' || (command === 'disconnect' && flag('reset')) ? { allowNoRoutes: true } : {});
   }
 } catch (e) {
   if (e instanceof ConfigError) {
@@ -585,6 +588,7 @@ try {
   throw e;
 }
 const state = new State(cfg.ship.stateDir);
+setCloneRecorder((dir) => recordClonedCheckout(cfg.ship.stateDir, dir));
 const dryRun = flag('dry-run');
 // CREW-1055: `crew agents sync --force` only — overwrites a persona's
 // prompt with crew's own local default even when it looks diverged,
@@ -3999,9 +4003,64 @@ switch (command) {
     // A configured toolchain's harness counts too: `connect` registers its MCP
     // entry whether or not `ship.pair` lists it (CREW-1520).
     const disconnectHarnesses = new Set([...shipPair(cfg.ship), ...shipToolchains(cfg.ship).map((t) => t.harness).filter(isPairHarness)]);
-    for (const h of disconnectHarnesses) {
-      process.stderr.write(`${pairInstallerFor(h).removePair({ url, bin: cfg.ship.agent.bin, dryRun })}\n`);
+    const removePairEntries = (mcpUrl: string, dry: boolean): string[] =>
+      [...disconnectHarnesses].map((h) => pairInstallerFor(h).removePair({ url: mcpUrl, bin: cfg.ship.agent.bin, dryRun: dry }));
+    if (!flag('reset')) {
+      for (const line of removePairEntries(url, dryRun)) process.stderr.write(`${line}\n`);
+      break;
     }
+    // CREW-2243: the whole-machine inverse of connect + install. See reset.ts
+    // for the fixed order and why crew.yaml goes last.
+    const host = hostPlatform();
+    let resetStore: SessionStore | undefined;
+    try { resetStore = getSessionStore(); } catch { resetStore = undefined; }
+    const effects: ResetEffects = {
+      async uninstallUnits(dry) {
+        const lines: string[] = [];
+        if (host === 'windows') return lines;
+        const log = { emit: (m: string) => { lines.push(m); }, warn: (m: string) => { lines.push(m); } };
+        for (const job of ['run', 'release', 'passengers'] as const) {
+          await applyUninstall(planUninstall(cfg.ship, CREW_HOME, host, detectSystemd(), job), CREW_HOME, dry, log);
+        }
+        return lines;
+      },
+      removePair: removePairEntries,
+      async revokeSeatKeys(r, dry) {
+        const outcomes = await revokeSeatKeys(r, { userAgent: cfg.ship.userAgent, dryRun: dry });
+        return outcomes.map((o) => ({ line: describeRevokeOutcome(o), ok: o.action !== 'failed' }));
+      },
+      async credential(r) {
+        if (!resetStore) return { stored: false, clear: async () => {} };
+        const store = resetStore;
+        const h = hostFromUrl(r.baseUrl);
+        const [slug] = splitRoute(r.route);
+        const session = await store.get(h, slug);
+        return { stored: Boolean(session?.apiKey), clear: () => store.clear(h, slug) };
+      },
+      inspectCheckout(dir) {
+        const dirty = gitWorkingTreeStatus(dir).map((c) => c.path);
+        const linkedWorktrees = worktrees(dir).map((w) => w.path).filter((p) => realpathSync(p) !== realpathSync(dir));
+        return { dirty, linkedWorktrees };
+      },
+    };
+    // Routes crew.yaml declares but that did not load (an interrupted first run):
+    // sign-in may still have stored a credential for them.
+    const droppedRoutes: Array<{ route: string; baseUrl: string }> = [];
+    try {
+      const rawCfg = parseYaml(readFileSync(cfg.configFile, 'utf8')) as { ship?: { baseUrl?: string }; routes?: Array<{ route?: unknown; baseUrl?: unknown }> } | null;
+      for (const r of rawCfg?.routes ?? []) {
+        if (typeof r?.route !== 'string' || cfg.routes.some((x) => x.route === r.route)) continue;
+        try { splitRoute(r.route); } catch { continue; }
+        droppedRoutes.push({ route: r.route, baseUrl: typeof r.baseUrl === 'string' ? r.baseUrl : rawCfg?.ship?.baseUrl ?? DEFAULT_BASE_URL });
+      }
+    } catch { /* an unreadable crew.yaml has no routes to find */ }
+    const steps = await runReset(
+      { routes: cfg.routes, droppedRoutes, stateDir: cfg.ship.stateDir, configFile: cfg.configFile, dryRun, removeCheckouts: flag('remove-checkouts') },
+      effects,
+    );
+    if (flag('json')) process.stdout.write(`${JSON.stringify({ dryRun, ok: !resetIncomplete(steps), steps })}\n`);
+    else for (const s of steps) process.stdout.write(`${describeResetStep(s)}\n`);
+    if (resetIncomplete(steps)) process.exitCode = 1;
     break;
   }
 
