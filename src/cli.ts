@@ -27,6 +27,7 @@ import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
 import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
+import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
@@ -4379,6 +4380,7 @@ switch (command) {
       .catch(() => []);
 
     const projects = projectModeLabels(await statusTracker.projectRowsWithModes().catch(() => []));
+    const crewMinVersion = (await readCrewFloor(route, cfg.ship)) ?? null;
     if (flag('json')) {
       const repos = await resolvedRepos(route);
       // Per-seat identity (ISSUE-525): crew-macos's menu bar wants the seat's
@@ -4446,6 +4448,9 @@ switch (command) {
         watermark: state.watermark(),
         route: {
           name: route.route,
+          // Additive (CREW-2248): the running version and the workspace's floor. `version` stays 1.
+          crewVersion: sentVersion(cfg.ship),
+          crewMinVersion,
           // Additive (CREW-1496): each project and its work mode. `version` stays 1.
           projects: projects.map((p) => ({ id: p.id, name: p.name, workMode: p.mode })),
           dir: route.dir,
@@ -4641,6 +4646,20 @@ switch (command) {
     // Does this machine have a row on the board, and which seats are its own?
     // Matched by name, per Brad's call: it is what an operator recognises.
     const tracker = new Tracker(route, cfg.ship);
+
+    // EPIC-053 §4: the version the server sees against the workspace's floor.
+    {
+      const have = sentVersion(cfg.ship);
+      const floor = await readCrewFloor(route, cfg.ship);
+      if (have && floor) {
+        process.stdout.write(
+          `crew version:      ${belowFloor(have, floor) ? 'WARN ' : ''}${have} (workspace requires ${floor})` +
+            `${belowFloor(have, floor) ? ' — update crew (the Crew app, or `npm install -g @tablation/crew`)' : ''}\n`,
+        );
+      } else if (have) {
+        process.stdout.write(`crew version:      ${have}${floor === null ? ' (workspace sets no minimum)' : ''}\n`);
+      }
+    }
 
     // A workspace's contract can be internally inconsistent — a status named
     // as `approved` that is not in `open`, a `handoff` listed as resolved.

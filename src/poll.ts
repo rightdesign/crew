@@ -24,6 +24,7 @@ import { attentionReasons, attentionTransitions, type AttentionReason } from './
 import { buildingDigest, DIRECTION_EVENT_TYPES, STATUS_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
+import { checkCrewFloor } from './crew-floor.ts';
 import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
@@ -267,8 +268,12 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     emit.emit(`${what}: no longer missing from the scheduler PATH — stop cleared`, { step: 'select' });
   }
   await checkRepoDisks({ state, emit, route, ship });
+  // EPIC-053 §4: below the workspace's crew floor nothing is picked; the
+  // heartbeat and sweeps still run, and the item clears the cycle it is met.
+  const floorStop = await checkCrewFloor({ state, emit, route, ship });
+  const itemStop = repoStopFor(openShipAttention(state), route);
   const selectionInput = {
-    repoStop: repoStopFor(openShipAttention(state), route),
+    repoStop: floorStop ? () => floorStop : itemStop,
     workModes,
     tickets, comments, watermark, blocked,
     holds,

@@ -75,6 +75,7 @@ import type { RoleName, Route, Ship } from './config.ts';
 import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, routeSlug } from './config.ts';
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
+import { isUpgradeRequired, raiseFromUpgradeRequired } from './crew-floor.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
@@ -473,6 +474,19 @@ export interface RunOnePassOptions {
  * immediately (zero-idle chaining) while those agents are still running.
  */
 export async function runOnePass(o: RunOnePassOptions): Promise<PassResult> {
+  try {
+    return await runOnePassUnguarded(o);
+  } catch (e) {
+    // EPIC-053 §4: the floor was raised while this daemon ran. Raise the item
+    // once and end the pass quietly; the next poll's floor check stops picking.
+    if (!isUpgradeRequired(e)) throw e;
+    const emit = o.newEmitter();
+    await raiseFromUpgradeRequired({ state: o.state, emit, route: o.route, ship: o.ship }, e);
+    return { pending: [], started: [], skipped: [] };
+  }
+}
+
+async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   // CREW-1372: `crew pause` is honored here too, the same refusal the one-shot
   // `run` makes before `decideCycle` (cli.ts). A paused pass does no keychain
   // read, no poll, no sweep and no spawn, so the loop backs off like any idle
