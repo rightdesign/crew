@@ -208,6 +208,29 @@ export function selectRecipes(s: HookSuggestion, ids: string[]): RecipeSelection
   return { hooks, ...(release ? { release } : {}) };
 }
 
+export const HOOK_KEYS = ['test', 'build', 'version', 'bump', 'released', 'ci_status'] as const;
+
+/**
+ * Parse repeated `--hook key=value` into the hooks to write (CREW-2320). They
+ * override what the sniff or a recipe proposed, and add a key neither found,
+ * so a wizard can write what the person typed. An unknown key or an empty
+ * value is refused by name rather than dropped.
+ */
+export function parseHookOverrides(specs: string[]): SuggestedHooks {
+  const out: SuggestedHooks = {};
+  for (const spec of specs) {
+    const eq = spec.indexOf('=');
+    const key = eq < 0 ? spec : spec.slice(0, eq);
+    const val = eq < 0 ? '' : spec.slice(eq + 1);
+    if (!(HOOK_KEYS as readonly string[]).includes(key)) {
+      throw new ReposError(`--hook: unknown key "${key}" (valid keys: ${HOOK_KEYS.join(', ')})`);
+    }
+    if (val.trim() === '') throw new ReposError(`--hook ${key}= needs a command (expected key=value)`);
+    out[key as keyof SuggestedHooks] = val;
+  }
+  return out;
+}
+
 export interface HooksArgs { route: string; name: string }
 
 /** `[route] <name>`: a leading arg naming a configured route is the route; else the only route. */
@@ -219,7 +242,7 @@ export function parseHooksArgs(args: string[], routes: string[]): HooksArgs {
     if (routes.length === 1) route = routes[0];
     else throw new ReposError(routes.length === 0 ? 'the config has no routes — run `crew connect` first' : `several routes are configured; name one: ${routes.join(', ')}`);
   }
-  if (rest.length !== 1) throw new ReposError('expected: crew repos hooks [route] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--json]');
+  if (rest.length !== 1) throw new ReposError('expected: crew repos hooks [route] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--hook KEY=CMD] [--json]');
   return { route: route!, name: rest[0]! };
 }
 

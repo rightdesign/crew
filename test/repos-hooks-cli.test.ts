@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CREW, CREW_ENV } from './helpers/crew-bin.ts';
@@ -67,6 +67,28 @@ test('--write repo --recipes ID is parsed as a flag value, not a positional', as
   assert.equal(badCode, 2);
   assert.match(bad.out().stderr, /bogus/);
   assert.doesNotMatch(bad.out().stderr, /expected: crew repos hooks/);
+});
+
+test('--hook key=value overrides the sniffed value, adds new keys and refuses unknown ones', async () => {
+  const s = ship();
+  writeFileSync(join(s.repo, 'Makefile'), 'test:\n\techo t\nbuild:\n\techo b\n');
+  const p = s.start('--write', 'repo', '--hook', 'test=make check', '--hook', 'version=cat VERSION', '--json');
+  const [code] = await once(p.child, 'exit');
+  assert.equal(code, 0, p.out().stderr);
+  const out = JSON.parse(p.out().stdout);
+  assert.deepEqual(out.written.hooks.sort(), ['build', 'test', 'version']);
+  const yaml = readFileSync(join(s.repo, '.crew.yaml'), 'utf8');
+  assert.match(yaml, /test: "make check"/);
+  assert.match(yaml, /build: "make build"/);
+  assert.match(yaml, /version: "cat VERSION"/);
+  const bad = s.start('--write', 'route', '--hook', 'tset=x');
+  const [badCode] = await once(bad.child, 'exit');
+  assert.equal(badCode, 2);
+  assert.match(bad.out().stderr, /unknown key "tset".*valid keys: test, build/);
+  const noWrite = s.start('--hook', 'test=x');
+  const [nwCode] = await once(noWrite.child, 'exit');
+  assert.equal(nwCode, 2);
+  assert.match(noWrite.out().stderr, /--hook only applies with --write/);
 });
 
 test('SIGINT during --agent reports cancelled with a non-zero exit instead of exiting 0 silently', async () => {

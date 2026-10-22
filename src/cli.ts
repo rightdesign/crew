@@ -87,7 +87,7 @@ import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPro
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
+import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
 import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
@@ -2576,7 +2576,7 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
       process.exit(2);
     };
     if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks') usage();
@@ -2611,9 +2611,13 @@ switch (command) {
             agentError = { reason: e.reason, message: e.message };
           } finally { process.off('SIGINT', onSigint); sigintOwnedByCommand = false; }
         }
-        const picked = selectRecipes(suggestion, recipeIds);
+        const hookSpecs = argv.flatMap((x, i) => (x === '--hook' && argv[i + 1] !== undefined ? [argv[i + 1] as string] : x.startsWith('--hook=') ? [x.slice(7)] : []));
+        const overrides = parseHookOverrides(hookSpecs);
+        if (hookSpecs.length > 0 && !write) throw new ReposError('--hook only applies with --write route|repo');
+        const base = selectRecipes(suggestion, recipeIds);
+        const picked = { ...base, hooks: { ...base.hooks, ...overrides } };
         let written: { target: 'route' | 'repo'; file: string; hooks: string[]; kept: string[] } | undefined;
-        if (write && suggestion.source === null && recipeIds.length === 0) throw new ReposError(`nothing to write: ${suggestion.notes[0]}`);
+        if (write && suggestion.source === null && recipeIds.length === 0 && hookSpecs.length === 0) throw new ReposError(`nothing to write: ${suggestion.notes[0]}`);
         if (write === 'route') {
           const plan = planRouteHooks(configText, a.route, a.name, picked.hooks);
           writeFileSync(cfg.configFile, plan.text);
