@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.67.0] — 2026-10-22
+
+- ISSUE-2320 `crew repos hooks --write` takes repeatable `--hook KEY=CMD` to write edited hook commands instead of only the detected ones.
+
 ## [0.66.0] — 2026-10-22
 
 - ISSUE-2318 Added a `hooks.ci_status` repo-spec hook (exit 0 = CI green) that the dev lane runs after pushing and before hand-off, and made the `github-actions-ci-status` recipe from `crew repos hooks --suggest` writable.
