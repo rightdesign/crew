@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.62.0] — 2026-10-22
+
+- CREW-2248 crew stops picking tickets and raises a crew_outdated attention item when it is below the workspace's minimum crew version; doctor and status --json show both versions.
+
 ## [0.61.0] — 2026-10-22
 
 - ISSUE-2240 crew connect reports which permissions the signed-in member is missing before provisioning, and crew doctor repeats them until granted.
