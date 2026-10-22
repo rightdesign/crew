@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.67.1] — 2026-10-22
+
+- ISSUE-2260 Getting started now leads with the Crew app on a Mac and keeps the CLI as the Linux and scripting route, with a new short Install page and troubleshooting for the minimum crew version, push auth and self-test failures.
+
 ## [0.67.0] — 2026-10-22
 
 - ISSUE-2320 `crew repos hooks --write` takes repeatable `--hook KEY=CMD` to write edited hook commands instead of only the detected ones.
