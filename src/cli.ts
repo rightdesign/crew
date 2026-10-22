@@ -51,7 +51,7 @@ import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
 import { unitAbandonsAgents, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
-import { loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
+import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
@@ -90,7 +90,7 @@ import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
-import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
@@ -347,7 +347,7 @@ function usage(): never {
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
-  crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
+  crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches (--json: every Repos row too)
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew passengers [route]       sync Host Passengers containers/tunnels once; what the passengers unit invokes
@@ -2576,7 +2576,7 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project>\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--json]\n');
       process.exit(2);
     };
     if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks') usage();
@@ -2684,6 +2684,17 @@ switch (command) {
     const base = dirname(cfg.configFile);
     try {
       if (sub === 'list') {
+        if (flag('json')) {
+          const rows = listRepoRows({
+            text, route: routeName!, base, resolved: resolvedRemotes, originOf,
+            exists: (d) => existsSync(d),
+            repoHasHooks: (d) => REPO_CONFIG_FILENAMES.some((f) => {
+              try { return Object.keys(parseRepoConfig(readFileSync(resolvePath(d, f), 'utf8'), f).hooks).length > 0; } catch { return false; }
+            }),
+          });
+          process.stdout.write(`${JSON.stringify({ route: routeName, repos: rows })}\n`);
+          break;
+        }
         const repos = configuredRepos(text, routeName!, base);
         if (repos.length === 0) process.stdout.write(`route ${routeName} has no checkout configured — \`crew repos add ${routeName} <path>\`\n`);
         for (const r of repos) {

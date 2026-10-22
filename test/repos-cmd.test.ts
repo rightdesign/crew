@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
+import { listRepoRows, parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
 import { parse } from 'yaml';
 
 const BASE = '/cfg';
@@ -185,4 +185,45 @@ test('clone refuses a row with no remote, an unknown row, and an already-attache
   assert.throws(() => planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'ghost', resolved }), /no Repos row named "ghost"/);
   const first = planRepoClone({ text: empty, base: BASE, route: 'acme/product', name: 'crew', resolved, dir: '/src/crew' });
   assert.throws(() => planRepoClone({ text: first.text, base: BASE, route: 'acme/product', name: 'crew', resolved }), /already has a checkout named "crew"/);
+});
+
+const listText = `routes:
+  - route: acme/product
+    enabled: true
+    repos:
+      crew:
+        dir: /src/crew
+        hooks:
+          test: npm test
+      stray: /src/stray
+      spec: /src/spec
+`;
+const listIn = (over: Partial<Parameters<typeof listRepoRows>[0]> = {}) => ({
+  text: listText, route: 'acme/product', base: BASE, resolved,
+  originOf: (d: string) => ({ '/src/crew': 'git@github.com:acme/crew.git', '/src/stray': 'git@github.com:acme/other.git', '/src/spec': 'git@github.com:acme/spec.git' } as Record<string, string>)[d],
+  exists: (d: string) => d !== '/src/stray',
+  repoHasHooks: (d: string) => d === '/src/spec',
+  ...over,
+});
+
+test('listRepoRows lists attached and unattached Repos rows plus unmatched checkouts', () => {
+  const rows = listRepoRows(listIn());
+  const by = Object.fromEntries(rows.map((r) => [r.name, r]));
+  assert.equal(rows.length, 4);
+  assert.deepEqual(by.crew, { name: 'crew', remote: 'acme/crew', repoRowId: 'r2', attached: true, dir: '/src/crew', exists: true, origin: null, matchedRow: 'crew', hooksSource: 'route' });
+  assert.deepEqual(by.synthesis, { name: 'synthesis', remote: 'Acme/synthesis', repoRowId: 'r1', attached: false, dir: null, exists: false, origin: null, matchedRow: null, hooksSource: 'none' });
+  assert.equal(by.stray!.repoRowId, null);
+  assert.equal(by.stray!.exists, false);
+  assert.equal(by.stray!.origin, 'git@github.com:acme/other.git');
+  assert.equal(by.spec!.hooksSource, 'repo');
+});
+
+test('listRepoRows reports an origin that differs from the row remote and a row with no remote', () => {
+  const rows = listRepoRows(listIn({
+    resolved: { repoNames: { r2: 'crew', r3: 'bare' }, repoRemotes: { r2: 'acme/elsewhere' } },
+  }));
+  const crew = rows.find((r) => r.name === 'crew')!;
+  assert.equal(crew.attached, true); // matched by entry name
+  assert.equal(crew.origin, 'git@github.com:acme/crew.git');
+  assert.equal(rows.find((r) => r.name === 'bare')!.remote, null);
 });

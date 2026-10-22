@@ -155,6 +155,85 @@ export function configuredRepos(text: string, route: string, base: string): Repo
   return dir ? [{ name: basename(String(dir)), dir: expandDir(String(dir), base) }] : [];
 }
 
+export interface RepoListRow {
+  name: string;
+  /** The Repos row's `owner/repo`; null for a row with none, and for a checkout no row matches. */
+  remote: string | null;
+  repoRowId: string | null;
+  attached: boolean;
+  dir: string | null;
+  exists: boolean;
+  /** The checkout's origin URL when it differs from `remote` (or no row has one); null otherwise. */
+  origin: string | null;
+  matchedRow: string | null;
+  hooksSource: 'route' | 'repo' | 'none';
+}
+
+export interface RepoListInput {
+  text: string;
+  route: string;
+  base: string;
+  resolved?: RepoRemotes;
+  originOf: (dir: string) => string | undefined;
+  exists: (dir: string) => boolean;
+  /** True when the checkout carries a repo-spec file (`.crew.yaml`…) that sets at least one hook. */
+  repoHasHooks: (dir: string) => boolean;
+}
+
+/** Whether the route's yaml sets hooks for the checkout `name` (its `repos:` entry, or the route itself on `dir:`). */
+function routeSetsHooks(text: string, route: string, name: string): boolean {
+  const m = routeMapOf(parseDocument(text), route);
+  const repos = m.get('repos', true);
+  let target: unknown = m;
+  if (isMap(repos)) target = repos.get(name, true);
+  if (!isMap(target)) return false;
+  const hooks = target.get('hooks', true);
+  return isMap(hooks) && hooks.items.length > 0;
+}
+
+/**
+ * `crew repos list --json` (CREW-2319): every Repos row the route knows
+ * (from the resolved file) with the checkout attached to it, if any, then
+ * each configured checkout that matches no row (`repoRowId: null`). A
+ * checkout matches a row by normalized origin remote, else by entry name.
+ * `hooksSource` follows precedence: a repo-spec file shadows route hooks.
+ */
+export function listRepoRows(i: RepoListInput): RepoListRow[] {
+  const checkouts = configuredRepos(i.text, i.route, i.base);
+  const claimed = new Set<number>();
+  const hooksSourceOf = (c: RepoEntry): RepoListRow['hooksSource'] =>
+    i.exists(c.dir) && i.repoHasHooks(c.dir) ? 'repo' : routeSetsHooks(i.text, i.route, c.name) ? 'route' : 'none';
+  const originFor = (c: RepoEntry, remote: string | null): string | null => {
+    const o = i.originOf(c.dir) ?? null;
+    if (!o) return null;
+    return remote !== null && normalizeRemote(o) === normalizeRemote(remote) ? null : o;
+  };
+  const rows: RepoListRow[] = [];
+  const names = i.resolved?.repoNames ?? {};
+  const remotes = i.resolved?.repoRemotes ?? {};
+  for (const [id, name] of Object.entries(names)) {
+    const remote = remotes[id] ?? null;
+    const want = normalizeRemote(remote);
+    let idx = checkouts.findIndex((c, n) => !claimed.has(n) && want !== undefined && normalizeRemote(i.originOf(c.dir)) === want);
+    if (idx < 0) idx = checkouts.findIndex((c, n) => !claimed.has(n) && c.name === name);
+    const c = idx >= 0 ? checkouts[idx]! : undefined;
+    if (idx >= 0) claimed.add(idx);
+    rows.push({
+      name, remote, repoRowId: id, attached: c !== undefined, dir: c?.dir ?? null,
+      exists: c ? i.exists(c.dir) : false, origin: c ? originFor(c, remote) : null,
+      matchedRow: c ? name : null, hooksSource: c ? hooksSourceOf(c) : 'none',
+    });
+  }
+  checkouts.forEach((c, n) => {
+    if (claimed.has(n)) return;
+    rows.push({
+      name: c.name, remote: null, repoRowId: null, attached: true, dir: c.dir, exists: i.exists(c.dir),
+      origin: originFor(c, null), matchedRow: null, hooksSource: hooksSourceOf(c),
+    });
+  });
+  return rows;
+}
+
 /**
  * Plan adding `path` to `route`. First repo -> `dir:`. Second -> `dir:` becomes
  * a `repos:` map holding the old checkout and the new one. A route already on
