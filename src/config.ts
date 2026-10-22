@@ -1349,6 +1349,20 @@ export function resolveApiKey(r: Route): string {
 }
 
 /**
+ * Where `resolveApiKey` finds this route's key, in the same order, without
+ * returning the key (CREW-2350). `keychain` means `hydrateApiKeys` filled
+ * `route.apiKey` from the OS keychain; `none` means no key resolves.
+ */
+export function credentialSource(r: Route): 'inline' | 'keychain' | 'apiKeyFile' | 'CREW_API_KEY' | 'none' {
+  if (r.apiKey) return KEYCHAIN_ELIGIBLE_ROUTES.has(r) ? 'keychain' : 'inline';
+  if (r.apiKeyFile && r.apiKeyVar && existsSync(r.apiKeyFile)) {
+    const re = new RegExp(`^${r.apiKeyVar}=`);
+    if (readFileSync(r.apiKeyFile, 'utf8').split('\n').some((l) => re.test(l))) return 'apiKeyFile';
+  }
+  return process.env.CREW_API_KEY?.trim() ? 'CREW_API_KEY' : 'none';
+}
+
+/**
  * Routes `hydrateApiKeys` has decided are keychain-backed — those that had
  * neither an explicit `apiKey` nor a working `apiKeyFile`/`apiKeyVar` pair
  * the FIRST time it ever saw them. Remembered per `Route` object (not

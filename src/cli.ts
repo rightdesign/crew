@@ -63,6 +63,7 @@ import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts'
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
+import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
 import { StaleWriteError } from '@tablation/client';
@@ -322,6 +323,7 @@ function usage(): never {
   crew watch [route]             live view of what the crew is doing
   crew status [route] [--json]   paused/running state; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
+  crew whoami [route] [--json]   the signed-in identity, key role, operator Crew row and credential source per route
   crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
   crew doctor [route] [--fix] [--offline] [--json]   preflight; --fix enables clean routes and offers crew install;
                                  --offline skips push probes; --json prints push-auth and tool checks only
@@ -580,7 +582,7 @@ const named = worktreeArgs
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || command === 'whoami' || releaseFleetWide ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
   (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
@@ -4406,6 +4408,23 @@ switch (command) {
     recordSelftest(cfg.ship.stateDir, results);
     process.stdout.write(flag('json') ? `${JSON.stringify(results, null, 2)}\n` : `${results.map(formatResult).join('\n')}\n`);
     if (results.some((r) => !r.ok)) process.exitCode = 1;
+    break;
+  }
+
+  case 'whoami': {
+    // CREW-2350: one /auth/me call per route; positional or --route names one.
+    const only = value('route') ?? positional[1];
+    const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
+    if (only && wanted.length === 0) {
+      process.stderr.write(`crew whoami: no route "${only}" (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
+      process.exit(2);
+    }
+    const report = await buildWhoami(wanted, {
+      userAgent: cfg.ship.userAgent,
+      operatorName: async (r, id) => (await new Tracker(r, cfg.ship).crewRows()).find((c) => c.id === id)?.name,
+    });
+    process.stdout.write(flag('json') ? `${JSON.stringify(report.length === 1 && only ? report[0] : report, null, 2)}\n` : formatWhoami(report));
+    if (report.some((r) => !r.ok)) process.exitCode = 1;
     break;
   }
 
