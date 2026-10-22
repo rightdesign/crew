@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.63.2] — 2026-10-22
+
+- ISSUE-2315 `crew connect --dry-run` with no workspace named now reuses the keychain session from an earlier dry-run sign-in instead of asking for a new device approval, so the macOS wizard can resume after a relaunch.
+
 ## [0.63.1] — 2026-10-22
 
 - ISSUE-2313 `crew connect --dry-run` now works on a machine with no crew.yaml, so the macOS app can run device approval and discovery before anything is written.
