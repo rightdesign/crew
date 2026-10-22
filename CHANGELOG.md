@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.65.0] — 2026-10-22
+
+- ISSUE-2319 `crew repos list ROUTE --json` prints every Repos row the route knows (attached or not) plus unmatched checkouts, with remote, origin, existence and hooks source; text output is unchanged.
+
 ## [0.64.0] — 2026-10-22
 
 - ISSUE-2317 `crew repos hooks --suggest` lists recipes and gains an optional read-only `--agent` review mode; `--write` accepts `--recipes ID,ID` and Ctrl-C cancels `--agent`.
