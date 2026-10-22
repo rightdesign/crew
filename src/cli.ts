@@ -78,6 +78,7 @@ import {
   type SessionStore,
 } from '@tablation/client';
 import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
+import { checkCapabilities, describeCapability, missLine } from './capability-check.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
@@ -3074,6 +3075,17 @@ switch (command) {
       // route string and a state-file path segment cannot.
       const route = `${found.workspaceSlug}/${found.projectSlug ?? found.projectId}`;
       const resolvedPath = resolvedPathFor(cfg.ship.stateDir, route);
+      // CREW-2240: report what this key may do before provisioning, so a
+      // member learns what to ask an admin for now rather than from a refused
+      // write later. Provisioning below carries on for whatever is allowed.
+      const capabilities = await checkCapabilities(authOpts, found);
+      if (flag('json')) {
+        process.stdout.write(`${JSON.stringify({ event: 'capabilities', route, items: capabilities })}\n`);
+      } else {
+        process.stderr.write('capabilities for this key:\n');
+        for (const i of capabilities) process.stderr.write(`  ${describeCapability(i)}\n`);
+      }
+      const capabilityMisses = capabilities.filter((i) => i.status === 'missing').map(missLine);
       // One release-lock row per repo of this route (CREW-1384): every repo the
       // board's Repos table names plus every checkout this ship configured for
       // the route. Idempotent and safe against another ship connecting at once.
@@ -3238,6 +3250,7 @@ switch (command) {
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(found.releaseSeat ? { releaseSeat: found.releaseSeat } : {}),
         ...((found.role ?? previous?.role) ? { role: found.role ?? previous?.role } : {}),
+        ...(capabilityMisses.length > 0 ? { capabilityMisses } : {}),
         ...(operator ? { operator } : {}),
         ...(contract ? { contract } : {}),
         ...(reviewedStatuses.length > 0 ? { reviewedStatuses } : {}),
@@ -4653,6 +4666,8 @@ switch (command) {
     const keyRole = route.resolved?.role ?? await fetchKeyRole(route, cfg.ship.userAgent);
     const roleRoute: Route = route.resolved && keyRole ? { ...route, resolved: { ...route.resolved, role: keyRole } } : route;
     process.stdout.write(`api key role:     ${keyRole ?? 'unknown'}\n`);
+    // CREW-2240: what the last `crew connect` found this key may not do.
+    for (const m of route.resolved?.capabilityMisses ?? []) process.stdout.write(`capability:       MISSING ${m} (re-run \`crew connect\` once granted)\n`);
     const canMint = await canMintAgentKeys(roleRoute, { userAgent: cfg.ship.userAgent });
     process.stdout.write(`can mint agent keys: ${canMint === undefined ? 'unknown' : canMint ? 'yes' : 'no'}\n`);
 

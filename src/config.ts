@@ -155,6 +155,12 @@ export interface ResolvedIds {
   releaseAgentId?: string;
   /** This key's own role in the workspace (`/auth/me`), stamped by `crew connect` (CREW-1797): non-admin keys never write the Agents / Agent Skills tables. */
   role?: string;
+  /**
+   * Checklist items `crew connect` found missing for this key (CREW-2240), as
+   * `<label> — ask a workspace admin for <what>` lines. Stored so `crew doctor`
+   * repeats them until a reconnect with the grant in place clears them.
+   */
+  capabilityMisses?: string[];
   operator: string;
   holds: HoldConfig[];
   /**
@@ -894,6 +900,9 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}),
     ...(typeof raw.releaseAgentId === 'string' && raw.releaseAgentId ? { releaseAgentId: raw.releaseAgentId } : {}),
     ...(typeof raw.role === 'string' && raw.role ? { role: raw.role } : {}),
+    ...(Array.isArray(raw.capabilityMisses) && raw.capabilityMisses.length > 0
+      ? { capabilityMisses: raw.capabilityMisses.filter((x: unknown): x is string => typeof x === 'string') }
+      : {}),
     ...(Object.keys(agentPersonas).length > 0 ? { agentPersonas } : {}),
     ...(Object.keys(agentSkills).length > 0 ? { agentSkills } : {}),
   };

@@ -181,6 +181,14 @@ reality: the checkouts, the tools on PATH, the agent binary, the repo's hooks,
 and whether the board answers. Nothing writes, wakes an agent or deploys until
 a route has `enabled: true`.
 
+Right after the project resolves, `crew connect` prints a capability checklist
+for the signed-in member (write the Crew and Ships tables, create Repos rows,
+mint agent keys, sync personas and skills): `ok`, or `missing — ask a workspace
+admin for <capability>`. With `--json` it is one `capabilities` event on stdout.
+Connect carries on for whatever is allowed; misses are stored in the route's
+resolved state and `crew doctor` repeats them until a re-connect finds the grant
+in place.
+
 A secondary workspace is addressed as `<primary>:<slug>`:
 `crew connect paradium:issues` (or `paradium:issues/<project>`, or
 `--workspace-id paradium:issues`) connects to it, and the route, keychain

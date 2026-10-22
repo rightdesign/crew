@@ -203,7 +203,7 @@ export class ConnectHttpError extends Error {
   }
 }
 
-async function get<T>(o: AuthOptions, path: string): Promise<T> {
+export async function get<T>(o: AuthOptions, path: string): Promise<T> {
   const res = await fetch(`${o.baseUrl.replace(/\/+$/, '')}/api${path}`, {
     headers: {
       Authorization: `Bearer ${o.apiKey}`,
