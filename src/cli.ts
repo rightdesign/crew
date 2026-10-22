@@ -106,6 +106,7 @@ import { createInterface } from 'node:readline/promises';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
+import { ensureMachineId, matchShipRows } from './machine-id.ts';
 import {
   dockerAvailable, ensureImage, imagePresent, passengerImageRef, planContainers, syncAllPassengerCheckouts, syncPassengerContainers,
 } from './passenger-containers.ts';
@@ -351,7 +352,7 @@ function usage(): never {
   crew install                  write and load this platform's scheduler unit
   crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
-     --json  --ship-name N --agent-bin PATH --extra-path DIRS --host-passengers --no-wizard --choose KEY=VALUE   (non-interactive: docs/commands.md)
+     --json  --machine-id ID  --ship-name N --agent-bin PATH --extra-path DIRS --host-passengers --no-wizard --choose KEY=VALUE   (non-interactive: docs/commands.md)
 
 Options:
   --dry-run      decide everything, perform nothing
@@ -1061,7 +1062,7 @@ async function routeProblems(c: Route): Promise<string[]> {
     const ships = await tracker.shipRows();
     // No Ships table is fine; a table with no (or an ambiguous) row for this ship is not.
     if (ships.length > 0) {
-      const mine = ships.filter((s2) => (s2.name ?? '').trim() === cfg.ship.name.trim());
+      const mine = matchShipRows(ships, cfg.ship.name, doctorMachineId(cfg.ship.stateDir)).rows;
       if (mine.length !== 1) problems.push(`ship record: ${mine.length} rows named "${cfg.ship.name}"`);
       else if (mine[0]!.platform && mine[0]!.platform !== host) problems.push(`ship record: declares ${mine[0]!.platform}, this host is ${host}`);
     }
@@ -1069,6 +1070,11 @@ async function routeProblems(c: Route): Promise<string[]> {
     problems.push(`tracker unreachable: ${e instanceof Error ? e.message : String(e)}`);
   }
   return problems;
+}
+
+/** This machine's hashed id for doctor's read-only row matching; `--machine-id` is honored like connect's. */
+function doctorMachineId(stateDir: string): string | undefined {
+  try { return ensureMachineId(stateDir, { override: value('machine-id') }); } catch { return undefined; }
 }
 
 /**
@@ -3024,8 +3030,16 @@ switch (command) {
         process.stderr.write(`(no SSH keypair synced — ${(e as Error).message})\n`);
       }
     }
+    // ISSUE-2249: a stable hashed machine id, matched before the name. Best-effort
+    // like the SSH key: an unreadable id just means name matching, as before.
+    let machineId: string | undefined;
+    try {
+      machineId = ensureMachineId(cfg.ship.stateDir, { override: value('machine-id') });
+    } catch (e) {
+      process.stderr.write(`(no machine id — ${(e as Error).message})\n`);
+    }
     const ship = {
-      name: cfg.ship.name, platform: cfg.ship.platform,
+      name: cfg.ship.name, platform: cfg.ship.platform, machineId,
       hostPassengers: firstRun?.answers.hostPassengers ?? existingRoute?.hostPassengers === true,
       sshPublicKey,
     };
@@ -4769,7 +4783,13 @@ switch (command) {
     if (ships.length === 0) {
       process.stdout.write('ship record:       this workspace has no Ships table (fine)\n');
     } else {
-      const mine = ships.filter((s2) => (s2.name ?? '').trim() === cfg.ship.name.trim());
+      const matched = matchShipRows(ships, cfg.ship.name, doctorMachineId(cfg.ship.stateDir));
+      const mine = matched.rows;
+      process.stdout.write(
+        matched.hasColumn
+          ? `ship row:          ${mine.length === 1 ? `matched by ${matched.by === 'machine_id' ? 'machine id' : 'name'}` : 'not matched'}\n`
+          : 'ship row:          matched by name only — the Ships table has no machine_id column (update the Issues template)\n',
+      );
       if (mine.length === 0) {
         process.stdout.write(
           `ship record:       NO row named "${cfg.ship.name}" — ` +

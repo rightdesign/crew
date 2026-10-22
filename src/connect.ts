@@ -43,7 +43,15 @@ export interface DiscoverOptions extends AuthOptions {
    * the read-only lookup it always was: no ship-scoping, no writes, the
    * old workspace-wide-by-name seat search.
    */
-  ship?: { name: string; platform?: string; hostPassengers?: boolean; sshPublicKey?: string };
+  ship?: {
+    name: string; platform?: string; hostPassengers?: boolean; sshPublicKey?: string;
+    /**
+     * This machine's hashed id (`machine-id.ts`, ISSUE-2249). Matched against
+     * the Ships row's `machine_id` before the name, so a drifted hostname does
+     * not provision a second ship. Absent: name matching only, as before.
+     */
+    machineId?: string;
+  };
   /**
    * Same meaning as everywhere else in the CLI: report what discovery would
    * do without writing anything. Provisioning (the `ship` option above) is
@@ -179,7 +187,7 @@ export interface Discovered {
    * for `crew connect --json`'s `ship_row` event (CREW-2235). Unset whenever
    * `provisioning` skipped the Ships row.
    */
-  shipRow?: { id: string; name: string; action: 'created' | 'matched' };
+  shipRow?: { id: string; name: string; action: 'created' | 'matched'; matchedBy?: 'machine_id' | 'name' };
   /** Per-seat outcome of the Crew-row provisioning, for the `seat` events. */
   seatRows?: Array<{ role: string; id: string; action: 'matched' | 'claimed' | 'created' }>;
   /** How `operator` was settled, for the `operator_row` event. */
@@ -578,11 +586,10 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   if (out.shipsModelId && o.ship && !o.dryRun) {
     const shipRows = await get<Array<{
       id: string; name?: string | null; host_passengers?: boolean | null; ssh_public_key?: string | null;
-      owner_id?: string | null;
+      owner_id?: string | null; machine_id?: string | null;
     }>>(
       o, `/data-models/${out.shipsModelId}/records?limit=200`,
     );
-    const mine = shipRows.filter((r) => (r.name ?? '').trim() === o.ship!.name.trim());
     // Config-truth for this flag lives on this machine (this route's own
     // `hostPassengers:`), never on the Ships row itself (ISSUE-644) — the
     // row is a read-only reflection, synced here on every connect so a
@@ -608,20 +615,53 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // has no `owner_id` field on Ships: that is skipped (and said so in
     // `provisioning`), never an error. Not attempted at all when `/auth/me`
     // gave no id — nothing to record.
+    // One read of the Ships field metadata serves both optional columns, which
+    // arrive with a template update: `owner_id` (CREW-1286) and `machine_id`
+    // (ISSUE-2249). Unreadable metadata reads as "column absent".
+    let shipColumns = new Set<string>();
+    try {
+      const shipsModel = await get<{ fields?: Array<{ columnName: string }> }>(o, `/data-models/${out.shipsModelId}`);
+      shipColumns = new Set((shipsModel.fields ?? []).map((f) => f.columnName));
+    } catch { /* see above */ }
     let ownerId: string | undefined;
     if (out.meId) {
-      let hasOwnerColumn = false;
-      try {
-        const shipsModel = await get<{ fields?: Array<{ columnName: string }> }>(o, `/data-models/${out.shipsModelId}`);
-        hasOwnerColumn = (shipsModel.fields ?? []).some((f) => f.columnName === 'owner_id');
-      } catch { /* unreadable field metadata reads as "column absent" */ }
-      if (hasOwnerColumn) ownerId = out.meId;
+      if (shipColumns.has('owner_id')) ownerId = out.meId;
       else provisioning.push('could not record the ship owner — the Ships table has no owner_id column yet (update the Issues template)');
+    }
+    // Match by machine id first (ISSUE-2249), then by name. A row carrying a
+    // DIFFERENT machine id is another machine that happens to share this
+    // hostname: it is never claimed, so the two get two rows.
+    const machineId = shipColumns.has('machine_id') ? o.ship.machineId : undefined;
+    let mine: typeof shipRows;
+    let matchedBy: 'machine_id' | 'name' = 'name';
+    let writeMachineId = false;
+    const byName = shipRows.filter((r) => (r.name ?? '').trim() === o.ship!.name.trim());
+    if (machineId) {
+      const byId = shipRows.filter((r) => (r.machine_id ?? '') === machineId);
+      if (byId.length > 0) {
+        mine = byId;
+        matchedBy = 'machine_id';
+      } else {
+        mine = byName.filter((r) => !r.machine_id);
+        writeMachineId = true;
+      }
+    } else {
+      mine = byName;
     }
     if (mine.length === 1) {
       shipRowId = mine[0]!.id;
-      out.shipRow = { id: shipRowId, name: o.ship.name, action: 'matched' };
+      out.shipRow = { id: shipRowId, name: o.ship.name, action: 'matched', matchedBy };
       const patchBody: Record<string, unknown> = {};
+      if (matchedBy === 'machine_id') {
+        // Renaming stays a workspace action: keep the row's own name, and say so.
+        const keptName = (mine[0]!.name ?? '').trim();
+        if (keptName !== o.ship.name.trim()) {
+          out.shipRow.name = keptName;
+          provisioning.push(`matched Ships row "${keptName}" by machine id — this host is now called "${o.ship.name}"; the row's name is kept`);
+        }
+        patchBody.last_seen = new Date().toISOString();
+      }
+      if (writeMachineId) patchBody.machine_id = machineId;
       if ((mine[0]!.host_passengers ?? false) !== hostPassengers) patchBody.host_passengers = hostPassengers;
       if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
         patchBody.ssh_public_key = sshPublicKey;
@@ -640,12 +680,17 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         host_passengers: hostPassengers,
         ...(sshPublicKey !== undefined ? { ssh_public_key: sshPublicKey } : {}),
         ...(ownerId !== undefined ? { owner_id: ownerId } : {}),
+        ...(writeMachineId ? { machine_id: machineId } : {}),
       });
       shipRowId = created.id;
-      out.shipRow = { id: shipRowId, name: o.ship.name, action: 'created' };
+      out.shipRow = { id: shipRowId, name: o.ship.name, action: 'created', matchedBy };
       provisioning.push(`created Ships row "${o.ship.name}"`);
     } else {
-      problems.push(`${mine.length} Ships rows named "${o.ship.name}" — which one is this machine?`);
+      problems.push(
+        matchedBy === 'machine_id'
+          ? `${mine.length} Ships rows carry this machine's id — which one is this machine?`
+          : `${mine.length} Ships rows named "${o.ship.name}" — which one is this machine?`,
+      );
     }
   }
 

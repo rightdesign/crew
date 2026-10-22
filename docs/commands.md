@@ -82,6 +82,7 @@ A first-run connect needs no terminal when every answer is a flag, and `--json` 
 | Flag | Meaning | Default |
 | --- | --- | --- |
 | `--ship-name NAME` | How this machine appears on the board | the hostname |
+| `--machine-id ID` | Override the stable machine id (hashed) used to find this machine's Ships row before its name; for tests and containers | the hardware id, hashed |
 | `--agent-bin PATH` | Absolute path to the agent binary | the `claude` on `PATH` |
 | `--extra-path DIRS` | `ship.extraPath` for scheduled runs | derived from where `node`, `pnpm` and (with Host Passengers) `docker` live |
 | `--host-passengers` | Host Passengers on this machine | off |

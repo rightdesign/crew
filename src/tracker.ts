@@ -185,6 +185,8 @@ export interface ShipRow {
   pid?: number | null;
   host_passengers?: boolean | null;
   ssh_public_key?: string | null;
+  /** Hashed stable machine id (ISSUE-2249); the key's absence means the template has not taken the column. */
+  machine_id?: string | null;
   tunnel_status?: string | null;
   /**
    * This ship's open attention items (CREW-1373). The column is optional on
