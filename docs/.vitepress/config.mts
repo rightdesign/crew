@@ -17,10 +17,13 @@ export default defineConfig({
   themeConfig: {
     search: { provider: 'local' },
     nav: [
+      { text: 'Install', link: '/install' },
+      { text: 'Install', link: '/install' },
       { text: 'Getting started', link: '/getting-started' },
       { text: 'Commands', link: '/commands' },
     ],
     sidebar: [
+      { text: 'Install', link: '/install' },
       { text: 'Getting started', link: '/getting-started' },
       { text: 'Command reference', link: '/commands' },
       { text: 'Host Passengers', link: '/host-passengers' },

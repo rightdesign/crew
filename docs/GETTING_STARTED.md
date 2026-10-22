@@ -4,21 +4,28 @@ This walks a new engineer from "no account" to a running crew seat polling a
 real workspace's issue tracker on Tablation. It assumes nothing already
 exists on your machine or your Tablation account.
 
-There are two halves to this:
+There are three parts, and you do Part 1 and then **one** of the other two:
 
 1. **Get into Tablation** — an account and workspace access.
-2. **Install and connect crew** — the CLI that turns that access into a
-   running, polling seat. Four commands do the core of it:
-   `npm install -g @tablation/crew`, `crew connect`, `crew repos add`,
-   `crew doctor --fix`.
+2. **On a Mac: the Crew app** — download the app and follow its setup wizard.
+   No terminal needed.
+3. **On Linux or by script: the CLI** — install `crew` and run
+   `crew connect`, `crew repos add` and `crew doctor --fix` yourself. This is
+   also the route for CI and any scripted setup.
+
+The two routes produce the same thing: a `crew.yaml`, a keychain credential, a
+Ships row for the machine and a scheduler unit. The app is a front end over the
+CLI, so everything it does can be checked with `crew doctor`.
+
+For the shortest version, see [Install](/install).
 
 ## Contents
 
 - [Part 1 — Get into Tablation](#part-1-get-into-tablation)
-  - [1.1 Get invited](#_1-1-get-invited)
+  - [1.1 Get into a workspace](#_1-1-get-into-a-workspace)
   - [1.2 Your machine's Ships row](#_1-2-your-machine-s-ships-row)
-- [Part 2 — Install and connect crew](#part-2-install-and-connect-crew)
-- [Part 3 — crew-macos (optional menu bar front end)](#part-3-crew-macos-optional-menu-bar-front-end)
+- [Part 2 — On a Mac: the Crew app](#part-2-on-a-mac-the-crew-app)
+- [Part 3 — On Linux or by script: the CLI](#part-3-on-linux-or-by-script-the-cli)
 - [Attaching a checkout to a route](#attaching-a-checkout-to-a-route)
 - [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crew-yaml)
 - [Advanced: an existing `crew.yaml`](#advanced-an-existing-crew-yaml)
@@ -31,20 +38,28 @@ capability: see [Host Passengers](/host-passengers).
 
 ## Part 1 — Get into Tablation
 
-### 1.1 Get invited
+### 1.1 Get into a workspace
 
-Access to a workspace is invite-only today. Ask whoever administers the
-workspace you're joining (a **workspace admin**) to send you an invite from
-their **Users** panel (Settings → Users → *Invite by email*). You'll get a
-link shaped like:
+You need an account on Tablation and access to the workspace whose board the
+crew will work. There are two ways in.
+
+**Be invited.** Ask whoever administers the workspace you're joining (a
+**workspace admin**) to send you an invite from their **Users** panel
+(Settings → Users → *Invite by email*). You'll get a link shaped like:
 
 ```
 https://app.tablation.com/accept-invite?token=<token>
 ```
 
 Open it, set a password, and you're in. If you don't have a link, ask the
-admin to resend one rather than guessing at a signup URL — there's no public
-self-serve signup.
+admin to resend one rather than guessing at a URL.
+
+**Register your own workspace.** If you are starting fresh rather than joining
+a team, sign in at <https://app.tablation.com> and create a workspace for
+yourself from the app (a new organization is created with it). You become its
+admin, and the Issues project the crew reads is installed into it for you the
+first time you connect (see 2.2 and 3.3). Whichever way you came in, the rest
+of this guide is the same.
 
 ### 1.2 Your machine's Ships row
 
@@ -63,10 +78,109 @@ team usually already has a naming convention for this (e.g.
 `"Brad's MacBook"`); ask before inventing your own.
 
 ---
+## Part 2 — On a Mac: the Crew app
 
-## Part 2 — Install and connect crew
+The Crew app is a macOS menu bar app. Its first launch opens a setup wizard
+that takes a Mac from nothing to a running crew in seven screens, and after
+that it shows which seat is working on what, with a live log window and
+switches to pause the crew or the timer. It needs macOS 14 or later.
 
-### 2.1 Prerequisites
+### 2.1 Download
+
+Get it from the [Developers page](https://tablation.com/developers) (the
+**Download Crew for macOS** button), which serves
+<https://tablation.com/downloads/crew/Crew-latest.zip>. The build is signed
+and notarized, so it opens without a Gatekeeper warning. Unzip it, drag
+`Crew.app` to `/Applications` and open it.
+
+The app carries its own compiled `crew`, so you do not install Node or npm.
+It installs that copy under `~/Library/Application Support` on first launch,
+and keeps using a `crew` it finds elsewhere on your Mac if you already have
+one.
+
+### 2.2 The setup wizard
+
+The wizard has a step track across the top; you can see which steps are done
+and which is current. Each step is one screen. Under the hood each runs the
+same `crew` commands as Part 3, so the "writes" column below is what to look
+for in `crew doctor`.
+
+| # | Step | What it does | What it writes |
+| --- | --- | --- | --- |
+| 1 | **Requirements** | Checks for `git` and at least one agent CLI (Claude Code is the default). A missing tool shows its install command with **Copy** and **Run in Terminal**; missing Command Line Tools offer **Install Command Line Tools…**. **Recheck** re-runs the check. Whether the agent CLI is *signed in* is checked later, in Verify. | Nothing |
+| 2 | **Sign in** | Signs you in to Tablation with device authorization: your browser opens, you approve, and the app picks it up. | The workspace credential in the macOS keychain |
+| 3 | **Workspace** | Lists the workspaces you can reach and the projects in them that have the tracker tables; pick one. If none qualifies and your role can install it, it offers to install the Issues template. | The resolved ids, in crew's state directory |
+| 4 | **This machine** | Names this Mac on the board (default: its hostname), confirms the agent binary, derives the scheduler `PATH` (`ship.extraPath`) and asks whether to host Passengers. | `~/.config/crew/crew.yaml` (mode 0600) with the `ship:` block and the route (`enabled: false`); your Ships row and one Crew row per lane in the workspace; your own Crew row; the Tablation MCP server in `~/.claude.json`; per-seat agent keys in the keychain |
+| 5 | **Repositories** | For each repository the project lists, clones it or attaches an existing checkout, proposes `test` and `build` hooks from what it finds (with named recipes, and an optional read-only review by Claude Code), and checks that `git push` works. A push failure shows the exact fix with **Fix in Terminal…** and **Copy**. | The route's `dir:` / `repos:` entries, and hooks in `crew.yaml` or a starter `.crew.yaml` in the checkout; a Repos row when the tracker has none |
+| 6 | **Verify** | Runs the agent self-test for every configured toolchain, one row each: running, passed (with the workspace name it read, tokens and cost) or failed with the reason and its remedy. **Retry** per row. **Continue** is enabled when at least one passes; a failure on another toolchain shows as a warning. | Nothing in the tracker; the last result for `crew doctor` |
+| 7 | **Start** | Turns the crew on: enables the route and installs the scheduler. If a blocking problem remains it is shown with a link to Setup health instead of installing. | `enabled: true` on the route; this platform's scheduler units (a launchd user agent) |
+
+The wizard has a **Back** button where it is safe to go back, and **Cancel**
+anywhere. Quitting part-way and reopening continues from what is already
+written; each step finds the rows it made earlier rather than creating
+duplicates.
+
+A `crew://connect?host=…&workspace=…` link opens the wizard with the host and
+workspace filled in, or, on a Mac that is already set up, offers to add that
+route.
+
+### 2.3 Verify, and the sample ticket
+
+Verify is the point of no surprises: it proves an agent run works on this Mac
+before anything is scheduled. The failure classes and what to do about each are
+in [If something's stuck](#if-something-s-stuck).
+
+When Start finishes, the completion panel offers **Run a sample ticket**. It
+shows the token cost first, then runs `crew sample-ticket`: a throwaway
+repository (`crew-sample`, beside your first checkout, with no remote) and one
+approved ticket asking for a small documented function with a test. You can
+watch the dev seat take it, QA verify it and the release phase merge it in the
+menu and the log window. **Remove the sample** afterwards closes the sample
+ticket, detaches the route entry and deletes the Repos row and the sandbox
+directory. The same action is available from Setup health later.
+
+### 2.4 Updating
+
+- **The app** updates itself (Sparkle): it checks on launch and daily, and the
+  menu has **Check for Updates…** and, when one is waiting, an **Update
+  available** item. Permissions you granted survive the update.
+- **The built-in crew** updates from crew's published releases. Settings shows
+  the version in use and the workspace's **minimum crew version**, with an
+  **Update** button when a newer one exists. A crew below the workspace's
+  minimum stops picking tickets until it is updated; see
+  [If something's stuck](#if-something-s-stuck).
+
+### 2.5 Setup health
+
+**Setup health** (from the menu) shows the same report as `crew doctor`: the
+config, your Ships row, each checkout and its hooks, push auth per repository,
+the tools crew needs, the tracker answering with your key. It also lists the
+versions of the app, the built-in crew and the crew in use, and the last
+self-test. **Recheck** runs it again; **Copy report** puts it on the clipboard
+for a bug report.
+
+### 2.6 Start over
+
+Settings → **Advanced** has **Start over** and **Uninstall**. Both name the ship
+and ask you to confirm. Start over removes everything this Mac's setup wrote
+(the same as `crew disconnect --reset`: scheduler units, MCP entries, seat keys
+revoked then cleared from the keychain, the workspace credential, resolved
+state and `crew.yaml`) so you can run the wizard again. Uninstall does that and
+removes the app. Rows on the board (Ships, Crew, Repos) are never deleted, and a
+checkout is only removed when crew cloned it and it has no uncommitted work.
+
+If the menu shows nothing or something stale, `Crew.app/Contents/MacOS/Crew
+--probe` prints, as plain text, what the menu is built from.
+
+---
+
+## Part 3 — On Linux or by script: the CLI
+
+Use this on Linux, on CI, or on a Mac where you would rather work in a
+terminal. Everything in it also works on macOS; the app is a front end over
+these commands.
+
+### 3.1 Prerequisites
 
 - **Node 22 or newer** (`node -v`). The `claude` agent binary is separate; crew
   asks where it is during `crew connect`.
@@ -76,7 +190,7 @@ team usually already has a naming convention for this (e.g.
 No other checkout is needed: crew installs from npm, and its tracker client
 (`@tablation/client`) comes with it.
 
-### 2.2 Install
+### 3.2 Install
 
 ```sh
 npm install -g @tablation/crew
@@ -101,7 +215,10 @@ The binary resolves its prompts and `package.json` from its own directory
 Maintainers can publish the same assets by hand with
 `scripts/publish-binaries.sh` when Actions is unavailable.
 
-### 2.3 Connect to a workspace
+The same tarball is what the Crew app carries inside it. Releases are also
+listed on the [Install](/install) page.
+
+### 3.3 Connect to a workspace
 
 ```sh
 crew connect my-workspace
@@ -198,16 +315,44 @@ writes the result to a local state file — nothing here starts polling or
 touches the tracker's data beyond reading it. Re-running it later only asks
 about anything genuinely new.
 
-### 2.4 Attach your repo checkouts
+#### Without a terminal prompt: `--json` and flags
+
+On a headless machine or in a script, give `connect` every answer as a flag and
+read its progress as JSON lines:
+
+```sh
+crew connect my-workspace --no-wizard --json \
+  --ship-name ci-runner-1 --agent-bin /usr/local/bin/claude
+```
+
+A decision a terminal would have asked comes back as a `choice` event and exit
+code 3; run the same command again with `--choose KEY=VALUE`. The flags, events
+and exit codes are in the [command reference](/commands#non-interactive-crew-connect).
+
+### 3.4 Attach your repo checkouts
+
+If the project's Repos table already lists the repository, let crew clone it
+and attach it in one step:
+
+```sh
+crew repos clone my-workspace/issues my-product
+```
+
+It clones into `<reposBasePath>/<workspace>/my-product` (or `--dir PATH`), over
+HTTPS by default or SSH with `ship.cloneScheme: ssh`. For a checkout you already
+have, attach it:
 
 ```sh
 crew repos add my-workspace/issues ~/src/my-product
 ```
 
 See [Attaching a checkout to a route](#attaching-a-checkout-to-a-route) for what
-it matches and writes. Repeat for each repo this machine should work.
+it matches and writes. Repeat for each repo this machine should work. For a checkout with no
+`.crew.yaml`, `crew repos hooks my-workspace/issues my-product` proposes
+`test`/`build` hooks (see
+[Attaching a checkout to a route](#attaching-a-checkout-to-a-route)).
 
-### 2.5 Sync personas and skills
+### 3.5 Sync personas and skills
 
 ```sh
 crew agents sync my-workspace/my-product
@@ -232,13 +377,13 @@ exits 0. A missing row, or a Crew table with no `Agent` field yet, is reported
 (the seat keeps writing as the ship) and fixed by an admin's sync; run yours
 again afterwards to link. `crew doctor` prints the key's role (`api key role:`).
 
-### 2.6 Register the Tablation MCP server
+### 3.6 Register the Tablation MCP server
 
 The polled seats (dev/design/QA/triage) talk to the tracker entirely
 through crew's own REST calls — this step is for anyone driving a live,
 interactive Claude Code session against the tracker: the **Pair** persona,
 or a session invoked via an Epic's `grill_link` to run the `Grill-Me`
-skill (§2.5). Neither works well without the `mcp__tablation__*` tools.
+skill (§3.5). Neither works well without the `mcp__tablation__*` tools.
 
 **`crew connect` does this for you.** After it resolves a route, it checks
 whether Claude Code already has a server named `tablation` and, if not,
@@ -274,7 +419,7 @@ Notes:
 - The server is plain HTTP, not HTTPS, when the backend is running on
   `localhost` — swap in whatever host you're actually pointed at.
 
-### 2.7 Pair on Codex, Gemini CLI and Copilot (VS Code)
+### 3.7 Pair on Codex, Gemini CLI and Copilot (VS Code)
 
 Claude Code gets Pair from a session-start hook that runs `crew agents prompt
 pair`. Codex, Gemini CLI and Copilot have no such hook, so `crew connect` installs the
@@ -312,7 +457,7 @@ says so and leaves it. VS Code started from the Dock does not inherit a shell's
 CREW_API_KEY <key>` once per login. `crew doctor` warns on macOS when the key is
 absent from the login environment.
 
-### 2.7 Run the preflight
+### 3.8 Run the preflight and the self-test
 
 ```sh
 crew doctor my-workspace/my-product
@@ -324,7 +469,20 @@ and have working hooks (`.crew.yaml` or the fallback in `crew.yaml`), the
 tools it needs are on `PATH`, the agent binary exists, and the tracker
 actually answers with that API key. Fix anything it flags before continuing.
 
-### 2.8 Turn the route on
+Then prove an agent run works here:
+
+```sh
+crew selftest my-workspace/my-product
+```
+
+It launches each configured toolchain exactly as a scheduled run would and asks
+it to read the workspace's name through the tracker. It passes when the reply
+names the workspace, and otherwise names what failed; see
+[If something's stuck](#if-something-s-stuck). It writes nothing to the
+tracker. `--json` prints one result per toolchain, and `--toolchain NAME`
+tests one.
+
+### 3.9 Turn the route on
 
 Once `doctor` is clean, flip the route live:
 
@@ -345,7 +503,7 @@ Nothing writes to the tracker, wakes an agent, or deploys anything until
 this is `true` — it's the one switch that matters most, so leave it `false`
 during all of the above.
 
-### 2.9 Try it by hand first
+### 3.10 Try it by hand first
 
 Before putting it on a timer, run one cycle manually and watch what it does:
 
@@ -355,7 +513,7 @@ crew run my-workspace/my-product      # actually runs the winning role's session
 crew watch my-workspace/my-product    # live view while it's running
 ```
 
-### 2.10 Put it on a timer
+### 3.11 Put it on a timer
 
 ```sh
 crew install             # writes and loads this platform's own scheduler unit
@@ -392,88 +550,9 @@ Useful day-to-day commands once it's running:
 ```sh
 crew status my-workspace/my-product   # paused/running state
 crew log my-workspace/my-product      # tail the log
+crew sample-ticket my-workspace/my-product   # watch one throwaway ticket go dev -> QA -> release
 crew inbox                            # your own tickets, across every workspace
 crew pause my-workspace/my-product    # stop it without uninstalling
-```
-
----
-
-## Part 3 — crew-macos (optional menu bar front end)
-
-`crew-macos` is a macOS menu bar app that sits on top of everything in Part
-2 — it shows which seat is working, on what ticket, in which repo, and how
-far through the cycle it is, plus a live log window and two switches
-(pause the crew; stop the timer). It writes nothing itself: every action it
-offers goes through your existing `crew`, so it can't drift from what
-the CLI would do.
-
-It only makes sense **after** Part 2 — specifically after `crew install`
-(2.10) — because it locates your checkout by reading the installed
-launchd job, not by asking you for a path.
-
-### 3.1 Requirements
-
-macOS 14+ and Xcode 16+ (Swift 6). No package dependencies to install
-separately. There's no App Store listing or downloadable build — it's built
-from source.
-
-### 3.2 Clone and build
-
-```sh
-git clone <crew-macos remote> crew-macos
-cd crew-macos
-make app        # builds Crew.app in this directory
-make run        # builds it and launches it
-```
-
-`make app` signs the build **ad-hoc** by default (no certificate, no
-notarisation) — fine for trying it out. If you're keeping it installed
-long-term, sign it with a real identity instead, so macOS doesn't treat a
-later rebuild as a different app and re-ask for permissions it already
-granted:
-
-```sh
-make identities     # lists what this machine can sign with
-make install SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-```
-
-`make install` (with or without `SIGN_IDENTITY`) copies the built app into
-`/Applications`.
-
-### 3.3 How it finds your setup
-
-You don't configure this app separately — it reuses what you already set up
-in Part 2:
-
-- **Config**: the same search order as the CLI (`$CREW_CONFIG`, then
-  `$XDG_CONFIG_HOME/crew`, then `~/.config/crew/crew.yaml`), so the app and
-  `crew` can never disagree about which file is in force.
-- **Checkout**: read out of the launchd plist that `crew install`
-  wrote — the interpreter path and `crew`'s absolute path, exactly as
-  the timer invokes them. This is why 2.10 has to happen first; without an
-  installed timer there's no plist for it to read.
-
-Both can be overridden in the app's own Settings if you need to point it
-somewhere nonstandard.
-
-### 3.4 Check it's seeing the right thing
-
-```sh
-./Crew.app/Contents/MacOS/Crew --probe
-```
-
-This prints, as plain text, exactly what the menu is built from: which
-config file it found, which `crew`/interpreter it's invoking, whether
-`crew status --json` answered, the current pause/lock state, and the
-worktrees it sees on disk with the repo each one belongs to. Run this first
-if the menu shows nothing, or shows something stale — it's a menu bar app,
-so there's no console output to check otherwise.
-
-If it's still unclear, turn on verbose logging and watch the log directly:
-
-```sh
-defaults write com.tablation.crew.menubar debugLogging -bool true   # then relaunch
-tail -f ~/Library/Logs/Crew.log
 ```
 
 ---
@@ -583,3 +662,26 @@ is stored in plaintext there.
   rather than JSON → check `userAgent` in `crew.yaml`; the default already
   works around Cloudflare blocking bare tool user agents, so this usually
   means it was overridden to something that doesn't start with `Mozilla/5.0`.
+- `crew_outdated` in `crew status` or the log, with "crew X is below this
+  workspace's minimum Y — no ticket will be picked until it is updated" → the
+  workspace sets a minimum crew version and this crew is older. Nothing is
+  claimed and the heartbeat keeps running. Update (the Crew app's Settings has
+  an **Update** button; on the CLI, `npm install -g @tablation/crew` or the
+  newest binary tarball) and it resumes on its own. Tracker writes from an
+  older crew are also refused with HTTP 426.
+- `push auth <repo>: FAILED` in `crew doctor` (or a failed push check in the
+  app's Repositories step) → a seat could build a branch but not push it. The
+  line carries the fix: `gh auth login` then `gh auth setup-git` for an HTTPS
+  remote, or `ssh-add` for an SSH one. `crew doctor --offline` skips the probe.
+- **Self-test failures** (`crew selftest`, or the Verify step) each name a
+  class and a remedy:
+
+  | Class | Meaning | Remedy |
+  | --- | --- | --- |
+  | `binary-not-found` | The agent binary is not on the scheduler's `PATH` | Add its directory to `ship.extraPath` in `crew.yaml`, then `crew doctor` |
+  | `login-missing` | The vendor CLI is not signed in | Log in to it in a terminal on this machine, then re-run `crew selftest` (the app's **Open Terminal** runs the command) |
+  | `mcp-unavailable` | The tracker MCP tool was not available to the agent | Register the Tablation MCP server (`crew doctor` shows how), then re-run |
+  | `key-refused` | The dev seat's key was refused | Ask a workspace admin to mint a fresh one with `crew agents sync` |
+  | `keychain-locked` | The OS keychain is locked | Unlock it from a logged-in session (`security unlock-keychain`), then re-run |
+  | `timeout` | The harness did not answer in time | Run it by hand to see where it stalls |
+  | `wrong-answer` | The agent answered but did not name the workspace | Run it by hand to see what it said |

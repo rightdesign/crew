@@ -58,7 +58,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew agents sync [route] [--force]` | Push personas and skill files into the workspace's Agents and Agent Skills tables (`--force` overwrites a diverged persona). A row with "Customize prompt" on is never synced, with or without `--force`; the command reports it as an override and still exits 0. |
+| `crew agents sync [route] [--force] [--revoke-seat-keys]` | Push personas and skill files into the workspace's Agents and Agent Skills tables (`--force` overwrites a diverged persona; `--revoke-seat-keys` revokes this ship's seat keys on the server and clears them from the keychain, so the next sync mints fresh ones). A row with "Customize prompt" on is never synced, with or without `--force`; the command reports it as an override and still exits 0. |
 | `crew agents prompt ROLE [route]` | Print one persona's current prompt (e.g. `pair`, for a SessionStart hook). |
 | `crew skills sync [route]` | Push only the skill files. |
 
@@ -121,6 +121,10 @@ On a terminal the wizard still runs unless `--no-wizard` is given. Off a termina
 | `status.<value>` | the Issues table has a status the default contract does not know; one event per value | `yes` (resolved/terminal) or `no` |
 
 Exit codes: 0 connected, 2 stopped on a problem, 3 stopped on a `choice`.
+
+## Minimum crew version
+
+A project can set a minimum crew version. A crew below it claims no ticket, keeps its heartbeat, and raises a `crew_outdated` attention item (shown by `crew status`) naming both versions; it clears itself once crew is updated. Tracker writes from an older crew are refused with HTTP 426. The Crew app updates its built-in crew; on the CLI, update with `npm install -g @tablation/crew` or the newest binary release. See [If something's stuck](/getting-started#if-something-s-stuck).
 
 ## Options on every command
 
