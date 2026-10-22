@@ -25,6 +25,35 @@ export interface SuggestedHooks {
   build?: string;
   version?: string;
   bump?: string;
+  released?: string;
+}
+
+/** What a recipe asks of `release:`; `ci` and `verifyMatch` are what the mode needs to pass the repo-spec parser. */
+export interface RecipeRelease {
+  mode: string;
+  ci?: string;
+  verifyMatch?: 'commit' | 'version';
+}
+
+/**
+ * A named, deterministic bundle detected from the checkout (CREW-2317): what it
+ * saw, and the exact values accepting it would set. `writable: false` marks a
+ * recipe whose check has no home in the repo spec yet; it is reported so a
+ * wizard can show it, and `--write` refuses it by id rather than dropping it.
+ */
+export interface HookRecipe {
+  id: string;
+  title: string;
+  description: string;
+  /** Checkout files that triggered the recipe. */
+  evidence: string[];
+  hooks: SuggestedHooks;
+  /** The `release:` block the recipe sets, when it sets one (repo-level `.crew.yaml` only). */
+  release?: RecipeRelease;
+  /** A command with no hook slot to land in: advisory text, never written. */
+  check?: string;
+  writable: boolean;
+  defaultOn: boolean;
 }
 
 export interface HookSuggestion {
@@ -33,12 +62,15 @@ export interface HookSuggestion {
   hooks: SuggestedHooks;
   /** Human-readable remarks: other ecosystems seen, why nothing was proposed. */
   notes: string[];
+  recipes: HookRecipe[];
 }
 
 /** The slice of a filesystem the sniffing needs. */
 export interface CheckoutFiles {
   exists(rel: string): boolean;
   read(rel: string): string | undefined;
+  /** Entry names directly under a directory; absent in fixtures that have no recipes to detect. */
+  list?(rel: string): string[];
 }
 
 type Pm = 'pnpm' | 'yarn' | 'bun' | 'npm';
@@ -95,20 +127,86 @@ const DETECTORS: Array<{ source: string; detect: (f: CheckoutFiles) => Suggested
   { source: 'Makefile', detect: fromMakefile },
 ];
 
+const WORKFLOW_RE = /\.ya?ml$/;
+
+/**
+ * Recipes read from `.github/workflows/`. Only the directory's existence and
+ * file names are used: a workflow's contents say nothing certain about
+ * whether it publishes a release, so the recipe says what it saw and leaves
+ * the on/off call to the person (the release recipe defaults on, because a
+ * repo with workflows and `ci_auto` only needs `hooks.released` to be true).
+ */
+export function detectRecipes(f: CheckoutFiles): HookRecipe[] {
+  const workflows = (f.list?.('.github/workflows') ?? []).filter((n) => WORKFLOW_RE.test(n)).sort();
+  if (workflows.length === 0) return [];
+  const evidence = workflows.map((n) => `.github/workflows/${n}`);
+  return [
+    {
+      id: 'github-actions-release',
+      title: 'Releases run in GitHub Actions',
+      description: 'CI publishes the release after the crew merges; the crew watches `gh release view` for the live tag.',
+      evidence,
+      // `ltrimstr` because `verify.match: version` compares the bare version, not `v1.2.3`.
+      hooks: { released: `gh release view --json tagName -q '.tagName | ltrimstr("v")'` },
+      release: { mode: 'ci_auto', ci: 'github', verifyMatch: 'version' },
+      writable: true,
+      defaultOn: true,
+    },
+    {
+      id: 'github-actions-ci-status',
+      title: 'Check CI status before hand-off',
+      description: 'Ask GitHub whether the latest run on the branch passed before a ticket is handed to QA. The repo spec has no hook for this yet, so it is reported but cannot be written.',
+      evidence,
+      hooks: {},
+      check: 'gh run list --branch "$CREW_BRANCH" --limit 1 --json conclusion -q \'.[0].conclusion == "success"\'',
+      writable: false,
+      defaultOn: false,
+    },
+  ];
+}
+
 /** What the checkout's files say its test/build commands are. */
 export function suggestHooks(f: CheckoutFiles): HookSuggestion {
+  const recipes = detectRecipes(f);
   const found = DETECTORS.flatMap((d) => {
     const hooks = d.detect(f);
     return hooks && Object.keys(hooks).length > 0 ? [{ source: d.source, hooks }] : [];
   });
   if (found.length === 0) {
-    return { source: null, hooks: {}, notes: ['no package.json scripts, Package.swift, pyproject.toml or Makefile test/build targets found — nothing to propose'] };
+    return { source: null, hooks: {}, notes: ['no package.json scripts, Package.swift, pyproject.toml or Makefile test/build targets found — nothing to propose'], recipes };
   }
   const [first, ...others] = found;
   const notes = others.length > 0
     ? [`also found ${others.map((o) => o.source).join(', ')}; proposing from ${first!.source} only`]
     : [];
-  return { source: first!.source, hooks: first!.hooks, notes };
+  return { source: first!.source, hooks: first!.hooks, notes, recipes };
+}
+
+export interface RecipeSelection {
+  hooks: SuggestedHooks;
+  release?: RecipeRelease;
+}
+
+/**
+ * Fold the chosen recipes into the hooks to write; none are applied unless
+ * named (`defaultOn` is only what a wizard pre-ticks). An unknown or unwritable id is an error, so
+ * a typo never silently writes less than was asked for. Sniffed hooks win a
+ * collision: a recipe adds hooks, it never rewrites what the files stated.
+ */
+export function selectRecipes(s: HookSuggestion, ids: string[]): RecipeSelection {
+  const chosen = ids.map((id) => {
+    const r = s.recipes.find((x) => x.id === id);
+    if (!r) throw new ReposError(`no recipe "${id}" here (have: ${s.recipes.map((x) => x.id).join(', ') || 'none'})`);
+    if (!r.writable) throw new ReposError(`recipe "${id}" cannot be written: ${r.description}`);
+    return r;
+  });
+  let hooks: SuggestedHooks = { ...s.hooks };
+  let release: RecipeRelease | undefined;
+  for (const r of chosen) {
+    hooks = { ...r.hooks, ...hooks };
+    release ??= r.release;
+  }
+  return { hooks, ...(release ? { release } : {}) };
 }
 
 export interface HooksArgs { route: string; name: string }
@@ -122,7 +220,7 @@ export function parseHooksArgs(args: string[], routes: string[]): HooksArgs {
     if (routes.length === 1) route = routes[0];
     else throw new ReposError(routes.length === 0 ? 'the config has no routes — run `crew connect` first' : `several routes are configured; name one: ${routes.join(', ')}`);
   }
-  if (rest.length !== 1) throw new ReposError('expected: crew repos hooks [route] <name> [--suggest] [--write route|repo] [--json]');
+  if (rest.length !== 1) throw new ReposError('expected: crew repos hooks [route] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--json]');
   return { route: route!, name: rest[0]! };
 }
 
@@ -191,7 +289,7 @@ export function planRouteHooks(text: string, route: string, name: string, hooks:
  * against the repo spec's own parser before it is returned, so the file it
  * hands over is one `crew doctor` accepts.
  */
-export function starterRepoConfig(hooks: SuggestedHooks): string {
+export function starterRepoConfig(hooks: SuggestedHooks, release?: RecipeRelease): string {
   const lines = [
     '# Starter .crew.yaml proposed by `crew repos hooks --write repo`.',
     '# Review the hooks, then commit this file; it is the durable home for them',
@@ -204,7 +302,13 @@ export function starterRepoConfig(hooks: SuggestedHooks): string {
   const entries = Object.entries(hooks).filter(([, v]) => v !== undefined);
   if (entries.length === 0) lines.push('  # test: "..."', '  # build: "..."');
   for (const [k, v] of entries) lines.push(`  ${k}: ${JSON.stringify(v)}`);
-  lines.push('', 'release:', '  # integrate: merging to the base branch is the release; nothing is deployed.', '  mode: integrate', '');
+  if (release) {
+    lines.push('', 'release:', `  mode: ${release.mode}`);
+    if (release.ci) lines.push(`  ci: { provider: ${release.ci} }`);
+    if (release.verifyMatch) lines.push('  verify:', `    match: ${release.verifyMatch}`);
+    lines.push('');
+  }
+  else lines.push('', 'release:', '  # integrate: merging to the base branch is the release; nothing is deployed.', '  mode: integrate', '');
   const text = lines.join('\n');
   parseRepoConfig(text, '.crew.yaml');
   return text;

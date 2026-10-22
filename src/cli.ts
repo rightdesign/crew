@@ -87,7 +87,8 @@ import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPro
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { parseHooksArgs, repoDirOf, suggestHooks, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
+import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
+import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
 import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
@@ -345,7 +346,7 @@ function usage(): never {
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
-  crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--write route|repo, --json)
+  crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
@@ -1713,10 +1714,14 @@ async function releasePhase(
 // covered by the same cleanup as a plain EXCLUSIVE command's.
 let lock: { release: () => void } | undefined;
 const dropLock = () => { lock?.release(); lock = undefined; };
+// Set by a command that handles Ctrl-C itself (`repos hooks --agent` aborts its
+// toolchain session and reports `cancelled`); the global exit-0 handler below
+// would otherwise end the process first, silently, and leave the child running.
+let sigintOwnedByCommand = false;
 if (!dryRun) {
   process.on('exit', dropLock);
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(sig, () => { dropLock(); process.exit(0); });
+    process.on(sig, () => { if (sig === 'SIGINT' && sigintOwnedByCommand) return; dropLock(); process.exit(0); });
   }
 }
 if (EXCLUSIVE[command] && !dryRun) {
@@ -2571,7 +2576,7 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project>\ncrew repos hooks [workspace/project] <name> [--suggest] [--write route|repo] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project>\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--json]\n');
       process.exit(2);
     };
     if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks') usage();
@@ -2583,35 +2588,64 @@ switch (command) {
         const a = parseHooksArgs(positional.slice(2), routeNamesOf(configText));
         const dir = repoDirOf(configText, dirname(cfg.configFile), a.route, a.name);
         if (!existsSync(dir)) throw new ReposError(`${dir} does not exist on disk`);
-        const files = { exists: (r: string) => existsSync(resolvePath(dir, r)), read: (r: string) => { try { return readFileSync(resolvePath(dir, r), 'utf8'); } catch { return undefined; } } };
+        const files = { exists: (r: string) => existsSync(resolvePath(dir, r)), list: (r: string) => { try { return readdirSync(resolvePath(dir, r)); } catch { return []; } }, read: (r: string) => { try { return readFileSync(resolvePath(dir, r), 'utf8'); } catch { return undefined; } } };
         const suggestion = suggestHooks(files);
         const write = value('write');
         if (write !== undefined && write !== 'route' && write !== 'repo') throw new ReposError(`--write takes "route" or "repo" (got "${write}")`);
+        const recipeIds = (value('recipes') ?? '').split(',').map((x) => x.trim()).filter((x) => x && x !== 'none');
+        if (recipeIds.length > 0 && !write) throw new ReposError('--recipes only applies with --write route|repo');
+        if (flag('agent') && write) throw new ReposError('--agent is read-only; drop --write (write the sniffed hooks, then re-run --agent to compare)');
+        let agent: AgentSuggestion | null = null;
+        let agentError: { reason: string; message: string } | null = null;
+        if (flag('agent')) {
+          // Ctrl-C cancels the session; the sniff result above is unaffected either way.
+          const ac = new AbortController();
+          const onSigint = () => ac.abort();
+          process.once('SIGINT', onSigint);
+          sigintOwnedByCommand = true;
+          try {
+            const routeCfg = cfg.routes.find((r) => r.route === a.route);
+            agent = await runAgentSuggest({ spec: resolveToolchain(cfg.ship, routeCfg, a.name), dir, sniff: suggestion, signal: ac.signal });
+          } catch (e) {
+            if (!(e instanceof AgentSuggestError)) throw e;
+            agentError = { reason: e.reason, message: e.message };
+          } finally { process.off('SIGINT', onSigint); sigintOwnedByCommand = false; }
+        }
+        const picked = selectRecipes(suggestion, recipeIds);
         let written: { target: 'route' | 'repo'; file: string; hooks: string[]; kept: string[] } | undefined;
-        if (write && suggestion.source === null) throw new ReposError(`nothing to write: ${suggestion.notes[0]}`);
+        if (write && suggestion.source === null && recipeIds.length === 0) throw new ReposError(`nothing to write: ${suggestion.notes[0]}`);
         if (write === 'route') {
-          const plan = planRouteHooks(configText, a.route, a.name, suggestion.hooks);
+          const plan = planRouteHooks(configText, a.route, a.name, picked.hooks);
           writeFileSync(cfg.configFile, plan.text);
           written = { target: 'route', file: cfg.configFile, hooks: plan.written, kept: plan.kept };
         } else if (write === 'repo') {
           const have = existingRepoConfig(files);
           if (have) throw new ReposError(`${resolvePath(dir, have)} already exists; not overwriting it`);
           const file = resolvePath(dir, '.crew.yaml');
-          writeFileSync(file, starterRepoConfig(suggestion.hooks), { flag: 'wx' });
-          written = { target: 'repo', file, hooks: Object.keys(suggestion.hooks), kept: [] };
+          writeFileSync(file, starterRepoConfig(picked.hooks, picked.release), { flag: 'wx' });
+          written = { target: 'repo', file, hooks: Object.keys(picked.hooks), kept: [] };
         }
         if (flag('json')) {
-          process.stdout.write(`${JSON.stringify({ route: a.route, repo: a.name, dir, ...suggestion, written: written ?? null })}\n`);
+          process.stdout.write(`${JSON.stringify({ route: a.route, repo: a.name, dir, ...suggestion, agent, agentError, written: written ?? null })}\n`);
         } else {
           if (suggestion.source) process.stdout.write(`${a.name}: proposed from ${suggestion.source}\n`);
           for (const [k, v] of Object.entries(suggestion.hooks)) process.stdout.write(`  ${k}: ${v}\n`);
           for (const n of suggestion.notes) process.stdout.write(`note: ${n}\n`);
+          for (const r of suggestion.recipes) process.stdout.write(`recipe ${r.id}${r.defaultOn ? ' (default on)' : ''}${r.writable ? '' : ' (advisory)'}: ${r.title} [${r.evidence.join(', ')}]\n`);
+          if (agent) {
+            process.stdout.write(`agent (${agent.toolchain}, ${agent.model}) read ${agent.filesRead.join(', ') || 'no files'}\n`);
+            for (const [k, v] of Object.entries(agent.hooks)) process.stdout.write(`  ${k}: ${v}${agent.differsFromSniff.includes(k) ? '   (differs from file sniff)' : ''}\n`);
+            for (const n of agent.notes) process.stdout.write(`note: ${n}\n`);
+          }
+          if (agentError) process.stderr.write(`crew repos: --agent failed (${agentError.reason}): ${agentError.message}\n`);
           if (written) {
             process.stdout.write(`wrote ${written.hooks.join(', ') || 'nothing new'} to ${written.file}\n`);
             if (written.kept.length) process.stdout.write(`kept existing route hooks: ${written.kept.join(', ')}\n`);
             if (written.target === 'repo') process.stdout.write('review it and commit it to the repository\n');
+            if (written.target === 'route' && picked.release) process.stdout.write(`note: release.mode ${picked.release.mode} is repo-level; use --write repo to set it\n`);
           }
         }
+        if (agentError) process.exitCode = 1;
       } catch (e) {
         if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
         throw e;

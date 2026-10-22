@@ -57,3 +57,7 @@ test('splitConnectArg keeps a colon in the workspace part and splits only on the
   assert.deepEqual(splitConnectArg('a/c'), ['a', 'c']);
   assert.deepEqual(splitConnectArg(undefined), [undefined, undefined]);
 });
+
+test('--recipes takes a value, so its id is never a positional (CREW-2317)', () => {
+  assert.deepEqual(positionalArgs(['repos', 'hooks', 'p', '--write', 'repo', '--recipes', 'github-actions-release']), ['repos', 'hooks', 'p']);
+});
