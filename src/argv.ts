@@ -85,3 +85,15 @@ export function splitConnectArg(arg: string | undefined): [string | undefined, s
   const i = arg.indexOf('/');
   return [arg.slice(0, i), arg.slice(i + 1)];
 }
+
+/**
+ * `crew --version` / `crew version` (CREW-2404): the version request, or null
+ * for any other argv. Only the first argument counts, and only `--json` may
+ * follow, so every other unknown flag still falls through to usage (exit 2).
+ */
+export function versionRequest(argv: readonly string[]): { json: boolean } | null {
+  if (argv[0] !== '--version' && argv[0] !== 'version') return null;
+  const rest = argv.slice(1);
+  if (rest.some((a) => a !== '--json')) return null;
+  return { json: rest.length > 0 };
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { positionalArgs, splitConnectArg } from '../src/argv.ts';
+import { positionalArgs, splitConnectArg, versionRequest } from '../src/argv.ts';
 
 test('agents sync --force <route> and <route> --force resolve the same route (CREW-1539)', () => {
   assert.deepEqual(positionalArgs(['agents', 'sync', '--force', 'paradium/issues']), ['agents', 'sync', 'paradium/issues']);
@@ -60,4 +60,14 @@ test('splitConnectArg keeps a colon in the workspace part and splits only on the
 
 test('--recipes takes a value, so its id is never a positional (CREW-2317)', () => {
   assert.deepEqual(positionalArgs(['repos', 'hooks', 'p', '--write', 'repo', '--recipes', 'github-actions-release']), ['repos', 'hooks', 'p']);
+});
+
+test('--version and version are version requests; nothing else is (CREW-2404)', () => {
+  assert.deepEqual(versionRequest(['--version']), { json: false });
+  assert.deepEqual(versionRequest(['version']), { json: false });
+  assert.deepEqual(versionRequest(['--version', '--json']), { json: true });
+  assert.equal(versionRequest(['--bogus']), null);
+  assert.equal(versionRequest(['poll', '--version']), null);
+  assert.equal(versionRequest(['--version', '--bogus']), null);
+  assert.equal(versionRequest([]), null);
 });

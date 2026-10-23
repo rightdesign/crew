@@ -15,10 +15,10 @@ import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
-import { pickWorktreeRoute, positionalArgs, splitConnectArg, splitWorktreeArgs } from './argv.ts';
+import { pickWorktreeRoute, positionalArgs, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
-  ticketsByRepo, configuredMembers,
+  ticketsByRepo, configuredMembers, crewVersion,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat, shipPair,
@@ -322,6 +322,7 @@ function usage(): never {
   crew merge [route]             merge verified branches and stop
   crew deploy [route]            release now, even with nothing new to merge
   crew watch [route]             live view of what the crew is doing
+  crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
   crew status [route] [--json]   paused/running state; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
   crew whoami [route] [--json]   the signed-in identity, key role, operator Crew row and credential source per route
@@ -380,6 +381,17 @@ In watch: space pauses the stream, q quits.
 }
 
 const argv = process.argv.slice(2);
+// `crew --version` (CREW-2404) answers before any config is loaded: it works
+// with no crew.yaml and never touches the tracker. stdout carries only the
+// version (or the --json object), which the Crew macOS app reads.
+const versionReq = versionRequest(argv);
+if (versionReq) {
+  const version = crewVersion(CREW_HOME);
+  process.stdout.write(versionReq.json
+    ? `${JSON.stringify({ version, home: CREW_HOME, compiled: isCompiledBinary(import.meta.url) })}\n`
+    : `${version}\n`);
+  process.exit(0);
+}
 const flag = (name: string) => argv.includes(`--${name}`);
 const value = (name: string) => {
   const i = argv.indexOf(`--${name}`);
