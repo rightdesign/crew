@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.3] — 2026-10-23
+
+- CREW-2410 `crew --help`, `crew -h` and `crew help` now print usage to stdout and exit 0; an unknown command or flag still exits 2, with a first line naming it.
+
 ## [0.71.2] — 2026-10-23
 
 - CREW-2404 `crew --version` and `crew version` print the version and exit 0 instead of printing help and exiting 2.
