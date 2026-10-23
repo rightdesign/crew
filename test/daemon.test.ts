@@ -73,7 +73,7 @@ test('a rejected pass is reported and the loop runs the next pass (CREW-1774)', 
   const reason = await runDaemonLoop({
     runPass: async () => {
       call++;
-      if (call === 1) throw new Error('reading stalled events failed: HTTP 502');
+      if (call === 1) throw new Error('reading stalled events failed: HTTP 500');
       return emptyResult();
     },
     onPassError: (err) => errors.push(err),
@@ -83,7 +83,7 @@ test('a rejected pass is reported and the loop runs the next pass (CREW-1774)', 
   assert.equal(reason, 'maxPasses');
   assert.equal(call, 3);
   assert.equal(errors.length, 1);
-  assert.match((errors[0] as Error).message, /HTTP 502/);
+  assert.match((errors[0] as Error).message, /HTTP 500/);
   assert.deepEqual(sleeps, [5000, 10000]);
 });
 

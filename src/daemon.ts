@@ -97,6 +97,7 @@ import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgen
 import { fetchSkillOverrides } from './skills.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
+import { isTransientError, transientBackoffMs, OUTAGE_ESCALATE_AFTER } from './outage.ts';
 
 /** The idle backoff floor: short, so a just-missed cycle doesn't wait long. */
 export const DEFAULT_FLOOR_MS = 5_000;
@@ -149,6 +150,18 @@ export interface DaemonLoopOptions {
    */
   onPassError?: (err: unknown) => void;
   /**
+   * CREW-2383: a failed pass whose cause `isTransientError` (tracker
+   * restarting or unreachable). The loop sleeps `backoffMs` (15/30/60 s)
+   * instead of reaching `onPassError`.
+   */
+  onTransient?: (info: { err: unknown; consecutive: number; backoffMs: number; downMs: number }) => void;
+  /** Called once, on the `OUTAGE_ESCALATE_AFTER`th consecutive transient failure. */
+  onOutage?: (info: { err: unknown; consecutive: number; downMs: number }) => void;
+  /** First successful pass after at least one transient failure. */
+  onRecovered?: (info: { downMs: number }) => void;
+  /** Test clock. */
+  now?: () => number;
+  /**
    * Self-update detection (ISSUE-764). Consulted only on an IDLE pass, right
    * before the loop would otherwise sleep — never while chaining on found
    * work, so an actively-busy daemon is never interrupted mid-cycle to pick
@@ -186,13 +199,33 @@ export async function runDaemonLoop(o: DaemonLoopOptions): Promise<DaemonStopRea
   const sleep = o.sleep ?? defaultSleep;
   let backoff = floor;
   let passes = 0;
+  const now = o.now ?? Date.now;
+  let transientRun = 0;
+  let downSince = 0;
 
   for (;;) {
     if (o.signal?.aborted) return 'aborted';
     let result: PassResult;
     try {
       result = await o.runPass();
+      if (transientRun > 0) {
+        o.onRecovered?.({ downMs: now() - downSince });
+        transientRun = 0;
+      }
     } catch (err) {
+      if (isTransientError(err)) {
+        passes++;
+        if (transientRun === 0) downSince = now();
+        transientRun++;
+        const wait = transientBackoffMs(transientRun);
+        const downMs = now() - downSince;
+        o.onTransient?.({ err, consecutive: transientRun, backoffMs: wait, downMs });
+        if (transientRun === OUTAGE_ESCALATE_AFTER) o.onOutage?.({ err, consecutive: transientRun, downMs });
+        if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
+        if (o.signal?.aborted) return 'aborted';
+        await sleep(wait);
+        continue;
+      }
       // CREW-1774: a failed tracker read must not end the daemon — launchd's
       // restart kills every in-flight agent run with it.
       passes++;

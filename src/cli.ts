@@ -121,6 +121,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
+import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention } from './ship-attention.ts';
 import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
@@ -2381,6 +2382,20 @@ switch (command) {
           console: (l) => process.stderr.write(`${l}\n`),
         }),
       }),
+      onTransient: ({ err, consecutive, backoffMs }) => emit.warn(
+        `tracker unavailable (${describeCause(err)}); attempt ${consecutive}, retrying in ${Math.round(backoffMs / 1000)}s`,
+      ),
+      onOutage: ({ err, downMs }) => {
+        const msg = `tracker unreachable for ${Math.max(1, Math.round(downMs / 60_000))} minutes: ${describeCause(err)}`;
+        emit.error(msg);
+        void raiseShipAttention({ state, emit, route, ship: cfg.ship }, {
+          kind: 'tracker_unreachable', key: TRACKER_OUTAGE_KEY, message: msg, since: new Date().toISOString(),
+        });
+      },
+      onRecovered: ({ downMs }) => {
+        clearShipAttention(state, TRACKER_OUTAGE_KEY);
+        emit.emit(`tracker is back after ${Math.max(1, Math.round(downMs / 1000))}s`);
+      },
       onPassError: (err) => emit.error(
         `daemon pass failed, continuing: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
       ),
