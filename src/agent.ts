@@ -635,6 +635,7 @@ class RunObserver {
     // the same message as "claiming TABL-1763" resolves to that key.
     for (const ev of events) if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) this.attribution.note(ev.text);
     for (const ev of events) {
+      if (ev.kind === 'tool') this.attribution.noteWrite(ev.tool, ev.input);
       if (ev.kind === 'tool' && isClaimWrite(ev.tool, ev.input)) {
         const claimed = this.attribution.current;
         if (claimed && claimed !== this.liveTicket) {
@@ -742,10 +743,10 @@ interface RunEnd {
 async function finishRun(
   id: RunIdentity, obs: RunObserver, emit: Emitter, startedAt: string, end: RunEnd, agentLogKey?: string,
 ): Promise<{ ms: number; ticket: string | undefined }> {
-  // The ticket the transcript actually spent the most tokens on, falling
-  // back to the pre-run poll hint when the visible text never named one
-  // (e.g. an administrative run with nothing ticket-specific to say).
-  const attributedTicket = obs.attribution.winner(obs.liveTicket);
+  // The ticket this run's tracker writes targeted (hand-off, then claim, then
+  // comment); only a run with no such write falls back to the ticket it spent
+  // the most tokens on, then the pre-run poll hint (CREW-2364).
+  const { ticket: attributedTicket, by: attributedBy } = obs.attribution.decide(obs.liveTicket);
   // Which toolchain, harness and provider produced this run (CREW-1516),
   // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
   // the sidecar and the event only — the Agent Log carries harness+provider.
@@ -754,6 +755,7 @@ async function finishRun(
   try {
     writeRunMeta(id, startedAt, obs.liveTicket, {
       attributedTicket: attributedTicket ?? null,
+      attributedBy,
       running: undefined,
       exitCode: end.code,
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),

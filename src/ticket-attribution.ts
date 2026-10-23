@@ -38,6 +38,9 @@ export function ticketMentions(text: string): string[] {
 export class TicketAttributionTracker {
   #tokensByTicket = new Map<string, number>();
   #current: string | undefined;
+  /** Tracker record uuid → ticket key, learned when a write names both (a claim resolves the key from the last mention). */
+  #keyByRecord = new Map<string, string>();
+  #lastBy: Partial<Record<'claim' | 'handoff' | 'comment', string>> = {};
 
   /** The ticket key most recently named in the transcript, or undefined before any. */
   get current(): string | undefined { return this.#current; }
@@ -54,6 +57,39 @@ export class TicketAttributionTracker {
     if (mentions.length > 0) this.#current = mentions[mentions.length - 1];
     if (this.#current === undefined || tokens <= 0) return;
     this.#tokensByTicket.set(this.#current, (this.#tokensByTicket.get(this.#current) ?? 0) + tokens);
+  }
+
+  /**
+   * Record a tool call if it is a ticket-targeted tracker write (claim,
+   * hand-off or comment). The ticket key comes from a record uuid seen on an
+   * earlier write when known, else from the key last named in the transcript
+   * (a claim or hand-off announces its ticket). A comment on a record never
+   * seen before is ignored: its uuid cannot be resolved to a key.
+   */
+  noteWrite(tool: string | undefined, input: Record<string, unknown> | undefined): void {
+    const w = classifyWrite(tool, input);
+    if (!w) return;
+    let key = w.recordId ? this.#keyByRecord.get(w.recordId) : undefined;
+    if (w.kind !== 'comment') key ??= this.#current;
+    if (!key) return;
+    if (w.kind !== 'comment' && w.recordId) this.#keyByRecord.set(w.recordId, key);
+    this.#lastBy[w.kind] = key;
+  }
+
+  /**
+   * How the attribution is decided: a hand-off write beats a claim, a claim
+   * beats a comment (so a follow-up ticket filed or commented on while
+   * working never displaces the claimed one), and any write beats the
+   * mention-token heuristic, which is only the fallback for runs that made
+   * no ticket-targeted write. The pre-run hint is last.
+   */
+  decide(hint?: string): { ticket: string | undefined; by: 'handoff' | 'claim' | 'comment' | 'mentions' | 'hint' } {
+    for (const by of ['handoff', 'claim', 'comment'] as const) {
+      const ticket = this.#lastBy[by];
+      if (ticket) return { ticket, by };
+    }
+    if (this.#tokensByTicket.size > 0) return { ticket: this.winner(hint), by: 'mentions' };
+    return { ticket: hint, by: 'hint' };
   }
 
   /**
@@ -83,4 +119,29 @@ export function isClaimWrite(tool: string | undefined, input: Record<string, unk
   if (!tool || !/records_controller_update$/.test(tool)) return false;
   const body = input?.body;
   return typeof body === 'object' && body !== null && (body as Record<string, unknown>).status === 'in_progress';
+}
+
+/** Statuses that hand a ticket on (or park it) rather than claim it. */
+const HANDOFF_STATUSES = new Set(['fixed', 'verified', 'needs_info', 'accepted']);
+
+/**
+ * Classifies a tool call as a ticket-targeted tracker write: `claim` (status
+ * to a building/checking status), `handoff` (status to a hand-off status) or
+ * `comment` (a record create carrying `ticket_id`, the Comments table's link).
+ * `recordId` is the ticket's uuid for claim/hand-off and for a comment too.
+ */
+export function classifyWrite(
+  tool: string | undefined, input: Record<string, unknown> | undefined,
+): { kind: 'claim' | 'handoff' | 'comment'; recordId?: string } | undefined {
+  if (!tool) return undefined;
+  const body = input?.body;
+  if (typeof body !== 'object' || body === null) return undefined;
+  const b = body as Record<string, unknown>;
+  if (/records_controller_update$/.test(tool)) {
+    const recordId = typeof input?.recordId === 'string' ? input.recordId : undefined;
+    if (b.status === 'in_progress' || b.status === 'qa') return { kind: 'claim', recordId };
+    if (typeof b.status === 'string' && HANDOFF_STATUSES.has(b.status)) return { kind: 'handoff', recordId };
+  }
+  if (/records_controller_create$/.test(tool) && typeof b.ticket_id === 'string') return { kind: 'comment', recordId: b.ticket_id };
+  return undefined;
 }
