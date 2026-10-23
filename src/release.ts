@@ -199,6 +199,40 @@ export const describeHeld = (held: HeldTicket[]): string[] =>
 export type BumpSize = 'major' | 'minor' | 'patch';
 
 const CHANGELOG_LINE = /^Changelog:[ \t]*(.*)$/gm;
+const TICKET_REF_AT_START = /^([A-Z][A-Z0-9]*)-(\d+)\b/;
+
+/**
+ * One bullet per ticket reference, no repeats.
+ *
+ * `entries` arrive newest commit first (`git log` order), so keeping the first
+ * line seen per ticket keeps the LAST one written on the branch: a QA bounce's
+ * fix commit rewords the line, and that wording supersedes the first attempt.
+ * Exact repeats are dropped too. A line with no leading reference is kept
+ * as written. The ticket's own number is rewritten to the project's prefix
+ * form (`CMAC-2344`, not `ISSUE-2344`) so one section never mixes spellings.
+ */
+export function dedupeChangelogEntries(entries: string[], ticket: Pick<Ticket, 'issue_id' | 'issue_tag'>): string[] {
+  const own = (ticket.issue_tag ?? ticket.issue_id).match(/^([A-Z][A-Z0-9]*)-(\d+)$/);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of entries) {
+    let line = raw.trim();
+    const ref = line.match(TICKET_REF_AT_START);
+    let key = line;
+    if (ref) {
+      const prefix = ref[1]!;
+      const num = ref[2]!;
+      const canonical = own && own[2] === num ? own[1]! : prefix;
+      line = `${canonical}-${num}${line.slice(ref[0].length)}`;
+      key = `${canonical}-${num}`;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
 const BUMP_LINE = /^Bump:[ \t]*(major|minor|patch)\b/gim;
 
 /**
@@ -285,7 +319,10 @@ export function planMerge(
     // Read the Changelog:/Bump: lines while the branch history is still
     // reachable — the squash is about to flatten it.
     const bodies = commitBodies(cwd, `${base}..${branch}`);
-    const entries = [...bodies.matchAll(CHANGELOG_LINE)].map((m) => m[1]!.trim()).filter(Boolean);
+    const entries = dedupeChangelogEntries(
+      [...bodies.matchAll(CHANGELOG_LINE)].map((m) => m[1]!.trim()).filter(Boolean),
+      ticket,
+    );
     const usedFallback = entries.length === 0;
     const { size, majorRequested } = requestedBump(bodies);
     return {

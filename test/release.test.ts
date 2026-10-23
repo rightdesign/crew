@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   checkGuards, planMerge, requestedBump, renderChangelogSection,
-  insertChangelogSection, planReleasedBranches, decideRelease, renderTag, describeUnplaceable, releaseIdle, reportUnplaceable, describeHeld,
+  insertChangelogSection, dedupeChangelogEntries, planReleasedBranches, decideRelease, renderTag, describeUnplaceable, releaseIdle, reportUnplaceable, describeHeld,
 } from '../src/release.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { blockerInfoMap } from '../src/blocked.ts';
@@ -534,4 +534,39 @@ test('reportHeld says a held ticket once per change of blocker state, and again 
   reportHeld(o, []);
   reportHeld(o, held('ISSUE-41 (in_progress)'));
   assert.equal(said.length, 3);
+});
+
+test('dedupeChangelogEntries: exact repeats collapse to one bullet', () => {
+  const t = { issue_id: 'ISSUE-2384', issue_tag: 'CMAC-2384' };
+  const line = 'ISSUE-2384 Sparkle feed now lists the latest build';
+  assert.deepEqual(dedupeChangelogEntries([line, line], t), ['CMAC-2384 Sparkle feed now lists the latest build']);
+});
+
+test('dedupeChangelogEntries: a reworded line keeps the newest wording (first in git log order)', () => {
+  const t = { issue_id: 'ISSUE-2381', issue_tag: 'CMAC-2381' };
+  assert.deepEqual(
+    dedupeChangelogEntries(['ISSUE-2381 Second wording', 'CMAC-2381 First wording', 'ISSUE-2381 Third'], t),
+    ['CMAC-2381 Second wording'],
+  );
+});
+
+test('dedupeChangelogEntries: distinct tickets and reference-less lines are unchanged', () => {
+  const t = { issue_id: 'ISSUE-5', issue_tag: null };
+  assert.deepEqual(
+    dedupeChangelogEntries(['ISSUE-5 One', 'ISSUE-6 Two', 'Plain note', 'Plain note two'], t),
+    ['ISSUE-5 One', 'ISSUE-6 Two', 'Plain note', 'Plain note two'],
+  );
+});
+
+test('planMerge dedupes a bounced branch whose fix commit rewords the Changelog line', () => {
+  const { dir, g } = repo();
+  g('checkout', '-qb', 'issue-40');
+  writeFileSync(join(dir, 'a.txt'), '1');
+  g('add', '.');
+  g('commit', '-qm', 'first\n\nChangelog: ISSUE-40 Old wording\nBump: patch');
+  writeFileSync(join(dir, 'a.txt'), '2');
+  g('commit', '-qam', 'fix\n\nChangelog: ISSUE-40 New wording\nBump: patch');
+  g('checkout', '-q', 'main');
+  const [c] = planMerge(dir, [T('ISSUE-40')], DEFAULT_CONTRACT, null);
+  assert.deepEqual(c!.entries, ['ISSUE-40 New wording']);
 });
