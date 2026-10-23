@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.4] — 2026-10-23
+
+- ISSUE-2411 A release lock held by a dead process on the same ship is reclaimed on the next cycle, and a failed lock release is retried and logged instead of silently leaving the row held until its TTL.
+- ISSUE-2412 `crew doctor` now warns when a Locks row is held by this ship's own process that no longer runs, so a stale claim is visible before the next release cycle reclaims it.
+
 ## [0.71.3] — 2026-10-23
 
 - CREW-2410 `crew --help`, `crew -h` and `crew help` now print usage to stdout and exit 0; an unknown command or flag still exits 2, with a first line naming it.
