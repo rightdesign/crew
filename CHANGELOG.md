@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.68.1] — 2026-10-23
+
+- CREW-2364 Run attribution follows the ticket a run claimed or handed off instead of the most-mentioned one.
+
 ## [0.68.0] — 2026-10-22
 
 - ISSUE-2350 crew whoami [route] [--json] reports the signed-in identity, key role, operator Crew row and credential source
