@@ -83,7 +83,9 @@ import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { runStalledSweep } from './stalled.ts';
 import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
-import { guardRunHandoff } from './handoff-guard.ts';
+import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
+import { listPendingHandoffs } from './pending-handoff.ts';
+import { replayQueuedAgentRuns } from './agent-log.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
@@ -649,6 +651,22 @@ async function publishShipAttention(o: RunOnePassOptions): Promise<void> {
 // re-run its own argv-driven top-level dispatch).
 // ---------------------------------------------------------------------------
 
+/** Retries what an earlier run could not write (CREW-2363): pending hand-offs and queued Agent Log reports. */
+async function replayPendingWrites(ctx: RoleAgentContext): Promise<void> {
+  const { route, ship, emit } = ctx;
+  try {
+    const roles = [...new Set(listPendingHandoffs(ship.stateDir, routeSlug(route.route)).map((r) => r.role))] as RoleName[];
+    for (const role of roles) {
+      const identity = await resolveSeatKey(route, role, ctx.getSessionStore);
+      await replayRoutePending(route, ship, new Tracker(route, ship, { apiKey: identity.apiKey }), emit, role);
+    }
+    await replayQueuedAgentRuns(ship.stateDir, routeSlug(route.route),
+      async (role) => (await resolveSeatKey(route, role as RoleName, ctx.getSessionStore)).apiKey, emit);
+  } catch (e) {
+    emit.warn(`could not replay pending writes: ${(e as Error).message}`, { step: 'agent' });
+  }
+}
+
 /**
  * `reconcileRuns` wired to this route: the seat's key reports the Agent Log
  * row, and the follow-up is the tracker work `runRoleAgent` does around a run
@@ -657,6 +675,9 @@ async function publishShipAttention(o: RunOnePassOptions): Promise<void> {
  */
 async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): Promise<void> {
   const { route, ship, emit } = ctx;
+  // CREW-2363: whatever an earlier run could not write while the tracker was
+  // down (its hand-off, its Agent Log report) is retried on every pass.
+  await replayPendingWrites(ctx);
   await reconcileRuns({
     stateDir: ship.stateDir, routeLabel: routeSlug(route.route), emit, state: o.state,
     maxConcurrentAgents: o.maxConcurrentAgents, inFlight: o.inFlight,

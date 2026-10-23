@@ -21,6 +21,7 @@ import {
 } from './select.ts';
 import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } from './epics.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
+import { pendingHandoffFor } from './pending-handoff.ts';
 import { buildingDigest, DIRECTION_EVENT_TYPES, STATUS_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
 import { loadRepoConfig, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
@@ -413,6 +414,10 @@ export function writeDigest(
       myShipId: d.ships.find((s) => (s.name ?? '').trim() === o.ship.name.trim())?.id ?? null,
       watermark: d.watermark,
       events: d.directionEvents,
+      previousRun: (t: { id: string }) => {
+        const r = pendingHandoffFor(stateDir, t.id);
+        return r?.finalText ? { finalText: r.finalText.slice(0, 2000), at: r.createdAt } : null;
+      },
       blocked: d.blocked,
       blockerInfo: d.info,
     };

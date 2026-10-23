@@ -12,14 +12,16 @@ import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, createWri
 import { StringDecoder } from 'node:string_decoder';
 import { finished } from 'node:stream/promises';
 import type { StreamKindEvent } from './stream.ts';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
-import { reportAgentRun, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { reportAgentRun, queueAgentRun, AgentLogUnreachableError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { HandoffTranscriptTracker } from './handoff-transcript.ts';
+import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
 import { appendAdditions } from './prompt-additions.ts';
@@ -401,10 +403,8 @@ export function describePlan(p: AgentPlan): string {
 export interface RunResult {
   code: number;
   ms: number;
-}
-export interface RunResult {
-  code: number;
-  ms: number;
+  /** The run's hand-off write failed against an unreachable tracker; a pending record was left for replay (CREW-2363). */
+  handoffPending?: boolean;
 }
 
 /**
@@ -563,6 +563,8 @@ const TAIL_POLL_MS = 200;
 class RunObserver {
   readonly cycles: AgentCycle[] = [];
   readonly attribution = new TicketAttributionTracker();
+  /** Hand-off writes and their outcomes, to tell a run whose hand-off never landed (CREW-2363). */
+  readonly handoff = new HandoffTranscriptTracker();
   result: ReturnType<ReturnType<typeof adapterFor>['extractResult']>;
   /** Set once the stream carries the harness's final result (turn count or cost). */
   sawResult = false;
@@ -619,6 +621,7 @@ class RunObserver {
         this.result = { ...this.result, ...Object.fromEntries(Object.entries(got).filter(([, v]) => v !== undefined)) };
         if (got.numTurns !== undefined || got.costUsd !== undefined) this.sawResult = true;
       }
+      this.handoff.feed(parsed);
       this.consume(parsed, this.mapper.map(parsed));
     } catch {
       /* a shape this run's mapping does not expect must not kill the cycle */
@@ -742,7 +745,7 @@ interface RunEnd {
  */
 async function finishRun(
   id: RunIdentity, obs: RunObserver, emit: Emitter, startedAt: string, end: RunEnd, agentLogKey?: string,
-): Promise<{ ms: number; ticket: string | undefined }> {
+): Promise<{ ms: number; ticket: string | undefined; handoffPending: boolean }> {
   // The ticket this run's tracker writes targeted (hand-off, then claim, then
   // comment); only a run with no such write falls back to the ticket it spent
   // the most tokens on, then the pre-run poll hint (CREW-2364).
@@ -752,6 +755,21 @@ async function finishRun(
   // the sidecar and the event only — the Agent Log carries harness+provider.
   const identity = { toolchain: id.toolchain, harness: id.harness, provider: id.provider };
   const { result } = obs;
+  // A hand-off write that hit an unreachable tracker, with no later success.
+  // The branch may well be pushed; only the board does not know (CREW-2363).
+  const pending = end.interrupted ? null : obs.handoff.pending();
+  if (pending) {
+    try {
+      const now = new Date();
+      writePendingHandoff(stateDirOfStream(id.streamPath), {
+        ...pending, version: 1, route: id.route, role: id.role,
+        ...(attributedTicket ? { ticket: attributedTicket } : {}),
+        streamPath: id.streamPath, createdAt: now.toISOString(), attempts: 0, nextAttemptAt: now.toISOString(),
+      });
+    } catch (e) {
+      emit.warn(`could not save the pending hand-off: ${(e as Error).message}`, { step: 'agent' });
+    }
+  }
   try {
     writeRunMeta(id, startedAt, obs.liveTicket, {
       attributedTicket: attributedTicket ?? null,
@@ -759,14 +777,16 @@ async function finishRun(
       running: undefined,
       exitCode: end.code,
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
+      ...(pending ? { handoff: 'pending' } : {}),
       sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
       totalCostUsd: result?.costUsd ?? null,
     });
   } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
   const ms = Date.now() - Date.parse(startedAt);
-  emit.emit(end.interrupted ? 'agent run interrupted' : `agent run finished (exit ${end.code ?? 'unknown'})`, {
+  emit.emit(end.interrupted ? 'agent run interrupted' : `agent run finished (${pending ? 'hand-off pending' : `exit ${end.code ?? 'unknown'}`})`, {
     data: {
       ms, code: end.code,
+      ...(pending ? { handoff: 'pending' } : {}),
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
       ...identity,
       ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
@@ -775,8 +795,7 @@ async function finishRun(
     },
   });
   if (id.agentLog && agentLogKey) {
-    try {
-      await reportAgentRun({ ...id.agentLog, apiKey: agentLogKey }, {
+    const report = {
         ticketReference: attributedTicket,
         outcome: end.interrupted ? 'interrupted' : end.code === 0 || (end.code === null && obs.sawResult) ? 'success' : 'error',
         startedAt,
@@ -792,15 +811,29 @@ async function finishRun(
         provider: identity.provider,
         promptVersion: id.promptVersion,
         promptSha: id.promptSha,
-      });
+    };
+    try {
+      await reportAgentRun({ ...id.agentLog, apiKey: agentLogKey }, report);
     } catch (e) {
+      // The tracker did not answer, so no row exists: keep the report and send
+      // it on a later pass rather than losing the run's record (CREW-2363).
+      if (e instanceof AgentLogUnreachableError) {
+        try {
+          queueAgentRun(stateDirOfStream(id.streamPath), basename(id.streamPath, '.jsonl'), {
+            version: 1, route: id.route, role: id.role, target: id.agentLog, report,
+            attempts: 0, nextAttemptAt: new Date().toISOString(),
+          });
+          emit.warn(`could not report agent log (${e.message}); queued to retry`, { step: 'agent' });
+          return { ms, ticket: attributedTicket, handoffPending: !!pending };
+        } catch { /* fall through to the plain warning */ }
+      }
       // A workspace that has never been provisioned/backfilled (ISSUE-465),
       // or a plain network hiccup, must not fail the run it is reporting
       // on — same reasoning as `openSink`'s degrade-quietly contract above.
       emit.warn(`could not report agent log: ${(e as Error).message}`, { step: 'agent' });
     }
   }
-  return { ms, ticket: attributedTicket };
+  return { ms, ticket: attributedTicket, handoffPending: !!pending };
 }
 
 /**
@@ -886,8 +919,8 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       obs.end();
       await endSink(eventsSink);
       if (spawnFailed) return;
-      const { ms } = await finishRun(id, obs, emit, startedAt, { code: code ?? 1 }, plan.agentLog?.apiKey);
-      resolve({ code: code ?? 1, ms });
+      const { ms, handoffPending } = await finishRun(id, obs, emit, startedAt, { code: code ?? 1 }, plan.agentLog?.apiKey);
+      resolve({ code: code ?? 1, ms, ...(handoffPending ? { handoffPending } : {}) });
     });
     // An agent that exits (or closes stdin) before the prompt is fully written
     // breaks the pipe under this write. Without a listener that EPIPE is an

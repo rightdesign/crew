@@ -756,6 +756,15 @@ export class Tracker {
     if (!res.ok) throw new Error(`posting a ${type} event failed: HTTP ${res.status}`);
   }
 
+  /** A ticket comment under a seat's identity (CREW-2363: the replayed hand-off comment). */
+  async postComment(ticketId: string, body: string, memberId: string): Promise<void> {
+    const auth = await this.authorshipProbe();
+    await this.client.records.create(this.models.comments, {
+      [this.contract.comments.parent]: ticketId, [this.contract.comments.author]: memberId, [this.contract.comments.body]: body,
+      ...(auth.commentShip && auth.shipId ? { [this.contract.comments.ship]: auth.shipId } : {}),
+    });
+  }
+
   /**
    * Whether the Issues table has an event log: `GET /data-models/<issues>/events`
    * answers 200 when it does and 404 when the setting is off. Crew requires it

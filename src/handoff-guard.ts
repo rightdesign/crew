@@ -29,7 +29,8 @@ import type { Contract } from './contract.ts';
 import { gitOk, headSha, isAncestor, remoteConfigured, worktrees } from './git.ts';
 import { existingBranchForTicket, type BranchLookupTicket } from './ticket-branch.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
-import { repoTargetFor, type Route, type Ship, type RoleName } from './config.ts';
+import { repoTargetFor, routeSlug, type Route, type Ship, type RoleName } from './config.ts';
+import { replayPendingHandoffs } from './pending-handoff.ts';
 import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import type { RunnerEvent, Ticket, Tracker } from './tracker.ts';
@@ -236,6 +237,8 @@ export async function guardRunHandoff(
   /** ISO time the run started; with it, hand-offs to tickets other than `workingId` are checked too (CREW-1759). */
   since?: string,
 ): Promise<HandoffOutcome | null> {
+  // CREW-2363: any hand-off an earlier run could not write (tracker down) goes first.
+  const replayed = await replayRoutePending(route, ship, tracker, log, role);
   if (!workingId || (role !== 'dev' && role !== 'design' && role !== 'qa')) return null;
   const seatId = route.resolved?.seats[role];
   if (!seatId) return null;
@@ -253,7 +256,8 @@ export async function guardRunHandoff(
       return null;
     }
     const affinity = await tracker.claimAffinity();
-    const outcome = await enforceHandoff({
+    // The replay just handed this very ticket on and posted its `pushed` event.
+    const outcome: HandoffOutcome = replayed.includes(workingId) ? { kind: 'pushed', sha: '' } : await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
       seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
     });
@@ -304,6 +308,24 @@ function repoConfigFor(route: Route, t: Ticket) {
     worktrees: { nameOverride: o?.worktreeName },
   }, target.dir);
   return { target, cfg };
+}
+
+/**
+ * Replays this route's pending hand-offs (CREW-2363). Exported for the daemon's
+ * own pass, which calls it even when no run just ended. Never throws.
+ */
+export async function replayRoutePending(route: Route, ship: Ship, tracker: Tracker, log: HandoffLog, role?: string): Promise<string[]> {
+  try {
+    return await replayPendingHandoffs({
+      writer: tracker, contract: tracker.contract, stateDir: ship.stateDir, route: routeSlug(route.route), role,
+      seats: route.resolved?.seats ?? {},
+      checkout: (t) => { const r = repoConfigFor(route, t); return r ? { dir: r.target.dir, cfg: r.cfg } : null; },
+      log,
+    });
+  } catch (e) {
+    log.warn(`could not replay pending hand-offs: ${(e as Error).message}`, { step: 'handoff' });
+    return [];
+  }
 }
 
 export const STRAY_HANDOFF_MARKER = calloutHeader('WARNING', 'Stray Hand-off');

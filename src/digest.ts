@@ -133,6 +133,13 @@ export interface DigestInput {
    */
   repoStop?: (t: DigestTicket) => string | null;
   /**
+   * What this seat's own earlier run left for a ticket (CREW-2363): the final
+   * text of a run whose hand-off never reached the board, and when. Rendered
+   * under Step 1 so the next run recognises its own pushed work rather than
+   * parking it as someone else's.
+   */
+  previousRun?: (t: DigestTicket) => { finalText: string; at: string } | null;
+  /**
    * Work modes (CREW-1445, CREW-1493). The caller has already dropped the
    * tickets the mode excludes from `tickets`; this drives the note that tells
    * the lane why a project's accepted tickets are absent. It also lets ticket
@@ -409,6 +416,11 @@ export function buildingDigest(i: DigestInput): string {
   const held = i.tickets.filter((t) => (t.status === 'accepted' || t.status === 'blocked') && !isBlocked(t) && stopOf(t) !== null);
   const heldTable = held.length === 0 ? '' : `\n### Held repos — this ship cannot start these right now\n\nNot yours to start this run: the ship's checkout of their repo is stopped. It\nresumes by itself once the checkout is level; no one needs to change the ticket.\n\n| ticket | why |\n|---|---|\n${sorted(held).map((t) => `| ${displayKey(t)} | ${stopOf(t)} |`).join('\n')}\n`;
 
+  const prev = step1
+    .map((t) => ({ t, p: t.assignee_id === i.me && i.previousRun ? i.previousRun(t) : null }))
+    .filter((x): x is { t: DigestTicket; p: { finalText: string; at: string } } => !!x.p);
+  const prevSection = prev.length === 0 ? '' : `\n### Your previous run — hand-off not yet on the board\n\nEach ticket below is held by this seat and a run of this seat ended with its hand-off write\nfailing against an unreachable tracker. The branch commits are **your own earlier work**: adopt them and\ncontinue (merge the base in if behind, run the hooks, hand off); never park them as someone else's.\nThe crew replays the hand-off itself when the tracker answers, so check the ticket before writing it again.\n\n${prev.map(({ t, p }) => `**${displayKey(t)}** (run ended ${p.at.slice(0, 16)}Z) final text:\n\n${p.finalText.split('\n').map((l) => `> ${l}`).join('\n')}\n`).join('\n')}`;
+
   return stream([
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
@@ -421,6 +433,7 @@ export function buildingDigest(i: DigestInput): string {
     '\n### Step 1 — open tickets that may be yours to act on\n',
     '\n`fixed` tickets are deliberately absent: they belong to the QA lane.\n',
     table(step1, i, header, row),
+    ...(prevSection ? [prevSection] : []),
     '\n### Step 2 — accepted tickets, in pick order\n',
     '\nWork the first one you are not required to skip. Tickets waiting on an\nunresolved dependency are already out of this table — see Blocked below.\n',
     table(step2, i, header, row),

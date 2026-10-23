@@ -209,6 +209,11 @@ should is Step 1's call, not a filesystem check.
   base. Only evidence of work elsewhere — a progress comment from another
   ship, or a remote branch this ship did not push — is a reason to pause,
   and then it is a stop for a person (see "Stopping"), never a bare comment.
+  A commit on the ticket's branch authored under this ship's identity while
+  the ticket was held by your seat is your seat's earlier run, not foreign
+  work: adopt it and continue (merge `<remote>/<base>` in if behind, run the
+  hooks, hand off). The digest's "Your previous run" section, when present,
+  carries that run's final text; never park such a branch as someone else's.
 - Otherwise pick from the digest's "Step 2" table, which is already
   `accepted`, in your lane and in order. Absent a digest, fetch those tickets
   and order them by **effective priority, then manual position, then severity, then `issue_id`**:

@@ -186,3 +186,7 @@ ancestor of the new tip, and the squash-merge still ships only the ticket's own
 diff. The lane skill therefore states the rule (Step 4.4) and says that "never
 merge" means never merge INTO the base; QA's hard limits forbid asking a builder
 to rewrite a pushed branch.
+
+## Adopting your own earlier run's commit (CREW-2363)
+
+A run that pushed its branch while the tracker was down could not write its hand-off. The next run on the same seat found its own pushed commit with no comment and parked it as foreign work. The lane policy now says a commit authored under this ship's identity while the seat held the ticket is the seat's earlier run to adopt, and the digest's "Your previous run" section carries that run's final text when crew still has a pending hand-off for the ticket.
