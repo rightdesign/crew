@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.69.0] — 2026-10-23
+
+- ISSUE-2363 A run that pushed its branch while the tracker was down keeps its hand-off and replays it when the tracker is back, instead of exiting as a success with the hand-off undone.
+- CREW-2363 A hand-off that fails while the tracker is down is kept and replayed, runs are marked "hand-off pending", and the next run recognizes its own pushed work.
+
 ## [0.68.1] — 2026-10-23
 
 - CREW-2364 Run attribution follows the ticket a run claimed or handed off instead of the most-mentioned one.
