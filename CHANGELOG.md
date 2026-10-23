@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.2] — 2026-10-23
+
+- CREW-2404 `crew --version` and `crew version` print the version and exit 0 instead of printing help and exiting 2.
+
 ## [0.71.1] — 2026-10-23
 
 - ISSUE-2390 A release's changelog now lists each ticket once, using the newest Changelog line from its branch, and spells the ticket reference with the project's prefix.
