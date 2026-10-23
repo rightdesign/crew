@@ -75,6 +75,7 @@ export function releaseLockScope(route: string, repo: string): string {
  */
 export async function acquireBoardLock(
   client: LockRecordsClient, modelId: string | undefined, scope: string, holderLabel: string, ttlMs: number,
+  log: BoardLockLog = {},
 ): Promise<BoardLockResult> {
   if (!modelId) return { ok: true, release: async () => {}, exclusion: 'off' };
 
@@ -84,7 +85,9 @@ export async function acquireBoardLock(
   if (!row) return { ok: false, reason: 'missing' };   // `crew connect` provisions it
 
   const age = Date.now() - new Date(row.updated_at).getTime();
-  const free = !row.holder || row.holder === holderLabel || age > ttlMs;
+  const staleOwn = !!row.holder && row.holder !== holderLabel && isDeadOwnClaim(row.holder, holderLabel);
+  const free = !row.holder || row.holder === holderLabel || age > ttlMs || staleOwn;
+  if (staleOwn) log.warn?.(`reclaimed stale own claim ${row.holder} on ${scope} (process is gone)`);
   if (!free) return { ok: false, heldBy: row.holder ?? undefined, reason: 'held' };
 
   let claimed: LockRow;
@@ -100,13 +103,33 @@ export async function acquireBoardLock(
     exclusion: 'taken',
     release: async () => {
       try {
-        await client.update(modelId, row.id, { holder: '' }, claimed.updated_at);
-      } catch {
-        // Best-effort: a failed release just leaves the row held until its
-        // TTL expires, same as a ship that lost network mid-run would.
+        try {
+          await client.update(modelId, row.id, { holder: '' }, claimed.updated_at);
+        } catch (e) {
+          if (!(e instanceof StaleWriteError)) throw e;
+          // Something touched the row since our claim. If it still names us,
+          // the release must still land (CREW-2411); if not, it is not ours.
+          const [now] = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+          if (now?.holder === holderLabel) await client.update(modelId, row.id, { holder: '' }, now.updated_at);
+        }
+        log.debug?.(`lock released for ${scope}`);
+      } catch (e) {
+        // Best-effort: a failed release leaves the row held until its TTL
+        // expires, same as a ship that lost network mid-run would — but say so.
+        log.warn?.(`lock release failed for ${scope}: ${(e as Error).message}`);
       }
     },
   };
+}
+
+export interface BoardLockLog { warn?: (m: string) => void; debug?: (m: string) => void }
+
+/** A holder label is `<ship>:<pid>`. True when it names this ship (same hostname-part) and that pid no longer runs. */
+function isDeadOwnClaim(holder: string, mine: string): boolean {
+  const split = (l: string) => { const i = l.lastIndexOf(':'); return i < 0 ? null : { ship: l.slice(0, i), pid: Number(l.slice(i + 1)) }; };
+  const h = split(holder), m = split(mine);
+  if (!h || !m || h.ship !== m.ship || !Number.isInteger(h.pid) || h.pid <= 0) return false;
+  try { process.kill(h.pid, 0); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ESRCH'; }
 }
 
 /** What `crew status` shows for one scope: whether a row exists and who holds it. */

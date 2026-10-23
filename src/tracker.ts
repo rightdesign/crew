@@ -18,7 +18,7 @@ import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
 import { projectWorkModes, type WorkMode } from './work-mode.ts';
-import { acquireBoardLock as claimBoardLock, lockRowState, type BoardLockResult, type LockRowState } from './board-lock.ts';
+import { acquireBoardLock as claimBoardLock, lockRowState, type BoardLockResult, type BoardLockLog, type LockRowState } from './board-lock.ts';
 
 export interface Ticket {
   id: string;
@@ -710,8 +710,8 @@ export class Tracker {
    * Locks table with no row for `scope` is `{ ok: false, reason: 'missing' }`
    * (CREW-1384): `crew connect` provisions the row.
    */
-  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number): Promise<BoardLockResult> {
-    return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs);
+  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number, log?: BoardLockLog): Promise<BoardLockResult> {
+    return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs, log);
   }
 
   /** The Locks row for `scope` — present? held by whom? Undefined when this workspace has no Locks table. */

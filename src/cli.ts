@@ -1437,7 +1437,9 @@ async function releasePhase(
 
     if (!dryRun) {
       const holderLabel = `${cfg.ship.name}:${process.pid}`;
-      const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS);
+      const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS, {
+        warn: (m) => remit.warn(m, { step: 'release' }), debug: (m) => remit.emit(m, { step: 'release' }),
+      });
       if (!got.ok && got.reason === 'missing') {
         const detail = `no Locks row for ${scope} — run \`crew connect ${c.route}\` to provision it`;
         remit.warn(`release for ${scope} refused: ${detail}`, { step: 'release' });

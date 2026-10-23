@@ -182,3 +182,30 @@ test('a release that fails (row deleted, network) does not throw — a stale cla
   row.id = 'gone';   // simulate the row vanishing before release
   if (got.ok) await assert.doesNotReject(got.release());
 });
+
+test('release lands even when the row was touched after the claim', async () => {
+  const { client, row } = fakeClient({ id: 'r', scope: 's', holder: '', updated_at: NOW });
+  const got = await acquireBoardLock(client, MODEL, 's', 'shipA:1', TTL);
+  assert.equal(got.ok, true);
+  row.updated_at = new Date(Date.now() + 5000).toISOString();   // someone bumped it
+  if (got.ok) await got.release();
+  assert.equal(row.holder, '');
+});
+
+test('release failure is logged, not thrown', async () => {
+  const f = fakeClient({ id: 'r', scope: 's', holder: '', updated_at: NOW });
+  const warns: string[] = [];
+  const got = await acquireBoardLock(f.client, MODEL, 's', 'shipA:1', TTL, { warn: (m) => warns.push(m) });
+  f.client.update = async () => { throw new Error('boom'); };
+  if (got.ok) await got.release();
+  assert.match(warns[0] ?? '', /lock release failed.*boom/);
+});
+
+test('this ship\'s claim by a dead pid is reclaimed; a live pid and another ship are not', async () => {
+  const dead = fakeClient({ id: 'r', scope: 's', holder: 'shipA:999999999', updated_at: NOW });
+  assert.equal((await acquireBoardLock(dead.client, MODEL, 's', 'shipA:1', TTL)).ok, true);
+  const live = fakeClient({ id: 'r', scope: 's', holder: `shipA:${process.pid}`, updated_at: NOW });
+  assert.equal((await acquireBoardLock(live.client, MODEL, 's', 'shipA:1', TTL)).ok, false);
+  const other = fakeClient({ id: 'r', scope: 's', holder: 'shipB:999999999', updated_at: NOW });
+  assert.equal((await acquireBoardLock(other.client, MODEL, 's', 'shipA:1', TTL)).ok, false);
+});
