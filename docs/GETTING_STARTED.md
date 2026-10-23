@@ -200,13 +200,15 @@ crew --help
 #### Without Node: the compiled binary
 
 Every tagged release also attaches a self-contained build for macOS and Linux
-to its GitHub Release: `crew-<version>-<target>.tar.gz` for `darwin-arm64`,
-`darwin-x64`, `linux-arm64` and `linux-x64`, plus a `SHA256SUMS` file. Check
+to its GitHub Release: `crew-<version>-<target>.tar.gz` for `darwin-universal` (one binary for both
+Apple Silicon and Intel Macs, the macOS download to pick if you are unsure),
+`darwin-arm64`, `darwin-x64`, `linux-arm64` and `linux-x64`, plus a
+`SHA256SUMS` file. Check
 the download against it, unpack it anywhere, and run the `crew` inside:
 
 ```sh
 shasum -a 256 -c --ignore-missing SHA256SUMS
-mkdir crew && tar -xzf crew-<version>-darwin-arm64.tar.gz -C crew
+mkdir crew && tar -xzf crew-<version>-darwin-universal.tar.gz -C crew
 crew/crew doctor
 ```
 

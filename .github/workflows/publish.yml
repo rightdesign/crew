@@ -61,7 +61,9 @@ jobs:
   # the npm job's token. scripts/publish-binaries.sh is the manual equivalent.
   binaries:
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu: build-binaries.sh needs `lipo` for the universal
+    # darwin binary.
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
