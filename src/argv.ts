@@ -97,3 +97,11 @@ export function versionRequest(argv: readonly string[]): { json: boolean } | nul
   if (rest.some((a) => a !== '--json')) return null;
   return { json: rest.length > 0 };
 }
+
+/**
+ * `crew --help` / `-h` / `help` (CREW-2410): a requested usage, which succeeds.
+ * Only the first argument counts, so `crew poll --help` is not a help request.
+ */
+export function helpRequest(argv: readonly string[]): boolean {
+  return argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help';
+}

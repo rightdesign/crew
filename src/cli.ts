@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { hostname, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
-import { pickWorktreeRoute, positionalArgs, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
+import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
   loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers, crewVersion,
@@ -313,8 +313,13 @@ async function offerTemplateInstall(
   return installed.project.slug;
 }
 
-function usage(): never {
-  process.stderr.write(`crew — a standing team of headless agents
+/**
+ * Usage on request (`crew --help`, `-h`, `help`; CREW-2410) goes to stdout and
+ * exits 0. Usage on error goes to stderr and exits 2, led by a line naming what
+ * was not understood when there is one.
+ */
+function usage(problem?: string, requested = false): never {
+  const text = `crew — a standing team of headless agents
 
   crew poll [route]              decide a cycle and report it; writes nothing
   crew run [route] [--role R]    run the winning role's session
@@ -376,7 +381,12 @@ Options:
   --all          (inbox) include closed tickets
 
 In watch: space pauses the stream, q quits.
-`);
+`;
+  if (requested) {
+    process.stdout.write(text);
+    process.exit(0);
+  }
+  process.stderr.write(problem ? `crew: ${problem}\n\n${text}` : text);
   process.exit(2);
 }
 
@@ -384,6 +394,7 @@ const argv = process.argv.slice(2);
 // `crew --version` (CREW-2404) answers before any config is loaded: it works
 // with no crew.yaml and never touches the tracker. stdout carries only the
 // version (or the --json object), which the Crew macOS app reads.
+if (helpRequest(argv)) usage(undefined, true);
 const versionReq = versionRequest(argv);
 if (versionReq) {
   const version = crewVersion(CREW_HOME);
@@ -402,7 +413,7 @@ const command = positional[0];
 // `crew connect --json` (CREW-2235): events on stdout, human text stays on stderr.
 const connectEvents = createEmitter(command === 'connect' && flag('json'), (l) => { process.stdout.write(l); });
 const connectChoices = parseChoices(argv);
-if (!command) usage();
+if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
 
 /**
  * Route for `agents sync` / `skills sync`, which write to a workspace. Unlike
@@ -5207,7 +5218,7 @@ switch (command) {
   }
 
   default:
-    usage();
+    usage(`unknown command "${command}"`);
 }
 
 lock?.release();
