@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.0] — 2026-10-23
+
+- ISSUE-2392 Tagged releases now attach a universal macOS crew binary (Apple Silicon and Intel in one file) as crew-<version>-darwin-universal.tar.gz.
+
 ## [0.70.0] — 2026-10-23
 
 - ISSUE-2383 A tracker restart no longer raises an error event on every failed daemon pass; it warns, backs off, and escalates once after about three minutes.
