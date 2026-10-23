@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, isSshRemote, formatPushAuth } from '../src/doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, isSshRemote, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock } from '../src/doctor-checks.ts';
 
 const fail = (msg: string) => () => { throw Object.assign(new Error('x'), { stderr: msg }); };
 
@@ -58,4 +58,17 @@ test('one repo failing to resolve is reported and does not drop its siblings', a
   });
   assert.deepEqual(settled, ['GOOD', 'ALSO-GOOD']);
   assert.deepEqual(errors, [{ repo: 'bad', detail: 'release.mode "local" needs hooks.deploy' }]);
+});
+
+test('a lock held by this ship with a dead pid is reported; live, foreign and free are not', () => {
+  const dead = () => false, live = () => true;
+  assert.equal(staleOwnLockClaim('mini:4242', 'mini', dead), true);
+  assert.equal(staleOwnLockClaim('mini:4242', 'mini', live), false);
+  assert.equal(staleOwnLockClaim('studio:4242', 'mini', dead), false);
+  assert.equal(staleOwnLockClaim('mini', 'mini', dead), false);
+  assert.equal(staleOwnLockClaim('mini:abc', 'mini', dead), false);
+  assert.equal(staleOwnLockClaim(undefined, 'mini', dead), false);
+  assert.equal(staleOwnLockClaim('', 'mini', dead), false);
+  assert.equal(staleOwnLockClaim(`mini:${process.pid}`, 'mini'), false);
+  assert.match(formatStaleOwnLock('r/crew', 'mini:4242'), /lock r\/crew is held by mini:4242/);
 });

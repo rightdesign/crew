@@ -8,7 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -4859,6 +4859,12 @@ switch (command) {
       } else {
         const warn = missingReleaserWarning(r.name, config.release, await tracker.shipRows().catch(() => []));
         if (warn) process.stdout.write(`                   WARNING ${warn}\n`);
+      }
+      // CREW-2412: a stale claim by this ship's own dead process.
+      const scope = releaseLockScope(route.route, r.name);
+      const lock = await tracker.lockState(scope).catch(() => undefined);
+      if (lock?.holder && staleOwnLockClaim(lock.holder, cfg.ship.name)) {
+        process.stdout.write(`                   ${formatStaleOwnLock(scope, lock.holder)}`);
       }
     }
 

@@ -122,3 +122,29 @@ export async function settleRepos<T, R>(
   for (const o of out) { if (o.ok) settled.push(o.value); else errors.push({ repo: o.repo, detail: o.detail }); }
   return { settled, errors };
 }
+
+/** True unless `process.kill(pid, 0)` says the process is gone (ESRCH); EPERM means it exists. */
+export function pidRunning(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== 'ESRCH'; }
+}
+
+/**
+ * CREW-2412: a Locks row held as `<this ship>:<pid>` whose pid no longer runs.
+ * The release phase reclaims it on its next cycle (CREW-2411, same test), so
+ * this only makes the stale claim visible beforehand. Another ship's holder,
+ * a free row or a live pid is not reported; neither is a label with no pid
+ * part, since nothing can tell whether that process is gone.
+ */
+export function staleOwnLockClaim(
+  holder: string | undefined, shipName: string, running: (pid: number) => boolean = pidRunning,
+): boolean {
+  if (!holder) return false;
+  const i = holder.lastIndexOf(':');
+  if (i < 0 || holder.slice(0, i) !== shipName) return false;
+  const pid = Number(holder.slice(i + 1));
+  return Number.isInteger(pid) && pid > 0 && !running(pid);
+}
+
+export function formatStaleOwnLock(scope: string, holder: string): string {
+  return `WARN lock ${scope} is held by ${holder}, but that process is gone — the next release cycle reclaims it\n`;
+}
