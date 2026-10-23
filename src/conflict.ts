@@ -56,6 +56,12 @@ export interface ConflictBounce {
   paths: string[];
   /** How many times the crew has already handed this ticket back for a conflict. */
   priorBounces: number;
+  /** The checkout the squash ran in; it has both the base and the branch refs. */
+  cwd: string;
+  /** The base tip this conflict was detected against (recorded on the hand-back so a later one can compare). */
+  baseSha: string | null;
+  /** The base tip the most recent acted-on hand-back was written against; null for events that predate it. */
+  priorBaseSha: string | null;
 }
 
 export type ConflictOutcome =
@@ -105,6 +111,25 @@ export const priorBounces = (ticket: Ticket, events: RunnerEvent[]): number => {
   ).length;
 };
 
+/** The base tip a hand-back event was written against: its metadata, else the `Base tip:` line of its note. */
+export const baseShaOf = (e: RunnerEvent): string | null => {
+  const m = e.metadata?.base_sha;
+  if (typeof m === 'string' && m) return m;
+  return /Base tip: `([0-9a-f]{7,40})`/.exec(e.message ?? '')?.[1] ?? null;
+};
+
+/** The newest hand-back of this ticket that a lane acted on (same test as `priorBounces`). */
+const lastActedHandBack = (ticket: Ticket, events: RunnerEvent[]): RunnerEvent | undefined => {
+  const mine = events.filter((e) => e.record_id === ticket.id);
+  const pushes = mine.filter((e) => e.event_type === 'pushed').map(stampOf);
+  return mine
+    .filter((e) => e.event_type === 'conflict_handed_back' && pushes.some((p) => p > stampOf(e)))
+    .sort((a, b) => stampOf(b).localeCompare(stampOf(a)))[0];
+};
+
+/** A third conflict in a row escalates however the base moved: a hot file must not loop forever. */
+export const MAX_ABSORBED_HANDBACKS = 2;
+
 export function planConflictBounce(
   cwd: string,
   ticket: Ticket,
@@ -117,6 +142,9 @@ export function planConflictBounce(
     ticket, branch, base, paths,
     worktree: worktreeForBranch(cwd, branch),
     priorBounces: priorBounces(ticket, events),
+    cwd,
+    baseSha: gitOk(cwd, ['rev-parse', '--verify', '-q', base]) || null,
+    priorBaseSha: baseShaOf(lastActedHandBack(ticket, events) ?? { record_id: '', event_type: '' }),
   };
 }
 
@@ -173,22 +201,29 @@ ${merged
     ? `\`${b.base}\` has been merged into \`${b.branch}\` in its worktree and the conflict is left in place, so \`git status\` there shows exactly what disagrees. Resolve it, commit, push as a plain fast-forward (the branch is pushed, so rebasing it is not an option) and hand back to QA as usual — \`git merge --abort\` backs the merge out if you would rather start differently.`
     : `This ship has no worktree for \`${b.branch}\`, so nothing has been merged for you. Merge \`${b.base}\` into the branch wherever it lives, resolve the conflict, and commit.`}
 
-Nothing was written to \`${b.base}\`: the failed merge was rewound, and the rest of the release shipped without this ticket. Re-verifying is what puts it back in the merge queue.`;
+${b.baseSha ? `Base tip: \`${b.baseSha}\`\n\n` : ''}Nothing was written to \`${b.base}\`: the failed merge was rewound, and the rest of the release shipped without this ticket. Re-verifying is what puts it back in the merge queue.`;
 }
 
 export function escalateComment(b: ConflictBounce): string {
+  const where = b.paths.length ? ` (${b.paths.map((p) => `\`${p}\``).join(', ')})` : '';
+  const absorbed = b.priorBounces >= MAX_ABSORBED_HANDBACKS;
   return `${BOUNCE_MARKER}
 
 **Conflicting again after a hand-back — stopping rather than looping.**
 
-\`${b.branch}\` was handed back once for a merge conflict, verified again, and conflicts against \`${b.base}\` a second time${b.paths.length ? ` (${b.paths.map((p) => `\`${p}\``).join(', ')})` : ''}.
+\`${b.branch}\` was handed back ${b.priorBounces === 1 ? 'once' : `${b.priorBounces} times`} for a merge conflict, verified again, and conflicts against \`${b.base}\` ${b.priorBounces === 1 ? 'a second time' : `again (conflict ${b.priorBounces + 1})`}${where}.
 
-Either \`${b.base}\` is moving faster than this branch can absorb it, or this ticket overlaps work that has already shipped and needs rethinking rather than merging. That is a call for a person, not another lap through the lanes.`;
+${absorbed
+    ? `Each earlier hand-back was answered by merging \`${b.base}\` in, and \`${b.base}\` moved underneath the branch every time. This file is changing faster than the lanes can absorb it, so it needs a person to sequence this ticket against the others touching it.`
+    : `The branch ${b.priorBaseSha ? `does not contain \`${b.priorBaseSha}\`, the \`${b.base}\` tip it was last handed back for` : 'was pushed'} — the hand-back was answered without merging \`${b.base}\` in, or this ticket overlaps work that has already shipped and needs rethinking rather than merging.`}
+That is a call for a person, not another lap through the lanes.`;
 }
 
 export interface ConflictWriter {
   updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown>;
-  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
+  postEvent(
+    ticketId: string, body: string, memberId: string, type?: string, extra?: Record<string, unknown>,
+  ): Promise<void>;
 }
 
 export interface ConflictLog {
@@ -215,7 +250,17 @@ export async function applyConflictBounce(
 ): Promise<ConflictOutcome> {
   const t = { ticket: b.ticket.issue_id, step: 'merge' };
 
-  if (b.priorBounces > 0) {
+  // A hand-back that was answered by merging the base it named is not a failed
+  // resolution when the base has moved again since (CREW-2379): treat it as a
+  // fresh conflict, up to MAX_ABSORBED_HANDBACKS. Anything we cannot prove
+  // (no recorded sha, branch ref unreadable) keeps the old escalation.
+  const absorbed = b.priorBounces > 0 && b.priorBounces < MAX_ABSORBED_HANDBACKS && !!b.priorBaseSha
+    && isAncestor(b.worktree ?? b.cwd, b.priorBaseSha, b.branch);
+  if (absorbed) {
+    log.emit(`${b.ticket.issue_id} conflicts again, but ${b.base} moved since the hand-back was answered — handing back again`, t);
+  }
+
+  if (b.priorBounces > 0 && !absorbed) {
     if (dryRun) {
       log.emit(`would escalate to ${contract.statuses.needsHuman} — handed back before`, t);
       return { kind: 'escalated' };
@@ -281,7 +326,8 @@ export async function applyConflictBounce(
     await writer.updateTicket(
       b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
     );
-    await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId, 'conflict_handed_back').catch(() => {
+    await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId, 'conflict_handed_back',
+      b.baseSha ? { base_sha: b.baseSha } : undefined).catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });
     log.emit(

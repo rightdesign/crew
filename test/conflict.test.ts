@@ -8,7 +8,7 @@ import { StaleWriteError } from '@tablation/client';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planConflictBounce, applyConflictBounce, refreshBranch, worktreeForBranch,
-  priorBounces, BOUNCE_MARKER, type ConflictWriter, type ConflictLog,
+  priorBounces, baseShaOf, BOUNCE_MARKER, type ConflictWriter, type ConflictLog,
 } from '../src/conflict.ts';
 import type { Ticket, RunnerEvent } from '../src/tracker.ts';
 
@@ -257,4 +257,78 @@ test('refreshBranch refuses a branch that is behind its remote instead of callin
   assert.equal(r.clean, false);
   assert.equal(r.behind, true);
   assert.deepEqual(r.paths, []);
+});
+
+/** A hand-back answered by a push, written against base tip `sha` (or none, for old events). */
+const answered = (sha: string | null, n = 1): RunnerEvent[] =>
+  Array.from({ length: n }, (_, i) => [
+    { record_id: 'row-1', event_type: 'conflict_handed_back', message: `${BOUNCE_MARKER}\nearlier`, occurred_at: `2026-01-0${i * 2 + 1}T00:00:00Z`, ...(sha ? { metadata: { base_sha: sha } } : {}) },
+    { record_id: 'row-1', event_type: 'pushed', occurred_at: `2026-01-0${i * 2 + 2}T00:00:00Z` },
+  ]).flat();
+
+/** The branch merged the base at `sha`, then the base moved again and conflicts (the TABL-2334 shape). */
+function overtakenRepo() {
+  const { dir, wt, g } = conflictingRepo();
+  const sha = g('rev-parse', 'main').toString().trim();
+  execFileSync('git', ['merge', '-q', '--no-edit', 'main'], { cwd: wt, stdio: 'pipe' });
+  moveBase(g, dir);
+  return { dir, wt, g, sha };
+}
+
+test('a second conflict after the lane absorbed the handed-back base is handed back again', async () => {
+  const { dir, g, sha } = overtakenRepo();
+  const { w, patches, notes } = writer();
+  const metas: unknown[] = [];
+  w.postEvent = async (_id, body, _m, _t, extra) => { notes.push(body); metas.push(extra); };
+
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], answered(sha));
+  assert.equal(b.priorBounces, 1);
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+
+  assert.equal(out.kind, 'handed-back');
+  assert.equal(patches[0]!.patch.status, DEFAULT_CONTRACT.statuses.building);
+  const tip = g('rev-parse', 'main').toString().trim();
+  assert.notEqual(tip, sha);
+  assert.deepEqual(metas[0], { base_sha: tip });
+  assert.match(notes[0]!, new RegExp(`Base tip: \`${tip}\``));
+  // The merge is waiting in the worktree for the lane.
+  const st = execFileSync('git', ['status', '--porcelain'], { cwd: b.worktree!, stdio: 'pipe' }).toString();
+  assert.match(st, /^UU /m);
+});
+
+test('a hand-back whose base the branch never absorbed still escalates', async () => {
+  const { dir, g } = conflictingRepo();
+  g('commit', '-q', '--allow-empty', '-m', 'base advanced past the branch');
+  const sha = g('rev-parse', 'main').toString().trim();
+  moveBase(g, dir);
+  const { w, patches } = writer();
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], answered(sha));
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+  assert.equal(out.kind, 'escalated');
+  assert.equal(patches[0]!.patch.status, DEFAULT_CONTRACT.statuses.needsHuman);
+});
+
+test('a hand-back with no recorded base sha keeps the old escalation', async () => {
+  const { dir } = overtakenRepo();
+  const { w } = writer();
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], answered(null));
+  assert.equal(b.priorBaseSha, null);
+  assert.equal((await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false)).kind, 'escalated');
+});
+
+test('the base sha is also read from the note when the event row carries no metadata', () => {
+  const sha = 'a'.repeat(40);
+  const [h] = answered(null);
+  assert.equal(baseShaOf({ ...h!, message: `x\n\nBase tip: \`${sha}\`\n\ny` }), sha);
+});
+
+test('the third consecutive overtaken conflict escalates', async () => {
+  const { dir, sha } = overtakenRepo();
+  const { w, notes } = writer();
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], answered(sha, 2));
+  assert.equal(b.priorBounces, 2);
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+  assert.equal(out.kind, 'escalated');
+  assert.match(notes[0]!, /2 times/);
+  assert.match(notes[0]!, /moved underneath/);
 });

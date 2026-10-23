@@ -123,6 +123,8 @@ export interface RunnerEvent {
   message?: string | null;
   occurred_at?: string | null;
   created_at?: string | null;
+  /** Structured extras the writer attached (`ship_id`, a hand-back's `base_sha`); absent on older rows. */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface Comment {
@@ -746,11 +748,13 @@ export class Tracker {
    * whatever wording the caller already used. Attributed to the seat's Crew
    * row, with the posting ship in `metadata`.
    */
-  async postEvent(ticketId: string, body: string, memberId: string, type = 'note'): Promise<void> {
+  async postEvent(
+    ticketId: string, body: string, memberId: string, type = 'note', extra?: Record<string, unknown>,
+  ): Promise<void> {
     const auth = await this.authorshipProbe();
     const res = await this.eventsFetch('POST', `/records/${ticketId}/events`, {
       type, message: body, actorRecordId: memberId,
-      ...(auth.shipId ? { metadata: { ship_id: auth.shipId } } : {}),
+      ...(auth.shipId || extra ? { metadata: { ...(auth.shipId ? { ship_id: auth.shipId } : {}), ...extra } } : {}),
     });
     if (res.status === 404) throw new ConfigError(EVENT_LOG_MISSING);
     if (!res.ok) throw new Error(`posting a ${type} event failed: HTTP ${res.status}`);
