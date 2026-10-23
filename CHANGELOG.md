@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.69.1] — 2026-10-23
+
+- ISSUE-2379 A second merge conflict caused by main moving after a hand-back was answered is handed back to the dev lane instead of escalating to a person; the third in a row still escalates.
+
 ## [0.69.0] — 2026-10-23
 
 - ISSUE-2363 A run that pushed its branch while the tracker was down keeps its hand-off and replays it when the tracker is back, instead of exiting as a success with the hand-off undone.
