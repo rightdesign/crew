@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.9] — 2026-10-24
+
+- CREW-2443 `crew connect --sign-out` and `crew disconnect --reset` no longer fail with "no config found" on a machine without crew.yaml.
+
 ## [0.71.8] — 2026-10-24
 
 - CREW-2440 Added `crew connect --sign-out` and made `crew disconnect --reset` clear host sessions stored by dry-run connects; signed_in events now name the host.
