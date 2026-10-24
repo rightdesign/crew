@@ -200,7 +200,7 @@ export interface Discovered {
    */
   shipRow?: { id: string; name: string; action: 'created' | 'matched'; matchedBy?: 'machine_id' | 'name' };
   /** Per-seat outcome of the Crew-row provisioning, for the `seat` events. */
-  seatRows?: Array<{ role: string; id: string; action: 'matched' | 'claimed' | 'created' }>;
+  seatRows?: Array<{ role: string; id: string; action: 'matched' | 'claimed' | 'created' | 'would-create'; shipId?: string }>;
   /** How `operator` was settled, for the `operator_row` event. */
   operatorAction?: 'matched' | 'linked' | 'created';
 }
@@ -732,19 +732,45 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     const rows = await get<Array<{ id: string; name?: string | null; email?: string | null; ship_id?: string | null; user_id?: string | null; agent_id?: string | null }>>(
       o, `/data-models/${out.models.crew}/records?limit=200`,
     );
-    // Unscoped (old behaviour) unless a ship actually resolved above.
-    const scoped = shipRowId ? rows.filter((r) => r.ship_id === shipRowId) : rows;
+    // A dry run writes nothing, so `shipRowId` stays unset above even for a
+    // machine that already has a Ships row. Resolve that row read-only, only
+    // to scope the seat lookup (CREW-2471): without it a provisioned machine's
+    // dry run would report its own seats as `would-create`. Only an
+    // unambiguous match counts; none (or several) leaves this unset.
+    let seatShipId = shipRowId;
+    if (!seatShipId && o.dryRun && o.ship && out.shipsModelId) {
+      try {
+        const shipRows = await get<Array<{ id: string; name?: string | null; machine_id?: string | null }>>(
+          o, `/data-models/${out.shipsModelId}/records?limit=200`,
+        );
+        const byId = o.ship.machineId ? shipRows.filter((r) => r.machine_id === o.ship!.machineId) : [];
+        const mineRows = byId.length > 0 ? byId : shipRows.filter((r) => (r.name ?? '').trim() === o.ship!.name.trim() && !r.machine_id);
+        if (mineRows.length === 1) seatShipId = mineRows[0]!.id;
+      } catch { /* unreadable Ships table: treated as no row yet */ }
+    }
+    // Without a resolved ship only legacy rows (no `ship_id`) are candidates:
+    // a row carrying another ship's id is another machine's seat and never
+    // this one's (CREW-2471). A workspace with no Ships table has no
+    // `ship_id` on any row, so this is the old workspace-wide search there.
+    const scoped = seatShipId ? rows.filter((r) => r.ship_id === seatShipId) : rows.filter((r) => !r.ship_id);
     // A row with no `ship_id` predates multi-machine support and implicitly
     // represents a single shared instance (see the ticket's own framing,
     // ISSUE-610) — claimed by name the first time a real ship connects and
     // finds one, rather than left to be duplicated by a fresh create below.
-    const unclaimed = shipRowId ? rows.filter((r) => !r.ship_id) : [];
+    const unclaimed = seatShipId ? rows.filter((r) => !r.ship_id) : [];
 
     for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
       const searchTerm = role === 'dev' ? 'develop' : role;
       let id = seatFor(scoped, searchTerm);
-      let seatAction: 'matched' | 'claimed' | 'created' = 'matched';
-      if (!id && shipRowId) {
+      let seatAction: 'matched' | 'claimed' | 'created' | 'would-create' = 'matched';
+      if (!id && seatShipId && !shipRowId) {
+        // Dry run against an existing Ships row: preview what a real run does.
+        const legacyId = seatFor(unclaimed, searchTerm);
+        if (legacyId) {
+          id = legacyId;
+          seatAction = 'claimed';
+        }
+      } else if (!id && shipRowId) {
         const legacyId = seatFor(unclaimed, searchTerm);
         if (legacyId) {
           await patch(o, `/data-models/${out.models.crew}/records/${legacyId}`, { ship_id: shipRowId });
@@ -764,7 +790,12 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       }
       if (id) {
         out.seats[role] = id;
-        (out.seatRows ??= []).push({ role, id, action: seatAction });
+        const rowShip = rows.find((r) => r.id === id)?.ship_id ?? shipRowId ?? undefined;
+        (out.seatRows ??= []).push({ role, id, action: seatAction, ...(rowShip ? { shipId: rowShip } : {}) });
+      } else if (o.dryRun && o.ship && out.shipsModelId) {
+        // Nothing qualifies and a real run would create the row: preview it
+        // rather than reporting a problem or a false match. No id exists yet.
+        (out.seatRows ??= []).push({ role, id: '', action: 'would-create' });
       } else problems.push(`no Crew row looking like the ${role} seat — create one, or omit that role`);
     }
     // `pair` is optional and best-effort, unlike the four polled seats above:
@@ -777,7 +808,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // same way one a person is driving does. Never claimed or created
     // (unlike the four polled seats): an interactive session's own row is
     // a person's to place, not this command's.
-    const pairId = seatFor(scoped, 'pair') || (shipRowId ? seatFor(unclaimed, 'pair') : undefined);
+    const pairId = seatFor(scoped, 'pair') || (seatShipId ? seatFor(unclaimed, 'pair') : undefined);
     if (pairId) out.seats.pair = pairId;
     // The per-ship "Release" row (CREW-1371 D5): release-phase comments and
     // failure tickets are written as this row, not the Developer agent. Only
