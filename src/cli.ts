@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
 import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
-  loadConfig, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
+  loadConfig, findConfigFile, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers, crewVersion,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
@@ -560,7 +560,17 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    cfg = loadConfig(CREW_HOME, undefined, command === 'repos' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out')) ? { allowNoRoutes: true } : {});
+    const toleratesNoRoutes = command === 'repos' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out'));
+    // CREW-2443: sign-out and reset exist for a machine whose only trace is a
+    // dry-run connect's keychain session, so they must load with NO crew.yaml.
+    // Load an empty ship block at the path a config-less connect would have
+    // used, which puts stateDir where that connect's `rememberSession` wrote.
+    const configless = (command === 'connect' && flag('sign-out')) || (command === 'disconnect' && flag('reset'));
+    if (configless && !existsSync(findConfigFile(CREW_HOME))) {
+      cfg = loadConfig(CREW_HOME, firstRunConfigPath(), { text: 'ship: {}\n', allowNoRoutes: true });
+    } else {
+      cfg = loadConfig(CREW_HOME, undefined, toleratesNoRoutes ? { allowNoRoutes: true } : {});
+    }
   }
 } catch (e) {
   if (e instanceof ConfigError) {
