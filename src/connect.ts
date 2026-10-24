@@ -154,7 +154,7 @@ export interface Discovered {
    * against `meEmail` when possible. Left unset when no hold's email matches
    * (or none is on file): the caller decides then, by asking. */
   operator?: string;
-  holds: Array<{ id: string; name: string; email?: string | null; user_id?: string | null }>;
+  holds: Array<{ id: string; name: string; email?: string | null; user_id?: string | null; memberEmail?: string }>;
   /**
    * The subset of `holds` that can be a person: no `agent_id` and no `ship_id`
    * (CREW-2423). Seat rows and Release rows of other ships are holds for the
@@ -821,6 +821,12 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         if (key) members.set(key, { identityId: m.identityId, email: m.email });
       }
     } catch { /* a plain member may not list members — not fatal */ }
+    // CREW-2431: the `operator_row` event shows the matched row's email, which
+    // for a row linked to a member but carrying no email of its own is the member's.
+    for (const h of out.holds) {
+      const e = h.user_id ? members.get(h.user_id)?.email : undefined;
+      if (e) h.memberEmail = e;
+    }
     out.candidates = people.map((r) => ({
       id: r.id, name: r.name ?? '', email: r.email, user_id: r.user_id,
       detail: r.email || (r.user_id ? members.get(r.user_id)?.email : undefined) || undefined,

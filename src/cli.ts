@@ -3305,8 +3305,15 @@ switch (command) {
         connectEvents.emit('operator_row', 'no Crew row matched you', { action: 'unmatched', compared: found.operatorCompared });
       }
       if (operator) {
-        connectEvents.emit('operator_row', `operator ${found.holds.find((h) => h.id === operator)?.name ?? operator}`, {
+        const opRow = found.holds.find((h) => h.id === operator);
+        // CREW-2431: name and email of the matched row, so a front end can show who it is.
+        // A row just linked to or created for this key's own account has this key's email.
+        const opEmail = opRow?.email || opRow?.memberEmail
+          || (opRow?.user_id && opRow.user_id === found.meId ? found.meEmail : undefined);
+        connectEvents.emit('operator_row', `operator ${opRow?.name ?? operator}`, {
           id: operator, action: found.operatorAction ?? 'previous',
+          ...(opRow?.name ? { name: opRow.name } : {}),
+          ...(opEmail ? { email: opEmail } : {}),
         });
       }
       // CREW-978: a non-interactive `connect` with no previous file and no

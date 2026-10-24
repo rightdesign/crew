@@ -232,7 +232,10 @@ test('several Crew rows and none matching the key: an operator choice, then --ch
     assert.ok(choice.options.some((o: { value: string }) => o.value === 'new'));
     const second = await runConnect([...common, '--choose', 'operator=h2']);
     assert.equal(second.code, 0, second.stderr);
-    assert.equal(second.events.find((e) => e.event === 'operator_row')!.id, 'h2');
+    const opRow = second.events.find((e) => e.event === 'operator_row')!;
+    assert.equal(opRow.id, 'h2');
+    assert.equal(opRow.name, 'Bob');
+    assert.equal(opRow.email, 'b@x.test');
   } finally { await m.close(); }
 });
 

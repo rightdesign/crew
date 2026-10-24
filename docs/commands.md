@@ -103,7 +103,7 @@ On a terminal the wizard still runs unless `--no-wizard` is given. Off a termina
 | `template_missing` | `canInstall`: no project has the tables a route needs; `true` when the key's role can install the Issues template |
 | `template_installed` | `projectSlug` |
 | `ship_row` | `id`, `name`, `action` (`created` or `matched`) |
-| `operator_row` | `id`, `action` (`matched`, `linked`, `created`, or `previous` for one carried from an earlier connect) |
+| `operator_row` | `id`, `action` (`matched`, `linked`, `created`, or `previous` for one carried from an earlier connect), `name`, `email` (the row's, else its linked member's; omitted when unknown) |
 | `seat` | one per lane: `role`, `id`, `action` (`matched`, `claimed`, `created`), `key` (the seat-key outcome: `minted`, `already_stored`, `no_agent`, `failed`, `forbidden`, or `none` when none was attempted) |
 | `mcp_registered` | `harness`, `bin`; `message` is the line crew prints |
 | `pair_installed` | `harness`; `message` is the line crew prints |
