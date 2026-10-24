@@ -35,6 +35,7 @@ function effects(calls: string[], over: Partial<ResetEffects> = {}): ResetEffect
     removePair: (url, dry) => { calls.push(`pair:${url}:${dry}`); return [`claude ${url}`]; },
     revokeSeatKeys: async (r, dry) => { calls.push(`revoke:${r.route}:${dry}`); return [{ line: 'dev: agent key revoked', ok: true }]; },
     credential: async (r) => ({ stored: true, clear: async () => { calls.push(`clear:${r.route}`); } }),
+    hostSessions: async () => [],
     inspectCheckout: () => ({ dirty: [], linkedWorktrees: [] }),
     ...over,
   };
@@ -165,4 +166,25 @@ test('the clone recorder logs a real clone, but never an existing checkout or a 
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
   }
+});
+
+test('reset clears a dry-run host session even with no routes (no crew.yaml)', async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  const steps = await runReset(opts(f, { routes: [] }), effects(calls, {
+    hostSessions: async () => [{ host: 'app.example.test', workspace: 'ws', stored: true, clear: async () => { calls.push('clear-host'); } }],
+  }));
+  assert.ok(calls.includes('clear-host'));
+  const s = steps.find((x) => x.target === 'app.example.test/ws');
+  assert.equal(s?.step, 'credential');
+  assert.equal(s?.action, 'removed');
+});
+
+test('reset reports a route credential once, not again as a host session', async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  await runReset(opts(f, { routes: [{ route: 'w/p', baseUrl: 'https://example.test' }] }), effects(calls, {
+    hostSessions: async () => [{ host: 'example.test', workspace: 'w', stored: true, clear: async () => { calls.push('clear-host'); } }],
+  }));
+  assert.ok(!calls.includes('clear-host'));
 });

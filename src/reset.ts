@@ -17,7 +17,8 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Route } from './config.ts';
+import { hostFromUrl } from '@tablation/client';
+import { splitRoute, type Route } from './config.ts';
 
 export type ResetAction = 'removed' | 'would-remove' | 'absent' | 'kept' | 'failed';
 
@@ -61,6 +62,12 @@ export interface ResetEffects {
   revokeSeatKeys(route: Route, dryRun: boolean): Promise<Array<{ line: string; ok: boolean }>>;
   /** The workspace credential for a route: whether one is stored, and how to delete it. */
   credential(route: Pick<Route, 'route' | 'baseUrl'>): Promise<{ stored: boolean; clear(): Promise<void> }>;
+  /**
+   * Keychain sessions a dry-run `connect` stored (CREW-2440), found through the
+   * state directory's pointer, so they exist with no crew.yaml. Called before
+   * the state step removes that pointer.
+   */
+  hostSessions(stateDir: string): Promise<Array<{ host: string; workspace: string; stored: boolean; clear(): Promise<void> }>>;
   /** `git status --porcelain` for a checkout, plus its linked worktrees (other than the checkout itself). */
   inspectCheckout(dir: string): { dirty: string[]; linkedWorktrees: string[] };
 }
@@ -106,6 +113,25 @@ export async function runReset(o: ResetOptions, fx: ResetEffects): Promise<Reset
     } catch (e) {
       steps.push({ step: 'credential', target: route.route, action: 'failed', detail: (e as Error).message });
     }
+  }
+
+  // Sessions a dry-run connect stored: not tied to any route, so the loop above
+  // never sees them. A route credential already handled is reported only once.
+  const covered = new Set([...o.routes, ...(o.droppedRoutes ?? [])].map((r) => `${hostFromUrl(r.baseUrl)}/${splitRoute(r.route)[0]}`));
+  try {
+    for (const s of await fx.hostSessions(o.stateDir)) {
+      const target = `${s.host}/${s.workspace}`;
+      if (covered.has(target)) continue;
+      try {
+        if (!s.stored) { steps.push({ step: 'credential', target, action: 'absent', detail: 'no host session in the keychain' }); continue; }
+        if (!o.dryRun) await s.clear();
+        steps.push({ step: 'credential', target, action: mark(o.dryRun), detail: 'host session stored by a dry-run connect' });
+      } catch (e) {
+        steps.push({ step: 'credential', target, action: 'failed', detail: (e as Error).message });
+      }
+    }
+  } catch (e) {
+    steps.push({ step: 'credential', target: 'host sessions', action: 'failed', detail: (e as Error).message });
   }
 
   // Read the record before the state directory goes: it lives there.

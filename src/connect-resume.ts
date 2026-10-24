@@ -15,7 +15,7 @@
  * session": the caller falls back to the device flow.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { SessionStore } from '@tablation/client';
 
@@ -70,3 +70,60 @@ export async function resumeKeychainSession(o: {
   }
 }
 
+
+/** Every host/workspace pair a `crew connect` keychain sign-in was remembered for (the keychain itself cannot be listed). */
+export function rememberedSessions(stateDir: string): Array<{ host: string; workspace: string }> {
+  return Object.entries(readPointers(stateDir)).map(([host, workspace]) => ({ host, workspace }));
+}
+
+/** Drop `host`'s pointer, removing the file when it was the last one. Best-effort: never throws. */
+export function forgetSession(stateDir: string, host: string): void {
+  try {
+    const { [host]: _gone, ...rest } = readPointers(stateDir);
+    if (Object.keys(rest).length) writeFileSync(lastSessionFile(stateDir), `${JSON.stringify(rest, null, 2)}\n`, { mode: 0o600 });
+    else rmSync(lastSessionFile(stateDir), { force: true });
+  } catch { /* a stale pointer only costs a failed keychain lookup */ }
+}
+
+export interface SignOutOutcome {
+  host: string;
+  workspace: string;
+  action: 'removed' | 'would-remove' | 'absent' | 'failed';
+  detail?: string;
+}
+
+/**
+ * `crew connect --sign-out` (CREW-2440): clears the keychain session(s) a
+ * dry-run sign-in stored. Works with no crew.yaml because it follows the state
+ * directory's pointer, not the configured routes. `host` limits it to one host;
+ * `workspace` additionally clears that workspace's credential even when no
+ * pointer names it. Nothing to remove is an `absent` outcome, never an error.
+ */
+export async function signOutSessions(o: {
+  store: Pick<SessionStore, 'get' | 'clear'>;
+  stateDir: string;
+  host?: string;
+  workspace?: string;
+  dryRun?: boolean;
+}): Promise<SignOutOutcome[]> {
+  const targets = rememberedSessions(o.stateDir).filter((t) => !o.host || t.host === o.host);
+  if (o.host && o.workspace && !targets.some((t) => t.host === o.host && t.workspace === o.workspace)) {
+    targets.push({ host: o.host, workspace: o.workspace });
+  }
+  const out: SignOutOutcome[] = [];
+  for (const t of targets) {
+    try {
+      const stored = await o.store.get(t.host, t.workspace);
+      if (stored?.apiKey) {
+        if (!o.dryRun) await o.store.clear(t.host, t.workspace);
+        out.push({ ...t, action: o.dryRun ? 'would-remove' : 'removed' });
+      } else {
+        out.push({ ...t, action: 'absent', detail: 'no keychain entry' });
+      }
+      if (!o.dryRun) forgetSession(o.stateDir, t.host);
+    } catch (e) {
+      out.push({ ...t, action: 'failed', detail: (e as Error).message });
+    }
+  }
+  return out;
+}

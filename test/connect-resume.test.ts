@@ -57,3 +57,46 @@ test('a corrupt pointer file reads as no session, and an unwritable state dir do
   assert.doesNotThrow(() => rememberSession('/dev/null/nope', HOST, 'ws'));
   assert.ok(!existsSync('/dev/null/nope'));
 });
+
+import { signOutSessions, rememberedSessions } from '../src/connect-resume.ts';
+
+const clearingStore = (entries: Record<string, string>) => ({
+  ...storeOf(entries),
+  clear: async (host: string, ws: string) => { delete entries[`${host}/${ws}`]; },
+});
+
+test('sign-out clears the stored session and its pointer, and the next resume finds nothing', async () => {
+  const stateDir = dir();
+  const entries = { [`${HOST}/ws`]: 'k1' };
+  const store = clearingStore(entries);
+  rememberSession(stateDir, HOST, 'ws');
+  const out = await signOutSessions({ store, stateDir });
+  assert.deepEqual(out, [{ host: HOST, workspace: 'ws', action: 'removed' }]);
+  assert.deepEqual(entries, {});
+  assert.deepEqual(rememberedSessions(stateDir), []);
+  assert.equal(existsSync(lastSessionFile(stateDir)), false);
+  assert.equal(await resumeKeychainSession({ store, stateDir, host: HOST, verify: async () => true }), undefined);
+});
+
+test('sign-out with nothing stored reports absent, and a dry run removes nothing', async () => {
+  const stateDir = dir();
+  assert.deepEqual(await signOutSessions({ store: clearingStore({}), stateDir }), []);
+  const entries = { [`${HOST}/ws`]: 'k1' };
+  rememberSession(stateDir, HOST, 'ws');
+  const dry = await signOutSessions({ store: clearingStore(entries), stateDir, dryRun: true });
+  assert.equal(dry[0]?.action, 'would-remove');
+  assert.deepEqual(Object.keys(entries), [`${HOST}/ws`]);
+  assert.equal(rememberedSessions(stateDir).length, 1);
+  const gone = await signOutSessions({ store: clearingStore({}), stateDir });
+  assert.equal(gone[0]?.action, 'absent');
+});
+
+test('sign-out honors --host and --workspace', async () => {
+  const stateDir = dir();
+  const entries = { [`${HOST}/ws`]: 'k1', 'other.test/x': 'k2' };
+  rememberSession(stateDir, HOST, 'ws');
+  assert.deepEqual(await signOutSessions({ store: clearingStore(entries), stateDir, host: 'elsewhere.test' }), []);
+  const out = await signOutSessions({ store: clearingStore(entries), stateDir, host: 'other.test', workspace: 'x' });
+  assert.deepEqual(out, [{ host: 'other.test', workspace: 'x', action: 'removed' }]);
+  assert.deepEqual(Object.keys(entries), [`${HOST}/ws`]);
+});

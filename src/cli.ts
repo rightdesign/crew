@@ -25,7 +25,7 @@ import {
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
-import { resumeKeychainSession, rememberSession } from './connect-resume.ts';
+import { resumeKeychainSession, rememberSession, rememberedSessions, signOutSessions } from './connect-resume.ts';
 import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
@@ -347,6 +347,7 @@ function usage(problem?: string, requested = false): never {
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
   crew log [route]               tail the log
   crew inbox [--member NAME]    your tickets across every workspace (or a colleague's)
+  crew connect --sign-out [--host H] [--workspace W] [--json]  clear the keychain session a dry-run connect stored (no crew.yaml needed; nothing to remove still exits 0)
   crew connect                  resolve a workspace's ids into a crew.yaml block, then (admin key) sync personas/skills and mint seat keys (--no-agents-sync skips that; --no-mcp skips registering the Tablation MCP server with Claude Code; --mcp replace overwrites a different one; --dry-run works with no crew.yaml and writes none: no file, no rows, no seat keys — the device approval and workspace credential behave as in a real run; with no workspace named it first reuses the keychain session a previous dry-run stored for the host, falling back to device approval when that is missing or rejected, and the signed_in event's session field says which)
   crew disconnect               remove what connect installed for Pair (Claude MCP; Codex/Gemini instructions block and MCP entry per ship.pair)
   crew disconnect --reset [--remove-checkouts] [--dry-run] [--json]   remove everything connect and install wrote on this machine: scheduler units, Pair/MCP entries, seat keys, keychain credential, resolved state, then crew.yaml (--remove-checkouts also deletes checkouts crew cloned, never one with local changes)
@@ -521,7 +522,7 @@ try {
     shipName: value('ship-name'), agentBin: value('agent-bin'), extraPath: value('extra-path'),
     hostPassengers: flag('host-passengers'), noWizard: flag('no-wizard'),
   };
-  if (command === 'connect' && usesFlagAnswers(wizardFlags, connectIsTTY)
+  if (command === 'connect' && !flag('sign-out') && usesFlagAnswers(wizardFlags, connectIsTTY)
     && shouldRunWizard({ isTTY: true, crewHome: CREW_HOME })) {
     // CREW-2235: every answer comes from a flag, so no terminal is needed.
     const flagged = flagWizardAnswers(wizardFlags, {
@@ -538,7 +539,7 @@ try {
     firstRunFromFlags = true;
     agentBinSearched = flagged.agentBinSearched;
     cfg = loadConfig(CREW_HOME, configPath, { text: renderShipBlock(flagged.answers), allowNoRoutes: true });
-  } else if (command === 'connect' && shouldRunWizard({
+  } else if (command === 'connect' && !flag('sign-out') && shouldRunWizard({
     isTTY: connectIsTTY, crewHome: CREW_HOME,
   })) {
     // Closed in a finally: an open readline on stdin keeps the event loop (and
@@ -559,7 +560,7 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    cfg = loadConfig(CREW_HOME, undefined, command === 'repos' || (command === 'disconnect' && flag('reset')) ? { allowNoRoutes: true } : {});
+    cfg = loadConfig(CREW_HOME, undefined, command === 'repos' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out')) ? { allowNoRoutes: true } : {});
   }
 } catch (e) {
   if (e instanceof ConfigError) {
@@ -2938,6 +2939,25 @@ switch (command) {
     // slug — `discover()` accepts either) and `--project` remain for
     // scripting and for a project named rather than slugged.
     const arg = positional[1];
+    if (flag('sign-out')) {
+      // CREW-2440: drop the keychain session a dry-run connect stored. Needs no
+      // crew.yaml, and finding nothing to remove is success, not an error.
+      let signOutStore: SessionStore | undefined;
+      try { signOutStore = getSessionStore(); } catch { signOutStore = undefined; }
+      const outcomes = signOutStore
+        ? await signOutSessions({
+          store: signOutStore, stateDir: cfg.ship.stateDir, dryRun,
+          host: value('host') ?? (value('base-url') ? hostFromUrl(value('base-url')!) : undefined),
+          workspace: value('workspace'),
+        })
+        : [];
+      const failed = outcomes.some((o) => o.action === 'failed');
+      if (flag('json')) process.stdout.write(`${JSON.stringify({ dryRun, ok: !failed, sessions: outcomes })}\n`);
+      else if (!outcomes.length) process.stdout.write('nothing to sign out of\n');
+      else for (const o of outcomes) process.stdout.write(`${o.action}: ${o.host}/${o.workspace}${o.detail ? ` (${o.detail})` : ''}\n`);
+      if (failed) process.exitCode = 1;
+      break;
+    }
     // CREW-2235: `--json` never prompts — a decision becomes a `choice` event
     // (exit CHOICE_EXIT_CODE) the caller answers with `--choose key=value`.
     const canAsk = !!(process.stdin.isTTY && process.stdout.isTTY) && !connectEvents.json;
@@ -3083,6 +3103,7 @@ switch (command) {
         identity: { id: result.identity.id, email: result.identity.email },
         workspaces: [{ slug: result.workspace.slug, name: result.workspace.name }],
         session: 'device',
+        host: hostFromUrl(baseUrl),
       });
       // The device flow just said exactly which workspace this key is
       // scoped to — no reason to make the operator retype what there was
@@ -3169,6 +3190,7 @@ switch (command) {
           identity: { id: found.meId, email: found.meEmail, name: found.meName },
           workspaces: [{ slug: found.workspaceSlug, name: found.workspaceName, role: found.role }],
           session: signInSource,
+          host: hostFromUrl(baseUrl),
         });
       }
       connectEvents.emit('workspace_resolved', `workspace ${found.workspaceSlug}`, {
@@ -4187,6 +4209,13 @@ switch (command) {
         const [slug] = splitRoute(r.route);
         const session = await store.get(h, slug);
         return { stored: Boolean(session?.apiKey), clear: () => store.clear(h, slug) };
+      },
+      async hostSessions(stateDir) {
+        const store = resetStore;
+        return Promise.all(rememberedSessions(stateDir).map(async ({ host: h, workspace: w }) => {
+          const session = store ? await store.get(h, w).catch(() => undefined) : undefined;
+          return { host: h, workspace: w, stored: Boolean(session?.apiKey), clear: async () => { await store?.clear(h, w); } };
+        }));
       },
       inspectCheckout(dir) {
         const dirty = gitWorkingTreeStatus(dir).map((c) => c.path);
