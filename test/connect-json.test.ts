@@ -99,7 +99,7 @@ test('flagWizardAnswers: finds claude in ~/.local/bin and extraPath with a minim
 interface Mock { server: Server; url: string; posts: string[]; close(): Promise<void> }
 
 /** A tracker with one workspace; `projects` names the Issues-shaped projects it holds. */
-async function mockTracker(o: { projects: string[]; role?: string; holds?: Array<{ id: string; name: string; email?: string }>; installable?: boolean }): Promise<Mock> {
+async function mockTracker(o: { projects: string[]; role?: string; holds?: Array<{ id: string; name: string; email?: string }>; installable?: boolean; workspaces?: string[] }): Promise<Mock> {
   const posts: string[] = [];
   let installed = false;
   const projectRows = () => [
@@ -119,6 +119,7 @@ async function mockTracker(o: { projects: string[]; role?: string; holds?: Array
       if (req.method !== 'GET') posts.push(`${req.method} ${path}`);
       if (path === '/auth/device/authorize') return send(200, { deviceCode: 'dc', userCode: 'ABCD-1234', verificationUri: 'http://v', verificationUriComplete: 'http://v?c=ABCD-1234', expiresIn: 60, interval: 0 });
       if (path === '/auth/device/token') return send(400, { error: 'access_denied' });
+      if (path === '/auth/my-workspaces') return send(200, { workspaces: (o.workspaces ?? ['ws']).map((slug) => ({ slug, name: slug.toUpperCase(), role: 'WORKSPACE_ADMIN' })) });
       if (path === '/workspaces/ws') return send(200, { id: 'w1', slug: 'ws', name: 'WS' });
       if (path === '/auth/me') return send(200, { role: o.role ?? 'WORKSPACE_ADMIN', email: 'me@x.test', id: 'me1', name: 'Me' });
       if (path === '/library-templates') return send(200, o.installable ? [{ id: 't1', name: 'Issues', identifier: 'crew.issues' }] : []);
@@ -333,5 +334,40 @@ test('--dry-run with no crew.yaml reaches device authorization before anything e
     assert.equal(names(r)[0], 'device_code');
     assert.ok(!r.stderr.includes('no config found'), r.stderr);
     assert.ok(!existsSync(join(r.dir, 'crew.yaml')));
+  } finally { await m.close(); }
+});
+
+test('a --key with no workspace named emits signed_in before the workspace choice (CREW-2447)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'], workspaces: ['ws', 'other'] });
+  try {
+    const r = await runConnect(['--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--agent-bin', '$CLAUDE']);
+    assert.equal(r.code, CHOICE_EXIT_CODE, r.stderr);
+    assert.deepEqual(names(r), ['signed_in', 'choice']);
+    const si = r.events[0]!;
+    assert.equal(si.identity.email, 'me@x.test');
+    assert.equal(si.session, 'flag');
+    assert.deepEqual(si.workspaces.map((w: { slug: string }) => w.slug), ['ws', 'other']);
+    assert.equal(r.events[1]!.key, 'workspace');
+  } finally { await m.close(); }
+});
+
+test('a dry run against a crew.yaml naming one workspace does not ask which (CREW-2447)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'], workspaces: ['ws', 'other'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    const real = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--ship-name', 't', '--agent-bin', '$CLAUDE', '--no-mcp', '--dir', '/tmp/crew-json-checkout'], dir);
+    assert.equal(real.code, 0, real.stderr);
+    // The route's key as `hydrateApiKeys` leaves it for a keychain-backed route: inline on the route.
+    const yamlPath = join(dir, 'crew.yaml');
+    writeFileSync(yamlPath, readFileSync(yamlPath, 'utf8').replace(/^(\s*)apiKeyFile:.*\n(\s*apiKeyVar:.*\n)?/m, '$1apiKey: k1\n'));
+    const dry = await runConnect(['--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--no-mcp'], dir);
+    assert.equal(dry.code, 0, dry.stderr);
+    const n = names(dry);
+    assert.equal(n[0], 'signed_in');
+    assert.ok(!n.includes('choice'), n.join(','));
+    assert.ok(n.indexOf('workspace_resolved') > 0);
+    assert.equal(dry.events[0]!.session, 'config');
+    assert.match(dry.events[0]!.message, /ws/);
+    assert.equal(n.filter((e) => e === 'signed_in').length, 1);
   } finally { await m.close(); }
 });

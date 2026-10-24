@@ -2989,6 +2989,8 @@ switch (command) {
     // already-configured route's (already-merged) key is the next best
     // guess, and exactly what a ship-level key resolves to in practice.
     let apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? cfg.routes.find((c) => c.apiKey)?.apiKey;
+    // CREW-2447: where a key given up front came from, for the `signed_in` event.
+    const givenKeySource: 'flag' | 'config' = value('key') ?? process.env.CREW_CONNECT_KEY ? 'flag' : 'config';
     // The OS keychain store `@tablation/client` reads/writes sessions
     // through (ISSUE-966) — the same one `hydrateApiKeys` reads on every
     // `crew` invocation, and `tablation login` already writes into.
@@ -3660,6 +3662,35 @@ switch (command) {
     try {
       if (!workspace) {
         const workspaces = await listWorkspaces(authOpts);
+        // CREW-2447: a key resolved without the device flow (--key, CREW_CONNECT_KEY,
+        // crew.yaml or the keychain) still has to tell a JSON client who is signed in
+        // before any `choice` event asks it about a workspace. Same shape as the
+        // device and named-workspace emissions.
+        const configWorkspaces = [...new Set(cfg.routes.map((r) => splitRoute(r.route)[0]))];
+        // A dry run against a crew.yaml that names exactly one workspace has nothing to
+        // ask: asking again for a workspace the config already names is the wizard
+        // re-entering discovery (CMAC-2446).
+        const defaulted = dryRun && givenKeySource === 'config' && configWorkspaces.length === 1
+          ? workspaces.find((w) => w.slug === configWorkspaces[0]) : undefined;
+        if (!signedInEmitted && (apiKey ?? '') !== '') {
+          let me: { id?: string; email?: string; name?: string } = {};
+          try {
+            me = await connectGet<typeof me>(authOpts, '/auth/me');
+          } catch { /* the workspace list above already proved the key works */ }
+          if (me.id || me.email) {
+            signedInEmitted = true;
+            connectEvents.emit('signed_in',
+              `key belongs to ${me.email ?? me.id}${defaulted ? `; using ${defaulted.slug}, the workspace crew.yaml already names` : ''}`, {
+                identity: { id: me.id, email: me.email, name: me.name },
+                workspaces: workspaces.map((w) => ({ slug: w.slug, name: w.name, role: w.role })),
+                session: givenKeySource,
+                host: hostFromUrl(baseUrl),
+              });
+          }
+        }
+        if (defaulted) {
+          await runConnect(defaulted.slug, project);
+        } else
         if (workspaces.length === 0) {
           process.stderr.write('crew connect: this key\'s identity has no workspace memberships.\n');
           stopWithProblem('this key\'s identity has no workspace memberships', 'workspace');
