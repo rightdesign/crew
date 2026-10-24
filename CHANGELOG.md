@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.6] — 2026-10-24
+
+- CREW-2423 `crew connect` now offers only people as the operator's Crew row, matches by identity or email, and shows each option's email instead of a UUID.
+
 ## [0.71.5] — 2026-10-24
 
 - CREW-2416 `crew connect --no-wizard` no longer requires the agent binary before sign-in or on a dry run, and finds `claude` in its usual install directories.
