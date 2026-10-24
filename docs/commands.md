@@ -85,12 +85,12 @@ A first-run connect needs no terminal when every answer is a flag, and `--json` 
 | --- | --- | --- |
 | `--ship-name NAME` | How this machine appears on the board | the hostname |
 | `--machine-id ID` | Override the stable machine id (hashed) used to find this machine's Ships row before its name; for tests and containers | the hardware id, hashed |
-| `--agent-bin PATH` | Absolute path to the agent binary | the `claude` on `PATH` |
+| `--agent-bin PATH` | Absolute path to the agent binary | the `claude` on `PATH`, else in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin`, `~/.volta/bin` and `--extra-path` |
 | `--extra-path DIRS` | `ship.extraPath` for scheduled runs | derived from where `node`, `pnpm` and (with Host Passengers) `docker` live |
 | `--host-passengers` | Host Passengers on this machine | off |
 | `--no-wizard` | Never prompt: take every answer from flags and defaults | |
 
-On a terminal the wizard still runs unless `--no-wizard` is given. Off a terminal, any one of the answer flags selects the flag path. An agent binary that cannot be found or is not executable is a `problem` event and exit 2, never a prompt. With a `--key`, the key is written to a 0600 key file (there is no sign-in to put it in the keychain) so `crew.yaml` can name it.
+On a terminal the wizard still runs unless `--no-wizard` is given. Off a terminal, any one of the answer flags selects the flag path. An `--agent-bin` that is not executable is a `problem` event and exit 2, never a prompt. A `claude` that cannot be found fails only a real run (after sign-in, naming every directory searched); a `--dry-run` succeeds and its `done` event reports `agentBin: null` with an `agentBinNote`. With a `--key`, the key is written to a 0600 key file (there is no sign-in to put it in the keychain) so `crew.yaml` can name it.
 
 **`--json`** writes one JSON object per line on stdout, each `{event, message, ...data}`; all human text stays on stderr (including the route block). Device authorization needs no terminal under `--json`: the code arrives as a `device_code` event and crew keeps polling.
 

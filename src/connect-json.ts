@@ -13,7 +13,9 @@
  */
 
 import { accessSync, constants } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { delimiter } from 'node:path';
 import { deriveExtraPath, findOnPath, type WizardAnswers, type WizardEnv } from './connect-wizard.ts';
 
 /** Exit status of a run that stopped on a `choice` event. 2 stays "bad input / unresolved". */
@@ -94,18 +96,51 @@ export function usesFlagAnswers(f: WizardFlags, isTTY: boolean): boolean {
 }
 
 /**
+ * Where an agent CLI (`claude`, `codex`, `gemini`) usually installs. A GUI
+ * caller's PATH is minimal and misses these (CREW-2416), so a lookup that
+ * only reads PATH reports a binary that is on the machine as absent.
+ *
+ * Precedence, first hit wins: PATH, then `--extra-path`, then `~/.local/bin`
+ * (the Claude Code installer's location) and `~/.claude/local`, then Homebrew
+ * and `/usr/local/bin`, then the npm/volta dirs. So a user-level install beats a
+ * stale system one whenever PATH does not already name one.
+ */
+export function agentBinSearchDirs(home: string, pathEnv: string, extraPath?: string): string[] {
+  const dirs = [
+    ...pathEnv.split(delimiter),
+    ...(extraPath ?? '').split(delimiter),
+    join(home, '.local/bin'), join(home, '.claude/local'), '/opt/homebrew/bin', '/usr/local/bin',
+    join(home, '.npm-global/bin'), join(home, '.volta/bin'),
+  ];
+  return [...new Set(dirs.filter(Boolean))];
+}
+
+/** `name` on PATH, else in the usual install directories; `searched` lists every directory tried. */
+export function findAgentBin(
+  name: string, env: WizardEnv, extraPath: string | undefined, isExec: (p: string) => boolean,
+): { bin?: string; searched: string[] } {
+  const searched = agentBinSearchDirs(env.home ?? homedir(), env.pathEnv, extraPath);
+  return { bin: findOnPath(name, searched.join(delimiter), isExec), searched };
+}
+
+/**
  * The wizard's answers from flags, with the same defaults the wizard offers:
- * ship name = hostname, agent binary = the `claude` on PATH, `extraPath`
- * derived from where node/pnpm/docker live. Fails (never prompts) when no
- * executable agent binary can be settled.
+ * ship name = hostname, agent binary = `claude` (PATH, then the usual install
+ * directories), `extraPath` derived from where node/pnpm/docker live.
+ *
+ * Never prompts. An explicit `--agent-bin` that is not executable is an error.
+ * A binary that simply cannot be found is NOT: nothing before the config write
+ * needs it (sign-in and provisioning launch no agent), so the answers carry the
+ * bare name `claude` as a placeholder and `agentBinSearched` lists where it
+ * looked — the caller fails a real run on that, and a dry run reports it.
  */
 export function flagWizardAnswers(
   f: WizardFlags, env: WizardEnv,
-): { answers: WizardAnswers } | { error: string } {
+): { answers: WizardAnswers; agentBinSearched?: string[] } | { error: string } {
   const isExec = env.isExecutable ?? ((p: string) => { try { accessSync(p, constants.X_OK); return true; } catch { return false; } });
-  const agentBin = f.agentBin ?? findOnPath('claude', env.pathEnv, isExec);
-  if (!agentBin) return { error: 'no agent binary: "claude" is not on PATH — pass --agent-bin /absolute/path' };
   if (f.agentBin && !isExec(f.agentBin)) return { error: `--agent-bin ${f.agentBin} is not an executable file` };
+  const found = f.agentBin ? undefined : findAgentBin('claude', env, f.extraPath, isExec);
+  const agentBin = f.agentBin ?? found?.bin;
   const pnpmPath = findOnPath('pnpm', env.pathEnv, isExec);
   const dockerPath = f.hostPassengers ? findOnPath('docker', env.pathEnv, isExec) : undefined;
   const extraPath = f.extraPath
@@ -114,9 +149,10 @@ export function flagWizardAnswers(
     answers: {
       name: f.shipName?.trim() || env.hostname,
       platform: env.platform,
-      agentBin,
+      agentBin: agentBin ?? 'claude',
       extraPath,
       hostPassengers: f.hostPassengers,
     },
+    ...(agentBin ? {} : { agentBinSearched: found?.searched ?? [] }),
   };
 }

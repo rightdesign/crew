@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -75,8 +75,23 @@ test('flagWizardAnswers: explicit --agent-bin and --extra-path win; a bad binary
   const r = flagWizardAnswers(flags({ agentBin: '/elsewhere/claude', extraPath: '/x', hostPassengers: true }), env());
   assert.deepEqual('answers' in r && [r.answers.agentBin, r.answers.extraPath, r.answers.hostPassengers], ['/elsewhere/claude', '/x', true]);
   assert.match('error' in flagWizardAnswers(flags({ agentBin: '/nope' }), env()) ? 'bad' : '', /bad/);
-  const none = flagWizardAnswers(flags(), env({ pathEnv: '/usr/bin' }));
-  assert.ok('error' in none && /--agent-bin/.test(none.error));
+});
+
+test('flagWizardAnswers: no claude anywhere is not an error (CREW-2416): placeholder answer plus the directories searched', () => {
+  const none = flagWizardAnswers(flags(), env({ pathEnv: '/usr/bin', home: '/h' }));
+  assert.ok('answers' in none);
+  assert.equal(none.answers.agentBin, 'claude');
+  assert.ok(none.agentBinSearched?.includes('/h/.local/bin'));
+  assert.ok(none.agentBinSearched?.includes('/opt/homebrew/bin'));
+  assert.ok(none.agentBinSearched?.includes('/usr/bin'));
+});
+
+test('flagWizardAnswers: finds claude in ~/.local/bin and extraPath with a minimal PATH (CREW-2416)', () => {
+  const isExecutable = (p: string) => p === '/h/.local/bin/claude' || p === '/x/bin/claude';
+  const a = flagWizardAnswers(flags(), env({ pathEnv: '/usr/bin:/bin', home: '/h', isExecutable }));
+  assert.ok('answers' in a && a.answers.agentBin === '/h/.local/bin/claude' && !a.agentBinSearched);
+  const b = flagWizardAnswers(flags({ extraPath: '/x/bin' }), env({ pathEnv: '/usr/bin', home: '/nohome', isExecutable }));
+  assert.ok('answers' in b && b.answers.agentBin === '/x/bin/claude');
 });
 
 // ---- end to end: the real CLI, no TTY, against a mock tracker -------------------------------
@@ -138,12 +153,12 @@ async function mockTracker(o: { projects: string[]; role?: string; holds?: Array
 interface Run { code: number | null; events: Array<Record<string, any>>; stdout: string; stderr: string; dir: string }
 
 /** `crew connect` as a child process with no TTY and an empty HOME, so no config exists. */
-async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew-json-'))): Promise<Run> {
+async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew-json-')), pathEnv = process.env.PATH ?? ''): Promise<Run> {
   const fakeClaude = join(dir, 'claude');
   writeFileSync(fakeClaude, '#!/bin/sh\nexit 1\n');
   chmodSync(fakeClaude, 0o755);
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'cli.ts'), 'connect', ...args.map((a) => a.replace('$CLAUDE', fakeClaude))], {
-    env: { PATH: process.env.PATH ?? '', HOME: dir, CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
+    env: { PATH: pathEnv, HOME: dir, CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = ''; let stderr = '';
@@ -284,6 +299,27 @@ test('--dry-run with no crew.yaml takes the first-run flag-answers path and writ
     const again = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--no-mcp'], dir);
     assert.equal(again.code, 0, again.stderr);
     assert.equal(again.events.find((e) => e.event === 'done')!.wroteConfig, false);
+  } finally { await m.close(); }
+});
+
+test('a claude in ~/.local/bin is found without --agent-bin and written to crew.yaml as an absolute path (CREW-2416)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    mkdirSync(join(dir, '.local/bin'), { recursive: true });
+    const bin = join(dir, '.local/bin/claude');
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+    chmodSync(bin, 0o755);
+    // A minimal PATH, like a GUI caller's. The search order is PATH, --extra-path,
+    // then ~/.local/bin ahead of the Homebrew/system dirs, so a real `claude` in
+    // /opt/homebrew/bin or /usr/local/bin on the host cannot win over this one.
+    const minimal = '/usr/bin:/bin';
+    const dry = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--dir', '/tmp/crew-json-checkout'], dir, minimal);
+    assert.equal(dry.code, 0, dry.stderr);
+    assert.equal(dry.events.find((e) => e.event === 'done')!.agentBin, bin);
+    const real = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--no-mcp', '--dir', '/tmp/crew-json-checkout'], dir, minimal);
+    assert.equal(real.code, 0, real.stderr);
+    assert.ok(readFileSync(join(dir, 'crew.yaml'), 'utf8').includes(bin));
   } finally { await m.close(); }
 });
 

@@ -513,6 +513,8 @@ let cfg: ReturnType<typeof loadConfig>;
 let firstRun: { answers: WizardAnswers; configPath: string } | undefined;
 // CREW-2235: answers came from flags, so the key must be persisted for the file to be written.
 let firstRunFromFlags = false;
+// CREW-2416: set when flag answers found no agent binary; a dry run reports it, a real run fails on it.
+let agentBinSearched: string[] | undefined;
 try {
   const connectIsTTY = !!(process.stdin.isTTY && process.stdout.isTTY);
   const wizardFlags = {
@@ -534,6 +536,7 @@ try {
     const configPath = firstRunConfigPath();
     firstRun = { answers: flagged.answers, configPath };
     firstRunFromFlags = true;
+    agentBinSearched = flagged.agentBinSearched;
     cfg = loadConfig(CREW_HOME, configPath, { text: renderShipBlock(flagged.answers), allowNoRoutes: true });
   } else if (command === 'connect' && shouldRunWizard({
     isTTY: connectIsTTY, crewHome: CREW_HOME,
@@ -3448,6 +3451,11 @@ switch (command) {
       // this ran. 0600: this file holds a live credential.
       let apiKeyFile: string | undefined;
       const apiKeyVar = 'CREW_API_KEY';
+      if (firstRunFromFlags && agentBinSearched && !dryRun) {
+        const msg = `no agent binary: "claude" was not found on PATH or in ${agentBinSearched.join(', ')} — pass --agent-bin /absolute/path`;
+        process.stderr.write(`crew connect: ${msg}\n`);
+        stopWithProblem(msg, 'wizard');
+      }
       if ((mintedFromDevice || firstRunFromFlags) && !keychainBacked) {
         apiKeyFile = apiKeyPathFor(cfg.ship.stateDir, route);
         if (dryRun) {
@@ -3601,6 +3609,8 @@ switch (command) {
       connectEvents.emit('done', `connected ${route}`, {
         route, resolvedPath: dryRun ? undefined : resolvedPath, configPath: wroteConfig ? wizard!.configPath : undefined,
         wroteConfig, operator, dryRun, unresolved: found.problems.length,
+        ...(firstRunFromFlags ? { agentBin: agentBinSearched ? null : firstRun?.answers.agentBin } : {}),
+        ...(agentBinSearched ? { agentBinNote: `no \`claude\` found on PATH or in ${agentBinSearched.join(', ')}; a real run needs --agent-bin` } : {}),
       });
     };
 

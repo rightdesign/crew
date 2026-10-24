@@ -48,6 +48,8 @@ export interface WizardEnv {
   /** `process.execPath` — always an absolute path to the node running crew. */
   nodePath: string;
   dockerAvailable: boolean;
+  /** The home directory the install-location search uses; `os.homedir()` when absent (tests set it). */
+  home?: string;
   /** Overridable so a test needs no real executables. */
   isExecutable?: (path: string) => boolean;
 }
