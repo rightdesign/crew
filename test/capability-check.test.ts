@@ -8,7 +8,7 @@ const BASE = { baseUrl: 'https://example.test', apiKey: 'k', userAgent: 'crew-te
 function found(role: string | undefined): Discovered {
   return {
     workspaceId: 'ws', workspaceSlug: 'ws', role, projectId: 'proj', crewModelId: 'crew-m', shipsModelId: 'ships-m',
-    reposModelId: 'repos-m', models: { issues: 'i', comments: 'c', crew: 'crew-m' }, seats: {}, holds: [], problems: [], provisioning: [],
+    reposModelId: 'repos-m', models: { issues: 'i', comments: 'c', crew: 'crew-m' }, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
 }
 

@@ -801,7 +801,7 @@ test('renderConnection() no longer prints a resolved: block — those ids go to 
   const d: Discovered = {
     workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
     projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
-    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
   const block = renderConnection(d, 'issues/issues', '/tmp/synthesis');
   assert.ok(!block.includes('resolved:'));
@@ -812,7 +812,7 @@ test('renderConnection() prints real apiKeyFile/apiKeyVar when a device-login ke
   const d: Discovered = {
     workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
     projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
-    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
   const block = renderConnection(d, 'issues/issues', '/tmp/synthesis', {
     apiKeyFile: '/tmp/state/keys/issues/issues.env', apiKeyVar: 'CREW_API_KEY',
@@ -831,7 +831,7 @@ test('renderConnection() omits apiKeyFile/apiKeyVar entirely for a keychain-back
   const d: Discovered = {
     workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
     projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
-    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
   const block = renderConnection(d, 'issues/issues', '/tmp/synthesis', { keychainBacked: true });
   assert.ok(!block.includes('apiKeyFile:'));
@@ -844,7 +844,7 @@ test('renderConnection() still shows the paste-your-own-key placeholder for a pl
   const d: Discovered = {
     workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
     projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
-    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], problems: [], provisioning: [],
+    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
   const block = renderConnection(d, 'issues/issues', '/tmp/synthesis');
   assert.ok(block.includes('REPLACE — a file holding'));
@@ -1079,4 +1079,50 @@ test('discover() falls back to slug when the server sends no path', async (t) =>
   });
   t.after(restore);
   assert.equal((await discover({ ...BASE, workspace: 'issues', project: 'bar' })).workspaceSlug, 'issues');
+});
+
+// CREW-2423: operator candidates are people, matched by identity then email.
+test('discover() excludes agent and other-ship seat rows from the operator candidates (CREW-2423)', async (t) => {
+  const { restore } = mockFetchCalls(operatorRoutes([
+    { id: 'other-seat', name: 'QA agent', ship_id: 'ship-2' },
+    { id: 'other-agent', name: 'Dev agent', agent_id: 'a-1' },
+    { id: 'p-co', name: 'Co-worker', email: 'co@example.test', user_id: 'someone-else' },
+    { id: 'p-two', name: 'Other', email: 'o@example.test' },
+    { id: 'p-three', name: '', email: 'u@example.test' },
+  ]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, interactive: true });
+  assert.deepEqual(found.candidates.map((c) => c.id), ['p-co', 'p-two', 'p-three']);
+  assert.deepEqual(found.candidates.map((c) => c.detail), ['co@example.test', 'o@example.test', 'u@example.test']);
+  assert.ok(found.holds.some((h) => h.id === 'other-seat'), 'holds keep the poll semantics');
+  assert.ok(found.operatorCompared?.includes('Brad@example.test'));
+});
+
+test('discover() treats a row linked to another membership of the same identity as mine (CREW-2423)', async (t) => {
+  const { restore, calls } = mockFetchCalls(operatorRoutes(
+    [{ id: 'p-primary', name: 'Brad Choate', user_id: 'member-primary' }, { id: 'p-co', name: 'Co', email: 'co@example.test' }],
+    {
+      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', id: 'member-alias', identityId: 'person-1', email: 'brad@alias.test', name: 'Brad' },
+      '/api/workspaces/ws-1/members': [
+        { id: 'member-primary', identityId: 'person-1', email: 'brad@primary.test' },
+        { id: 'member-alias', identityId: 'person-1', email: 'brad@alias.test' },
+      ],
+    },
+  ));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'p-primary');
+  assert.equal(found.operatorAction, 'matched');
+  assert.equal(writes(calls).length, 0);
+});
+
+test('discover() matches the sign-in email against the linked member when the row has none (CREW-2423)', async (t) => {
+  const { restore } = mockFetchCalls(operatorRoutes(
+    [{ id: 'p-sync', name: 'Brad', email: 'brad@example.test' }, { id: 'p-co', name: 'Co', email: 'co@example.test' }],
+    { '/api/data-models/crew-model/records/p-sync': {} },
+  ));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(found.operator, 'p-sync');
+  assert.equal(found.operatorAction, 'linked');
 });

@@ -108,6 +108,8 @@ export interface Discovered {
   meEmail?: string;
   /** This key's own identity id, from the same `/auth/me` call — written onto the Ships row as `owner_id` (CREW-1286). */
   meId?: string;
+  /** This key's person across memberships (`/auth/me.identityId`, CREW-2423), when the server sends it — lets a Crew row linked to another membership of the same person (an alias, a re-invite) count as the operator's own. */
+  meIdentityId?: string;
   /** This key's own display name, from the same `/auth/me` call — names a Crew row `connect` creates for the operator (CREW-1798). */
   meName?: string;
   /** The Crew table's id, kept so the caller can link/create the operator's row after an interactive pick. */
@@ -153,6 +155,15 @@ export interface Discovered {
    * (or none is on file): the caller decides then, by asking. */
   operator?: string;
   holds: Array<{ id: string; name: string; email?: string | null; user_id?: string | null }>;
+  /**
+   * The subset of `holds` that can be a person: no `agent_id` and no `ship_id`
+   * (CREW-2423). Seat rows and Release rows of other ships are holds for the
+   * poll loop, but are never offered as the operator. `detail` is the email
+   * shown under the name (the row's own, else its linked member's).
+   */
+  candidates: Array<{ id: string; name: string; email?: string | null; user_id?: string | null; detail?: string }>;
+  /** What the operator match compared, for `--dry-run` and the `operator_row` event when no row matched (CREW-2423). */
+  operatorCompared?: string;
   /**
    * Set only when no `project` was given AND more than one project qualifies
    * — an ambiguity refused rather than guessed, same reasoning as a
@@ -378,17 +389,18 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   const ws = await get<{ id: string; slug: string; path?: string; name?: string }>(o, `/workspaces/${encodeURIComponent(o.workspace).replace(/%3A/gi, ':')}`);
   const out: Discovered = {
     workspaceId: ws.id, workspaceSlug: ws.path ?? ws.slug, workspaceName: ws.name,
-    models: {}, seats: {}, holds: [], problems, provisioning,
+    models: {}, seats: {}, holds: [], candidates: [], problems, provisioning,
   };
 
   // Own role, not anyone else's — `/auth/me` derives it the same way for an
   // API key as for a session, and is the only "am I an admin here" a plain
   // member's own key can ask without a 403 (no admin-only membership list).
   try {
-    const me = await get<{ role?: string; email?: string; id?: string; name?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
+    const me = await get<{ role?: string; email?: string; id?: string; name?: string; identityId?: string }>(o, `/auth/me?workspaceId=${ws.id}`);
     out.role = me.role;
     out.meEmail = me.email;
     out.meId = me.id;
+    out.meIdentityId = me.identityId;
     out.meName = me.name;
   } catch { /* not fatal — the no-qualifying-project message just stays generic */ }
 
@@ -717,7 +729,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   }
 
   if (out.models.crew) {
-    const rows = await get<Array<{ id: string; name?: string | null; email?: string | null; ship_id?: string | null; user_id?: string | null }>>(
+    const rows = await get<Array<{ id: string; name?: string | null; email?: string | null; ship_id?: string | null; user_id?: string | null; agent_id?: string | null }>>(
       o, `/data-models/${out.models.crew}/records?limit=200`,
     );
     // Unscoped (old behaviour) unless a ship actually resolved above.
@@ -792,31 +804,65 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     const holdRows = rows.filter((r) => !seatIds.has(r.id));
     out.holds = holdRows.map((r) => ({ id: r.id, name: r.name ?? '', email: r.email, user_id: r.user_id }));
     out.crewModelId = out.models.crew;
+    // Operator candidates are people (CREW-2423): a row with an agent, or a ship and
+    // no linked member, belongs to a machine (whichever ship). Only this list changes; the
+    // hold semantics above are what the poll loop relies on.
+    const people = holdRows.filter((r) => !r.agent_id && (!r.ship_id || !!r.user_id));
+    // Workspace members, best effort: maps a row's user_id to its person and
+    // email. The endpoint may predate `identityId`; absent, only the direct
+    // membership and email matches below apply.
+    const members = new Map<string, { identityId?: string; email?: string }>();
+    try {
+      const list = await get<Array<{ id?: string; userId?: string; identityId?: string; email?: string }>>(
+        o, `/workspaces/${out.workspaceId}/members`,
+      );
+      for (const m of Array.isArray(list) ? list : []) {
+        const key = m.id ?? m.userId;
+        if (key) members.set(key, { identityId: m.identityId, email: m.email });
+      }
+    } catch { /* a plain member may not list members — not fatal */ }
+    out.candidates = people.map((r) => ({
+      id: r.id, name: r.name ?? '', email: r.email, user_id: r.user_id,
+      detail: r.email || (r.user_id ? members.get(r.user_id)?.email : undefined) || undefined,
+    }));
+    const isMine = (r: { user_id?: string | null }) =>
+      !!r.user_id && (r.user_id === out.meId ||
+        (!!out.meIdentityId && members.get(r.user_id)?.identityId === out.meIdentityId));
+    const emailOf = (r: { email?: string | null; user_id?: string | null }) =>
+      [r.email, r.user_id ? members.get(r.user_id)?.email : undefined].filter((e): e is string => !!e);
     if (!out.meId) {
       // No identity to link or create with (the `/auth/me` call failed or
       // returned none): the pre-CREW-1798 selection, which only selects.
-      if (out.holds.length === 0) problems.push('no non-seat Crew rows — which row is the operator?');
+      if (out.candidates.length === 0) problems.push('no non-seat Crew rows — which row is the operator?');
       else {
-        const byEmail = out.meEmail ? holdRows.filter((r) => eq(r.email, out.meEmail!)) : [];
+        const byEmail = out.meEmail ? people.filter((r) => emailOf(r).some((e) => eq(e, out.meEmail!))) : [];
         if (byEmail.length === 1) out.operator = byEmail[0]!.id;
-        else if (out.holds.length === 1) out.operator = out.holds[0]!.id;
+        else if (out.candidates.length === 1) out.operator = out.candidates[0]!.id;
       }
     } else {
-      // A row already carrying another identity is someone else's: never a
+      // A row linked to a different person is someone else's: never a
       // candidate, never overwritten (CREW-1798).
-      const candidates = holdRows.filter((r) => !r.user_id || r.user_id === out.meId);
-      const mine = holdRows.find((r) => r.user_id === out.meId);
-      const byEmail = out.meEmail ? candidates.filter((r) => eq(r.email, out.meEmail!)) : [];
-      const only = holdRows.length === 1 && candidates.length === 1 ? candidates[0] : undefined;
+      const candidates = people.filter((r) => !r.user_id || isMine(r));
+      const mine = people.find(isMine);
+      const byEmail = out.meEmail ? candidates.filter((r) => emailOf(r).some((e) => eq(e, out.meEmail!))) : [];
+      const unlinked = people.filter((r) => !r.user_id);
+      const only = candidates.length === 1 && unlinked.length === 1 ? candidates[0] : undefined;
       const pick = mine ?? (byEmail.length === 1 ? byEmail[0] : only);
       if (pick) {
         out.operator = pick.id;
-        out.operatorAction = pick.user_id === out.meId ? 'matched' : 'linked';
+        out.operatorAction = isMine(pick) ? 'matched' : 'linked';
         // Like the Ships/Crew provisioning above, writes need a `ship`: a bare
         // `discover()` stays a read-only lookup.
-        if (pick.user_id !== out.meId && o.ship) await linkOperatorRow(o, out, pick);
-      } else if (o.ship && (!o.interactive || candidates.length === 0)) {
-        await createOperatorRow(o, out);
+        if (!isMine(pick) && o.ship) await linkOperatorRow(o, out, pick);
+      } else {
+        out.operatorCompared =
+          `signed in as ${out.meEmail ?? 'unknown email'} (identity ${out.meIdentityId ?? out.meId}); ` +
+          (people.length === 0 ? 'no person rows in the Crew table' : people.map((r) => {
+            const m = r.user_id ? members.get(r.user_id) : undefined;
+            return `"${r.name || 'unnamed row'}" <${r.email ?? 'no email'}>` +
+              (r.user_id ? ` linked to member ${m?.email ?? r.user_id}${m?.identityId ? ` (identity ${m.identityId})` : ''}` : ' unlinked');
+          }).join('; '));
+        if (o.ship && (!o.interactive || candidates.length === 0)) await createOperatorRow(o, out);
       }
     }
   }
@@ -872,6 +918,7 @@ export async function createOperatorRow(o: AuthOptions & { dryRun?: boolean }, f
     found.operator = created.id;
     found.operatorAction = 'created';
     found.holds.push({ id: created.id, name, email: found.meEmail, user_id: found.meId });
+    found.candidates.push({ id: created.id, name, email: found.meEmail, user_id: found.meId, detail: found.meEmail });
     found.provisioning.push(`created Crew row "${name}" for you`);
   } catch (e) {
     if (!(e instanceof ConnectHttpError) || e.status !== 403) throw e;

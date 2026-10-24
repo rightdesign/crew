@@ -80,7 +80,7 @@ test('wizard: Host Passengers yes without Docker warns but still records the ans
 test('the written file loads back: ship answers and a route with real baseUrl, hostPassengers and enabled: false', () => {
   const answers = { name: 'brads-box', platform: 'macos' as const, agentBin: '/opt/bin/claude', extraPath: '/opt/node/bin', hostPassengers: true };
   const d: Discovered = {
-    workspaceId: 'w', workspaceSlug: 'issues', models: {}, seats: {}, holds: [], problems: [], provisioning: [],
+    workspaceId: 'w', workspaceSlug: 'issues', models: {}, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
   const block = renderConnection(d, 'issues/issues', '~/Crew/issues', {
     keychainBacked: true, baseUrl: 'https://app.tablation.com', hostPassengers: true,

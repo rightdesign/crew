@@ -51,6 +51,8 @@ export function createEmitter(json: boolean, write: (line: string) => void): Con
 export interface ChoiceOption {
   value: string;
   label: string;
+  /** A secondary line under the label — the Crew row's email, never a UUID (CREW-2423). */
+  detail?: string;
 }
 
 /**

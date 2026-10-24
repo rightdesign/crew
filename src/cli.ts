@@ -202,14 +202,14 @@ function terminalPrompter(): Prompter & { close(): void } {
  * "edit the state file by hand" instructions.
  */
 async function pickOperator(
-  holds: Array<{ id: string; name: string; user_id?: string | null }>,
+  holds: Array<{ id: string; name: string; user_id?: string | null; detail?: string }>,
   me: { id?: string; name?: string; email?: string },
 ): Promise<string | undefined> {
   // A row carrying another identity is someone else's, not an option.
   const choices = holds.filter((h) => !h.user_id || h.user_id === me.id);
   const canCreate = !!me.id;
   process.stderr.write('\nWhich of these Crew rows is you?\n');
-  choices.forEach((h, i) => process.stderr.write(`  ${i + 1}. ${h.name || h.id}\n`));
+  choices.forEach((h, i) => process.stderr.write(`  ${i + 1}. ${h.name || 'unnamed row'}${h.detail ? ` <${h.detail}>` : ''}\n`));
   if (canCreate) process.stderr.write(`  0. Create a new Crew row for ${me.name ?? ''} ${me.email ?? ''}`.trimEnd() + '\n');
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
@@ -3242,8 +3242,8 @@ switch (command) {
       // (or ambiguous) AND there is a person on the other end of a terminal
       // to ask — a script piping stdin gets the old file-editing fallback.
       let operator = found.operator;
-      if (!operator && found.holds.length > 0 && canAsk) {
-        const picked = await pickOperator(found.holds, { id: found.meId, name: found.meName, email: found.meEmail });
+      if (!operator && found.candidates.length > 0 && canAsk) {
+        const picked = await pickOperator(found.candidates, { id: found.meId, name: found.meName, email: found.meEmail });
         if (picked === NEW_OPERATOR_ROW) {
           await createOperatorRow({ ...authOpts, dryRun }, found);
           operator = found.operator;
@@ -3278,7 +3278,7 @@ switch (command) {
       // picker (blank answer, or no TTY to ask at all) must not wipe an
       // operator a prior run or a hand-edit already resolved.
       if (!operator) operator = previous?.operator;
-      if (connectEvents.json && !operator && found.holds.length > 0) {
+      if (connectEvents.json && !operator && found.candidates.length > 0) {
         const answer = connectChoices.operator;
         if (answer === 'new') {
           await createOperatorRow({ ...authOpts, dryRun }, found);
@@ -3293,12 +3293,16 @@ switch (command) {
             found.operatorAction = 'linked';
           }
         } else {
-          const mine = found.holds.filter((h) => !h.user_id || h.user_id === found.meId);
+          const mine = found.candidates.filter((h) => !h.user_id || h.user_id === found.meId);
           stopForChoice('operator', 'Which Crew row is you?', [
-            ...mine.map((h) => ({ value: h.id, label: h.name || h.id })),
+            ...mine.map((h) => ({ value: h.id, label: h.name || 'unnamed row', ...(h.detail ? { detail: h.detail } : { detail: h.id }) })),
             ...(found.meId ? [{ value: 'new', label: `Create a new Crew row for ${found.meName ?? found.meEmail ?? 'me'}` }] : []),
           ]);
         }
+      }
+      if (!operator && found.operatorCompared) {
+        process.stderr.write(`crew connect: no Crew row matched you — ${found.operatorCompared}\n`);
+        connectEvents.emit('operator_row', 'no Crew row matched you', { action: 'unmatched', compared: found.operatorCompared });
       }
       if (operator) {
         connectEvents.emit('operator_row', `operator ${found.holds.find((h) => h.id === operator)?.name ?? operator}`, {
@@ -3316,12 +3320,12 @@ switch (command) {
       // new was asked to resolve) — this only refuses a *first* write.
       if (!operator && !hadPreviousFile) {
         process.stderr.write(
-          `crew connect ${route}: cannot determine the operator — ${found.holds.length} Crew row(s) ` +
+          `crew connect ${route}: cannot determine the operator — ${found.candidates.length} Crew row(s) ` +
           `could be it, none matching this key's own email, and there's no terminal to ask.\n` +
           `  Re-run from a real terminal to pick one, or pass --key for a key whose own\n` +
           `  identity email matches exactly one Crew row.\n`,
         );
-        stopWithProblem(`cannot determine the operator — ${found.holds.length} Crew row(s) could be it`, 'operator');
+        stopWithProblem(`cannot determine the operator — ${found.candidates.length} Crew row(s) could be it`, 'operator');
       }
       const alreadyReviewed = new Set(previous?.reviewedStatuses ?? []);
       const stillUnrecognized = (found.unrecognizedStatuses ?? []).filter((s) => !alreadyReviewed.has(s.value));
