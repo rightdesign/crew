@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.5] — 2026-10-24
+
+- CREW-2416 `crew connect --no-wizard` no longer requires the agent binary before sign-in or on a dry run, and finds `claude` in its usual install directories.
+
 ## [0.71.4] — 2026-10-23
 
 - ISSUE-2411 A release lock held by a dead process on the same ship is reclaimed on the next cycle, and a failed lock release is retried and logged instead of silently leaving the row held until its TTL.
