@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.73.1] — 2026-10-25
+
+- CREW-2524 The connect-json tests no longer hang on a macOS keychain prompt, and a stuck test child is killed instead of stalling the suite.
+
 ## [0.73.0] — 2026-10-25
 
 - CREW-2523 `crew repos hooks` gains `--write route --replace` to overwrite existing route hooks and `--clear route` to remove them.
