@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.72.2] — 2026-10-25
+
+- CREW-2516 First-run `crew connect` no longer writes a placeholder `dir:` that is never a checkout; `crew repos add`/`clone` drop a leftover one and `repos list --json` reports it as `cloneBase`.
+- CREW-2521 `crew selftest --toolchain NAME` and `crew connect --machine-id ID` no longer read the option's value as the route or workspace, so the app's Verify step can pass.
+
 ## [0.72.1] — 2026-10-25
 
 - CREW-2498 `crew connect` with no workspace now reuses the remembered keychain session on a real run instead of starting a new device approval.
