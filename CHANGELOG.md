@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.72.1] — 2026-10-25
+
+- CREW-2498 `crew connect` with no workspace now reuses the remembered keychain session on a real run instead of starting a new device approval.
+
 ## [0.72.0] — 2026-10-25
 
 - CREW-2495 `crew ship rename` and two-way ship name sync between crew.yaml and the Ships table.
