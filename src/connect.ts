@@ -1014,7 +1014,7 @@ export async function createOperatorRow(o: AuthOptions & { dryRun?: boolean }, f
 export function renderConnection(
   d: Discovered,
   route: string,
-  dir: string,
+  dir: string | null,
   opts: {
     area?: string; apiKeyFile?: string; apiKeyVar?: string; keychainBacked?: boolean;
     /** Real values for the first-run wizard's written file (CREW-1286), where nothing is left for a person to paste over. */
@@ -1043,7 +1043,7 @@ export function renderConnection(
       : `\n    apiKeyVar: REPLACE_KEY_VAR`;
   return `  - route: ${route}
     enabled: false          # arm it deliberately, once doctor is green
-${opts.area ? `    area: "${opts.area}"\n` : ''}    dir: "${dir}"
+${opts.area ? `    area: "${opts.area}"\n` : ''}    ${dir === null ? 'repos: {}              # `crew repos clone` / `crew repos add` fill this in' : `dir: "${dir}"`}
     # worktreePrefix: omitted — each repo derives its own from its checkout's
     # directory name (ISSUE-400). Only set this if every repo this route
     # serves genuinely wants the SAME prefix, which is rare once an area has

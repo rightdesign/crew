@@ -91,7 +91,7 @@ import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
-import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, cloneBaseOf, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
@@ -2820,20 +2820,22 @@ switch (command) {
     const originOf = (dir: string) => gitOk(dir, ['remote', 'get-url', 'origin']) ?? undefined;
     const text = configText;
     const base = dirname(cfg.configFile);
+    const isCheckout = (d: string) => existsSync(`${d}/.git`);
     try {
       if (sub === 'list') {
         if (flag('json')) {
           const rows = listRepoRows({
             text, route: routeName!, base, resolved: resolvedRemotes, originOf,
-            exists: (d) => existsSync(d),
+            exists: (d) => existsSync(d), isCheckout,
             repoHasHooks: (d) => REPO_CONFIG_FILENAMES.some((f) => {
               try { return Object.keys(parseRepoConfig(readFileSync(resolvePath(d, f), 'utf8'), f).hooks).length > 0; } catch { return false; }
             }),
           });
-          process.stdout.write(`${JSON.stringify({ route: routeName, repos: rows })}\n`);
+          process.stdout.write(`${JSON.stringify({ route: routeName, repos: rows, cloneBase: cloneBaseOf(text, routeName!, base, isCheckout) })}\n`);
           break;
         }
-        const repos = configuredRepos(text, routeName!, base);
+        const cloneBase = cloneBaseOf(text, routeName!, base, isCheckout);
+        const repos = configuredRepos(text, routeName!, base).filter((r) => r.dir !== cloneBase);
         if (repos.length === 0) process.stdout.write(`route ${routeName} has no checkout configured — \`crew repos add ${routeName} <path>\`\n`);
         for (const r of repos) {
           const origin = originOf(r.dir);
@@ -2849,7 +2851,7 @@ switch (command) {
         const json = flag('json');
         const say = (event: string, extra: Record<string, unknown>, human: string) =>
           process.stdout.write(json ? `${JSON.stringify({ event, ...extra })}\n` : `${human}\n`);
-        const plan = planRepoClone({ text, base, route: routeName!, name: addName!, resolved: resolvedRemotes, dir: value('dir') });
+        const plan = planRepoClone({ text, base, route: routeName!, name: addName!, resolved: resolvedRemotes, dir: value('dir'), isCheckout });
         if (existsSync(plan.target) && (existsSync(`${plan.target}/.git`) || readdirSync(plan.target).length > 0)) {
           throw new ReposError(
             existsSync(`${plan.target}/.git`)
@@ -2873,6 +2875,7 @@ switch (command) {
           throw new ReposError(`${e.message}${authHint}\n  crew.yaml was not changed`);
         }
         writeFileSync(cfg.configFile, plan.text);
+        if (plan.droppedDir) process.stderr.write(`crew repos: dropped dir: ${plan.droppedDir} from route ${routeName} — it is not a checkout (the clone base); checkouts now live under repos:\n`);
         say('attached', { route: routeName, name: plan.name, dir: plan.target, mode: plan.mode }, `cloned and attached ${plan.target} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}`);
         break;
       }
@@ -2882,8 +2885,9 @@ switch (command) {
       const origin = originOf(top);
       const plan = planRepoAdd({
         text, base, route: routeName!, path: top, origin, resolved: resolvedRemotes, name: value('name') ?? addName,
-        nameForExisting: (d) => matchRepoName(originOf(d), resolvedRemotes),
+        nameForExisting: (d) => matchRepoName(originOf(d), resolvedRemotes), isCheckout,
       });
+      if (plan.droppedDir) process.stderr.write(`crew repos: dropped dir: ${plan.droppedDir} from route ${routeName} — it is not a checkout (the clone base); checkouts now live under repos:\n`);
       // No Repos row for this checkout: create one (CREW-1310) unless told not to.
       // Everything that can fail on the tracker is done before crew.yaml is
       // written, so a refused create leaves the config alone and the command
@@ -3612,10 +3616,13 @@ switch (command) {
       const keyPersisted = keychainBacked || apiKeyFile !== undefined;
       const wizard = firstRun;
       const writeFirstRun = wizard !== undefined && !dryRun && keyPersisted;
-      const routeDir = value('dir') ?? (writeFirstRun ? join(DEFAULT_REPOS_BASE_PATH, found.workspaceSlug) : undefined);
+      // CREW-2516: a first run has no checkout yet, and `dir:` means "the
+      // checkout this route works". Write `repos: {}` instead; `crew repos
+      // clone` puts checkouts under reposBasePath and attaches them.
+      const routeDir = value('dir');
       const routeBlock = renderConnection(
         found, route,
-        routeDir ?? 'REPLACE — the local checkout this route works',
+        routeDir ?? (writeFirstRun ? null : 'REPLACE — the local checkout this route works'),
         {
           area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked,
           ...(writeFirstRun ? { baseUrl, hostPassengers: wizard.answers.hostPassengers } : {}),

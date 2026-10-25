@@ -102,6 +102,8 @@ export interface AddPlan {
   warning?: string;
   /** True when no Repos row matches (or the checkout has no origin to match on). */
   unmatched: boolean;
+  /** A non-checkout `dir:` that was dropped while writing the first `repos:` entry (CREW-2516). */
+  droppedDir?: string;
 }
 
 export interface AddInput {
@@ -118,6 +120,13 @@ export interface AddInput {
   name?: string;
   /** The name for a checkout already on the route (its `dir:`), given its path. */
   nameForExisting?: (dir: string) => string | undefined;
+  /**
+   * Whether a directory is a git checkout. When given, a route whose `dir:`
+   * is not one (and which has no `repos:` entries) has that `dir:` dropped as
+   * the first-run placeholder (CREW-2516) instead of being carried into
+   * `repos:` as a phantom checkout.
+   */
+  isCheckout?: (dir: string) => boolean;
 }
 
 function expandDir(p: string, base: string): string {
@@ -155,6 +164,21 @@ export function configuredRepos(text: string, route: string, base: string): Repo
   return dir ? [{ name: basename(String(dir)), dir: expandDir(String(dir), base) }] : [];
 }
 
+/**
+ * The route's `dir:` when it is a placeholder rather than a checkout (CREW-2516):
+ * set, no `repos:` entries, and not a git checkout. It is where clones land
+ * (`cloneBase`), not a repository, so listings must not report it as one.
+ */
+export function cloneBaseOf(text: string, route: string, base: string, isCheckout: (dir: string) => boolean): string | null {
+  const m = routeMapOf(parseDocument(text), route);
+  const repos = m.get('repos', true);
+  if (isMap(repos) && repos.items.length > 0) return null;
+  const dir = m.get('dir');
+  if (!dir) return null;
+  const abs = expandDir(String(dir), base);
+  return isCheckout(abs) ? null : abs;
+}
+
 export interface RepoListRow {
   name: string;
   /** The Repos row's `owner/repo`; null for a row with none, and for a checkout no row matches. */
@@ -176,6 +200,8 @@ export interface RepoListInput {
   resolved?: RepoRemotes;
   originOf: (dir: string) => string | undefined;
   exists: (dir: string) => boolean;
+  /** Whether a directory is a git checkout; a route's non-checkout `dir:` is then reported as `cloneBase`, not a repo. */
+  isCheckout?: (dir: string) => boolean;
   /** True when the checkout carries a repo-spec file (`.crew.yaml`…) that sets at least one hook. */
   repoHasHooks: (dir: string) => boolean;
 }
@@ -199,7 +225,8 @@ function routeSetsHooks(text: string, route: string, name: string): boolean {
  * `hooksSource` follows precedence: a repo-spec file shadows route hooks.
  */
 export function listRepoRows(i: RepoListInput): RepoListRow[] {
-  const checkouts = configuredRepos(i.text, i.route, i.base);
+  const cloneBase = i.isCheckout ? cloneBaseOf(i.text, i.route, i.base, i.isCheckout) : null;
+  const checkouts = configuredRepos(i.text, i.route, i.base).filter((c) => c.dir !== cloneBase);
   const claimed = new Set<number>();
   const hooksSourceOf = (c: RepoEntry): RepoListRow['hooksSource'] =>
     i.exists(c.dir) && i.repoHasHooks(c.dir) ? 'repo' : routeSetsHooks(i.text, i.route, c.name) ? 'route' : 'none';
@@ -244,8 +271,22 @@ export function planRepoAdd(i: AddInput): AddPlan {
   const doc = parseDocument(i.text);
   if (doc.errors.length > 0) throw new ReposError(`config is not valid YAML — ${doc.errors[0]!.message}`);
   const m = routeMapOf(doc, i.route);
-  const existing = configuredRepos(i.text, i.route, i.base);
+  let existing = configuredRepos(i.text, i.route, i.base);
   const target = expandDir(i.path, i.base);
+
+  // CREW-2516: an older first-run `crew connect` wrote the clone base as the
+  // route's `dir:`, though nothing is (or will be) checked out there.
+  let droppedDir: string | undefined;
+  const placeholder = m.get('dir');
+  const reposNow = m.get('repos', true);
+  if (i.isCheckout && placeholder && !(isMap(reposNow) && reposNow.items.length > 0)) {
+    const placeholderDir = expandDir(String(placeholder), i.base);
+    if (placeholderDir !== target && !i.isCheckout(placeholderDir)) {
+      droppedDir = placeholderDir;
+      m.delete('dir');
+      existing = [];
+    }
+  }
 
   if (existing.some((e) => e.dir === target)) {
     throw new ReposError(`${target} is already configured on route ${i.route}`);
@@ -278,12 +319,15 @@ export function planRepoAdd(i: AddInput): AddPlan {
     pair.key = doc.createNode('repos');
     pair.value = doc.createNode({ [oldName]: oldDir, [name]: target });
     mode = 'repos';
+  } else if (droppedDir) {
+    m.set('repos', doc.createNode({ [name]: target }));
+    mode = 'repos';
   } else {
     m.set('dir', target);
     mode = 'dir';
   }
 
-  return { text: String(doc), mode, name, block: renderBlock(m), warning, unmatched: !matched };
+  return { text: String(doc), mode, name, block: renderBlock(m), warning, unmatched: !matched, droppedDir };
 }
 
 /**
@@ -415,14 +459,15 @@ export interface CloneInput {
   resolved?: RepoRemotes;
   /** `--dir`: the clone destination, instead of `<reposBasePath>/<workspace>/<name>`. */
   dir?: string;
+  isCheckout?: (dir: string) => boolean;
 }
 
 /**
  * Plan cloning a Repos row's remote and attaching it. Pure: refuses a row the
  * tracker does not know or that carries no `remote`, and a repo already
  * attached (by name or by destination), before anything touches disk. The
- * attach itself is `planRepoAdd`, so the first checkout lands as `dir:` and
- * later ones under `repos:` exactly as `crew repos add` would record them.
+ * attach itself is `planRepoAdd`, so the first checkout lands as `dir:` (or
+ * `repos:` once a placeholder `dir:` was dropped) and later ones under `repos:` exactly as `crew repos add` would record them.
  */
 export function planRepoClone(i: CloneInput): ClonePlan {
   const names = i.resolved?.repoNames ?? {};
@@ -448,6 +493,6 @@ export function planRepoClone(i: CloneInput): ClonePlan {
   const ship = doc.get('ship', true);
   const basePath = String(m.get('reposBasePath') ?? (isMap(ship) ? ship.get('reposBasePath') : undefined) ?? '~/Crew');
   const target = i.dir ? expandDir(i.dir, i.base) : join(expandDir(basePath, i.base), i.route.split('/')[0]!, name);
-  const add = planRepoAdd({ text: i.text, base: i.base, route: i.route, path: target, origin: remote, resolved: i.resolved, name });
+  const add = planRepoAdd({ text: i.text, base: i.base, route: i.route, path: target, origin: remote, resolved: i.resolved, name, isCheckout: i.isCheckout });
   return { ...add, remote, target };
 }

@@ -7,7 +7,7 @@ import {
   deriveExtraPath, findOnPath, nextSteps, renderFullConfig, renderShipBlock, runWizard, shouldRunWizard,
   writeNewConfig, HOST_PASSENGERS_DOCS_URL, type Prompter, type WizardEnv,
 } from '../src/connect-wizard.ts';
-import { loadConfig } from '../src/config.ts';
+import { loadConfig, reposOf } from '../src/config.ts';
 import { renderConnection, type Discovered } from '../src/connect.ts';
 
 /** Scripted prompter: answers are consumed in order, and every said/asked line is kept. */
@@ -82,9 +82,12 @@ test('the written file loads back: ship answers and a route with real baseUrl, h
   const d: Discovered = {
     workspaceId: 'w', workspaceSlug: 'issues', models: {}, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
   };
-  const block = renderConnection(d, 'issues/issues', '~/Crew/issues', {
+  const block = renderConnection(d, 'issues/issues', null, {
     keychainBacked: true, baseUrl: 'https://app.tablation.com', hostPassengers: true,
   });
+  // CREW-2516: a first run has no checkout, so no `dir:` placeholder is written.
+  assert.doesNotMatch(block, /^\s+dir:/m);
+  assert.match(block, /repos: \{\}/);
   const dir = mkdtempSync(join(tmpdir(), 'crew-wizard-'));
   const file = join(dir, 'crew.yaml');
   assert.equal(writeNewConfig(file, renderFullConfig(answers, block)), true);
@@ -98,6 +101,8 @@ test('the written file loads back: ship answers and a route with real baseUrl, h
   assert.equal(cfg.routes[0]!.enabled, false);
   assert.equal(cfg.routes[0]!.hostPassengers, true);
   assert.equal(cfg.routes[0]!.baseUrl, 'https://app.tablation.com');
+  assert.equal(cfg.routes[0]!.dirIsCloneBase, true);
+  assert.deepEqual(reposOf(cfg.routes[0]!), []);
 });
 
 test('the ship-only block loads with allowNoRoutes — and is refused without it', () => {

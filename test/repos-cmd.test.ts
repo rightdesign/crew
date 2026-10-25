@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listRepoRows, parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
+import { cloneBaseOf, listRepoRows, parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, configuredRepos, matchRepoName, normalizeRemote, planRepoAdd, planRepoRow, resolveRepoProject, ReposError } from '../src/repos-cmd.ts';
 import { parse } from 'yaml';
 
 const BASE = '/cfg';
@@ -226,4 +226,53 @@ test('listRepoRows reports an origin that differs from the row remote and a row 
   assert.equal(crew.attached, true); // matched by entry name
   assert.equal(crew.origin, 'git@github.com:acme/crew.git');
   assert.equal(rows.find((r) => r.name === 'bare')!.remote, null);
+});
+
+const placeholderText = `routes:
+  - route: acme/product
+    enabled: false
+    dir: "/Users/x/Crew/acme"
+`;
+const noGit = () => false;
+
+test('add on a route whose dir: is a non-checkout placeholder drops it and writes repos:', () => {
+  const p = planRepoAdd({ text: placeholderText, base: BASE, route: 'acme/product', path: '/Users/x/Crew/acme/crew', origin: 'acme/crew', resolved, isCheckout: noGit });
+  assert.equal(p.mode, 'repos');
+  assert.equal(p.droppedDir, '/Users/x/Crew/acme');
+  const r = route(p.text, 'acme/product');
+  assert.equal(r.dir, undefined);
+  assert.deepEqual(r.repos, { crew: '/Users/x/Crew/acme/crew' });
+});
+
+test('add keeps a dir: that is a real checkout (and converts it as before)', () => {
+  const p = planRepoAdd({ text: placeholderText, base: BASE, route: 'acme/product', path: '/src/syn', origin: 'acme/synthesis', resolved, isCheckout: () => true });
+  assert.equal(p.droppedDir, undefined);
+  assert.equal(p.mode, 'repos');
+  assert.equal(Object.keys(route(p.text, 'acme/product').repos as object).length, 2);
+});
+
+test('add into the first-run `repos: {}` shape just fills repos:', () => {
+  const text = `routes:\n  - route: acme/product\n    repos: {}\n`;
+  const p = planRepoAdd({ text, base: BASE, route: 'acme/product', path: '/Users/x/Crew/acme/crew', origin: 'acme/crew', resolved, isCheckout: noGit });
+  assert.equal(p.mode, 'repos');
+  assert.equal(p.droppedDir, undefined);
+  assert.deepEqual(route(p.text, 'acme/product').repos, { crew: '/Users/x/Crew/acme/crew' });
+});
+
+test('cloneBaseOf / listRepoRows report a non-checkout dir: as cloneBase, with no phantom repo', () => {
+  assert.equal(cloneBaseOf(placeholderText, 'acme/product', BASE, noGit), '/Users/x/Crew/acme');
+  assert.equal(cloneBaseOf(placeholderText, 'acme/product', BASE, () => true), null);
+  const rows = listRepoRows({
+    text: placeholderText, route: 'acme/product', base: BASE, resolved,
+    originOf: () => undefined, exists: () => false, repoHasHooks: () => false, isCheckout: noGit,
+  });
+  assert.deepEqual(rows.map((r) => r.name).sort(), ['crew', 'synthesis']);
+  assert.ok(rows.every((r) => r.repoRowId !== null && !r.attached));
+});
+
+test('planRepoClone drops the placeholder dir: and lands under the clone base', () => {
+  const text = placeholderText.replace('    enabled: false\n', '    enabled: false\n    reposBasePath: /Users/x/Crew\n');
+  const p = planRepoClone({ text, base: BASE, route: 'acme/product', name: 'crew', resolved, isCheckout: noGit });
+  assert.equal(p.target, '/Users/x/Crew/acme/crew');
+  assert.equal(p.droppedDir, '/Users/x/Crew/acme');
 });

@@ -19,6 +19,15 @@ tracker, for three reasons:
 3. It is the direction the PRD already sets (R14: *briefs name hooks rather
    than commands*).
 
+Where a checkout lives is the ship's `crew.yaml`, not this file. A route's
+`dir:` is the single-checkout form: it names one existing git checkout and
+nothing else. `reposBasePath` (default `~/Crew`) is the directory *clones* go
+under, as `<reposBasePath>/<workspace>/<repo>`; it is never itself a checkout.
+A first-run `crew connect` therefore writes `repos: {}` rather than a `dir:`,
+and `crew repos clone` / `crew repos add` fill `repos:` in. A leftover `dir:`
+that is not a checkout is dropped by the first `repos add`/`clone`, and
+`crew repos list --json` reports it as `cloneBase`, not as a repository.
+
 The tracker's `Repos` row holds what the repo **cannot** know: which area it
 serves, which other repos must release before it, and whether it is enabled.
 

@@ -243,6 +243,13 @@ export interface Route {
    */
   dir: string;
   /**
+   * True when the route declared no `dir:` and no checkouts under `repos:`
+   * (a first-run `crew connect` writes `repos: {}`), so `dir` is only the
+   * clone base `<reposBasePath>/<workspace>` and is NOT a checkout. `reposOf`
+   * then derives targets from the tracker's Repos rows instead of using it.
+   */
+  dirIsCloneBase?: boolean;
+  /**
    * Repo name (as the tracker's `Repos` table calls it) -> local checkout.
    *
    * An area has many repos (ISSUE-331), and each needs its own directory on
@@ -1190,11 +1197,18 @@ function parseOneRoute(
     }
   }
   const hasRepos = Object.keys(repoDirs).length > 0;
+  const reposBasePath = expand(String(c?.reposBasePath ?? raw.ship?.reposBasePath ?? DEFAULT_REPOS_BASE_PATH), base);
+  // An explicit empty `repos:` map with no `dir:` is the first-run shape
+  // (CREW-2516): nothing is checked out yet, and `crew repos clone` fills it.
+  // `dir` is then the clone base, flagged so nothing treats it as a checkout.
+  const dirIsCloneBase = !c?.dir && !hasRepos && c?.repos && typeof c.repos === 'object' && !Array.isArray(c.repos);
   const dir = c?.dir
     ? expand(String(c.dir), base)
     : hasRepos
       ? Object.values(repoDirs)[0]!
-      : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
+      : dirIsCloneBase
+        ? join(reposBasePath, splitRoute(route)[0])
+        : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
   // A rate scalar, never a switch: 0 or below would let a weight silently
   // starve the route, exactly the misuse `enabled: false` exists to do
   // honestly instead (see the Route.weight doc comment).
@@ -1207,8 +1221,9 @@ function parseOneRoute(
     enabled: c?.enabled === true,
     area: c?.area,
     dir,
+    ...(dirIsCloneBase ? { dirIsCloneBase: true } : {}),
     repos: repoDirs,
-    reposBasePath: expand(String(c?.reposBasePath ?? raw.ship?.reposBasePath ?? DEFAULT_REPOS_BASE_PATH), base),
+    reposBasePath,
     repoOverrides,
     worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
     ...(toolchain !== undefined ? { toolchain } : {}),
@@ -1305,7 +1320,7 @@ export function dirForRepo(r: Route, repoId?: string | null): string | null {
  */
 export function repoTargetFor(r: Route, repoId?: string | null): RepoTarget | null {
   const names = r.resolved?.repoNames;
-  if (!repoId || !names) return Object.keys(r.repos).length ? null : { name: basename(r.dir), dir: r.dir };
+  if (!repoId || !names) return Object.keys(r.repos).length || r.dirIsCloneBase ? null : { name: basename(r.dir), dir: r.dir };
   const name = names[repoId];
   if (!name) return null;
   return reposOf(r).find((t) => t.name === name) ?? null;
@@ -1522,6 +1537,15 @@ export function reposOf(r: Route): RepoTarget[] {
   if (named.length > 0) return named.map(([name, dir]) => ({ name, dir }));
 
   const trackerNames = r.resolved?.repoNames ? Object.values(r.resolved.repoNames) : [];
+  if (r.dirIsCloneBase) {
+    // No checkout declared and `dir` is only the clone base: never a phantom
+    // repo named after the workspace.
+    const [workspace] = splitRoute(r.route);
+    const remotes = r.resolved?.repoRemotes ?? {};
+    return Object.entries(r.resolved?.repoNames ?? {}).map(([id, name]) => ({
+      name, dir: defaultRepoDir(r.reposBasePath, workspace, name), remote: remotes[id],
+    }));
+  }
   if (trackerNames.length <= 1) return [{ name: basename(r.dir), dir: r.dir }];
 
   const remotes = r.resolved?.repoRemotes ?? {};
