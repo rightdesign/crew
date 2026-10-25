@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.71.12] — 2026-10-25
+
+- CREW-2480 crew recognizes tablation.issues as the tracker template and follows identifier supersession, keeping crew.issues installs working
+
 ## [0.71.11] — 2026-10-25
 
 - CREW-2471 `crew connect --dry-run` no longer reports another machine's seat rows as matched; it previews `would-create` seats and seat events carry `ship_id`.
