@@ -3480,7 +3480,7 @@ switch (command) {
       for (const sr of found.seatRows ?? []) {
         const minted = mintOutcomes.find((m) => m.role === sr.role);
         connectEvents.emit('seat', `${sr.role} seat ${sr.action}`, {
-          role: sr.role, id: sr.id, action: sr.action, key: minted?.action ?? 'none', ...(minted?.detail ? { detail: minted.detail } : {}),
+          role: sr.role, id: sr.id, action: sr.action, ...(sr.shipId ? { ship_id: sr.shipId } : {}), key: minted?.action ?? 'none', ...(minted?.detail ? { detail: minted.detail } : {}),
         });
       }
       // A device-authorization key that made it into the OS keychain

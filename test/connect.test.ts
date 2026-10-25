@@ -731,6 +731,58 @@ test('discover() skips all provisioning on a dry run — writes nothing, falls b
   assert.ok(!calls.some((c) => c.method === 'POST' || c.method === 'PATCH'), 'dry run writes nothing');
 });
 
+const DRY_ROUTES = {
+  '/api/workspaces/issues': { id: 'ws-1' },
+  '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+  '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+  '/api/data-models?projectId=proj-1': [
+    { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+    { id: 'ships-model', name: 'Ships' },
+  ],
+  '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-other', name: 'Other Mac' }],
+};
+
+test('discover() dry run with no Ships row ignores another ship\'s seat rows and previews would-create (CREW-2471)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    ...DRY_ROUTES,
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'o-dev', name: 'Developer agent', ship_id: 'ship-other' },
+      { id: 'o-design', name: 'Design agent', ship_id: 'ship-other' },
+      { id: 'o-qa', name: 'QA agent', ship_id: 'ship-other' },
+      { id: 'o-triage', name: 'Triage agent', ship_id: 'ship-other' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" }, dryRun: true });
+  assert.deepEqual(found.seats, {});
+  assert.deepEqual(found.seatRows?.map((r) => [r.role, r.action]), [
+    ['dev', 'would-create'], ['design', 'would-create'], ['qa', 'would-create'], ['triage', 'would-create'],
+  ]);
+  assert.deepEqual(found.problems.filter((p) => p.includes('seat — create')), []);
+  assert.ok(!calls.some((c) => c.method === 'POST' || c.method === 'PATCH'), 'dry run writes nothing');
+});
+
+test('discover() dry run claims legacy unscoped rows and reports the owning ship of a matched seat (CREW-2471)', async (t) => {
+  const { restore } = mockFetchCalls({
+    ...DRY_ROUTES,
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }, { id: 'ship-other', name: 'Other Mac' }],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'legacy-dev', name: 'Developer agent' },
+      { id: 'o-design', name: 'Design agent', ship_id: 'ship-other' },
+      { id: 'mine-qa', name: 'QA agent', ship_id: 'ship-1' },
+    ],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" }, dryRun: true });
+  assert.equal(found.seats.dev, 'legacy-dev');
+  assert.equal(found.seats.qa, 'mine-qa');
+  const by = Object.fromEntries((found.seatRows ?? []).map((r) => [r.role, r]));
+  assert.equal(by.qa?.shipId, 'ship-1');
+  assert.equal(by.design?.action, 'would-create');
+});
+
 test('listWorkspaces() reads /auth/my-workspaces, not the admin-only /workspaces list', async (t) => {
   const { restore, seen } = mockFetch({
     '/api/auth/my-workspaces': {
