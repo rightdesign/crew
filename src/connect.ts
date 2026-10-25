@@ -305,17 +305,42 @@ export async function provisionReleaseLocks(
 export interface LibraryTemplateOption {
   id: string;
   name: string;
-  /** Stable dotted-lowercase handle (e.g. `crew.issues`) — unlike `name`, never freely edited, so this is what a caller should match on, not the display name. */
+  /** Stable dotted-lowercase handle (e.g. `tablation.issues`) — unlike `name`, never freely edited, so this is what a caller should match on, not the display name. */
   identifier: string;
 }
 
 /**
- * `LibraryTemplate.identifier` of the "Issues" tracker template that `crew
- * connect <workspace>` defaults a bare (no `--project`) connect to —
- * matched on this stable handle rather than the freely-editable display
- * name (ISSUE-967).
+ * `LibraryTemplate.identifier`s of the "Issues" tracker template that `crew
+ * connect <workspace>` recognizes, preferred first — matched on the stable
+ * handle rather than the freely-editable display name (ISSUE-967). The
+ * template was republished as `tablation.issues` and `crew.issues` retired
+ * into it (ISSUE-2480), so an install made from either still counts; the
+ * install offer uses the first.
  */
-export const ISSUES_TEMPLATE_IDENTIFIER = 'crew.issues';
+export const ISSUES_TEMPLATE_IDENTIFIERS: readonly string[] = ['tablation.issues', 'crew.issues'];
+
+/**
+ * Every value a project's `sourceTemplateId` (or a Library template's
+ * `identifier`) may carry and still be the Issues tracker: the list above,
+ * plus — when the platform exposes `GET /library-templates/by-identifier/:identifier`
+ * (it follows supersession) — the id and identifier of whatever each
+ * candidate currently resolves to, so an identifier retired after this
+ * release still matches. An older platform answers 404 (or errors) and the
+ * list alone decides.
+ */
+export async function resolveIssuesTemplateKeys(o: AuthOptions): Promise<Set<string>> {
+  const keys = new Set<string>(ISSUES_TEMPLATE_IDENTIFIERS);
+  await Promise.all(ISSUES_TEMPLATE_IDENTIFIERS.map(async (identifier) => {
+    try {
+      const t = await get<{ id?: string; identifier?: string }>(
+        o, `/library-templates/by-identifier/${encodeURIComponent(identifier)}`,
+      );
+      if (t.id) keys.add(t.id);
+      if (t.identifier) keys.add(t.identifier);
+    } catch { /* route absent on an older platform, or no such template — the list decides */ }
+  }));
+  return keys;
+}
 
 export async function listLibraryTemplates(o: AuthOptions): Promise<LibraryTemplateOption[]> {
   return get<LibraryTemplateOption[]>(o, '/library-templates');
@@ -426,12 +451,14 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     }>>(o, `/projects?workspaceId=${ws.id}`);
     // No project named: `crew connect <workspace>` defaults to the `issues`
     // project (ISSUE-967) — matched by source-template identifier first (so
-    // a renamed/reslugged install of `crew.issues` still counts), falling
+    // a renamed/reslugged install of `tablation.issues`, or of the retired
+    // `crew.issues`, still counts), falling
     // back to slug `issues` (a hand-built or pre-identifier project). Tried
     // before the multi-project picker below, not instead of it: a default
     // candidate that doesn't actually qualify (missing tables) falls
     // through to the same picker/install-offer as if none was named.
-    const defaultCandidate = projects.find((p) => p.sourceTemplateId === ISSUES_TEMPLATE_IDENTIFIER)
+    const issuesKeys = await resolveIssuesTemplateKeys(o);
+    const defaultCandidate = projects.find((p) => !!p.sourceTemplateId && issuesKeys.has(p.sourceTemplateId))
       ?? projects.find((p) => eq(p.slug ?? '', 'issues'));
     if (defaultCandidate && (await missingTables(o, defaultCandidate.id)).length === 0) {
       out.projectId = defaultCandidate.id; out.projectSlug = defaultCandidate.slug; out.projectName = defaultCandidate.name;

@@ -123,6 +123,49 @@ test('no project given: a project installed from crew.issues is picked by source
   assert.equal(found.projectOptions, undefined);
 });
 
+test('no project given: a project installed from tablation.issues is picked by source-template identifier', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_USER' },
+    '/api/projects?workspaceId=ws-1': [
+      { id: 'p-tracker', name: 'Our Tracker', slug: 'our-tracker', sourceTemplateId: 'tablation.issues' },
+      { id: 'p-other', name: 'Other Issues-Shaped Project', slug: 'other', sourceTemplateId: null },
+    ],
+    '/api/data-models?projectId=p-tracker': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'm', name: 'Crew' },
+    ],
+    '/api/data-models?projectId=p-other': [{ id: 'i', name: 'Issues' }],
+    '/api/data-models/m/records?limit=200': [],
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues' });
+  assert.equal(found.projectId, 'p-tracker');
+  assert.equal(found.projectOptions, undefined);
+});
+
+test('no project given: a successor template id is matched through the by-identifier lookup when the platform exposes it', async (t) => {
+  const { restore } = mockFetch({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_USER' },
+    '/api/projects?workspaceId=ws-1': [
+      { id: 'p-tracker', name: 'Our Tracker', slug: 'our-tracker', sourceTemplateId: 'tpl-live' },
+      { id: 'p-other', name: 'Other Issues-Shaped Project', slug: 'other', sourceTemplateId: null },
+    ],
+    '/api/data-models?projectId=p-tracker': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'm', name: 'Crew' },
+    ],
+    '/api/data-models?projectId=p-other': [{ id: 'i', name: 'Issues' }],
+    '/api/data-models/m/records?limit=200': [],
+    '/api/library-templates/by-identifier/tablation.issues': { id: 'tpl-live', identifier: 'tablation.issues' },
+  });
+  t.after(restore);
+
+  const found = await discover({ ...BASE, workspace: 'issues' });
+  assert.equal(found.projectId, 'p-tracker');
+  assert.equal(found.projectOptions, undefined);
+});
+
 test('no project given: falls back to slug `issues` when no project carries the source-template identifier', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },

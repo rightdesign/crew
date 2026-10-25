@@ -228,7 +228,8 @@ crew connect my-workspace
 
 The workspace is normally the only thing you need to name — `crew connect`
 defaults the project to the `issues`-slugged project (the workspace's
-install of the `crew.issues` Library template, i.e. the tracker itself). If
+install of the `tablation.issues` Library template, i.e. the tracker itself;
+installs made from the earlier `crew.issues` identifier keep working). If
 that project isn't there yet, it offers to install it from the Library on a
 real terminal (say yes, or decline and set one up in the app first). Only
 pass a project explicitly (`crew connect my-workspace/my-product`, or

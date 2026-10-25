@@ -76,7 +76,7 @@ import { gatherInbox, renderInbox } from './inbox.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
   discover, get as connectGet, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
-  listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIER,
+  listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIERS, resolveIssuesTemplateKeys,
 } from './connect.ts';
 import {
   getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
@@ -276,9 +276,13 @@ async function offerTemplateInstall(
   decided?: boolean,
 ): Promise<string | undefined> {
   const templates = await listLibraryTemplates(authOpts);
-  const template = templates.find((t) => t.identifier === ISSUES_TEMPLATE_IDENTIFIER);
+  // Offer the preferred identifier; fall back to an older one (or whatever
+  // the platform resolves them to) only when it is the sole thing published.
+  const keys = await resolveIssuesTemplateKeys(authOpts);
+  const template = templates.find((t) => t.identifier === ISSUES_TEMPLATE_IDENTIFIERS[0])
+    ?? templates.find((t) => keys.has(t.identifier) || keys.has(t.id));
   if (!template) {
-    process.stderr.write(`\n  No template with identifier "${ISSUES_TEMPLATE_IDENTIFIER}" is published to the Library yet — nothing to offer to install.\n`);
+    process.stderr.write(`\n  No template with identifier "${ISSUES_TEMPLATE_IDENTIFIERS[0]}" is published to the Library yet — nothing to offer to install.\n`);
     return undefined;
   }
   if (decided === undefined) {
@@ -2938,8 +2942,9 @@ switch (command) {
   case 'connect': {
     // `crew connect foo` (just the workspace slug) is the normal form
     // (ISSUE-967): `discover()` defaults the project to whichever one is
-    // installed from the `crew.issues` Library template (falling back to
-    // slug `issues`), offering to install it when it's missing. `crew
+    // installed from the `tablation.issues` Library template (or the retired
+    // `crew.issues`), falling back to
+    // slug `issues`, offering to install it when it's missing. `crew
     // connect foo/bar` (workspace/project) names a project explicitly —
     // only needed for a deliberately non-default tracker project, in which
     // case `discover()` falls back to offering every project in that

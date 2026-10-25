@@ -218,7 +218,7 @@ const encodeSort = (s: Sort[]): string => JSON.stringify(s);
 /**
  * Which of the optional authorship columns (CREW-1371) this workspace's
  * tables carry, and this ship's own `Ships` row id. A column a table does not
- * have is simply not written: the install has not taken the `crew.issues`
+ * have is simply not written: the install has not taken the Issues
  * template update yet, and `crew doctor` says so rather than a write failing.
  */
 /**
