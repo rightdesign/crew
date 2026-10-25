@@ -34,7 +34,7 @@ import { replayPendingHandoffs } from './pending-handoff.ts';
 import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import type { RunnerEvent, Ticket, Tracker } from './tracker.ts';
-import { finishRunWorktree } from './run-worktree.ts';
+import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
@@ -262,6 +262,13 @@ export async function guardRunHandoff(
       seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
     });
     if (outcome.kind === 'pushed') await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
+    else {
+      // CREW-2528: a run that cut a branch from the base and committed nothing leaves no branch behind.
+      const branch = existingBranchForTicket(target.dir, cfg, t, role);
+      if (branch && dropEmptyRunBranch(target.dir, cfg, branch)) {
+        log.emit(`${t.issue_id}: dropped ${branch} — the run made no commits beyond ${cfg.branch.base}`, { ticket: t.issue_id, step: 'handoff' });
+      }
+    }
     if (since) await guardRunStrays(route, ship, tracker, role, workingId, since, log);
     return outcome;
   } catch (e) {

@@ -111,10 +111,12 @@ export function locateBranchForTicket(
 export function materializeBranchForTicket(
   dir: string, cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string,
   onProblem?: (problem: string) => void,
+  onReset?: (note: string) => void,
 ): string | null {
   const loc = locateBranchForTicket(dir, cfg, t, role);
   if (!loc) return null;
-  const r = levelRemoteBranch(dir, cfg.branch.remote, loc.branch);
+  const r = levelRemoteBranch(dir, cfg.branch.remote, loc.branch, `${cfg.branch.remote}/${cfg.branch.base}`);
   if (r.problem) onProblem?.(r.problem);
+  if (r.reset) onReset?.(r.reset);
   return loc.branch;
 }

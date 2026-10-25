@@ -195,6 +195,10 @@ export function remoteBranchForIssue(
  *   or mid-merge worktree is not ours to move.
  * - Diverged or ahead: left alone. Diverged while a worktree holds it is
  *   reported as a `problem` (CREW-1758).
+ * - Unless the local branch holds nothing but commits already on `baseRef`
+ *   (CREW-2528): a ticket branch cut fresh from the base and never committed
+ *   to is not ticket work, so it is reset to the remote tip (a clean holder
+ *   worktree is reset in place; a dirty one is a `problem`).
  *
  * `problem` is set when the local branch is behind the remote and could not
  * be moved, or has diverged from it in a worktree. That is never silent: a release that squashes a stale local ref
@@ -202,8 +206,8 @@ export function remoteBranchForIssue(
  * `exists` as "current" when `problem` is present.
  */
 export function levelRemoteBranch(
-  cwd: string, remote: string, branch: string,
-): { exists: boolean; problem?: string } {
+  cwd: string, remote: string, branch: string, baseRef?: string,
+): { exists: boolean; problem?: string; reset?: string } {
   const local = gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]);
   if (!remoteBranchExists(cwd, remote, branch)) return { exists: local !== null };
   if (local === null) {
@@ -212,6 +216,20 @@ export function levelRemoteBranch(
   const remoteTip = gitOk(cwd, ['rev-parse', '-q', '--verify', `refs/remotes/${remote}/${branch}`]);
   if (!remoteTip || remoteTip === local) return { exists: true };
   if (!isAncestor(cwd, local, remoteTip)) {
+    if (baseRef && isAncestor(cwd, local, baseRef)) {
+      const holder = worktrees(cwd).find((w) => w.branch === branch && !w.prunable);
+      if (holder) {
+        if (gitOk(holder.path, ['status', '--porcelain'])) {
+          return { exists: true, problem: `${branch} holds only commits already on ${baseRef}, but the worktree ${holder.path} that holds it has uncommitted changes` };
+        }
+        if (gitOk(holder.path, ['reset', '--hard', '--quiet', remoteTip]) === null) {
+          return { exists: true, problem: `could not reset ${branch} to ${remote}/${branch} in ${holder.path}` };
+        }
+      } else if (gitOk(cwd, ['branch', '-f', branch, remoteTip]) === null) {
+        return { exists: true, problem: `could not reset ${branch} to ${remote}/${branch}` };
+      }
+      return { exists: true, reset: `${branch} held only commits already on ${baseRef}; reset ${local.slice(0, 8)} -> ${remote}/${branch} at ${remoteTip.slice(0, 8)}` };
+    }
     // Diverged or ahead: not ours to move. But a worktree holding commits the
     // remote lacks, next to a remote tip QA may have verified, is the ship's
     // problem to see (CREW-1758) — never a quiet "exists".

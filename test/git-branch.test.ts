@@ -188,6 +188,51 @@ test('levelRemoteBranch: reports a diverged branch a worktree holds, naming both
   assert.equal(sh(shipB, 'rev-parse', 'tabl-10'), local);
 });
 
+/** Ship A pushes the real branch from an older base; ship B's empty copy sits on the moved-on base. */
+function staleEmptyBranch(branch: string) {
+  const ships = twoShips();
+  const { shipA, shipB, sh } = ships;
+  sh(shipA, 'checkout', '-q', '-b', branch);
+  sh(shipA, 'commit', '--allow-empty', '-qm', 'ticket work');
+  sh(shipA, 'push', '-q', '--set-upstream', 'origin', branch);
+  sh(shipA, 'checkout', '-q', 'main');
+  sh(shipA, 'commit', '--allow-empty', '-qm', 'release');
+  sh(shipA, 'push', '-q', 'origin', 'main');
+  fetchRemote(shipB);
+  sh(shipB, 'branch', '--no-track', branch, 'origin/main');
+  return ships;
+}
+
+test('levelRemoteBranch: resets a branch holding only base commits to the remote tip (CREW-2528)', () => {
+  const { shipA, shipB, sh } = staleEmptyBranch('tabl-20');
+  const r = levelRemoteBranch(shipB, 'origin', 'tabl-20', 'origin/main');
+  assert.equal(r.problem, undefined);
+  assert.ok(r.reset);
+  assert.equal(sh(shipB, 'rev-parse', 'tabl-20'), sh(shipA, 'rev-parse', 'tabl-20'));
+});
+
+test('levelRemoteBranch: resets a clean worktree holding only base commits in place (CREW-2528)', () => {
+  const { shipA, shipB, sh } = staleEmptyBranch('tabl-21');
+  const wt = shipB + '-wt21';
+  sh(shipB, 'worktree', 'add', '-q', wt, 'tabl-21');
+  const r = levelRemoteBranch(shipB, 'origin', 'tabl-21', 'origin/main');
+  assert.equal(r.problem, undefined);
+  assert.equal(sh(wt, 'rev-parse', 'HEAD'), sh(shipA, 'rev-parse', 'tabl-21'));
+});
+
+test('levelRemoteBranch: a branch with a genuine unpushed commit is still refused (CREW-1636 kept)', () => {
+  const { shipB, sh } = staleEmptyBranch('tabl-22');
+  const wt = shipB + '-wt22';
+  sh(shipB, 'worktree', 'add', '-q', wt, 'tabl-22');
+  sh(wt, 'config', 'user.email', 't@t'); sh(wt, 'config', 'user.name', 'T');
+  sh(wt, 'commit', '--allow-empty', '-qm', 'my work');
+  const before = sh(shipB, 'rev-parse', 'tabl-22');
+  const r = levelRemoteBranch(shipB, 'origin', 'tabl-22', 'origin/main');
+  assert.match(r.problem ?? '', /has commits not on origin\/tabl-22/);
+  assert.equal(r.reset, undefined);
+  assert.equal(sh(shipB, 'rev-parse', 'tabl-22'), before);
+});
+
 test('deleteRemoteBranch removes the upstream copy; a branch already gone is success', () => {
   const { shipA, sh } = twoShips();
   sh(shipA, 'branch', 'tabl-9');
@@ -216,4 +261,21 @@ test('remoteBranchTicketNumbers: the numbers on pushed ticket branches, never th
   const { shipA, sh } = twoShips();
   for (const b of ['tabl-10', 'crew-12-some-slug', 'issue-7']) { sh(shipA, 'branch', b); sh(shipA, 'push', '-q', 'origin', b); }
   assert.deepEqual(remoteBranchTicketNumbers(shipA, 'origin', 'main').sort(), ['10', '12', '7']);
+});
+
+test('dropEmptyRunBranch: removes a fresh branch with no commits, keeps one with work or on the remote (CREW-2528)', async () => {
+  const { dropEmptyRunBranch } = await import('../src/run-worktree.ts');
+  const { shipA, sh } = twoShips();
+  // Only `branch.remote` and `branch.base` are read.
+  const cfg = { branch: { remote: 'origin', base: 'main' } } as Parameters<typeof dropEmptyRunBranch>[1];
+  const wt = shipA + '-wt30';
+  sh(shipA, 'worktree', 'add', '-q', '--no-track', '-b', 'tabl-30', wt, 'origin/main');
+  assert.equal(dropEmptyRunBranch(shipA, cfg, 'tabl-30'), true);
+  assert.equal(sh(shipA, 'branch', '--list', 'tabl-30'), '');
+
+  const wt2 = shipA + '-wt31';
+  sh(shipA, 'worktree', 'add', '-q', '--no-track', '-b', 'tabl-31', wt2, 'origin/main');
+  sh(wt2, 'config', 'user.email', 't@t'); sh(wt2, 'config', 'user.name', 'T');
+  sh(wt2, 'commit', '--allow-empty', '-qm', 'work');
+  assert.equal(dropEmptyRunBranch(shipA, cfg, 'tabl-31'), false);
 });

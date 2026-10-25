@@ -39,6 +39,7 @@ import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planBuildFailureBounce, applyBuildFailureBounce } from './build-failure.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
+import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { guardRunHandoff } from './handoff-guard.ts';
 import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
@@ -1609,6 +1610,21 @@ async function releasePhase(
         state.release(scope).noteTestGateReported(g.sha);
       } catch (e) {
         remit.warn(`could not note the red test gate on the board: ${(e as Error).message}`, { step: 'merge' });
+      }
+    }
+
+    // A verified ticket skipped for a stale local ref says so on the ticket
+    // (CREW-2528), once per distinct problem, not only in the event log.
+    if (outcome.localRefSkips?.length && !dryRun) {
+      try {
+        const reported = await tracker.events('local_ref_skip');
+        const seat = releaseSeat(c);
+        for (const s of outcome.localRefSkips) {
+          if (localRefSkipReported(s.ticket, s.problem, reported)) continue;
+          await tracker.postEvent(s.ticket.id, localRefSkipComment(cfg.ship.name, s.problem), seat, 'local_ref_skip');
+        }
+      } catch (e) {
+        remit.warn(`could not note the skipped release on the board: ${(e as Error).message}`, { step: 'merge' });
       }
     }
 
@@ -4290,6 +4306,10 @@ switch (command) {
           continue;
         }
         if (!s2.upstream) continue;
+        // CREW-2528: a ticket branch whose upstream is the base (cut before
+        // --no-track) must not be fast-forwarded onto it; only the base
+        // branch itself follows `<remote>/<base>`.
+        if (w.branch !== r.config.branch.base && s2.upstream === `${r.config.branch.remote}/${r.config.branch.base}`) continue;
         tracked++;
         if (s2.canFastForward) {
           acted++;

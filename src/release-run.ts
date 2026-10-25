@@ -211,6 +211,12 @@ export interface ReleaseOutcome {
    */
   movedPast?: ReviewRequeue[];
   /**
+   * Verified tickets left out because of this ship's local ref (a branch the
+   * remote does not agree with), not because of the ticket (CREW-2528). The
+   * caller says so on the ticket instead of leaving it to the event log.
+   */
+  localRefSkips?: LocalRefSkip[];
+  /**
    * Consecutive cycles `decision.block` has refused this release, from
    * `state.release(route).noteBlocked()`. Only set when a block just
    * happened — `describeRelease` uses it to escalate a persisting block
@@ -896,7 +902,7 @@ function openReleaseCheckout(o: ReleaseRunOptions): ReleaseCheckout {
   o.emit.emit(`release checkout: ${dir}`, { step: 'release' });
   const close = () => closeReleaseCheckout(o.cwd, root, dir, branch);
   try {
-    git(o.cwd, ['worktree', 'add', '-q', '-b', branch, dir, `${remote}/${base}`]);
+    git(o.cwd, ['worktree', 'add', '-q', '--no-track', '-b', branch, dir, `${remote}/${base}`]);
   } catch (e) {
     close();
     throw e;
@@ -925,13 +931,21 @@ export function reportHeld(o: Pick<ReleaseRunOptions, 'emit' | 'state' | 'dryRun
   o.state?.noteHeldReported?.(signature);
 }
 
+/** A verified ticket the release skipped for a reason in this ship's git refs. */
+export interface LocalRefSkip { ticket: Ticket; problem: string }
+
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
   const movedPast: ReviewRequeue[] = [];
-  const out = await runReleaseCycle(o, movedPast);
-  return movedPast.length ? { ...out, movedPast } : out;
+  const localRefSkips: LocalRefSkip[] = [];
+  const out = await runReleaseCycle(o, movedPast, localRefSkips);
+  return {
+    ...out,
+    ...(movedPast.length ? { movedPast } : {}),
+    ...(localRefSkips.length ? { localRefSkips } : {}),
+  };
 }
 
-async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[]): Promise<ReleaseOutcome> {
+async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[], localRefSkips: LocalRefSkip[]): Promise<ReleaseOutcome> {
   const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
 
@@ -952,8 +966,9 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[])
       if (t.status !== o.contract.statuses.verified) continue;
       materializeBranchForTicket(o.cwd, o.repo, t, undefined, (problem) => {
         skipped.add(t.id);
+        localRefSkips.push({ ticket: t, problem });
         o.emit.error(`not releasing ${t.issue_id} this cycle: ${problem}`, { ticket: t.issue_id });
-      });
+      }, (note) => o.emit.emit(`${t.issue_id}: ${note}`, { ticket: t.issue_id }));
     }
     if (skipped.size) releasable = o.tickets.filter((t) => !skipped.has(t.id));
   }
@@ -982,6 +997,10 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[])
             `${o.repo.branch.remote}/${branch} (${remoteTip.slice(0, 8)}); not requeuing it`,
           { ticket: t.issue_id },
         );
+        localRefSkips.push({
+          ticket: t,
+          problem: `local ${branch} at ${moved.tip.slice(0, 8)} is not on ${o.repo.branch.remote}/${branch} (${remoteTip.slice(0, 8)})`,
+        });
         continue;
       }
       movedPast.push({ ticket: t, verified: moved.verified, head: moved.tip, branch: pushedBranchForTicket(o.repo, t) });

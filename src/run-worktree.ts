@@ -166,10 +166,10 @@ export function applyRunWorktree(dir: string, cfg: EffectiveRepoConfig, plan: Ru
       git(dir, ['worktree', 'remove', '--force', plan.path]);
       gitOk(dir, ['branch', '-D', plan.branch]);
       // fallthrough to a fresh cut under the same name
-      git(dir, ['worktree', 'add', '-b', plan.branch, plan.path, plan.base]);
+      git(dir, ['worktree', 'add', '--no-track', '-b', plan.branch, plan.path, plan.base]);
       return plan.path;
     case 'cut-fresh':
-      git(dir, ['worktree', 'add', '-b', plan.branch, plan.path, plan.base]);
+      git(dir, ['worktree', 'add', '--no-track', '-b', plan.branch, plan.path, plan.base]);
       return plan.path;
   }
 }
@@ -183,6 +183,28 @@ export function applyRunWorktree(dir: string, cfg: EffectiveRepoConfig, plan: Ru
 export function worktreeHoldsUnpushed(path: string, remote: string): boolean {
   const out = gitOk(path, ['for-each-ref', '--contains', 'HEAD', '--count=1', '--format=%(refname)', `refs/remotes/${remote}/`]);
   return out === null || out.trim() === '';
+}
+
+/**
+ * CREW-2528: a run that cut its branch fresh from the base and ended without
+ * a commit leaves a branch equal to the base. Kept as "never merged", it later
+ * collides with the real branch another ship pushes. Removes the worktree and
+ * the branch when the branch is not on the remote, holds nothing beyond the
+ * base and the tree is clean; anything else is left alone. Returns whether it
+ * removed them.
+ */
+export function dropEmptyRunBranch(dir: string, cfg: EffectiveRepoConfig, branch: string): boolean {
+  const { remote, base } = cfg.branch;
+  const baseRef = remoteConfigured(dir, remote) ? `${remote}/${base}` : base;
+  if (gitOk(dir, ['rev-parse', '-q', '--verify', `refs/heads/${branch}`]) === null) return false;
+  if (remoteConfigured(dir, remote) && remoteBranchExists(dir, remote, branch)) return false;
+  if (countCommits(dir, `${baseRef}..${branch}`) !== 0) return false;
+  const wt = worktrees(dir).find((w) => w.branch === branch && !w.prunable && w.path !== dir);
+  if (wt && existsSync(wt.path)) {
+    if (status(wt.path).length > 0) return false;
+    if (gitOk(dir, ['worktree', 'remove', wt.path]) === null) return false;
+  }
+  return gitOk(dir, ['branch', '-D', branch]) !== null;
 }
 
 export type FinishOutcome =
