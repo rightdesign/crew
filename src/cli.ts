@@ -421,6 +421,21 @@ const connectChoices = parseChoices(argv);
 if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
 
 /**
+ * Every command the dispatch `switch` below handles, plus `passenger-sync-daemon`
+ * above it. An unknown command is rejected here, before any config is loaded
+ * (CREW-2492): on a machine with no crew.yaml (CI) `loadConfig` would otherwise
+ * throw "no config found" before the dispatch's own `default:` was reached.
+ * test/help-cli.test.ts checks this set against the `case` labels.
+ */
+const KNOWN_COMMANDS = new Set([
+  'passenger-sync-daemon', 'agents', 'connect', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
+  'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'poll', 'ports', 'projects', 'reap', 'release',
+  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'skills', 'status',
+  'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
+]);
+if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
+
+/**
  * Route for `agents sync` / `skills sync`, which write to a workspace. Unlike
  * `findRoute`, an unnamed route is only accepted on a one-route ship: falling
  * back to "the single enabled route" on a multi-route ship let a mistyped

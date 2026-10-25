@@ -300,6 +300,8 @@ which only discovers names and remotes, never fetches anything itself.
 bin/crew          the entry point
 src/              the implementation (Node, run directly via type stripping)
 test/             its tests, including a fake board for integration runs
+                  (the suite must pass with no crew.yaml, as on CI: a CLI-level test sets
+                  CREW_CONFIG to a missing file instead of relying on the machine's own)
 prompts/          prompt sets — prompts/<name>/personas/lane-<role>.md
                   + prompts/<name>/skills/*.md
 docs/             CONTRACT.md, REPO_SPEC.md, MIGRATION.md
