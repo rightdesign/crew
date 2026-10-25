@@ -22,6 +22,7 @@ import { DEFAULT_CONTRACT, EVENT_LOG_MISSING } from './contract.ts';
 import { ensureLockRows, releaseLockScope, type LockProvisionClient } from './board-lock.ts';
 import { PERSONA_NAME } from './agents.ts';
 import type { RoleName } from './config.ts';
+import { planNameSync } from './ship-name.ts';
 
 export interface AuthOptions {
   baseUrl: string;
@@ -51,6 +52,11 @@ export interface DiscoverOptions extends AuthOptions {
      * not provision a second ship. Absent: name matching only, as before.
      */
     machineId?: string;
+    /**
+     * The ship name this route last saw agree with its Ships row (CREW-2495),
+     * looked up by route string once discovery knows it. Absent: no baseline.
+     */
+    lastSyncedName?: (route: string) => string | undefined;
   };
   /**
    * Same meaning as everywhere else in the CLI: report what discovery would
@@ -199,6 +205,8 @@ export interface Discovered {
    * `provisioning` skipped the Ships row.
    */
   shipRow?: { id: string; name: string; action: 'created' | 'matched'; matchedBy?: 'machine_id' | 'name' };
+  /** The Ships row's name, when the three-way rule (ship-name.ts) says this machine takes it over crew.yaml's. */
+  shipNameAdopted?: string;
   /** Per-seat outcome of the Crew-row provisioning, for the `seat` events. */
   seatRows?: Array<{ role: string; id: string; action: 'matched' | 'claimed' | 'created' | 'would-create'; shipId?: string }>;
   /** How `operator` was settled, for the `operator_row` event. */
@@ -692,11 +700,17 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       out.shipRow = { id: shipRowId, name: o.ship.name, action: 'matched', matchedBy };
       const patchBody: Record<string, unknown> = {};
       if (matchedBy === 'machine_id') {
-        // Renaming stays a workspace action: keep the row's own name, and say so.
-        const keptName = (mine[0]!.name ?? '').trim();
-        if (keptName !== o.ship.name.trim()) {
-          out.shipRow.name = keptName;
-          provisioning.push(`matched Ships row "${keptName}" by machine id — this host is now called "${o.ship.name}"; the row's name is kept`);
+        // CREW-2495: the same three-way rule start-up applies (ship-name.ts).
+        const rowName = (mine[0]!.name ?? '').trim();
+        const route = `${out.workspaceSlug}/${out.projectSlug ?? out.projectId}`;
+        const plan = planNameSync(o.ship.name.trim(), rowName, o.ship.lastSyncedName?.(route));
+        if (plan.action === 'push') {
+          patchBody.name = o.ship.name.trim();
+          provisioning.push(`renamed Ships row "${rowName}" to "${o.ship.name.trim()}" (crew.yaml changed)`);
+        } else if (plan.action === 'adopt' || plan.action === 'row-wins') {
+          out.shipRow.name = rowName;
+          out.shipNameAdopted = rowName;
+          provisioning.push(`matched Ships row "${rowName}" by machine id — this host's name becomes "${rowName}"${plan.action === 'row-wins' ? ' (crew.yaml also changed; the Ships row wins)' : ''}`);
         }
         patchBody.last_seen = new Date().toISOString();
       }

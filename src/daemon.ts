@@ -90,6 +90,7 @@ import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { Tracker } from './tracker.ts';
+import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
 import { interruptedComment, reconcileRuns } from './interrupted.ts';
@@ -488,6 +489,12 @@ export interface RunOnePassOptions {
    * run a previous crew process left behind (CREW-1775).
    */
   reconcile?: (ctx: RoleAgentContext, o: RunOnePassOptions) => Promise<void>;
+  /**
+   * crew.yaml's path (CREW-2495). Given, each pass reconciles the ship name
+   * with this machine's Ships row before anything else reads it. Left unset
+   * (tests), no name sync is attempted.
+   */
+  configFile?: string;
 }
 
 /**
@@ -541,6 +548,10 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   const spawn = o.spawnRoleAgent ?? runRoleAgent;
   const breaker = o.spawnBreaker ?? new SpawnBreaker();
   const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit, getSessionStore: o.getSessionStore };
+
+  // CREW-2495: a rename made in the Ships table (or in crew.yaml) lands before
+  // this pass's heartbeat, whose row lookup is by the ship's current name.
+  if (o.configFile) await reconcileRouteShipName({ route: o.route, ship: o.ship, configFile: o.configFile, emit });
 
   // CREW-1775: before deciding anything, account for runs a previous process
   // left behind — a live one keeps its role and capacity slot, a dead one is

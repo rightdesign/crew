@@ -67,7 +67,7 @@ function routes(ships: unknown[], withColumn: boolean, shipForSeats: string) {
   };
 }
 
-test('discover() matches the Ships row by machine id when the hostname drifted: no second row, name kept (ISSUE-2249)', async (t) => {
+test('discover() matches the Ships row by machine id when the hostname drifted: no second row, the row name is adopted (ISSUE-2249, CREW-2495)', async (t) => {
   const { restore, calls } = mockCalls({
     ...routes([{ id: 'ship-1', name: 'Old Name', machine_id: 'M1', host_passengers: false }], true, 'ship-1'),
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
@@ -77,10 +77,25 @@ test('discover() matches the Ships row by machine id when the hostname drifted: 
   assert.equal(found.shipRow?.id, 'ship-1');
   assert.equal(found.shipRow?.matchedBy, 'machine_id');
   assert.equal(found.shipRow?.name, 'Old Name');
-  assert.ok(found.provisioning.some((p) => p.includes('row\'s name is kept')));
+  assert.equal(found.shipNameAdopted, 'Old Name', 'no baseline: the Ships row wins');
+  assert.ok(found.provisioning.some((p) => p.includes('becomes "Old Name"')));
   assert.ok(!calls.some((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records'), 'no second row');
   const patch = calls.find((c) => c.method === 'PATCH' && c.key.endsWith('/ship-1'));
   assert.ok(patch && !('name' in (patch.body as object)) && 'last_seen' in (patch.body as object));
+});
+
+test('discover() pushes a changed crew.yaml name to the row when the baseline says only crew.yaml moved (CREW-2495)', async (t) => {
+  const { restore, calls } = mockCalls({
+    ...routes([{ id: 'ship-1', name: 'Old Name', machine_id: 'M1', host_passengers: false }], true, 'ship-1'),
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+  });
+  t.after(restore);
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar',
+    ship: { name: 'New Name', machineId: 'M1', lastSyncedName: () => 'Old Name' },
+  });
+  assert.equal(found.shipNameAdopted, undefined);
+  assert.equal((calls.find((c) => c.method === 'PATCH' && c.key.endsWith('/ship-1'))?.body as { name?: string }).name, 'New Name');
 });
 
 test('discover() matches by name and writes the machine id onto the row (ISSUE-2249)', async (t) => {

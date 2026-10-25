@@ -508,6 +508,13 @@ export class Tracker {
     }
   }
 
+  /** Renames a Ships row (CREW-2495). Throws on a refused write (a member key may not edit the table). */
+  async renameShipRow(rowId: string, name: string): Promise<void> {
+    const model = this.route.resolved?.shipsModelId;
+    if (!model) throw new Error('this workspace has no Ships table');
+    await this.client.records.update(model, rowId, { name });
+  }
+
   /**
    * This ship's own row on the `Ships` table, matched by name — the same
    * exact-string match `doctor` has always used (see the callsign comment

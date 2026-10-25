@@ -110,6 +110,7 @@ import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { ensureMachineId, matchShipRows } from './machine-id.ts';
+import { ShipNameError, reconcileRouteShipName, validateShipName, setShipNameInYaml, pickShipRow, readSyncedName, writeSyncedName } from './ship-name.ts';
 import {
   dockerAvailable, ensureImage, imagePresent, passengerImageRef, planContainers, syncAllPassengerCheckouts, syncPassengerContainers,
 } from './passenger-containers.ts';
@@ -358,6 +359,7 @@ function usage(problem?: string, requested = false): never {
   crew agents sync [route] [--force] [--revoke-seat-keys]   push crew's personas AND skill files into the workspace Agents/Agent Skills tables (--force overwrites even a diverged persona or skill; never one marked Customize prompt)
   crew agents prompt R [route] print one persona's current prompt (e.g. R=pair, for a SessionStart hook; --harness H adds which CLI it serves)
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
+  crew ship rename NAME [--json] rename this ship in crew.yaml and on every workspace's Ships row
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
@@ -430,7 +432,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
 const KNOWN_COMMANDS = new Set([
   'passenger-sync-daemon', 'agents', 'connect', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'poll', 'ports', 'projects', 'reap', 'release',
-  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'skills', 'status',
+  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
@@ -579,7 +581,7 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    const toleratesNoRoutes = command === 'repos' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out'));
+    const toleratesNoRoutes = command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out'));
     // CREW-2443: sign-out and reset exist for a machine whose only trace is a
     // dry-run connect's keychain session, so they must load with NO crew.yaml.
     // Load an empty ship block at the path a config-less connect would have
@@ -639,7 +641,7 @@ const named = worktreeArgs
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'projects' || command === 'whoami' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'whoami' || releaseFleetWide ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
   (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
@@ -1809,6 +1811,15 @@ switch (command) {
     // that companion unit's `crew run` passes — see `install.ts`.
     const skipInlineRelease = flag('no-release');
 
+    // CREW-2495: reconcile the ship name with each route's Ships row before
+    // the heartbeat (which finds the row by name). Routes go in turn, so a
+    // name adopted from one workspace is pushed to the next. Not on --dry-run.
+    if (!dryRun) {
+      for (const r of fleetWide ? cfg.routes : [route]) {
+        await reconcileRouteShipName({ route: r, ship: cfg.ship, configFile: cfg.configFile, emit: emit.forRoute(r.route) });
+      }
+    }
+
     // Many routes and none named: poll them all and pick the most
     // urgent across the fleet (ISSUE-338).
     if (fleetWide) {
@@ -2432,6 +2443,7 @@ switch (command) {
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
         spawnBreaker,
+        configFile: cfg.configFile,
         newEmitter: () => new Emitter({
           route: route.route,
           eventFile: eventFileFor(cfg.ship.stateDir),
@@ -2641,6 +2653,53 @@ switch (command) {
     // A diverged skill is not this run's failure, but it IS something an
     // operator needs to act on — same reasoning as `case 'agents'`.
     if (result.outcomes.some((o) => o.action === 'diverged')) process.exitCode = 1;
+    break;
+  }
+
+  case 'ship': {
+    // `crew ship rename NAME` (CREW-2495): one name for this machine in
+    // crew.yaml and on every workspace's Ships row. The local rename always
+    // happens; a row that refuses the write (a member key may not edit the
+    // table) is reported, not fatal, and is reconciled by the next poll.
+    if (positional[1] !== 'rename' || positional.length !== 3) {
+      process.stderr.write('crew ship rename NAME [--json]\n');
+      process.exit(2);
+    }
+    let newName: string;
+    try { newName = validateShipName(positional[2]!); } catch (e) {
+      if (e instanceof ShipNameError) { process.stderr.write(`crew ship: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    const oldName = cfg.ship.name;
+    writeFileSync(cfg.configFile, setShipNameInYaml(readFileSync(cfg.configFile, 'utf8'), newName));
+    cfg.ship.name = newName;
+    let renameMachineId: string | undefined;
+    try { renameMachineId = ensureMachineId(cfg.ship.stateDir); } catch { /* name matching only */ }
+    const outcomes: Array<{ route: string; status: string; rowId?: string; error?: string }> = [];
+    for (const r of cfg.routes) {
+      if (!r.resolved?.shipsModelId) { outcomes.push({ route: r.route, status: 'no-ships-table' }); continue; }
+      const resolvedFile = resolvedPathFor(cfg.ship.stateDir, r.route);
+      const tracker = new Tracker(r, cfg.ship);
+      const picked = pickShipRow(await tracker.shipRows(), renameMachineId, [oldName, readSyncedName(resolvedFile) ?? '']);
+      if (picked.kind !== 'row') {
+        outcomes.push({ route: r.route, status: picked.kind === 'unsupported' ? 'unsupported' : picked.kind === 'none' ? 'no-row' : 'ambiguous' });
+        continue;
+      }
+      try {
+        await tracker.renameShipRow(picked.row.id, newName);
+        writeSyncedName(resolvedFile, newName);
+        outcomes.push({ route: r.route, status: 'renamed', rowId: picked.row.id });
+      } catch (e) {
+        outcomes.push({ route: r.route, status: 'refused', rowId: picked.row.id, error: (e as Error).message });
+      }
+    }
+    if (flag('json')) {
+      process.stdout.write(`${JSON.stringify({ name: newName, previous: oldName, configFile: cfg.configFile, routes: outcomes })}\n`);
+    } else {
+      process.stdout.write(`ship renamed "${oldName}" -> "${newName}" in ${cfg.configFile}\n`);
+      for (const o of outcomes) process.stdout.write(`  ${o.route}: ${o.status}${o.error ? ` (${o.error})` : ''}\n`);
+    }
+    if (outcomes.some((o) => o.status === 'refused')) process.exitCode = 1;
     break;
   }
 
@@ -3212,6 +3271,7 @@ switch (command) {
       name: cfg.ship.name, platform: cfg.ship.platform, machineId,
       hostPassengers: firstRun?.answers.hostPassengers ?? existingRoute?.hostPassengers === true,
       sshPublicKey,
+      lastSyncedName: (r: string) => readSyncedName(resolvedPathFor(cfg.ship.stateDir, r)),
     };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
@@ -3257,6 +3317,11 @@ switch (command) {
         process.stderr.write(`crew connect ${ws}: unresolved —\n`);
         for (const p of found.problems) { process.stderr.write(`  - ${p}\n`); connectEvents.emit('problem', p, { stage: 'discover' }); }
         process.exit(2);
+      }
+      // CREW-2495: a rename made on the Ships row lands in crew.yaml here too.
+      if (found.shipNameAdopted && !dryRun) {
+        writeFileSync(cfg.configFile, setShipNameInYaml(readFileSync(cfg.configFile, 'utf8'), found.shipNameAdopted));
+        cfg.ship.name = found.shipNameAdopted;
       }
       if (found.shipRow) {
         connectEvents.emit('ship_row', `Ships row "${found.shipRow.name}" ${found.shipRow.action}`, found.shipRow);
@@ -3321,6 +3386,7 @@ switch (command) {
             agentSkills?: unknown;
             releaseAgentId?: string;
             role?: string;
+            shipName?: string;
           }
         | undefined;
       const hadPreviousFile = existsSync(resolvedPath);
@@ -3466,6 +3532,8 @@ switch (command) {
         ...(previous?.agentPersonas ? { agentPersonas: previous.agentPersonas } : {}),
         ...(previous?.agentSkills ? { agentSkills: previous.agentSkills } : {}),
         ...(previous?.releaseAgentId ? { releaseAgentId: previous.releaseAgentId } : {}),
+        // CREW-2495: the ship name this route last saw agree with its Ships row.
+        ...(found.shipRow ? { shipName: found.shipRow.name } : previous?.shipName ? { shipName: previous.shipName } : {}),
       };
       if (dryRun) {
         process.stderr.write(`(dry run) would write resolved ids to ${resolvedPath}\n`);
@@ -4639,6 +4707,7 @@ switch (command) {
     const projects = projectModeLabels(await statusTracker.projectRowsWithModes().catch(() => []));
     const crewMinVersion = (await readCrewFloor(route, cfg.ship)) ?? null;
     if (flag('json')) {
+      const nameSync = await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true });
       const repos = await resolvedRepos(route);
       // Per-seat identity (ISSUE-525): crew-macos's menu bar wants the seat's
       // own Crew-row `Name` (an operator can rename a seat to their liking)
@@ -4691,6 +4760,9 @@ switch (command) {
           // Additive (CREW-1373): open ship-level items, including the
           // derived `release_stale`. `version` stays 1.
           attention: openShipAttention(state),
+          // Additive (CREW-2495): this ship's Ships-row name and whether it has drifted from `name`.
+          rowName: nameSync.rowName ?? null,
+          nameDrift: nameSync.drift,
         },
         // Additive (CREW-1402): what the operator owes. `version` stays 1.
         todo: todo.map((i) => ({ ticket: displayKey(i.ticket), title: i.ticket.title ?? null, reasons: i.reasons })),
