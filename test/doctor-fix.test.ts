@@ -86,3 +86,19 @@ test('a named route limits the fix to that route', () => {
   assert.deepEqual(routesInScope(routes, 'a/two'), [{ route: 'a/two' }]);
   assert.deepEqual(routesInScope(routes, undefined), routes);
 });
+
+test('release-readiness gaps do not block enabling; a note says what is missing (CREW-2537)', async () => {
+  const h = await gatherHealth({ route: 'a/fresh', enabled: false, hasRepos: true },
+    async () => ({ problems: [], readiness: ['repo r: release.mode "local" needs a deploy hook'] }));
+  const p = planFix({ host: 'macos', schedulerAbsent: true, routes: [h] });
+  assert.deepEqual(p.actions, [{ kind: 'enable', route: 'a/fresh' }, { kind: 'install' }]);
+  assert.match(p.notes.join('\n'), /1 release-readiness gap.*deploy hook/);
+});
+
+test('an unsound route is explained, never silent (CREW-2537)', () => {
+  const p = planFix({ host: 'macos', schedulerAbsent: true,
+    routes: [clean('a/bad', { problems: ['repo r: /x is missing on disk'] }), clean('a/none', { hasRepos: false })] });
+  assert.deepEqual(p.actions, []);
+  assert.match(p.notes[0]!, /a\/bad: not enabled — repo r: \/x is missing/);
+  assert.match(p.notes[1]!, /a\/none: not enabled — no checkout/);
+});

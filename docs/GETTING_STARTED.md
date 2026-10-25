@@ -506,7 +506,11 @@ a checkout and is still `enabled: false` it asks (one yes/no per route) and
 writes just that key; then, if no scheduler is installed for this ship, it
 offers to run `crew install`. Run in a terminal with no flag, `doctor` offers
 the same at the end of its report; piped or scripted, a plain `doctor` never
-prompts and never changes anything. It prints every change it made.
+prompts and never changes anything. It prints every change it made. A route
+runs without release hooks (deploy, released, CI): those gaps are listed as
+"release readiness", `--fix` notes them when it enables the route, and a
+release stops at the first missing hook. A route it does not enable is named
+with its first blocking problem.
 
 Nothing writes to the tracker, wakes an agent, or deploys anything until
 this is `true` — it's the one switch that matters most, so leave it `false`

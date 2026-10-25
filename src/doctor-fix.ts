@@ -20,6 +20,12 @@ export interface RouteHealth {
   hasRepos: boolean;
   /** Every failed check, as the line doctor prints for it. Empty = clean. */
   problems: string[];
+  /**
+   * Release-readiness gaps (no deploy hook, no CI provider...). They matter only
+   * once a ticket reaches release and never stop a poll cycle, so they do not
+   * make a route unsound; `planFix` only mentions them.
+   */
+  readiness?: string[];
 }
 
 export type FixAction =
@@ -51,7 +57,16 @@ export function planFix(f: FixFacts): FixPlan {
   const actions: FixAction[] = [];
   const notes: string[] = [];
   for (const r of f.routes) {
-    if (!r.enabled && sound(r)) actions.push({ kind: 'enable', route: r.route });
+    if (!r.enabled && sound(r)) {
+      actions.push({ kind: 'enable', route: r.route });
+      const gaps = r.readiness ?? [];
+      if (gaps.length) {
+        notes.push(`${r.route}: ${gaps.length} release-readiness gap${gaps.length === 1 ? '' : 's'} (${gaps[0]}${gaps.length > 1 ? ', ...' : ''}) — the route will run, but releases stop at the first missing hook until it is added`);
+      }
+    } else if (!sound(r) && !r.enabled) {
+      // Never leave "nothing to change" without saying why.
+      notes.push(`${r.route}: not enabled — ${r.hasRepos ? r.problems[0] : 'no checkout is configured'}`);
+    }
   }
   if (f.schedulerAbsent && f.routes.some(sound)) {
     // Every sound route is either enabled already or offered for enabling above.
@@ -68,15 +83,18 @@ export function planFix(f: FixFacts): FixPlan {
  */
 export async function gatherHealth(
   c: { route: string; enabled: boolean; hasRepos: boolean },
-  check: () => Promise<string[]>,
+  check: () => Promise<string[] | { problems: string[]; readiness: string[] }>,
 ): Promise<RouteHealth> {
   let problems: string[];
+  let readiness: string[] = [];
   try {
-    problems = await check();
+    const r = await check();
+    if (Array.isArray(r)) problems = r;
+    else ({ problems, readiness } = r);
   } catch (e) {
     problems = [`checks could not run: ${e instanceof Error ? e.message : String(e)}`];
   }
-  return { route: c.route, enabled: c.enabled, hasRepos: c.hasRepos, problems };
+  return { route: c.route, enabled: c.enabled, hasRepos: c.hasRepos, problems, readiness };
 }
 
 /** `crew doctor <route> --fix` considers only the named route; with none named, every route. */

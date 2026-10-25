@@ -433,7 +433,11 @@ in — so the hook prints that, and the crew carries it.
   configured but never runs is exactly the failure this spec exists to avoid.
 - **The merged result is validated, not just the file.** A repo with no
   `.crew.yaml` does not escape the consistency rules (a `local` release still
-  needs a deploy hook) just because its settings arrived from the ship.
+  needs a deploy hook) just because its settings arrived from the ship. These are *release-readiness*
+  findings: a route polls and builds without a deploy, test or build hook, so
+  `crew doctor` prints them as "release readiness" and `crew doctor --fix` still
+  enables the route; releases stop at the first missing hook. `crew status
+  --json` lists them per repository as `releaseReadiness`.
 - **The repo is the source of truth for everything in this file, `platform`
   included.** It used to also live on the route in `crew.yaml`, as a
   fallback the ship could set before a repo had adopted this file — that

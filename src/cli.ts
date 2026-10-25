@@ -1106,9 +1106,12 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
  * decide whether the route is clean. Mirrors the `doctor` report above; a
  * check that cannot even run (a tracker call that throws) counts as failed.
  */
-async function routeProblems(c: Route): Promise<string[]> {
+async function routeProblems(c: Route): Promise<{ problems: string[]; readiness: string[] }> {
   const host = hostPlatform();
   const problems: string[] = [];
+  // Release readiness (CREW-2537) is reported apart: none of it stops a poll
+  // cycle, so it must not keep a route from being enabled.
+  const readiness: string[] = [];
   // Host Passengers preflight, as `doctor` prints it: a route that needs Docker
   // or ssh-keygen must not be enabled while they are missing.
   if (c.hostPassengers) {
@@ -1120,7 +1123,7 @@ async function routeProblems(c: Route): Promise<string[]> {
   for (const r of await resolvedRepos(c)) {
     if (!existsSync(r.dir)) problems.push(`repo ${r.name}: ${r.dir} is missing on disk`);
     if (!satisfies(host, r.config.platform)) problems.push(`repo ${r.name}: requires ${r.config.platform}, this host is ${host}`);
-    problems.push(...validateEffective(r.config).map((p) => `repo ${r.name}: ${p}`));
+    readiness.push(...validateEffective(r.config).map((p) => `repo ${r.name}: ${p}`));
   }
   try {
     const ships = await tracker.shipRows();
@@ -1133,7 +1136,7 @@ async function routeProblems(c: Route): Promise<string[]> {
   } catch (e) {
     problems.push(`tracker unreachable: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return problems;
+  return { problems, readiness };
 }
 
 /** This machine's hashed id for doctor's read-only row matching; `--machine-id` is honored like connect's. */
@@ -4845,6 +4848,9 @@ switch (command) {
             // Additive (CREW-1379): `unsafe` means a ship must not cut a
             // worktree or release from this base. `version` stays 1.
             baseBranch: baseHealth(r),
+            // Additive (CREW-2537): gaps that only matter once a ticket reaches
+            // release (no deploy hook, no CI provider...). They never stop a poll.
+            releaseReadiness: validateEffective(r.config),
             // Additive (CREW-2051): worktrees the sweep refuses to remove.
             heldWorktrees: openShipAttention(state)
               .filter((i) => i.kind === 'worktree_held' && i.held?.repo === r.name)
@@ -5078,7 +5084,7 @@ switch (command) {
         );
       }
       for (const p2 of validateEffective(config)) {
-        process.stdout.write(`                   - ${p2}\n`);
+        process.stdout.write(`                   - release readiness: ${p2}\n`);
       }
       const dh = doctorBaseReport(r, config.branch.base, baseHealth);
       process.stdout.write(dh.text);
