@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.73.3] — 2026-10-25
+
+- CREW-2529 Release hand-backs name the sibling branch a conflict comes from, and the tests-failed alert directs a composition-only fix onto an owning branch instead of a fresh one.
+
 ## [0.73.2] — 2026-10-25
 
 - CREW-2528 A ticket branch cut fresh from the base no longer tracks it or blocks the release once another ship pushes the real branch; a skipped release is now noted on the ticket.
