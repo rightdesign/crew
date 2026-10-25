@@ -158,14 +158,27 @@ async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew
   const fakeClaude = join(dir, 'claude');
   writeFileSync(fakeClaude, '#!/bin/sh\nexit 1\n');
   chmodSync(fakeClaude, 0o755);
+  // A stub `security` first on PATH (CREW-2524). @tablation/client shells out to the real macOS
+  // `security` to store the key, with no timeout; against a throwaway HOME on a Mac with a
+  // locked or prompting login keychain it blocks forever at 0% CPU. "No keychain" is what
+  // these tests assume, so make that true: item-not-found on read, failure on write. It sits
+  // in its own directory so it does not put the fake `claude` on PATH.
+  const stubs = join(dir, 'stubs');
+  mkdirSync(stubs, { recursive: true });
+  writeFileSync(join(stubs, 'security'), '#!/bin/sh\nexit 44\n');
+  chmodSync(join(stubs, 'security'), 0o755);
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'cli.ts'), 'connect', ...args.map((a) => a.replace('$CLAUDE', fakeClaude))], {
-    env: { PATH: pathEnv, HOME: dir, CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
+    env: { PATH: `${stubs}:${pathEnv}`, HOME: dir, CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = ''; let stderr = '';
   child.stdout.on('data', (d) => { stdout += d; });
   child.stderr.on('data', (d) => { stderr += d; });
+  // node:test's per-test timeout fails the test but leaves the child running, and a live
+  // child keeps the whole test process (and the suite) from exiting. Kill it first.
+  const watchdog = setTimeout(() => { stderr += '\n[runConnect: child killed after 45s]'; child.kill('SIGKILL'); }, 45000);
   const code = await new Promise<number | null>((r) => child.on('close', r));
+  clearTimeout(watchdog);
   const events = stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, any>);
   return { code, events, stdout, stderr, dir };
 }
