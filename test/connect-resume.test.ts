@@ -44,7 +44,7 @@ test('the pointer is per host and holds no secret', async () => {
   const stateDir = dir();
   rememberSession(stateDir, HOST, 'ws');
   rememberSession(stateDir, 'other.test', 'beta');
-  assert.deepEqual(JSON.parse(readFileSync(lastSessionFile(stateDir), 'utf8')), { [HOST]: 'ws', 'other.test': 'beta' });
+  assert.deepEqual(JSON.parse(readFileSync(lastSessionFile(stateDir), 'utf8')), { [HOST]: ['ws'], 'other.test': ['beta'] });
   const r = await resumeKeychainSession({ store: storeOf({ 'other.test/beta': 'kb' }), stateDir, host: 'third.test', verify: async () => true });
   assert.equal(r, undefined);
 });
@@ -99,4 +99,26 @@ test('sign-out honors --host and --workspace', async () => {
   const out = await signOutSessions({ store: clearingStore(entries), stateDir, host: 'other.test', workspace: 'x' });
   assert.deepEqual(out, [{ host: 'other.test', workspace: 'x', action: 'removed' }]);
   assert.deepEqual(Object.keys(entries), [`${HOST}/ws`]);
+});
+
+import { resumableSessions } from '../src/connect-resume.ts';
+
+test('CREW-2498: a real run resumes one remembered workspace, and offers several as a choice', async () => {
+  const stateDir = dir();
+  const store = storeOf({ [`${HOST}/a`]: 'ka', [`${HOST}/b`]: 'kb' });
+  rememberSession(stateDir, HOST, 'a');
+  assert.deepEqual(await resumableSessions({ store, stateDir, host: HOST, verify: async () => true }), [{ workspace: 'a', apiKey: 'ka' }]);
+  rememberSession(stateDir, HOST, 'b');
+  rememberSession(stateDir, HOST, 'a');
+  const both = await resumableSessions({ store, stateDir, host: HOST, verify: async () => true });
+  assert.deepEqual(both.map((r) => r.workspace), ['b', 'a']);
+  assert.equal(await resumeKeychainSession({ store, stateDir, host: HOST, verify: async () => true }), undefined, 'ambiguous');
+  assert.deepEqual(await resumableSessions({ store, stateDir, host: HOST, verify: async (k) => k === 'kb' }), [{ workspace: 'b', apiKey: 'kb' }]);
+  assert.deepEqual(await resumableSessions({ store, stateDir, host: 'none.test', verify: async () => true }), [], 'no remembered session: device path');
+});
+
+test('CREW-2498: a pointer file from before several workspaces were remembered still reads', async () => {
+  const stateDir = dir();
+  (await import('node:fs')).writeFileSync(lastSessionFile(stateDir), JSON.stringify({ [HOST]: 'ws' }));
+  assert.deepEqual(rememberedSessions(stateDir), [{ host: HOST, workspace: 'ws' }]);
 });

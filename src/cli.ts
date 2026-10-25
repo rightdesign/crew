@@ -25,7 +25,7 @@ import {
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
-import { resumeKeychainSession, rememberSession, rememberedSessions, signOutSessions } from './connect-resume.ts';
+import { resumableSessions, rememberSession, rememberedSessions, signOutSessions } from './connect-resume.ts';
 import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
@@ -3110,18 +3110,24 @@ switch (command) {
         // ever been stored.
       }
     }
-    // CREW-2315: a dry-run with no workspace named is the macOS wizard's
-    // sign-in step. If a previous dry-run already stored a keychain session
-    // for this host, and the server still accepts it, resume from it instead
-    // of making the operator approve a device again.
+    // CREW-2315/CREW-2498: a run with no workspace named (the macOS wizard's
+    // dry-run sign-in, and the provisioning run that follows it) resumes a
+    // keychain session this host already stored, when the server still accepts
+    // it, instead of making the operator approve a device again. One remembered
+    // workspace is used; several become a `workspace` choice under `--json`.
     let signInSource: 'keychain' | 'device' | 'key' = apiKey ? 'key' : 'device';
-    if (!apiKey && !workspace && dryRun && store) {
-      const resumed = await resumeKeychainSession({
+    if (!apiKey && !workspace && store) {
+      const resumable = await resumableSessions({
         store, stateDir: cfg.ship.stateDir, host: hostFromUrl(baseUrl),
         verify: async (k) => {
           try { await connectGet({ baseUrl, apiKey: k, userAgent: cfg.ship.userAgent }, '/auth/me'); return true; } catch { return false; }
         },
       });
+      if (resumable.length > 1 && connectEvents.json) {
+        stopForChoice('workspace', `${resumable.length} workspaces have a remembered sign-in on ${hostFromUrl(baseUrl)} — which one?`,
+          resumable.map((r) => ({ value: r.workspace, label: r.workspace })));
+      }
+      const resumed = resumable.length === 1 ? resumable[0] : undefined;
       if (resumed) {
         apiKey = resumed.apiKey;
         workspace = resumed.workspace;

@@ -23,22 +23,33 @@ export function lastSessionFile(stateDir: string): string {
   return join(stateDir, 'connect-session.json');
 }
 
-function readPointers(stateDir: string): Record<string, string> {
+/** host to every workspace slug a keychain session was stored for (a pointer written before CREW-2498 holds one slug as a string). */
+function readPointers(stateDir: string): Record<string, string[]> {
   try {
     const parsed: unknown = JSON.parse(readFileSync(lastSessionFile(stateDir), 'utf8'));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).filter((e): e is [string, string] => typeof e[1] === 'string'));
+    const out: Record<string, string[]> = {};
+    for (const [host, v] of Object.entries(parsed)) {
+      const slugs = (Array.isArray(v) ? v : [v]).filter((x): x is string => typeof x === 'string' && x !== '');
+      if (slugs.length) out[host] = slugs;
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
-/** Remember which workspace `host`'s keychain session was last stored for. Best-effort: never throws. */
+function writePointers(stateDir: string, pointers: Record<string, string[]>): void {
+  const file = lastSessionFile(stateDir);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(pointers, null, 2)}\n`, { mode: 0o600 });
+}
+
+/** Remember that `host` has a keychain session stored for `workspaceSlug`; the most recent goes last. Best-effort: never throws. */
 export function rememberSession(stateDir: string, host: string, workspaceSlug: string): void {
   try {
-    const file = lastSessionFile(stateDir);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify({ ...readPointers(stateDir), [host]: workspaceSlug }, null, 2)}\n`, { mode: 0o600 });
+    const all = readPointers(stateDir);
+    writePointers(stateDir, { ...all, [host]: [...(all[host] ?? []).filter((w) => w !== workspaceSlug), workspaceSlug] });
   } catch { /* the pointer only saves a re-approval; losing it is not a failure */ }
 }
 
@@ -48,39 +59,42 @@ export interface ResumedSession {
 }
 
 /**
- * The keychain session `host` last signed in to, when the keychain still holds
- * it and `verify` says the server still accepts the key. `undefined` for every
- * other outcome, including a keychain that cannot be reached right now.
+ * Every keychain session remembered for `host` whose key the keychain still
+ * holds and `verify` says the server still accepts. Empty for every other
+ * outcome, including a keychain that cannot be reached right now.
  */
-export async function resumeKeychainSession(o: {
+export async function resumableSessions(o: {
   store: Pick<SessionStore, 'get'>;
   stateDir: string;
   host: string;
   verify: (apiKey: string) => Promise<boolean>;
-}): Promise<ResumedSession | undefined> {
-  const workspace = readPointers(o.stateDir)[o.host];
-  if (!workspace) return undefined;
-  try {
-    const stored = await o.store.get(o.host, workspace);
-    if (!stored?.apiKey) return undefined;
-    if (!(await o.verify(stored.apiKey))) return undefined;
-    return { workspace, apiKey: stored.apiKey };
-  } catch {
-    return undefined;
+}): Promise<ResumedSession[]> {
+  const out: ResumedSession[] = [];
+  for (const workspace of readPointers(o.stateDir)[o.host] ?? []) {
+    try {
+      const stored = await o.store.get(o.host, workspace);
+      if (stored?.apiKey && (await o.verify(stored.apiKey))) out.push({ workspace, apiKey: stored.apiKey });
+    } catch { /* this entry is unusable; the others may not be */ }
   }
+  return out;
 }
 
+/** The one resumable session for `host`, or `undefined` when there is none or more than one (the caller must choose). */
+export async function resumeKeychainSession(o: Parameters<typeof resumableSessions>[0]): Promise<ResumedSession | undefined> {
+  const all = await resumableSessions(o);
+  return all.length === 1 ? all[0] : undefined;
+}
 
 /** Every host/workspace pair a `crew connect` keychain sign-in was remembered for (the keychain itself cannot be listed). */
 export function rememberedSessions(stateDir: string): Array<{ host: string; workspace: string }> {
-  return Object.entries(readPointers(stateDir)).map(([host, workspace]) => ({ host, workspace }));
+  return Object.entries(readPointers(stateDir)).flatMap(([host, ws]) => ws.map((workspace) => ({ host, workspace })));
 }
 
 /** Drop `host`'s pointer, removing the file when it was the last one. Best-effort: never throws. */
 export function forgetSession(stateDir: string, host: string): void {
   try {
     const { [host]: _gone, ...rest } = readPointers(stateDir);
-    if (Object.keys(rest).length) writeFileSync(lastSessionFile(stateDir), `${JSON.stringify(rest, null, 2)}\n`, { mode: 0o600 });
+    if (Object.keys(rest).length) writePointers(stateDir, rest);
     else rmSync(lastSessionFile(stateDir), { force: true });
   } catch { /* a stale pointer only costs a failed keychain lookup */ }
 }
