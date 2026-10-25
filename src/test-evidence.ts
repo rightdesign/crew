@@ -54,5 +54,9 @@ export function describeComposition(c: GateComposition): string {
     : '- (none merged this cycle)';
   return `${headLine(c.head)} Base before merging \`${c.base.slice(0, 8)}\`. Merged branches:\n\n${rows}\n\n` +
     'The gate runs on the base plus every verified branch above, not on the base alone: ' +
-    'reproduce on that composition.';
+    'reproduce on that composition. A fix that compiles only on the composition belongs on one of ' +
+    'those branches (the one owning the failing file, after merging the others into it), not on a ' +
+    'new branch cut from the base: a separate fix branch conflicts with the branches it contains ' +
+    'when the release squash-merges them all. Re-queue the touched ticket to QA and close this ' +
+    'alert with a note.';
 }

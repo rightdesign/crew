@@ -1735,6 +1735,7 @@ async function releasePhase(
         try {
           const bounce = planConflictBounce(
             target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, handedBack,
+            outcome.merged.filter((m) => m.branch).map((m) => ({ key: m.ticket.issue_id, branch: m.branch! })),
           );
           const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
           if (r.kind === 'failed') {

@@ -62,6 +62,8 @@ export interface ConflictBounce {
   baseSha: string | null;
   /** The base tip the most recent acted-on hand-back was written against; null for events that predate it. */
   priorBaseSha: string | null;
+  /** Branches already squash-merged earlier in this same release that changed one of `paths`. */
+  siblings?: { key: string; branch: string }[];
 }
 
 export type ConflictOutcome =
@@ -137,7 +139,12 @@ export function planConflictBounce(
   base: string,
   paths: string[],
   events: RunnerEvent[],
+  merged: { key: string; branch: string }[] = [],
 ): ConflictBounce {
+  // A path touched by a branch merged earlier in this release conflicts with
+  // that branch, not with a base that has not moved.
+  const siblings = merged.filter((m) => m.branch !== branch && paths.some((p) =>
+    (gitOk(cwd, ['diff', '--name-only', `${base}...${m.branch}`, '--', p]) ?? '').trim() !== ''));
   return {
     ticket, branch, base, paths,
     worktree: worktreeForBranch(cwd, branch),
@@ -145,6 +152,7 @@ export function planConflictBounce(
     cwd,
     baseSha: gitOk(cwd, ['rev-parse', '--verify', '-q', base]) || null,
     priorBaseSha: baseShaOf(lastActedHandBack(ticket, events) ?? { record_id: '', event_type: '' }),
+    siblings,
   };
 }
 
@@ -195,7 +203,9 @@ export function handBackComment(b: ConflictBounce, merged: boolean): string {
 
 **Back with the dev lane — this branch no longer merges.**
 
-\`${b.branch}\` was verified, but squash-merging it into \`${b.base}\` conflicts in ${list}. Work that landed on \`${b.base}\` after this branch was cut has changed the same lines.
+\`${b.branch}\` was verified, but squash-merging it into \`${b.base}\` conflicts in ${list}. ${b.siblings?.length
+    ? `This conflicts with ${b.siblings.map((x) => `${x.key} (\`${x.branch}\`)`).join(', ')}, merged earlier in the same release, not with a \`${b.base}\` that moved: merging \`${b.base}\` in will change nothing. Merge ${b.siblings.length === 1 ? 'that branch' : 'those branches'} into this one (or move this change onto ${b.siblings.length === 1 ? 'it' : 'one of them'}), resolve, and push.`
+    : `Work that landed on \`${b.base}\` after this branch was cut has changed the same lines.`}
 
 ${merged
     ? `\`${b.base}\` has been merged into \`${b.branch}\` in its worktree and the conflict is left in place, so \`git status\` there shows exactly what disagrees. Resolve it, commit, push as a plain fast-forward (the branch is pushed, so rebasing it is not an option) and hand back to QA as usual — \`git merge --abort\` backs the merge out if you would rather start differently.`

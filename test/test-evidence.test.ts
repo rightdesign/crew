@@ -41,6 +41,7 @@ test('the tests-failed alert carries evidence, shas and branches', () => {
   assert.match(n.detail!, /11111111/);
   assert.match(n.detail!, /TABL-2199 `tabl-2199` @ `deadbeef`/);
   assert.match(n.detail!, /base plus every verified branch/);
+  assert.match(n.detail!, /belongs on one of those branches/);
   assert.equal(n.head, comp.head);
 });
 
