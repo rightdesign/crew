@@ -262,15 +262,19 @@ export interface RouteWritePlan {
   written: string[];
   /** Hook names left alone because the route already sets them. */
   kept: string[];
+  /** Hook names whose existing route value was overwritten (`replace`); also listed in `written`. */
+  replaced: string[];
 }
 
 /**
  * Add `hooks` to the route-level config of repo `name`. A route on `dir:` takes
  * them under its own `hooks:`; a route on `repos:` takes them under that repo's
  * entry (a bare path entry becomes `{ dir, hooks }`). Hooks the route already
- * sets are kept, never overwritten. Comments and other routes are untouched.
+ * sets are kept, never overwritten, unless `replace` (CREW-2523): then each
+ * named key overwrites its existing value and keys not named stay as they are.
+ * Comments and other routes are untouched.
  */
-export function planRouteHooks(text: string, route: string, name: string, hooks: SuggestedHooks): RouteWritePlan {
+export function planRouteHooks(text: string, route: string, name: string, hooks: SuggestedHooks, opts: { replace?: boolean } = {}): RouteWritePlan {
   const doc = parseDocument(text);
   if (doc.errors.length > 0) throw new ReposError(`config is not valid YAML — ${doc.errors[0]!.message}`);
   const m = routeMapOf(doc, route);
@@ -295,15 +299,41 @@ export function planRouteHooks(text: string, route: string, name: string, hooks:
   }
   const written: string[] = [];
   const kept: string[] = [];
+  const replaced: string[] = [];
   for (const [k, v] of Object.entries(hooks)) {
     if (v === undefined) continue;
-    if (hooksMap.has(k)) kept.push(k);
+    if (hooksMap.has(k) && !opts.replace) kept.push(k);
     else {
+      if (hooksMap.has(k)) replaced.push(k);
       hooksMap.set(k, v);
       written.push(k);
     }
   }
-  return { text: String(doc), written, kept };
+  return { text: String(doc), written, kept, replaced };
+}
+
+/**
+ * Remove the route-level `hooks:` map of repo `name` (CREW-2523). A bare-path
+ * `repos:` entry is left as it was; one that is a map keeps its `dir`. Hooks in
+ * the repo's own `.crew.yaml` are not touched. `removed` names the hooks that
+ * were set (empty when there was nothing to clear).
+ */
+export function clearRouteHooks(text: string, route: string, name: string): { text: string; removed: string[] } {
+  const doc = parseDocument(text);
+  if (doc.errors.length > 0) throw new ReposError(`config is not valid YAML — ${doc.errors[0]!.message}`);
+  const m = routeMapOf(doc, route);
+  const repos = m.get('repos', true);
+  let target: YAMLMap = m;
+  if (isMap(repos)) {
+    const entry = repos.get(name, true);
+    if (!isMap(entry)) return { text, removed: [] };
+    target = entry;
+  }
+  const current = target.get('hooks', true);
+  if (!isMap(current)) return { text, removed: [] };
+  const removed = current.items.map((i) => String((i.key as { value?: unknown }).value ?? i.key));
+  target.delete('hooks');
+  return { text: String(doc), removed };
 }
 
 /**

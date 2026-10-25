@@ -88,7 +88,7 @@ import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPro
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
+import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
 import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, cloneBaseOf, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
@@ -2710,7 +2710,7 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
       process.exit(2);
     };
     if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks') usage();
@@ -2726,6 +2726,10 @@ switch (command) {
         const suggestion = suggestHooks(files);
         const write = value('write');
         if (write !== undefined && write !== 'route' && write !== 'repo') throw new ReposError(`--write takes "route" or "repo" (got "${write}")`);
+        const clear = value('clear');
+        if (clear !== undefined && clear !== 'route') throw new ReposError(`--clear takes "route" (got "${clear}")`);
+        if (clear && (write || flag('suggest') || flag('agent'))) throw new ReposError('--clear cannot be combined with --write, --suggest or --agent');
+        if (flag('replace') && write !== 'route') throw new ReposError('--replace only applies with --write route');
         const recipeIds = (value('recipes') ?? '').split(',').map((x) => x.trim()).filter((x) => x && x !== 'none');
         if (recipeIds.length > 0 && !write) throw new ReposError('--recipes only applies with --write route|repo');
         if (flag('agent') && write) throw new ReposError('--agent is read-only; drop --write (write the sniffed hooks, then re-run --agent to compare)');
@@ -2750,21 +2754,27 @@ switch (command) {
         if (hookSpecs.length > 0 && !write) throw new ReposError('--hook only applies with --write route|repo');
         const base = selectRecipes(suggestion, recipeIds);
         const picked = { ...base, hooks: { ...base.hooks, ...overrides } };
-        let written: { target: 'route' | 'repo'; file: string; hooks: string[]; kept: string[] } | undefined;
+        let written: { target: 'route' | 'repo'; file: string; hooks: string[]; kept: string[]; replaced: string[] } | undefined;
+        let cleared: { file: string; removed: string[] } | undefined;
+        if (clear) {
+          const plan = clearRouteHooks(configText, a.route, a.name);
+          if (plan.removed.length > 0) writeFileSync(cfg.configFile, plan.text);
+          cleared = { file: cfg.configFile, removed: plan.removed };
+        }
         if (write && suggestion.source === null && recipeIds.length === 0 && hookSpecs.length === 0) throw new ReposError(`nothing to write: ${suggestion.notes[0]}`);
         if (write === 'route') {
-          const plan = planRouteHooks(configText, a.route, a.name, picked.hooks);
+          const plan = planRouteHooks(configText, a.route, a.name, picked.hooks, { replace: flag('replace') });
           writeFileSync(cfg.configFile, plan.text);
-          written = { target: 'route', file: cfg.configFile, hooks: plan.written, kept: plan.kept };
+          written = { target: 'route', file: cfg.configFile, hooks: plan.written, kept: plan.kept, replaced: plan.replaced };
         } else if (write === 'repo') {
           const have = existingRepoConfig(files);
           if (have) throw new ReposError(`${resolvePath(dir, have)} already exists; not overwriting it`);
           const file = resolvePath(dir, '.crew.yaml');
           writeFileSync(file, starterRepoConfig(picked.hooks, picked.release), { flag: 'wx' });
-          written = { target: 'repo', file, hooks: Object.keys(picked.hooks), kept: [] };
+          written = { target: 'repo', file, hooks: Object.keys(picked.hooks), kept: [], replaced: [] };
         }
         if (flag('json')) {
-          process.stdout.write(`${JSON.stringify({ route: a.route, repo: a.name, dir, ...suggestion, agent, agentError, written: written ?? null })}\n`);
+          process.stdout.write(`${JSON.stringify({ route: a.route, repo: a.name, dir, ...suggestion, agent, agentError, written: written ?? null, cleared: cleared ?? null })}\n`);
         } else {
           if (suggestion.source) process.stdout.write(`${a.name}: proposed from ${suggestion.source}\n`);
           for (const [k, v] of Object.entries(suggestion.hooks)) process.stdout.write(`  ${k}: ${v}\n`);
@@ -2776,8 +2786,10 @@ switch (command) {
             for (const n of agent.notes) process.stdout.write(`note: ${n}\n`);
           }
           if (agentError) process.stderr.write(`crew repos: --agent failed (${agentError.reason}): ${agentError.message}\n`);
+          if (cleared) process.stdout.write(cleared.removed.length ? `removed route hooks ${cleared.removed.join(', ')} from ${cleared.file}\n` : 'no route hooks to remove\n');
           if (written) {
             process.stdout.write(`wrote ${written.hooks.join(', ') || 'nothing new'} to ${written.file}\n`);
+            if (written.replaced.length) process.stdout.write(`replaced route hooks: ${written.replaced.join(', ')}\n`);
             if (written.kept.length) process.stdout.write(`kept existing route hooks: ${written.kept.join(', ')}\n`);
             if (written.target === 'repo') process.stdout.write('review it and commit it to the repository\n');
             if (written.target === 'route' && picked.release) process.stdout.write(`note: release.mode ${picked.release.mode} is repo-level; use --write repo to set it\n`);

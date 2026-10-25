@@ -102,3 +102,28 @@ test('SIGINT during --agent reports cancelled with a non-zero exit instead of ex
   assert.equal(code, 1, p.out().stderr);
   assert.equal(JSON.parse(p.out().stdout).agentError.reason, 'cancelled');
 });
+
+test('--write route --replace then --clear route round-trips through the CLI (CREW-2523)', async () => {
+  const s = ship();
+  const run = async (...args: string[]) => {
+    const p = s.start(...args);
+    const [code] = await once(p.child, 'exit');
+    return { code, ...p.out() };
+  };
+  const cfgOf = () => readFileSync(join(s.repo, '..', 'crew.yaml'), 'utf8');
+  assert.equal((await run('--write', 'route', '--hook', 'test=one')).code, 0);
+  assert.match(cfgOf(), /test: one/);
+  assert.equal((await run('--write', 'route', '--hook', 'test=two')).code, 0);
+  assert.match(cfgOf(), /test: one/);
+  const rep = await run('--write', 'route', '--replace', '--hook', 'test=two', '--json');
+  assert.equal(rep.code, 0, rep.stderr);
+  assert.deepEqual(JSON.parse(rep.stdout).written.replaced, ['test']);
+  assert.match(cfgOf(), /test: two/);
+  const clr = await run('--clear', 'route', '--json');
+  assert.equal(clr.code, 0, clr.stderr);
+  assert.deepEqual(JSON.parse(clr.stdout).cleared.removed, ['test']);
+  assert.doesNotMatch(cfgOf(), /hooks:/);
+  const bad = await run('--clear', 'route', '--write', 'route');
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /--clear cannot be combined/);
+});

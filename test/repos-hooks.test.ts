@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parse } from 'yaml';
-import { suggestHooks, planRouteHooks, starterRepoConfig, parseHooksArgs, repoDirOf, existingRepoConfig, type CheckoutFiles } from '../src/repos-hooks.ts';
+import { suggestHooks, planRouteHooks, clearRouteHooks, starterRepoConfig, parseHooksArgs, repoDirOf, existingRepoConfig, type CheckoutFiles } from '../src/repos-hooks.ts';
 import { ReposError } from '../src/repos-cmd.ts';
 
 const tree = (files: Record<string, string>): CheckoutFiles => ({
@@ -90,4 +90,29 @@ test('argument parsing and repo lookup', () => {
   assert.throws(() => parseHooksArgs(['x'], ['a/b', 'c/d']), ReposError);
   assert.equal(repoDirOf(cfg, '/cfg', 'c/d', 'q'), '/src/q');
   assert.throws(() => repoDirOf(cfg, '/cfg', 'c/d', 'zz'), /have: p, q/);
+});
+
+test('replace overwrites named route hooks and leaves the rest (CREW-2523)', () => {
+  const b = planRouteHooks(cfg, 'c/d', 'q', { test: 'npm test', build: 'npm run build' }, { replace: true });
+  assert.deepEqual(route(b.text, 'c/d').repos.q.hooks, { test: 'npm test', build: 'npm run build' });
+  assert.deepEqual(b.replaced, ['test']);
+  assert.deepEqual(b.written, ['test', 'build']);
+  assert.deepEqual(b.kept, []);
+  const c = planRouteHooks(b.text, 'c/d', 'q', { test: 'other' }, { replace: true });
+  assert.deepEqual(route(c.text, 'c/d').repos.q.hooks, { test: 'other', build: 'npm run build' });
+});
+
+test('clear removes the route hooks map, keeps dir and comments (CREW-2523)', () => {
+  const a = clearRouteHooks(cfg, 'c/d', 'q');
+  assert.deepEqual(a.removed, ['test']);
+  assert.deepEqual(route(a.text, 'c/d').repos.q, { dir: '/src/q' });
+  assert.deepEqual(route(a.text, 'c/d').repos.p, '/src/p');
+  assert.match(a.text, /# keep me/);
+  const none = clearRouteHooks(cfg, 'c/d', 'p');
+  assert.deepEqual(none.removed, []);
+  assert.equal(none.text, cfg);
+  const dirRoute = planRouteHooks(cfg, 'a/b', 'x', { test: 'npm test' });
+  const cleared = clearRouteHooks(dirRoute.text, 'a/b', 'x');
+  assert.deepEqual(cleared.removed, ['test']);
+  assert.equal(route(cleared.text, 'a/b').hooks, undefined);
 });
