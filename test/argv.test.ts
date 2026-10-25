@@ -71,3 +71,19 @@ test('--version and version are version requests; nothing else is (CREW-2404)', 
   assert.equal(versionRequest(['--version', '--bogus']), null);
   assert.equal(versionRequest([]), null);
 });
+
+import { readFileSync } from 'node:fs';
+import { VALUE_FLAGS } from '../src/argv.ts';
+
+test('every value(\'name\') read in cli.ts is a VALUE_FLAGS member (CREW-2521)', () => {
+  const src = readFileSync(new URL('../src/cli.ts', import.meta.url), 'utf8');
+  const names = new Set([...src.matchAll(/\bvalue\('([a-z-]+)'\)/g)].map((m) => m[1] as string));
+  assert.ok(names.size > 10, 'the audit found the value() reads');
+  const missing = [...names].filter((n) => !VALUE_FLAGS.has(n));
+  assert.deepEqual(missing, [], 'valued options the positional parser would read as positionals');
+});
+
+test('--toolchain and --machine-id values are not positionals (CREW-2521)', () => {
+  assert.deepEqual(positionalArgs(['selftest', '--toolchain', 'claude', '--json']), ['selftest']);
+  assert.deepEqual(positionalArgs(['connect', '--machine-id', 'abc', '--dry-run', '--json']), ['connect']);
+});
