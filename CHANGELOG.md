@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.72.3] — 2026-10-25
+
+- CREW-2514 crew connect now updates the Claude Code MCP entry it registered earlier when the route key rotates, instead of leaving it as foreign.
+
 ## [0.72.2] — 2026-10-25
 
 - CREW-2516 First-run `crew connect` no longer writes a placeholder `dir:` that is never a checkout; `crew repos add`/`clone` drop a leftover one and `repos list --json` reports it as `cloneBase`.
