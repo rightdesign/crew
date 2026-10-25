@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.72.0] — 2026-10-25
+
+- CREW-2495 `crew ship rename` and two-way ship name sync between crew.yaml and the Ships table.
+
 ## [0.71.13] — 2026-10-25
 
 - CREW-2492 An unknown command is rejected before any config is loaded, so the suite passes without a crew.yaml and npm publishes can succeed again.
