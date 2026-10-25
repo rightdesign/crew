@@ -7,7 +7,7 @@
 
 import type { RoleName } from '../config.ts';
 import { mapStreamLine, extractResult, extractTurnTokens } from '../stream.ts';
-import { ensureClaudeMcp, inspectClaudeMcp, removeClaudeMcp } from '../claude-mcp.ts';
+import { ensureClaudeMcp, ensureClaudeMcpResult, inspectClaudeMcp, removeClaudeMcp } from '../claude-mcp.ts';
 import type { PairInstaller } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
 import { wrapInvocation, isOmlxLauncher } from '../launcher.ts';
@@ -175,4 +175,5 @@ export const claudeAdapter: HarnessAdapter = {
     return s.state === 'no-claude' ? { state: 'no-binary' } : s;
   },
   ensureMcp: ensureClaudeMcp,
+  ensureMcpResult: ensureClaudeMcpResult,
 };

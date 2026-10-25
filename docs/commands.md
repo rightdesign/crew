@@ -116,7 +116,7 @@ On a terminal the wizard still runs unless `--no-wizard` is given. Off a termina
 | `ship_row` | `id`, `name`, `action` (`created` or `matched`) |
 | `operator_row` | `id`, `action` (`matched`, `linked`, `created`, or `previous` for one carried from an earlier connect), `name`, `email` (the row's, else its linked member's; omitted when unknown) |
 | `seat` | one per lane: `role`, `id` (empty for `would-create`), `ship_id` (the Ships row the matched row belongs to; empty when none), `action` (`matched`, `claimed`, `created`, or `would-create`: a dry run found no row this machine could claim, so a real run would create one), `key` (the seat-key outcome: `minted`, `already_stored`, `no_agent`, `failed`, `forbidden`, or `none` when none was attempted) |
-| `mcp_registered` | `harness`, `bin`; `message` is the line crew prints |
+| `mcp_registered` | `harness`, `bin`, `url`, and for Claude Code `action` (`registered`, `replaced` or `kept`); `message` is the line crew prints |
 | `pair_installed` | `harness`; `message` is the line crew prints |
 | `capabilities` | reserved for the member capability checklist (ISSUE-2240) |
 | `choice` | `key`, `options` (`value`, `label`), `answer`: a decision a terminal would have asked; see below |

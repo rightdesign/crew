@@ -3645,8 +3645,11 @@ switch (command) {
           const id = `${tc.harness}\0${tc.bin}`;
           if (seen.has(id)) continue;
           seen.add(id);
-          const line = adapterFor(tc.harness).ensureMcp({ bin: tc.bin, url: mcpUrlFor(baseUrl), key: apiKey, replace, dryRun });
-          connectEvents.emit('mcp_registered', line, { harness: tc.harness, bin: tc.bin });
+          const adapter = adapterFor(tc.harness);
+          const mcpUrl = mcpUrlFor(baseUrl);
+          const mcpOpts = { bin: tc.bin, url: mcpUrl, key: apiKey, replace, dryRun, stateDir: cfg.ship.stateDir };
+          const { line, action } = adapter.ensureMcpResult ? adapter.ensureMcpResult(mcpOpts) : { line: adapter.ensureMcp(mcpOpts), action: undefined };
+          connectEvents.emit('mcp_registered', line, { harness: tc.harness, bin: tc.bin, url: mcpUrl, ...(action ? { action } : {}) });
           process.stderr.write(`${line}\n`);
         }
         // CREW-1517: Pair for the other harnesses `ship.pair` lists. Claude's is

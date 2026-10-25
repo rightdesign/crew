@@ -449,6 +449,12 @@ is left alone unless `--mcp replace`. `crew doctor` verifies each listed
 harness and `crew disconnect` removes exactly what was added (and the files, if
 they would be left empty).
 
+For Claude Code, crew remembers what it registered in `<stateDir>/mcp-registrations.json`
+(URL and a short fingerprint of the key, never the key). When a later sign-in mints a
+new key, `crew connect` replaces an entry it recognizes as its own without asking.
+An entry crew did not write is left alone, and the message names the URL it points
+at; `--mcp replace` overwrites it anyway.
+
 **Copilot specifics.** VS Code's user directory is `~/Library/Application
 Support/Code/User` on macOS, `~/.config/Code/User` on Linux and
 `%APPDATA%\Code\User` on Windows; `Code - Insiders` is installed too when its

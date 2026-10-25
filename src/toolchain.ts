@@ -68,6 +68,8 @@ export interface McpRegistrationOpts {
   url: string;
   key: string;
   home?: string;
+  /** `<stateDir>`, where crew remembers which MCP entries it wrote (CREW-2514). */
+  stateDir?: string;
 }
 
 export type McpRegistration =
@@ -123,6 +125,8 @@ export interface HarnessAdapter {
   inspectMcp(o: McpRegistrationOpts): McpRegistration;
   /** Register (or report) the tracker MCP server; returns the one line to print. */
   ensureMcp(o: McpRegistrationOpts & { replace?: boolean; dryRun?: boolean }): string;
+  /** As `ensureMcp`, plus the `action` taken, for adapters that record provenance. */
+  ensureMcpResult?(o: McpRegistrationOpts & { replace?: boolean; dryRun?: boolean }): { line: string; action?: 'registered' | 'replaced' | 'kept' };
 }
 
 const ADAPTERS: Record<string, HarnessAdapter> = {
