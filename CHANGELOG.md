@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.74.0] — 2026-10-26
+
+- CREW-2539 A Claude toolchain can set `auth: subscription` to force the subscription login over a Vertex or API-key setup in ~/.claude/settings.json; `crew doctor` and `crew selftest` report the resolved auth.
+
 ## [0.73.4] — 2026-10-25
 
 - CREW-2537 crew doctor --fix now enables a route and offers the scheduler when a repository lacks a deploy hook; release-readiness gaps are listed separately and no longer block setup.
