@@ -8,6 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
+import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
@@ -4982,7 +4983,29 @@ switch (command) {
       ));
     }
     if (flag('json')) {
-      process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows }, null, 2)}\n`);
+      // CREW-2542: the same findings the text report prints, structured. Only
+      // local checks run here (no tracker round trips), and nothing is written
+      // to ship state — the text report raises `hook_missing`, this only reads.
+      const problems: DoctorProblem[] = [];
+      let passed = 0;
+      for (const c of [route]) {
+        const { settled: repos, errors } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
+        for (const e of errors) {
+          problems.push({ severity: 'blocker', kind: 'repo_config_invalid', route: c.route, repo: e.repo, message: `could not resolve this repo's configuration: ${e.detail}`, remedy: "fix the repo's .crew.yaml" });
+        }
+        for (const r of repos) {
+          const f = repoFindings({
+            route: c.route, repo: r.name, dir: r.dir, notes: validateEffective(r.config),
+            base: doctorBaseReport(r, r.config.branch.base, baseHealth), hooks: r.config.hooks,
+            onPath: (cmd) => !!findOnPath(cmd, doctorSchedulerPath),
+          });
+          problems.push(...f.problems);
+          passed += f.passed;
+        }
+      }
+      problems.push(...attentionProblems(openShipAttention(state), problems));
+      if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
+      process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, problems, passed }, null, 2)}\n`);
       break;
     }
     process.stdout.write(
