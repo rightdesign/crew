@@ -9,6 +9,7 @@
 
 import { doctorBaseReport } from './doctor-repo.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { describeClaudeAuth } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5451,6 +5452,10 @@ switch (command) {
     // reports it and never launches a harness itself.
     for (const l of doctorSelftestLines(readSelftest(cfg.ship.stateDir), shipToolchains(cfg.ship).map((t) => t.name))) {
       process.stdout.write(`${l}\n`);
+    }
+    // CREW-2539: which billing path each Claude toolchain resolves to.
+    for (const t of shipToolchains(cfg.ship).filter((t) => t.harness === 'claude')) {
+      process.stdout.write(`auth:              ${t.name}: ${describeClaudeAuth(t)}\n`);
     }
     // CREW-1288: the opt-in action phase. `--fix` is itself the consent (so it
     // also works unattended); a plain run only ever offers, and only on a real

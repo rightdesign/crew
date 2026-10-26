@@ -5,6 +5,9 @@
  * `claude mcp` registration.
  */
 
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { RoleName } from '../config.ts';
 import { mapStreamLine, extractResult, extractTurnTokens } from '../stream.ts';
 import { ensureClaudeMcp, ensureClaudeMcpResult, inspectClaudeMcp, removeClaudeMcp } from '../claude-mcp.ts';
@@ -97,6 +100,42 @@ export const claudePair: PairInstaller = {
   removePair: (o) => removeClaudeMcp({ bin: o.bin ?? 'claude', dryRun: o.dryRun }),
 };
 
+/**
+ * The `--settings` payload for `auth: subscription` (CREW-2539). The Vertex
+ * onboarding wizard writes its variables into the `env` block of
+ * ~/.claude/settings.json, which Claude Code applies itself, so unsetting the
+ * shell variables cannot reach it. `--settings` ranks above user, project and
+ * local settings, so an empty value for every billing variable wins.
+ */
+export function subscriptionSettings(): string {
+  return JSON.stringify({ env: Object.fromEntries(BILLING_VARS_TO_UNSET.map((v) => [v, ''])) });
+}
+
+/**
+ * Which billing path a toolchain resolves to, for `crew doctor`. `inherit`
+ * names the first source that would win, so the choice is visible before a run
+ * bills anything.
+ */
+export function describeClaudeAuth(
+  spec: { auth?: 'subscription' | 'inherit' },
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string {
+  if (spec.auth === 'subscription') return 'subscription (settings override)';
+  // The adapter unsets these shell variables at exec, so only settings.json can still apply.
+  let fromSettings: string | undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')) as { env?: Record<string, unknown> };
+    const e = parsed.env ?? {};
+    const on = (k: string) => e[k] !== undefined && e[k] !== '' && e[k] !== '0';
+    if (on('CLAUDE_CODE_USE_VERTEX')) fromSettings = 'vertex from ~/.claude/settings.json';
+    else if (on('ANTHROPIC_API_KEY') || on('ANTHROPIC_AUTH_TOKEN')) fromSettings = 'API key from ~/.claude/settings.json';
+  } catch { /* no readable settings file: nothing to report */ }
+  if (fromSettings) return `inherit: ${fromSettings}`;
+  const shell = BILLING_VARS_TO_UNSET.find((v) => v.startsWith('ANTHROPIC_API') && env[v]);
+  return shell ? `inherit: ${shell} in env (unset at exec)` : 'inherit: subscription login';
+}
+
 export const claudeAdapter: HarnessAdapter = {
   harness: 'claude',
   displayName: 'Claude Code',
@@ -148,6 +187,7 @@ export const claudeAdapter: HarnessAdapter = {
             },
           })]
         : []),
+      ...(spec.auth === 'subscription' ? ['--settings', subscriptionSettings()] : []),
       ...spec.args,
     ];
     return wrapInvocation(spec, { model: o.model, args });

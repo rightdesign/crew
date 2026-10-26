@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { scrubbedEnv } from './agent.ts';
 import type { Ship } from './config.ts';
 import { pathFor } from './install.ts';
+import { describeClaudeAuth } from './adapters/claude.ts';
 import { adapterFor, type ToolchainSpec } from './toolchain.ts';
 
 export const SELFTEST_TIMEOUT_MS = 120_000;
@@ -248,7 +249,8 @@ export async function runSelftest(i: SelftestInput, deps: SelftestDeps = realDep
     const answer = [seen.finalText ?? '', ...seen.texts].join('\n');
     const usage = { ...(seen.tokens !== undefined ? { tokens: seen.tokens } : {}), ...(seen.costUsd !== undefined ? { costUsd: seen.costUsd } : {}) };
     if (!run.spawnError && !run.timedOut && answer.toLowerCase().includes(i.workspaceName.toLowerCase())) {
-      return finish({ ok: true, workspace: i.workspaceName, detail: `read workspace "${i.workspaceName}"`, ...usage });
+      const auth = spec.harness === 'claude' ? ` on ${describeClaudeAuth(spec)}` : '';
+      return finish({ ok: true, workspace: i.workspaceName, detail: `read workspace "${i.workspaceName}"${auth}`, ...usage });
     }
     const { failure, detail } = classify(spec, run, seen);
     return finish({ ok: false, failure, detail, ...usage });

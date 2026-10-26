@@ -52,6 +52,12 @@ export interface ToolchainSpec {
   env: Record<string, string>;
   /** Claude: extended-thinking budget; 0 disables. Other harnesses ignore it. */
   maxThinkingTokens: number;
+  /**
+   * Claude: `subscription` forces the operator's subscription login over any Vertex or API-key
+   * billing set up outside the shell (CREW-2539). Absent or `inherit` leaves the CLI's own
+   * resolution alone. Other harnesses reject it at load time.
+   */
+  auth?: 'subscription' | 'inherit';
   /** Codex: the reasoning effort the tier asked for (`model_reasoning_effort`). Other harnesses ignore it. */
   reasoningEffort?: string;
 }

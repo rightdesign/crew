@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { loadConfig, ConfigError } from '../src/config.ts';
 import { planAgentRun, describePlan } from '../src/agent.ts';
 import { profileFor } from '../src/capability.ts';
-import { claudeToolsFor } from '../src/adapters/claude.ts';
+import { claudeToolsFor, describeClaudeAuth, BILLING_VARS_TO_UNSET } from '../src/adapters/claude.ts';
 import { resolveToolchain, shipToolchains, adapterFor, resolveSeat, toolchainVendor } from '../src/toolchain.ts';
 
 function cfgFrom(yaml: string) {
@@ -370,4 +370,40 @@ test('codex: a non-default model_provider in args records provider local', () =>
   assert.equal(codex.provider({ ...base, args: [] }), 'openai');
   assert.equal(codex.provider({ ...base, args: ['-c', 'model_provider="omlx"'] }), 'local');
   assert.equal(codex.provider({ ...base, args: ['-c', 'model_provider="openai"'] }), 'openai');
+});
+
+// CREW-2539: opt-in `auth: subscription`.
+const AUTH_YAML = (auth: string, harness = 'claude') => `ship:
+  name: s
+  toolchains:
+    claude:
+      harness: ${harness}
+${auth}
+routes:${ROUTE()}`;
+
+test('auth: subscription adds a --settings override emptying every billing variable; inherit leaves argv alone', () => {
+  const sub = resolveToolchain(cfgFrom(AUTH_YAML('      auth: subscription')).ship);
+  const inv = adapterFor('claude').invocation(sub, { role: 'dev', model: 'm' });
+  const i = inv.args.indexOf('--settings');
+  assert.ok(i >= 0);
+  const env = (JSON.parse(inv.args[i + 1]!) as { env: Record<string, string> }).env;
+  for (const v of BILLING_VARS_TO_UNSET) assert.equal(env[v], '');
+  const inh = resolveToolchain(cfgFrom(AUTH_YAML('      auth: inherit')).ship);
+  assert.ok(!adapterFor('claude').invocation(inh, { role: 'dev', model: 'm' }).args.includes('--settings'));
+  assert.ok(!adapterFor('claude').invocation(resolveToolchain(cfgFrom(AUTH_YAML('')).ship), { role: 'dev', model: 'm' }).args.includes('--settings'));
+});
+
+test('auth rejects unknown values and non-claude harnesses', () => {
+  assert.throws(() => cfgFrom(AUTH_YAML('      auth: bogus')), ConfigError);
+  assert.throws(() => cfgFrom(AUTH_YAML('      auth: subscription', 'codex')), ConfigError);
+});
+
+test('describeClaudeAuth reports the resolved billing path', () => {
+  const home = mkdtempSync(join(tmpdir(), 'crew-auth-'));
+  mkdirSync(join(home, '.claude'));
+  assert.equal(describeClaudeAuth({}, {}, home), 'inherit: subscription login');
+  assert.equal(describeClaudeAuth({}, { ANTHROPIC_API_KEY: 'k' }, home), 'inherit: ANTHROPIC_API_KEY in env (unset at exec)');
+  writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_USE_VERTEX: '1' } }));
+  assert.equal(describeClaudeAuth({}, {}, home), 'inherit: vertex from ~/.claude/settings.json');
+  assert.equal(describeClaudeAuth({ auth: 'subscription' }, {}, home), 'subscription (settings override)');
 });

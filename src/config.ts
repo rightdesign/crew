@@ -1065,7 +1065,7 @@ function expandCommand(cmd: string, base: string): string {
   return cmd.includes('/') || cmd.startsWith('~') ? expand(cmd, base) : cmd;
 }
 
-const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'launcherBin', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens']);
+const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'launcherBin', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens', 'auth']);
 
 /** `ship.pair`: a list of harness names (CREW-1517). Undefined when absent. */
 function parsePair(raw: unknown, missing: Missing): string[] | undefined {
@@ -1132,8 +1132,19 @@ function parseToolchains(raw: unknown, base: string, missing: Missing, file: str
     if (!Number.isInteger(maxThinkingTokens) || maxThinkingTokens < 0) {
       missing.add(`${where}.maxThinkingTokens must be a non-negative integer (got "${entryRaw.maxThinkingTokens}")`);
     }
+    let auth: 'subscription' | 'inherit' | undefined;
+    if (entryRaw.auth !== undefined) {
+      if (entryRaw.auth !== 'subscription' && entryRaw.auth !== 'inherit') {
+        missing.add(`${where}.auth must be subscription|inherit (got "${entryRaw.auth}")`);
+      } else if (harness !== 'claude') {
+        missing.add(`${where}.auth is only supported on the claude harness`);
+      } else {
+        auth = entryRaw.auth;
+      }
+    }
     out.push({
       name, harness,
+      ...(auth ? { auth } : {}),
       bin: expandCommand(String(entryRaw.bin ?? adapter.defaultBin), base),
       ...(entryRaw.launcher ? { launcher: expandCommand(String(entryRaw.launcher), base) } : {}),
       ...(entryRaw.launcher && entryRaw.launcherBin ? { launcherBin: expandCommand(String(entryRaw.launcherBin), base) } : {}),

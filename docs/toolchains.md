@@ -45,6 +45,31 @@ defines an implicit toolchain named `claude`. A `toolchains:` entry named
 `claude` replaces it. Unknown toolchain names, harnesses and tiers fail at load
 time (a bad route override drops only that route, with a warning).
 
+### Forcing the subscription login (`auth`)
+
+Crew unsets the billing variables (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_VERTEX`
+and friends) in a run's shell environment. It cannot reach the `env` block that
+the Vertex onboarding wizard writes into `~/.claude/settings.json`, which Claude
+Code applies itself. On a machine where your interactive Claude Code bills a
+corporate Vertex account but crew's runs should use your personal subscription,
+opt in per toolchain:
+
+```yaml
+ship:
+  toolchains:
+    claude:
+      harness: claude
+      auth: subscription     # inherit (default) | subscription
+```
+
+With `subscription`, every launch passes `--settings` with an `env` block that
+sets each billing variable to the empty string; `--settings` ranks above user,
+project and local settings, so the override wins. `inherit` changes nothing.
+`crew doctor` prints the resolved auth per Claude toolchain (`auth: claude:
+subscription (settings override)`, or `inherit: vertex from
+~/.claude/settings.json`), and a passing `crew selftest` repeats it. Only the
+`claude` harness accepts `auth`.
+
 ## Codex
 
 ```yaml
