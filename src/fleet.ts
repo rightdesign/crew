@@ -141,7 +141,10 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
     // ISSUE-928: persist for EVERY reachable route, not just the winner —
     // an attention transition (a ticket going to needs_info) has nothing to
     // do with which route wins the cycle's agent slot.
-    if (!o.dryRun) o.state.attention(e.route.route).persist(e.decision.attention);
+    if (!o.dryRun) {
+      o.state.attention(e.route.route).persist(e.decision.attention);
+      o.state.unroutable(e.route.route).persist(e.decision.unroutable);
+    }
   }
 
   return {

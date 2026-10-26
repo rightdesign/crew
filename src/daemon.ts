@@ -570,6 +570,7 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   // persist, and without it here every pass saw `{}` and re-announced
   // "needs a person" for every ticket on every cycle.
   o.state.attention(o.route.route).persist(decision.attention);
+  o.state.unroutable(o.route.route).persist(decision.unroutable);
 
   if (decision.sweep.length) {
     const tracker = new Tracker(o.route, o.ship);

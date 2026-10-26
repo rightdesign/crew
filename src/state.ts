@@ -345,6 +345,30 @@ export class State {
   }
 
   /**
+   * The previous cycle's unroutable ticket ids for one route (CREW-2548): open
+   * tickets with no repository that are not exempt. `poll.ts` diffs against it
+   * so each ticket warns once when it becomes unroutable, not every cycle; the
+   * caller persists the new set beside `attention(route).persist(...)`. A
+   * missing or corrupt file reads as empty, so a fresh install warns once.
+   */
+  unroutable(route: string) {
+    const file = `.unroutable-${State.safe(route)}.json`;
+    return {
+      previous: (): string[] => {
+        try {
+          const parsed = JSON.parse(readFileSync(this.path(file), 'utf8'));
+          return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+        } catch {
+          return [];
+        }
+      },
+      persist: (next: string[]): void => {
+        writeFileSync(this.path(file), JSON.stringify(next));
+      },
+    };
+  }
+
+  /**
    * Open ship-level attention items (CREW-1373), ship-wide rather than
    * per-route: a parked role or a missing hook command is about this
    * machine. A corrupt or missing file reads as empty.

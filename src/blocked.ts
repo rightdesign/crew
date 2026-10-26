@@ -316,6 +316,26 @@ export function filingErrors(tickets: Ticket[], opts: FilingErrorOptions = {}): 
   });
 }
 
+/**
+ * What changed in the unroutable set since the previous cycle (CREW-2548).
+ * `added` are tickets that just became unroutable (warn once, with `synced`
+ * choosing the softer wording for a ticket a sync imported); `gained` are
+ * tickets that were unroutable and now carry a repository (one info line).
+ * A ticket that merely closed or vanished is dropped silently.
+ */
+export function unroutableChanges(
+  unroutable: Ticket[], previous: Iterable<string>, tickets: Ticket[], externalIdColumn: string,
+): { added: Array<{ ticket: Ticket; synced: boolean }>; gained: Ticket[] } {
+  const prev = new Set(previous);
+  const now = new Set(unroutable.map((t) => t.id));
+  return {
+    added: unroutable
+      .filter((t) => !prev.has(t.id))
+      .map((t) => ({ ticket: t, synced: !!(t as Record<string, unknown>)[externalIdColumn] })),
+    gained: tickets.filter((t) => prev.has(t.id) && !now.has(t.id) && !!t.repo_id),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Applying the sweep
 // ---------------------------------------------------------------------------

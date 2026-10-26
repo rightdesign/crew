@@ -14,6 +14,7 @@ import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
   sweepDiagnostics, strandedNeedsInfo, rollUpParents, filingErrors,
   type BlockerInfo, type SweepStep,
+  unroutableChanges,
 } from './blocked.ts';
 import { agentAssigneeIds, skippedByMode, withinWorkMode, type WorkModes } from './work-mode.ts';
 import {
@@ -76,6 +77,8 @@ export interface CycleDecision {
    * `fairness(route).record(...)` call.
    */
   attention: Record<string, AttentionReason[]>;
+  /** Ids of open tickets with no repository that are not exempt (CREW-2548); the caller persists via `state.unroutable(route).persist(...)`. */
+  unroutable: string[];
 }
 
 export interface CycleOptions {
@@ -207,13 +210,30 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
       emit.emit(`every child is done — this coordinating ticket is too`, { ticket: r.parent.issue_id });
     }
   }
-  for (const t of filingErrors(tickets, {
+  // CREW-2548: warn when a ticket FIRST becomes unroutable, not every cycle —
+  // on an imported board that is hundreds of lines every two minutes. One
+  // info summary per cycle; the ids ride in `data` for `status --json`.
+  const unroutableTickets = filingErrors(tickets, {
     ...coordinating,
     repoExemptValues: tracker.contract.repoExemptReportTypes,
-  })) {
+  });
+  const unroutable = unroutableTickets.map((t) => t.id);
+  const { added, gained } = unroutableChanges(
+    unroutableTickets, state.unroutable(route.route).previous(), tickets, tracker.contract.columns.externalId,
+  );
+  for (const { ticket: t, synced } of added) {
     emit.warn(
-      'no repo and not marked coordinating/question/investigation — a filing error, not an epic, and unroutable as written',
+      synced
+        ? 'no repository — not crew work until one is set'
+        : 'no repo and not marked coordinating/question/investigation — a filing error, not an epic, and unroutable as written',
       { ticket: t.issue_id },
+    );
+  }
+  for (const t of gained) emit.emit('now has a repository — no longer unroutable', { ticket: t.issue_id });
+  if (unroutableTickets.length) {
+    emit.emit(
+      `${unroutableTickets.length} open ticket(s) have no repository and are not routable (${added.length} new since last cycle)`,
+      { step: 'sweep', data: { unroutable: unroutableTickets.map((t) => t.issue_id), newUnroutable: added.map((a) => a.ticket.issue_id) } },
     );
   }
 
@@ -287,7 +307,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
     tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark, directionEvents,
-    selectionInput, attention: attentionCurrent,
+    selectionInput, attention: attentionCurrent, unroutable,
   };
 
   // AFTER every role has been evaluated, never during: advancing inside the

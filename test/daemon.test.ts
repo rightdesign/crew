@@ -303,6 +303,7 @@ function fakeDecision(pending: CycleDecision['selection']['pending']): CycleDeci
     watermark: '2026-08-01T00:00:00Z',
     selectionInput: {} as CycleDecision['selectionInput'],
     attention: {},
+    unroutable: [],
   };
 }
 

@@ -2123,7 +2123,10 @@ switch (command) {
     const decision = await decideCycle({ route, ship: cfg.ship, state, emit });
     // ISSUE-928: persist this cycle's attention set so next cycle's diff
     // sees it — never under --dry-run, which performs nothing.
-    if (!dryRun) state.attention(route.route).persist(decision.attention);
+    if (!dryRun) {
+      state.attention(route.route).persist(decision.attention);
+      state.unroutable(route.route).persist(decision.unroutable);
+    }
 
     if (decision.sweep.length) {
       if (dryRun) {
@@ -4859,6 +4862,8 @@ switch (command) {
           // Additive (CREW-1496): each project and its work mode. `version` stays 1.
           projects: projects.map((p) => ({ id: p.id, name: p.name, workMode: p.mode })),
           dir: route.dir,
+          // Additive (CREW-2548): open tickets with no repository, as of the last cycle.
+          unroutable: state.unroutable(route.route).previous().length,
           enabled: route.enabled,
           area: route.area ?? null,
           // Additive (CREW-1511): the toolchain this route's sessions run on.

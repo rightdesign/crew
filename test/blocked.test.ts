@@ -4,7 +4,7 @@ import { StaleWriteError } from '@tablation/client';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, sweepDiagnostics,
   planSweep, strandedNeedsInfo, rollUpParents, filingErrors, applySweep, sweepComment,
-  unresolvedBlockers, describeUnresolved,
+  unresolvedBlockers, describeUnresolved, unroutableChanges,
 } from '../src/blocked.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -299,4 +299,28 @@ test('mixed blockers: merged same-repo + verified cross-repo restores; unmerged 
   assert.equal(computeBlockedIds([t, unmerged, x], held).has('a'), true);
   assert.deepEqual(unresolvedBlockers(t, held), ['s']);
   assert.deepEqual(unresolvedBlockers(t, held, { mergeGated: false }), []); // release phase keeps the plain rule
+});
+
+test('unroutableChanges: first cycle reports every ticket, the next reports none (CREW-2548)', () => {
+  const ts = Array.from({ length: 50 }, (_, i) => T({ id: `r${i}`, issue_id: `ISSUE-${i}`, status: 'accepted' }));
+  const first = unroutableChanges(ts, [], ts, 'external_id');
+  assert.equal(first.added.length, 50);
+  const second = unroutableChanges(ts, ts.map((t) => t.id), ts, 'external_id');
+  assert.equal(second.added.length, 0);
+  assert.equal(second.gained.length, 0);
+});
+
+test('unroutableChanges: a ticket gaining a repo is reported once; a closed one is silent', () => {
+  const fixed = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', repo_id: 'repo' });
+  const still = T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' });
+  const r = unroutableChanges([still], ['a', 'b', 'gone'], [fixed, still], 'external_id');
+  assert.deepEqual(r.gained.map((t) => t.id), ['a']);
+  assert.equal(r.added.length, 0);
+});
+
+test('unroutableChanges: a synced ticket is flagged for the softer wording', () => {
+  const synced = T({ id: 's', issue_id: 'ISSUE-3', status: 'accepted', external_id: 'JIRA-9' } as never);
+  const hand = T({ id: 'h', issue_id: 'ISSUE-4', status: 'accepted' });
+  const r = unroutableChanges([synced, hand], [], [synced, hand], 'external_id');
+  assert.deepEqual(r.added.map((a) => a.synced), [true, false]);
 });

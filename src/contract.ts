@@ -106,6 +106,13 @@ export interface ContractColumns {
    */
   prRef: string;
   /**
+   * The id a sync (Jira and the like) stamped on a ticket it imported. A row
+   * with a value here was not filed by hand, so a missing Repo on it is "not
+   * crew work yet", not a filing error. Optional like `prRef`: a workspace
+   * with no such column reads as "hand-filed" everywhere.
+   */
+  externalId: string;
+  /**
    * Manual order inside an effective-priority band (CREW-1552) — a nullable
    * NUMBER on the tracker, written by the Board's drag-to-reorder. Optional
    * like `heldBy`: a table without the column ranks exactly as it did
@@ -280,6 +287,7 @@ export const DEFAULT_CONTRACT: Contract = {
     resolutionNote: 'resolution_note',
     verifiedSha: 'verified_sha',
     prRef: 'pr_ref',
+    externalId: 'external_id',
     position: 'position',
   },
   comments: {
