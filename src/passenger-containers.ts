@@ -27,12 +27,12 @@ import { crewVersion, passengerCheckoutTargets, reposOf } from './config.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { syncPassengerCheckout, originUrlOf, type CloneScheme, type PassengerCheckoutOutcome } from './git.ts';
 
-export type Exec = (cmd: string, args: string[]) => string;
+export type Exec = (cmd: string, args: string[], opts?: { timeoutMs?: number }) => string;
 
 /** `execFileSync`, wrapped to throw a plain `Error` with stdout+stderr, never a raw ENOENT. */
-export const realExec: Exec = (cmd, args) => {
+export const realExec: Exec = (cmd, args, opts) => {
   try {
-    return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: opts?.timeoutMs });
   } catch (e) {
     const err = e as { stderr?: string; stdout?: string; message: string };
     const why = [err.stderr, err.stdout].map((x) => (x ?? '').trim()).filter(Boolean).join(' / ');
@@ -40,10 +40,17 @@ export const realExec: Exec = (cmd, args) => {
   }
 };
 
-/** Is there a working Docker daemon at all? Surfaced by `crew doctor`. */
+/**
+ * Is there a working Docker daemon at all? Surfaced by `crew doctor`.
+ *
+ * Bounded (CREW-2544): with Docker Desktop installed but its daemon wedged or still
+ * starting, `docker info` blocks indefinitely, which hung `crew connect` before it
+ * emitted a single event. A daemon that cannot answer in this time is not available.
+ */
+export const DOCKER_INFO_TIMEOUT_MS = 10_000;
 export function dockerAvailable(exec: Exec = realExec): boolean {
   try {
-    exec('docker', ['info']);
+    exec('docker', ['info'], { timeoutMs: DOCKER_INFO_TIMEOUT_MS });
     return true;
   } catch {
     return false;

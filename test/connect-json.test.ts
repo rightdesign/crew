@@ -167,6 +167,9 @@ async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew
   mkdirSync(stubs, { recursive: true });
   writeFileSync(join(stubs, 'security'), '#!/bin/sh\nexit 44\n');
   chmodSync(join(stubs, 'security'), 0o755);
+  // Likewise `docker` (CREW-2544): a wedged Docker Desktop daemon blocks `docker info`; tests assume none.
+  writeFileSync(join(stubs, 'docker'), '#!/bin/sh\nexit 1\n');
+  chmodSync(join(stubs, 'docker'), 0o755);
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'cli.ts'), 'connect', ...args.map((a) => a.replace('$CLAUDE', fakeClaude))], {
     env: { PATH: `${stubs}:${pathEnv}`, HOME: dir, CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
