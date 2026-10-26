@@ -69,6 +69,7 @@ import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
+import { probeSeatReads, describeSeatForbidden, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
@@ -1450,6 +1451,7 @@ async function releasePhase(
       let seen = precheckTickets.get(c.route);
       if (!seen) precheckTickets.set(c.route, (seen = tracker.openTickets()));
       const { byRepo: preByRepo, unplaceable: preUnplaceable } = ticketsByRepo(c, await seen);
+      clearShipAttention(state, SEAT_FORBIDDEN_KEY);
       const preModes = { modes: await tracker.projectWorkModes(), agentAssignees: new Set<string>() };
       const pre = withoutManualVerified(
         preByRepo.get(target.name) ?? [], tracker.contract.statuses.verified, preModes,
@@ -1785,6 +1787,15 @@ async function releasePhase(
     // reach the top of the process as an uncaught exception — crashing a
     // release that may already be live — so it gets the same "warn, don't
     // fail" treatment as everything else in this function.
+    // CREW-2549: a 403 is the release seat's key lacking a project role, the
+    // same for every repository on every cycle — one ship attention item with
+    // the remedy, and a short line here, not a URL stack per repository.
+    if (isForbiddenError(e)) {
+      await raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, seatForbiddenItem());
+      const line = seatForbiddenRepoLine(scope);
+      remit.warn(line, { step: 'release' });
+      return { scope, tests: 'skipped', outcome: 'error', detail: line };
+    }
     remit.warn(`release phase failed: ${(e as Error).message}`, { step: 'release' });
     return { scope, tests: 'skipped', outcome: 'error', detail: (e as Error).message };
   } finally {
@@ -2618,6 +2629,11 @@ switch (command) {
       // keys" capability), so a member key attempts it and reads a 403.
       for (const o of await mintMissingSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
         process.stdout.write(`${describeMintOutcome(o)}\n`);
+      }
+      if (!dryRun) {
+        for (const p of await probeSeatReads(target, { userAgent: cfg.ship.userAgent })) {
+          if (p.state === 'forbidden') { process.stdout.write(`${describeSeatForbidden(p.role)}\n`); process.exitCode = 1; }
+        }
       }
     }
     // A diverged persona or skill is not this run's failure, but it IS
@@ -3605,6 +3621,9 @@ switch (command) {
         try {
           mintOutcomes = await mintMissingSeatKeys({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
           for (const o of mintOutcomes) process.stderr.write(`${describeMintOutcome(o)}\n`);
+          for (const p of await probeSeatReads({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent })) {
+            if (p.state === 'forbidden') process.stderr.write(`${describeSeatForbidden(p.role)}\n`);
+          }
         } catch (e) {
           process.stderr.write(`seat keys: skipped (${(e as Error).message})\n`);
         }
@@ -3769,6 +3788,9 @@ switch (command) {
             });
             const minted = await mintMissingSeatKeys(syncRoute, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
             for (const m of minted) process.stderr.write(`  ${describeMintOutcome(m)}\n`);
+            for (const p of await probeSeatReads(syncRoute, { userAgent: cfg.ship.userAgent })) {
+              if (p.state === 'forbidden') process.stderr.write(`  ${describeSeatForbidden(p.role)}\n`);
+            }
             if (run.readOnly) {
               const missing = run.personaResult.outcomes.some((p) => p.action === 'missing');
               process.stderr.write(missing
@@ -5003,6 +5025,13 @@ switch (command) {
           passed += f.passed;
         }
       }
+      if (!flag('offline')) {
+        for (const p of await probeSeatReads(route, { userAgent: cfg.ship.userAgent })) {
+          if (p.state === 'forbidden') {
+            problems.push({ severity: 'blocker', kind: 'seat_cannot_read_issues', route: route.route, message: `${p.role} agent key cannot read Issues (403)`, remedy: SEAT_NO_READ_REMEDY });
+          } else if (p.state === 'ok') passed++;
+        }
+      }
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
       process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, problems, passed }, null, 2)}\n`);
@@ -5177,6 +5206,20 @@ switch (command) {
       process.stdout.write(
         `seat identity:    release writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
       );
+    }
+
+    // CREW-2549: a stored key proves nothing about what it may read. A seat
+    // minted into a project with no default agent role authenticates and then
+    // 403s on Issues, which only the release phase used to find out.
+    if (!flag('offline')) {
+      for (const p of await probeSeatReads(roleRoute, { userAgent: cfg.ship.userAgent })) {
+        if (p.state === 'forbidden') {
+          process.stdout.write(`${describeSeatForbidden(p.role)}\n`);
+          process.exitCode = 1;
+        } else {
+          process.stdout.write(p.state === 'ok' ? `seat read:        ${p.role} can read Issues\n` : `seat read:        ${p.role} could not be checked (${p.detail})\n`);
+        }
+      }
     }
 
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
