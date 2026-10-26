@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.75.2] — 2026-10-26
+
+- CREW-2548 The sweep warns once per ticket that has no repository, with a one-line summary each cycle, instead of repeating every warning every two minutes.
+
 ## [0.75.1] — 2026-10-26
 
 - CREW-2549 crew doctor, connect and agents sync now flag seat keys that cannot read Issues, and the release phase reports a 403 once as an attention item
