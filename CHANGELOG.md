@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.75.1] — 2026-10-26
+
+- CREW-2549 crew doctor, connect and agents sync now flag seat keys that cannot read Issues, and the release phase reports a 403 once as an attention item
+
 ## [0.75.0] — 2026-10-26
 
 - CREW-2542 `crew doctor --json` now lists every blocker, attention item and release-readiness note as a structured `problems` array, plus a `passed` count.
