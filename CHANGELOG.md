@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.75.4] — 2026-10-27
+
+- CREW-2558 `crew connect --json` now emits a `config` event saying whether crew.yaml was written or left alone, and why.
+
 ## [0.75.3] — 2026-10-27
 
 - CREW-2557 First-run `crew connect` now writes a crew.yaml in the plain block dialect: no `repos: {}`, no folded `extraPath`, no default `baseUrl`, and no maintainer-facing comments.
