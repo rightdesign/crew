@@ -387,3 +387,21 @@ test('a dry run against a crew.yaml naming one workspace does not ask which (CRE
     assert.equal(n.filter((e) => e === 'signed_in').length, 1);
   } finally { await m.close(); }
 });
+
+test('--json emits a config event: written on a first run, left alone when crew.yaml exists (CREW-2558)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    const first = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--ship-name', 'test-ship', '--agent-bin', '$CLAUDE', '--no-mcp', '--dir', '/tmp/crew-json-checkout'], dir);
+    assert.equal(first.code, 0, first.stderr);
+    const wrote = first.events.find((e) => e.event === 'config')!;
+    assert.equal(wrote.written, true);
+    assert.equal(wrote.path, join(dir, 'crew.yaml'));
+    const again = await runConnect(['ws', '--key', 'k1', '--base-url', m.url, '--json', '--no-wizard', '--ship-name', 'test-ship', '--agent-bin', '$CLAUDE', '--no-mcp', '--dir', '/tmp/crew-json-checkout'], dir);
+    assert.equal(again.code, 0, again.stderr);
+    const left = again.events.find((e) => e.event === 'config')!;
+    assert.equal(left.written, false);
+    assert.equal(left.reason, 'exists');
+    assert.equal(left.path, join(dir, 'crew.yaml'));
+  } finally { await m.close(); }
+});

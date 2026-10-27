@@ -24,7 +24,7 @@ export const CHOICE_EXIT_CODE = 3;
 /** Every event type `--json` can emit, in the order a first run produces them. */
 export const CONNECT_EVENTS = [
   'device_code', 'signed_in', 'workspace_resolved', 'project_options', 'template_missing', 'template_installed',
-  'ship_row', 'operator_row', 'seat', 'mcp_registered', 'pair_installed', 'capabilities',
+  'ship_row', 'operator_row', 'seat', 'mcp_registered', 'pair_installed', 'capabilities', 'config',
   'agents_synced', 'seat_key',
   'choice', 'problem', 'done',
 ] as const;

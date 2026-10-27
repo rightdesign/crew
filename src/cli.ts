@@ -3689,6 +3689,20 @@ switch (command) {
         wroteConfig = writeNewConfig(wizard.configPath, renderFullConfig(wizard.answers, routeBlock));
         if (!wroteConfig) process.stderr.write(`(${wizard.configPath} appeared while connecting — leaving it alone)\n`);
       }
+      // CREW-2558: under `--json` the route block goes to stderr as prose, so say on
+      // the event stream whether crew.yaml was written and, if not, why. A dry run
+      // writes nothing by definition and stays quiet.
+      if (!dryRun) {
+        if (wroteConfig) {
+          connectEvents.emit('config', `wrote ${wizard!.configPath}`, { written: true, path: wizard!.configPath });
+        } else if (wizard && writeFirstRun) {
+          connectEvents.emit('config', `${wizard.configPath} appeared while connecting; left alone`, { written: false, path: wizard.configPath, reason: 'appeared while connecting' });
+        } else if (wizard) {
+          connectEvents.emit('config', `no key file or keychain entry to name; ${wizard.configPath} not written`, { written: false, path: wizard.configPath, reason: 'no-key' });
+        } else {
+          connectEvents.emit('config', `${cfg.configFile} already exists; left alone`, { written: false, path: cfg.configFile, reason: 'exists' });
+        }
+      }
       // Under `--json` stdout is the event stream; the block goes to stderr with the rest of the prose.
       if (!wroteConfig) (connectEvents.json ? process.stderr : process.stdout).write(routeBlock);
       // CREW-1378: give interactive Claude Code sessions the tablation MCP tools.
