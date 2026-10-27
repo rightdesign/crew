@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.75.3] — 2026-10-27
+
+- CREW-2557 First-run `crew connect` now writes a crew.yaml in the plain block dialect: no `repos: {}`, no folded `extraPath`, no default `baseUrl`, and no maintainer-facing comments.
+
 ## [0.75.2] — 2026-10-26
 
 - CREW-2548 The sweep warns once per ticket that has no repository, with a one-line summary each cycle, instead of repeating every warning every two minutes.
