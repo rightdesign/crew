@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.75.5] — 2026-10-27
+
+- CREW-2573 crew connect --dry-run on a brand-new Crew table now reports the operator row it would create instead of stopping with "cannot determine the operator".
+
 ## [0.75.4] — 2026-10-27
 
 - CREW-2558 `crew connect --json` now emits a `config` event saying whether crew.yaml was written or left alone, and why.
