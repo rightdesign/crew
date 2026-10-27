@@ -932,7 +932,7 @@ test('renderConnection() omits apiKeyFile/apiKeyVar entirely for a keychain-back
   assert.ok(!block.includes('apiKeyFile:'));
   assert.ok(!block.includes('apiKeyVar:'));
   assert.ok(!block.includes('REPLACE — a file holding'));
-  assert.match(block, /# apiKey: resolved automatically from the OS keychain/);
+  assert.doesNotMatch(block, /keychain|apiKey/);
 });
 
 test('renderConnection() still shows the paste-your-own-key placeholder for a plain --key connect (no device login, no keychain)', () => {

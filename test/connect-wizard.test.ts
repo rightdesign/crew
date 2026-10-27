@@ -87,7 +87,11 @@ test('the written file loads back: ship answers and a route with real baseUrl, h
   });
   // CREW-2516: a first run has no checkout, so no `dir:` placeholder is written.
   assert.doesNotMatch(block, /^\s+dir:/m);
-  assert.match(block, /repos: \{\}/);
+  assert.doesNotMatch(block, /repos:/);
+  // Default host, written for a person to maintain: no baseUrl, no flow collections, no ticket or package-path comments.
+  assert.doesNotMatch(block, /baseUrl/);
+  assert.doesNotMatch(block, /[{[]/);
+  assert.doesNotMatch(block, /ISSUE-|CREW-|REPO_SPEC|keychain/);
   const dir = mkdtempSync(join(tmpdir(), 'crew-wizard-'));
   const file = join(dir, 'crew.yaml');
   assert.equal(writeNewConfig(file, renderFullConfig(answers, block)), true);
@@ -103,6 +107,23 @@ test('the written file loads back: ship answers and a route with real baseUrl, h
   assert.equal(cfg.routes[0]!.baseUrl, 'https://app.tablation.com');
   assert.equal(cfg.routes[0]!.dirIsCloneBase, true);
   assert.deepEqual(reposOf(cfg.routes[0]!), []);
+});
+
+test('extraPath with a space stays on one line, and a non-default baseUrl is still written', () => {
+  const extra = '/Users/me/Library/Application Support/x/bin:/opt/homebrew/bin';
+  const ship = renderShipBlock({ name: 'b', platform: 'macos', agentBin: '/opt/bin/claude', extraPath: extra, hostPassengers: false });
+  assert.ok(ship.includes(`extraPath: ${extra}\n`));
+  const d: Discovered = {
+    workspaceId: 'w', workspaceSlug: 'issues', models: {}, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
+  };
+  assert.match(renderConnection(d, 'issues/issues', null, { keychainBacked: true, baseUrl: 'https://other.example' }), /baseUrl: "https:\/\/other.example"/);
+});
+
+test('a 0.75.x file with `repos: {}` still loads as the clone-base shape', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-wizard-'));
+  const text = `ship:\n  name: x\n  platform: macos\n  agent:\n    bin: /bin/claude\nroutes:\n  - route: issues/issues\n    repos: {}\n`;
+  const cfg = loadConfig(dir, join(dir, 'crew.yaml'), { text });
+  assert.equal(cfg.routes[0]!.dirIsCloneBase, true);
 });
 
 test('the ship-only block loads with allowNoRoutes — and is refused without it', () => {

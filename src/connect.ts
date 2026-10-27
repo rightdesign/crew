@@ -21,7 +21,7 @@
 import { DEFAULT_CONTRACT, EVENT_LOG_MISSING } from './contract.ts';
 import { ensureLockRows, releaseLockScope, type LockProvisionClient } from './board-lock.ts';
 import { PERSONA_NAME } from './agents.ts';
-import type { RoleName } from './config.ts';
+import { DEFAULT_BASE_URL, type RoleName } from './config.ts';
 import { planNameSync } from './ship-name.ts';
 
 export interface AuthOptions {
@@ -1032,7 +1032,7 @@ export function renderConnection(
   // placeholder, since a person supplying `--key` by hand never gets one
   // written for them and still has to say where their key lives.
   const apiKeyFileLine = opts.keychainBacked
-    ? `    # apiKey: resolved automatically from the OS keychain (crew connect) — no apiKeyFile needed`
+    ? ''
     : opts.apiKeyFile
       ? `    apiKeyFile: "${opts.apiKeyFile}"`
       : `    apiKeyFile: "REPLACE — a file holding this workspace's key"`;
@@ -1041,16 +1041,13 @@ export function renderConnection(
     : opts.apiKeyVar
       ? `\n    apiKeyVar: ${opts.apiKeyVar}`
       : `\n    apiKeyVar: REPLACE_KEY_VAR`;
+  // A default baseUrl is left out of a file a person maintains; `loadConfig` falls back to it.
+  const baseUrlLine = opts.baseUrl
+    ? opts.baseUrl.replace(/\/+$/, '') === DEFAULT_BASE_URL ? '' : `    baseUrl: "${opts.baseUrl}"\n`
+    : '    baseUrl: "REPLACE — the same baseUrl as your other routes"\n';
+  const keyLines = [apiKeyFileLine, apiKeyVarLine.replace(/^\n/, '')].filter(Boolean).join('\n');
   return `  - route: ${route}
-    enabled: false          # arm it deliberately, once doctor is green
-${opts.area ? `    area: "${opts.area}"\n` : ''}    ${dir === null ? 'repos: {}              # `crew repos clone` / `crew repos add` fill this in' : `dir: "${dir}"`}
-    # worktreePrefix: omitted — each repo derives its own from its checkout's
-    # directory name (ISSUE-400). Only set this if every repo this route
-    # serves genuinely wants the SAME prefix, which is rare once an area has
-    # more than one repo.
-    # What a host must be to build this — unix, macos, linux, or windows —
-    # belongs in each repo's own .crew.yaml, not here (see docs/REPO_SPEC.md).
-    baseUrl: ${opts.baseUrl ? `"${opts.baseUrl}"` : '"REPLACE — the same baseUrl as your other routes"'}
-${opts.hostPassengers ? '    hostPassengers: true\n' : ''}${apiKeyFileLine}${apiKeyVarLine}
-`;
+    enabled: false          # set to true once \`crew doctor\` is green
+${opts.area ? `    area: "${opts.area}"\n` : ''}${dir === null ? '' : `    dir: "${dir}"\n`}${baseUrlLine}${opts.hostPassengers ? '    hostPassengers: true\n' : ''}${keyLines ? keyLines + '\n' : ''}`;
 }
+

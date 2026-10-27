@@ -286,10 +286,10 @@ test('the interlock is per route and opt-in', () => {
 });
 
 test('every missing setting is reported at once, named by route index', () => {
-  const { dir, file } = withConfig('ship: {}\nroutes:\n  - route: issues/x\n');
+  const { dir, file } = withConfig('ship: {}\nroutes:\n  - enabled: false\n');
   assert.throws(() => loadConfig(dir, file), (e: Error) => {
     assert.ok(e instanceof ConfigError);
-    assert.match(e.message, /routes\[0\]\.dir/);
+    assert.match(e.message, /routes\[0\] dropped/);
     return true;
   });
 });

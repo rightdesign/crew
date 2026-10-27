@@ -244,7 +244,7 @@ export interface Route {
   dir: string;
   /**
    * True when the route declared no `dir:` and no checkouts under `repos:`
-   * (a first-run `crew connect` writes `repos: {}`), so `dir` is only the
+   * (a first-run `crew connect` writes neither), so `dir` is only the
    * clone base `<reposBasePath>/<workspace>` and is NOT a checkout. `reposOf`
    * then derives targets from the tracker's Repos rows instead of using it.
    */
@@ -1209,17 +1209,18 @@ function parseOneRoute(
   }
   const hasRepos = Object.keys(repoDirs).length > 0;
   const reposBasePath = expand(String(c?.reposBasePath ?? raw.ship?.reposBasePath ?? DEFAULT_REPOS_BASE_PATH), base);
-  // An explicit empty `repos:` map with no `dir:` is the first-run shape
-  // (CREW-2516): nothing is checked out yet, and `crew repos clone` fills it.
-  // `dir` is then the clone base, flagged so nothing treats it as a checkout.
-  const dirIsCloneBase = !c?.dir && !hasRepos && c?.repos && typeof c.repos === 'object' && !Array.isArray(c.repos);
+  // A route naming neither `dir:` nor any `repos:` entry (an absent key or an
+  // explicit empty map, as 0.75.x wrote) is the first-run shape (CREW-2516):
+  // nothing is checked out yet, and `crew repos clone` fills it. `dir` is then
+  // the clone base, flagged so nothing treats it as a checkout.
+  const dirIsCloneBase = !c?.dir && !hasRepos && !Array.isArray(c?.repos);
   const dir = c?.dir
     ? expand(String(c.dir), base)
     : hasRepos
       ? Object.values(repoDirs)[0]!
       : dirIsCloneBase
         ? join(reposBasePath, splitRoute(route)[0])
-        : (missing.req(undefined as string | undefined, `${where}.dir (or ${where}.repos)`) ?? '');
+        : '';
   // A rate scalar, never a switch: 0 or below would let a weight silently
   // starve the route, exactly the misuse `enabled: false` exists to do
   // honestly instead (see the Route.weight doc comment).

@@ -151,7 +151,7 @@ export function renderShipBlock(a: WizardAnswers): string {
       agent: { bin: a.agentBin },
       ...(a.extraPath ? { extraPath: a.extraPath } : {}),
     },
-  });
+  }, { lineWidth: 0 });
 }
 
 /** The full file: the `ship:` block, then `routes:` with the discovered block already indented as a list item. */

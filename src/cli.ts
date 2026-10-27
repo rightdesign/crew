@@ -3673,7 +3673,7 @@ switch (command) {
       const wizard = firstRun;
       const writeFirstRun = wizard !== undefined && !dryRun && keyPersisted;
       // CREW-2516: a first run has no checkout yet, and `dir:` means "the
-      // checkout this route works". Write `repos: {}` instead; `crew repos
+      // checkout this route works". Write no `dir:` instead; `crew repos
       // clone` puts checkouts under reposBasePath and attaches them.
       const routeDir = value('dir');
       const routeBlock = renderConnection(
