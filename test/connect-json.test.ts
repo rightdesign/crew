@@ -300,6 +300,26 @@ test('an unusable --agent-bin is a problem event and exit 2, never a prompt', { 
   assert.deepEqual(names(r), ['problem']);
 });
 
+test('--dry-run on an empty Crew table reports would-create instead of stopping; the real run creates the row (CREW-2573)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'], holds: [] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    const args = ['ws', '--key', 'k1', '--base-url', m.url, '--json', '--ship-name', 's', '--agent-bin', '$CLAUDE', '--no-mcp', '--dir', '/tmp/crew-json-checkout'];
+    const dry = await runConnect([...args, '--no-wizard', '--dry-run'], dir);
+    assert.equal(dry.code, 0, dry.stderr);
+    const opRow = dry.events.find((e) => e.event === 'operator_row')!;
+    assert.equal(opRow.action, 'would-create');
+    assert.equal(opRow.name, 'Me');
+    assert.equal(opRow.email, 'me@x.test');
+    assert.equal(opRow.id, undefined);
+    assert.ok(!dry.events.some((e) => e.event === 'problem' && e.stage === 'operator'), dry.stdout);
+    assert.ok(!m.posts.some((p) => p.includes('/records')), m.posts.join(','));
+    const real = await runConnect(args, dir);
+    assert.equal(real.code, 0, real.stderr);
+    assert.equal(real.events.find((e) => e.event === 'operator_row')!.action, 'created');
+  } finally { await m.close(); }
+});
+
 test('--dry-run with no crew.yaml takes the first-run flag-answers path and writes nothing (CREW-2313)', { timeout: 60000 }, async () => {
   const m = await mockTracker({ projects: ['issues'] });
   try {

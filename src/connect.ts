@@ -210,7 +210,7 @@ export interface Discovered {
   /** Per-seat outcome of the Crew-row provisioning, for the `seat` events. */
   seatRows?: Array<{ role: string; id: string; action: 'matched' | 'claimed' | 'created' | 'would-create'; shipId?: string }>;
   /** How `operator` was settled, for the `operator_row` event. */
-  operatorAction?: 'matched' | 'linked' | 'created';
+  operatorAction?: 'matched' | 'linked' | 'created' | 'would-create';
 }
 
 /**
@@ -987,6 +987,8 @@ export async function createOperatorRow(o: AuthOptions & { dryRun?: boolean }, f
   const name = found.meName || found.meEmail || 'Operator';
   if (o.dryRun) {
     found.provisioning.push(`would create Crew row "${name}" for you`);
+    // CREW-2573: accounted for, even though no row exists to point `operator` at.
+    found.operatorAction = 'would-create';
     return;
   }
   try {

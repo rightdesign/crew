@@ -3483,7 +3483,7 @@ switch (command) {
           ]);
         }
       }
-      if (!operator && found.operatorCompared) {
+      if (!operator && found.operatorCompared && found.operatorAction !== 'would-create') {
         process.stderr.write(`crew connect: no Crew row matched you — ${found.operatorCompared}\n`);
         connectEvents.emit('operator_row', 'no Crew row matched you', { action: 'unmatched', compared: found.operatorCompared });
       }
@@ -3499,6 +3499,16 @@ switch (command) {
           ...(opEmail ? { email: opEmail } : {}),
         });
       }
+      // CREW-2573: a dry run on a Crew table with no person rows would create the
+      // operator's own row. That is a resolved operator, just without an id yet.
+      const operatorWouldBeCreated = !operator && found.operatorAction === 'would-create';
+      if (operatorWouldBeCreated) {
+        connectEvents.emit('operator_row', `operator ${found.meName ?? found.meEmail ?? 'you'} (would create)`, {
+          action: 'would-create',
+          ...(found.meName ? { name: found.meName } : {}),
+          ...(found.meEmail ? { email: found.meEmail } : {}),
+        });
+      }
       // CREW-978: a non-interactive `connect` with no previous file and no
       // operator resolvable (several holds, none matching this key's email)
       // used to write a resolved file with no `operator` key at all — which
@@ -3508,7 +3518,7 @@ switch (command) {
       // to proceed without one (the loop already accepted this route before;
       // don't turn a routine reconnect into a hard failure over a field nothing
       // new was asked to resolve) — this only refuses a *first* write.
-      if (!operator && !hadPreviousFile) {
+      if (!operator && !hadPreviousFile && !operatorWouldBeCreated) {
         process.stderr.write(
           `crew connect ${route}: cannot determine the operator — ${found.candidates.length} Crew row(s) ` +
           `could be it, none matching this key's own email, and there's no terminal to ask.\n` +
