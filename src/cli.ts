@@ -69,7 +69,7 @@ import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
-import { probeSeatReads, describeSeatForbidden, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
+import { probeSeatReads, describeSeatForbidden, describeSeatTables, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
@@ -1820,7 +1820,7 @@ async function releasePhase(
     // same for every repository on every cycle — one ship attention item with
     // the remedy, and a short line here, not a URL stack per repository.
     if (isForbiddenError(e)) {
-      await raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, seatForbiddenItem());
+      await raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, seatForbiddenItem(new Date(), e, c));
       const line = seatForbiddenRepoLine(scope);
       remit.warn(line, { step: 'release' });
       return { scope, tests: 'skipped', outcome: 'error', detail: line };
@@ -2673,7 +2673,7 @@ switch (command) {
       }
       if (!dryRun) {
         for (const p of await probeSeatReads(target, { userAgent: cfg.ship.userAgent })) {
-          if (p.state === 'forbidden') { process.stdout.write(`${describeSeatForbidden(p.role)}\n`); process.exitCode = 1; }
+          if (p.state === 'forbidden') { process.stdout.write(`${describeSeatForbidden(p.role, p.tables)}\n`); process.exitCode = 1; }
         }
       }
     }
@@ -3698,7 +3698,7 @@ switch (command) {
           mintOutcomes = await mintMissingSeatKeys({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
           for (const o of mintOutcomes) process.stderr.write(`${describeMintOutcome(o)}\n`);
           for (const p of await probeSeatReads({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent })) {
-            if (p.state === 'forbidden') process.stderr.write(`${describeSeatForbidden(p.role)}\n`);
+            if (p.state === 'forbidden') process.stderr.write(`${describeSeatForbidden(p.role, p.tables)}\n`);
           }
         } catch (e) {
           process.stderr.write(`seat keys: skipped (${(e as Error).message})\n`);
@@ -3879,7 +3879,7 @@ switch (command) {
             const minted = await mintMissingSeatKeys(syncRoute, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
             for (const m of minted) process.stderr.write(`  ${describeMintOutcome(m)}\n`);
             for (const p of await probeSeatReads(syncRoute, { userAgent: cfg.ship.userAgent })) {
-              if (p.state === 'forbidden') process.stderr.write(`  ${describeSeatForbidden(p.role)}\n`);
+              if (p.state === 'forbidden') process.stderr.write(`  ${describeSeatForbidden(p.role, p.tables)}\n`);
             }
             if (run.readOnly) {
               const missing = run.personaResult.outcomes.some((p) => p.action === 'missing');
@@ -5120,7 +5120,7 @@ switch (command) {
       if (!flag('offline')) {
         for (const p of await probeSeatReads(route, { userAgent: cfg.ship.userAgent })) {
           if (p.state === 'forbidden') {
-            problems.push({ severity: 'blocker', kind: 'seat_cannot_read_issues', route: route.route, message: `${p.role} agent key cannot read Issues (403)`, remedy: SEAT_NO_READ_REMEDY });
+            problems.push({ severity: 'blocker', kind: 'seat_cannot_read_issues', route: route.route, message: `${p.role} agent key refused on ${p.tables.filter((t) => t.state === 'forbidden').map((t) => t.table).join(', ')} (403)`, remedy: describeSeatForbidden(p.role, p.tables).replace(/^.*?— /, '') });
           } else if (p.state === 'ok') passed++;
         }
       }
@@ -5306,10 +5306,10 @@ switch (command) {
     if (!flag('offline')) {
       for (const p of await probeSeatReads(roleRoute, { userAgent: cfg.ship.userAgent })) {
         if (p.state === 'forbidden') {
-          process.stdout.write(`${describeSeatForbidden(p.role)}\n`);
+          process.stdout.write(`${describeSeatForbidden(p.role, p.tables)}\n`);
           process.exitCode = 1;
         } else {
-          process.stdout.write(p.state === 'ok' ? `seat read:        ${p.role} can read Issues\n` : `seat read:        ${p.role} could not be checked (${p.detail})\n`);
+          process.stdout.write(p.state === 'ok' ? `${describeSeatTables(p.role, p.tables)}\n` : `seat read:        ${p.role} could not be checked (${p.detail})\n`);
         }
       }
     }
