@@ -21,12 +21,20 @@
  *     written. A network blip must not bounce good work, and a repo with no
  *     remote has nothing to be on.
  *
- * The `DISALLOWED_TOOLS` deny on `git push --force*` is untouched: this never
- * pushes, it only looks.
+ * CREW-2579: before bouncing, the runner completes the push itself when that
+ * is a plain fast-forward — the local branch exists and the remote either has
+ * no such branch or sits at an ancestor of the local tip. It already has the
+ * worktree, the branch name, the remote and the push credentials, and a seat
+ * that declines to push would otherwise cycle the ticket between `fixed` and
+ * the bounce forever. A moved remote (not an ancestor) or a rejected push
+ * still bounces, with git's error quoted. The push is never forced, and goes
+ * to the same branch name the check reads (`existingBranchForTicket`), so
+ * `branch.push` only matters to the seat's own first push. The `DISALLOWED_TOOLS`
+ * deny on `git push --force*` is untouched.
  */
 
 import type { Contract } from './contract.ts';
-import { gitOk, headSha, isAncestor, remoteConfigured, worktrees } from './git.ts';
+import { gitOk, headSha, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
 import { existingBranchForTicket, type BranchLookupTicket } from './ticket-branch.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, routeSlug, type Route, type Ship, type RoleName } from './config.ts';
@@ -95,7 +103,23 @@ export function inspectHandoff(
   return { kind: 'pushed', branch, sha: origin, remote };
 }
 
-export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, shipName: string | undefined): string {
+/**
+ * Whether the runner may complete this bounce by pushing: the branch exists
+ * locally and the remote lacks it or is strictly behind it. Anything else (the
+ * remote moved, no local branch) is for the seat or a person.
+ */
+export function pushableBounce(dir: string, v: Extract<HandoffVerdict, { kind: 'bounce' }>): v is Extract<HandoffVerdict, { kind: 'bounce' }> & { branch: string; local: string } {
+  if (!v.branch || !v.local) return false;
+  return !v.origin || isAncestor(dir, v.origin, v.local);
+}
+
+/** What `crew run --dry-run` prints for a hand-off the runner would complete, or `null` when there is none. */
+export function describeHandoffPush(dir: string, cfg: EffectiveRepoConfig, ticket: BranchLookupTicket, role?: string): string | null {
+  const v = inspectHandoff(dir, cfg, ticket, role);
+  return v.kind === 'bounce' && pushableBounce(dir, v) ? `would push ${v.branch} to ${v.remote}` : null;
+}
+
+export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, shipName: string | undefined, pushError?: string): string {
   return `${HANDOFF_BOUNCED_MARKER}
 
 **Hand-off bounced: the branch is not on \`${v.remote}\` at the tip this ticket was built to.**
@@ -103,7 +127,7 @@ export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, sh
 ${shipName ? `Ship: ${shipName}\n` : ''}Local HEAD: ${v.local ? `\`${v.local}\`` : '(no local branch)'}
 \`${v.remote}\`: ${v.origin ? `\`${v.origin}\`` : v.branch ? '(branch missing)' : '(no branch to look for)'}
 
-${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. Set back to \`in_progress\`, still held by this ship; push with a plain \`git push --set-upstream ${v.remote} <branch>\` (never \`--force\`) and set \`fixed\` again. Your brief authorizes this push: it is the hand-off, not a release, so do it now rather than asking for permission.`;
+${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. ${pushError ? ` The runner tried a plain push and git refused it: \`${pushError}\`.` : ''} Set back to \`in_progress\`, still held by this ship; push with a plain \`git push --set-upstream ${v.remote} <branch>\` (never \`--force\`) and set \`fixed\` again. Your brief authorizes this push: it is the hand-off, not a release, so do it now rather than asking for permission.`;
 }
 
 export interface HandoffWriter {
@@ -211,12 +235,32 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       i.log.warn(`${t.issue_id} has no local branch on this ship, so it is not this ship's hand-off to bounce: ${v.reason}`, log);
       return { kind: 'unverified', why: 'no local branch on this ship' };
     }
+    let pushError: string | undefined;
+    if (pushableBounce(i.dir, v)) {
+      const wt = worktrees(i.dir).find((w) => w.branch === v.branch);
+      try {
+        pushBranchUpstream(wt?.path ?? i.dir, v.remote, v.branch);
+        const again = inspectHandoff(i.dir, i.cfg, t, i.role);
+        if (again.kind === 'pushed') {
+          await i.writer.postEvent(t.id, pushedEventBody(again.sha, again.remote, again.branch), i.seatId, 'pushed');
+          await i.writer.postEvent(t.id,
+            `The runner pushed \`${again.branch}\` to \`${again.remote}\` on ${i.shipName ? `${i.shipName}'s` : 'this ship\'s'} behalf: the ${i.role} seat set \`${i.contract.statuses.handoff}\` without pushing. Plain fast-forward push.${i.cfg.hooks.ci_status ? ' The repo\'s `ci_status` hook was NOT run by the hand-off guard, so CI was not checked by the builder.' : ''}`,
+            i.seatId, 'pushed_by_runner').catch(() => i.log.warn('pushed, but the note failed to post', log));
+          i.log.emit(`${t.issue_id}: pushed ${again.branch} to ${again.remote} on the seat's behalf at ${again.sha.slice(0, 7)} — handed on to QA`, log);
+          return { kind: 'pushed', sha: again.sha };
+        }
+        pushError = `the push succeeded but ${again.kind === 'bounce' ? again.reason : again.why}`;
+      } catch (e) {
+        pushError = (e as Error).message;
+      }
+      i.log.warn(`${t.issue_id}: the runner's own push failed: ${pushError}`, log);
+    }
     await i.writer.updateTicket(t.id, {
       status: i.contract.statuses.building,
       ...(t.assignee_id ? {} : { assignee_id: i.seatId }),
       ...(i.hold && !heldBy ? { [i.hold.column]: i.hold.shipId } : {}),
     });
-    await i.writer.postEvent(t.id, bounceComment(v, i.shipName), i.seatId, 'bounced').catch(() => {
+    await i.writer.postEvent(t.id, bounceComment(v, i.shipName, pushError), i.seatId, 'bounced').catch(() => {
       i.log.warn('bounced, but the note failed to post', log);
     });
     i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: ${v.reason}`, log);
@@ -304,7 +348,7 @@ async function retireRunWorktree(
   }
 }
 
-function repoConfigFor(route: Route, t: Ticket) {
+export function repoConfigFor(route: Route, t: Ticket) {
   const target = repoTargetFor(route, t.repo_id);
   if (!target) return null;
   const o = route.repoOverrides[target.name];

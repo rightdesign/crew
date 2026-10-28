@@ -889,6 +889,15 @@ export function pushBranch(cwd: string, remote: string, branch: string, dst = br
 }
 
 /**
+ * A plain `git push --set-upstream` of `branch` as `dst` (CREW-2579: the
+ * runner completing a hand-off the seat did not push). Never forced; throws
+ * `GitError` carrying git's own stderr on rejection or an auth failure.
+ */
+export function pushBranchUpstream(cwd: string, remote: string, branch: string, dst = branch): void {
+  git(cwd, ['push', '--set-upstream', remote, `${branch}:${dst}`]);
+}
+
+/**
  * `prunable` is true when git itself says so (e.g. the gitdir file points to
  * a directory that no longer exists) — a worktree someone deleted by hand
  * rather than through `git worktree remove`, or that this repo's own

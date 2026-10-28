@@ -686,6 +686,17 @@ is stored in plaintext there.
   app's Repositories step) → a seat could build a branch but not push it. The
   line carries the fix: `gh auth login` then `gh auth setup-git` for an HTTPS
   remote, or `ssh-add` for an SSH one. `crew doctor --offline` skips the probe.
+- **A ticket reaches `fixed` but the seat never pushed** → the runner completes
+  the hand-off itself. When a build or design run ends at `fixed` and the ticket
+  branch is missing on the remote, or the remote is strictly behind the local
+  tip, the runner does a plain `git push --set-upstream` (never forced) and
+  records `pushed <sha> to <remote>/<branch>` plus a note that it pushed on the
+  seat's behalf. It does not run the repo's `ci_status` hook, and the note says
+  so when the repo defines one. It still bounces the ticket back to
+  `in_progress` when the remote has moved (its tip is not an ancestor of the
+  local tip) or the push is refused, quoting git's error in the bounce comment.
+  `crew run --dry-run` prints `would push <branch> to <remote>` and pushes
+  nothing.
 - **Self-test failures** (`crew selftest`, or the Verify step) each name a
   class and a remedy:
 

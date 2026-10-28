@@ -43,7 +43,7 @@ import { planStrandedVerified, applyStrandedVerified } from './stranded-verified
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
-import { guardRunHandoff } from './handoff-guard.ts';
+import { guardRunHandoff, describeHandoffPush, repoConfigFor } from './handoff-guard.ts';
 import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import {
@@ -2303,6 +2303,15 @@ switch (command) {
       });
       if (dryRun) {
         process.stdout.write(`${describePlan(plan)}\n`);
+        // CREW-2579: a hand-off the guard would complete is reported, never done.
+        if (workingId && (current === 'dev' || current === 'design')) {
+          try {
+            const t = await tracker2.ticket(workingId);
+            const r = repoConfigFor(route, t);
+            const would = r && describeHandoffPush(r.target.dir, r.cfg, t, current);
+            if (would) process.stdout.write(`${would}\n`);
+          } catch { /* a dry run reports what it can */ }
+        }
         break;
       }
       const before = snapshot(await tracker2.openTickets());
