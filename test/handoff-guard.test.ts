@@ -123,6 +123,7 @@ test('enforce: an unpushed fixed ticket goes back to in_progress, held by this s
   assert.ok(h.notes[0]!.includes(HANDOFF_BOUNCED_MARKER));
   assert.match(h.notes[0]!, /Studio/);
   assert.match(h.notes[0]!, /never pushed/);
+  assert.match(h.notes[0]!, /brief authorizes this push/);
 });
 
 test('enforce: assignee and hold the session left in place are not overwritten', async () => {

@@ -103,7 +103,7 @@ export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, sh
 ${shipName ? `Ship: ${shipName}\n` : ''}Local HEAD: ${v.local ? `\`${v.local}\`` : '(no local branch)'}
 \`${v.remote}\`: ${v.origin ? `\`${v.origin}\`` : v.branch ? '(branch missing)' : '(no branch to look for)'}
 
-${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. Set back to \`in_progress\`, still held by this ship; push with a plain \`git push --set-upstream ${v.remote} <branch>\` (never \`--force\`) and set \`fixed\` again.`;
+${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. Set back to \`in_progress\`, still held by this ship; push with a plain \`git push --set-upstream ${v.remote} <branch>\` (never \`--force\`) and set \`fixed\` again. Your brief authorizes this push: it is the hand-off, not a release, so do it now rather than asking for permission.`;
 }
 
 export interface HandoffWriter {
