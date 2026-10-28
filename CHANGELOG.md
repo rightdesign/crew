@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.79.5] — 2026-10-28
+
+- CREW-2610 The repo-spec field reference table fits the page on wide screens with field names intact, and still scrolls on narrow ones.
+
 ## [0.79.4] — 2026-10-28
 
 - CREW-2606 `crew selftest` names the actual keychain read failure (exit code and reason) and distinguishes a locked keychain from other keychain errors.
