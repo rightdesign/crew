@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.75.6] — 2026-10-28
+
+- CREW-2578 The dev lane brief and the hand-off bounce note now say plainly that pushing the ticket branch is authorized, so a seat no longer parks a ticket asking permission to push.
+
 ## [0.75.5] — 2026-10-27
 
 - CREW-2573 crew connect --dry-run on a brand-new Crew table now reports the operator row it would create instead of stopping with "cannot determine the operator".
