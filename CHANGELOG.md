@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.78.1] — 2026-10-28
+
+- CREW-2593 The Agent Log now receives each run's turn count and first-turn prefix tokens, shown in the run sidecar and `crew logbook`.
+- CREW-2598 Run attribution no longer credits a run to a ticket merely listed under "Other tickets" in the closing summary.
+
 ## [0.78.0] — 2026-10-28
 
 - CREW-2590 `crew repos check [PATH]` validates a checkout's .crew.yaml (parse errors, release readiness, hook syntax, shadowed ship settings) before the repo is attached to a route.
