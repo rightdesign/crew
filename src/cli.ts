@@ -3094,7 +3094,8 @@ switch (command) {
         for (const e of entries) {
           process.stdout.write(
             `${e.id}  ${e.started_at ?? '?'}  ${e.outcome ?? '?'}` +
-              `${e.ticket_reference ? `  ${e.ticket_reference}` : ''}${e.model ? `  ${e.model}` : ''}${e.harness || e.provider ? `  (${[e.harness, e.provider].filter(Boolean).join(' · ')})` : ''}\n`,
+              `${e.ticket_reference ? `  ${e.ticket_reference}` : ''}${e.model ? `  ${e.model}` : ''}${e.harness || e.provider ? `  (${[e.harness, e.provider].filter(Boolean).join(' · ')})` : ''}` +
+              `${e.num_turns != null ? `  turns ${e.num_turns}` : ''}${e.prefix_tokens != null ? `  prefix ${e.prefix_tokens}` : ''}\n`,
           );
         }
       } else {
@@ -3110,7 +3111,9 @@ switch (command) {
           `ticket:     ${entry.ticket_reference ?? '(none)'}\n` +
           `model:      ${entry.model ?? '?'}\n` +
           `harness:    ${entry.harness ?? '?'}\n` +
-          `provider:   ${entry.provider ?? '?'}\n`,
+          `provider:   ${entry.provider ?? '?'}\n` +
+          (entry.num_turns != null ? `turns:      ${entry.num_turns}\n` : '') +
+          (entry.prefix_tokens != null ? `prefix:     ${entry.prefix_tokens} tokens\n` : ''),
         );
         if (flag('prompt')) {
           process.stdout.write(`\nprompt reconstruction: ${reconstruction.status}` +

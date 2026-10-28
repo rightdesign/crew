@@ -325,3 +325,18 @@ test('a 5xx on the column probe is queued, and the replay sends only the columns
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0]!.body, { agent_runs: { $op: 'increment', value: 1 }, tokens_in: { $op: 'increment', value: 30 } });
 });
+
+test('reportAgentRun sends numTurns and prefixTokens when known and omits them otherwise', async (t) => {
+  const { restore, calls } = mockFetch({ 'POST /api/workspaces/ws-1/agents/log': { id: 'log-t' } });
+  t.after(restore);
+  const base = { outcome: 'success', startedAt: '2026-10-28T00:00:00.000Z', finishedAt: '2026-10-28T00:05:00.000Z', cycles: [] };
+
+  await reportAgentRun(target, { ...base, numTurns: 18, prefixTokens: 21000 });
+  assert.equal((calls[0]!.body as Record<string, unknown>).numTurns, 18);
+  assert.equal((calls[0]!.body as Record<string, unknown>).prefixTokens, 21000);
+
+  await reportAgentRun(target, base);
+  const unknown = calls[1]!.body as Record<string, unknown>;
+  assert.equal('numTurns' in unknown, false);
+  assert.equal('prefixTokens' in unknown, false);
+});

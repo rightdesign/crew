@@ -490,7 +490,7 @@ test('spawnAgent reports the run as one Agent Log row, its thinking block and it
   assert.deepEqual(logCall.body, {
     agentId: 'agent-9', ticketReference: 'ISSUE-401', outcome: 'success',
     startedAt: (logCall.body as any).startedAt, finishedAt: (logCall.body as any).finishedAt,
-    source: 'client', client: 'crew', model: 'claude-sonnet-5', costUsd: 0.0042,
+    source: 'client', client: 'crew', model: 'claude-sonnet-5', costUsd: 0.0042, numTurns: 2,
     harness: 'claude', provider: 'anthropic',
     // No `agentPersonas.dev.historyId` in this fixture's route (crew agents
     // sync hasn't run), so promptVersion is undefined and dropped by

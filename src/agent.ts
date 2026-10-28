@@ -577,6 +577,8 @@ class RunObserver {
   /** Hand-off writes and their outcomes, to tell a run whose hand-off never landed (CREW-2363). */
   readonly handoff = new HandoffTranscriptTracker();
   result: ReturnType<ReturnType<typeof adapterFor>['extractResult']>;
+  /** Prefix tokens of the first assistant call that carried usage; kept once. */
+  prefixTokens: number | undefined;
   /** Set once the stream carries the harness's final result (turn count or cost). */
   sawResult = false;
   muted = false;
@@ -717,6 +719,7 @@ class RunObserver {
     // above as an empty string, which `TicketAttributionTracker.add`
     // treats as "no new mention, keep crediting whatever ticket was
     // last named."
+    if (this.prefixTokens === undefined && parsed !== undefined) this.prefixTokens = this.adapter.extractPrefixTokens?.(parsed);
     const turnTokens = parsed === undefined ? undefined : this.adapter.extractTurnTokens(parsed);
     if (turnTokens !== undefined) this.attribution.add(turnText, turnTokens);
   }
@@ -789,7 +792,7 @@ async function finishRun(
       exitCode: end.code,
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
       ...(pending ? { handoff: 'pending' } : {}),
-      sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null,
+      sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null, prefixTokens: obs.prefixTokens ?? null,
       totalCostUsd: result?.costUsd ?? null,
     });
   } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
@@ -818,6 +821,9 @@ async function finishRun(
         cacheReadTokens: result?.cacheReadTokens,
         cacheWriteTokens: result?.cacheWriteTokens,
         costUsd: result?.costUsd,
+        // Both come from a finished run: without the result line (interrupted) neither is trustworthy.
+        ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
+        ...(result?.numTurns !== undefined && obs.prefixTokens !== undefined ? { prefixTokens: obs.prefixTokens } : {}),
         harness: identity.harness,
         provider: identity.provider,
         promptVersion: id.promptVersion,

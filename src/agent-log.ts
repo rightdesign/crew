@@ -84,6 +84,12 @@ export interface AgentRunReport {
   cacheWriteTokens?: number;
   costUsd?: number;
   /**
+   * API calls the run made (the result line's `num_turns`) and the input plus
+   * cache-creation tokens of its first call. Omitted when unknown — never 0.
+   */
+  numTurns?: number;
+  prefixTokens?: number;
+  /**
    * Who ran and who served the model (CREW-1516, EPIC-035 §13; the server's
    * DTO fields from TABL-1513). Dropped and retried once when the server
    * rejects them as unknown (an older build), so they never fail a report.
@@ -243,6 +249,8 @@ export async function reportAgentRun(
     cacheReadTokens: run.cacheReadTokens,
     cacheWriteTokens: run.cacheWriteTokens,
     costUsd: run.costUsd,
+    numTurns: run.numTurns,
+    prefixTokens: run.prefixTokens,
     promptVersion: run.promptVersion,
     promptSha: run.promptSha,
   };

@@ -110,3 +110,11 @@ test('toolTarget falls back to nothing when no recognizable input field is prese
   assert.equal(toolTarget('Task', { description: 'go do things' }), undefined);
   assert.equal(toolTarget('Grep', { pattern: 'foo.*bar' }), 'foo.*bar');
 });
+
+test('extractPrefixTokens is input plus cache-creation tokens of an assistant line, and nothing else', async () => {
+  const { extractPrefixTokens } = await import('../src/stream.ts');
+  const line = { type: 'assistant', message: { usage: { input_tokens: 6, cache_creation_input_tokens: 20994, cache_read_input_tokens: 0, output_tokens: 40 } } };
+  assert.equal(extractPrefixTokens(line), 21000);
+  assert.equal(extractPrefixTokens({ type: 'assistant', message: { content: [] } }), undefined);
+  assert.equal(extractPrefixTokens({ type: 'user', message: { usage: { input_tokens: 5 } } }), undefined);
+});

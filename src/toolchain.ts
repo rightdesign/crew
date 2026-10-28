@@ -128,6 +128,8 @@ export interface HarnessAdapter {
   createStreamMapper?(): { map(parsed: unknown): StreamKindEvent[]; flush(): StreamKindEvent[] };
   extractResult(parsed: unknown): StreamResult | undefined;
   extractTurnTokens(parsed: unknown): number | undefined;
+  /** Input plus cache-creation tokens of one assistant call; absent for a harness whose stream does not break calls out. */
+  extractPrefixTokens?(parsed: unknown): number | undefined;
   inspectMcp(o: McpRegistrationOpts): McpRegistration;
   /** Register (or report) the tracker MCP server; returns the one line to print. */
   ensureMcp(o: McpRegistrationOpts & { replace?: boolean; dryRun?: boolean }): string;

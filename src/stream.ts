@@ -119,6 +119,20 @@ export function extractTurnTokens(line: unknown): number | undefined {
     + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
 }
 
+/**
+ * The prompt prefix a run paid for on one API call: input plus cache-creation
+ * tokens of an `assistant` line's `usage` (cache reads are zero on a run's
+ * first call, so for that line this is the system prompt, tool schemas and
+ * lane brief). The caller keeps only the first line that has one.
+ */
+export function extractPrefixTokens(line: unknown): number | undefined {
+  const obj = line as StreamLine;
+  if (!obj || obj.type !== 'assistant') return undefined;
+  const usage = obj.message?.usage;
+  if (!usage) return undefined;
+  return (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+}
+
 /** The final `{"type":"result"}` line, or undefined for anything else. */
 export function extractResult(line: unknown): StreamResult | undefined {
   const obj = line as StreamLine;

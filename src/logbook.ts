@@ -31,6 +31,8 @@ export interface AgentLogEntry {
   model?: string | null;
   harness?: string | null;
   provider?: string | null;
+  num_turns?: number | null;
+  prefix_tokens?: number | null;
   prompt_version?: string | null;
   prompt_sha?: string | null;
   [column: string]: unknown;

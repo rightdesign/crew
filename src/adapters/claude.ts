@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { RoleName } from '../config.ts';
-import { mapStreamLine, extractResult, extractTurnTokens } from '../stream.ts';
+import { mapStreamLine, extractResult, extractTurnTokens, extractPrefixTokens } from '../stream.ts';
 import { ensureClaudeMcp, ensureClaudeMcpResult, inspectClaudeMcp, removeClaudeMcp } from '../claude-mcp.ts';
 import type { PairInstaller } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
@@ -209,6 +209,7 @@ export const claudeAdapter: HarnessAdapter = {
   mapStreamLine,
   extractResult,
   extractTurnTokens,
+  extractPrefixTokens,
 
   inspectMcp(o) {
     const s = inspectClaudeMcp(o);
