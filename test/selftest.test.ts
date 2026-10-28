@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runSelftest, recordSelftest, readSelftest, doctorSelftestLines, formatResult, type SelftestDeps, type SpawnedRun } from '../src/selftest.ts';
+import { REMEDY, runSelftest, recordSelftest, readSelftest, doctorSelftestLines, formatResult, type SelftestDeps, type SpawnedRun } from '../src/selftest.ts';
 import { shipToolchains } from '../src/toolchain.ts';
 import type { Ship } from '../src/config.ts';
 
@@ -76,6 +76,8 @@ test('no seat key readable → keychain locked, nothing launched', async () => {
   );
   assert.equal(res.failure, 'keychain-locked');
   assert.equal(launched, false);
+  assert.equal(res.detail, `OS keychain unavailable — ${REMEDY['keychain-locked']}`);
+  assert.equal(res.detail.split(REMEDY['keychain-locked']).length - 1, 1);
 });
 
 test('timeout and an answer that is not the name', async () => {

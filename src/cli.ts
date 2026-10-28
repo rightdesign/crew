@@ -4786,7 +4786,8 @@ switch (command) {
       if (upfront) { results.push({ ...stub, ok: false, ...upfront }); continue; }
       results.push(await runSelftest({
         ship: cfg.ship, toolchain: tc, baseUrl, workspaceId: route.resolved.workspaceId, apiKey,
-        keyProblem: keychainDown ? `${seatKey.kind === 'ship' ? seatKey.reason : ''} — ${REMEDY['keychain-locked']}` : undefined,
+        // Only the seat's reason: runSelftest appends the remedy itself, as for every other class.
+        keyProblem: keychainDown && seatKey.kind === 'ship' ? seatKey.reason : undefined,
         workspaceName,
       }));
     }
