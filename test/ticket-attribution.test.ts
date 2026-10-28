@@ -75,6 +75,40 @@ test('claim beats a comment on a follow-up; a comment on a known ticket attribut
 test('no writes falls back to mentions, then to the hint', () => {
   const t = new TicketAttributionTracker();
   t.add('looking at ISSUE-7', 50);
+  t.add('still on it', 50);
   assert.deepEqual(t.decide('ISSUE-1'), { ticket: 'ISSUE-7', by: 'mentions' });
   assert.deepEqual(new TicketAttributionTracker().decide('ISSUE-1'), { ticket: 'ISSUE-1', by: 'hint' });
+});
+
+test('CREW-2598: keys that only appear in a closing summary (own ticket first, others after) keep the hint', () => {
+  const t = new TicketAttributionTracker();
+  for (let i = 0; i < 47; i++) t.add('reading files', 1000);
+  t.add('Done with CREW-2580. Other tickets: TABL-559, TABL-560', 1000);
+  assert.deepEqual(t.decide('CREW-2580'), { ticket: 'CREW-2580', by: 'mentions' });
+});
+
+test('CREW-2598: a trailing "Other tickets" key alone never beats the hint', () => {
+  const t = new TicketAttributionTracker();
+  t.add('Summary. Other tickets: TABL-559', 5000);
+  assert.deepEqual(t.decide('CREW-2580'), { ticket: 'CREW-2580', by: 'hint' });
+});
+
+test('CREW-2598: a genuine switch (majority of tokens) overrides the hint', () => {
+  const t = new TicketAttributionTracker();
+  t.add('starting on CREW-1', 100);
+  t.add('actually TABL-9 is the real work', 100);
+  t.add('still going', 900);
+  assert.deepEqual(t.decide('CREW-1'), { ticket: 'TABL-9', by: 'mentions' });
+});
+
+test('CREW-2598: a hinted ticket that moved during the run attributes to it with no observed write', () => {
+  const t = new TicketAttributionTracker();
+  t.add('Done. Other tickets: TABL-559', 5000);
+  assert.deepEqual(t.decide('CREW-2580', { hintMoved: true }), { ticket: 'CREW-2580', by: 'readback' });
+});
+
+test('CREW-2598: without a hint the plain winner rule still applies', () => {
+  const t = new TicketAttributionTracker();
+  t.add('on TABL-5', 10);
+  assert.deepEqual(t.decide(), { ticket: 'TABL-5', by: 'mentions' });
 });

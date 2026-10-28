@@ -745,6 +745,13 @@ function writeRunMeta(
   } catch { /* the sidecar is a convenience, not load-bearing */ }
 }
 
+/**
+ * Reads the run's dispatch ticket back after the run and says whether its
+ * status or assignee changed since dispatch: the hand-off signal for a run
+ * that wrote through MCP tools crew never saw as tracker writes (CREW-2598).
+ */
+export type HintMoved = () => Promise<boolean>;
+
 /** How a run ended, as far as the finishing process can tell. */
 interface RunEnd {
   /** The agent's exit code; null when this process never saw it exit (a reattached run). */
@@ -759,11 +766,16 @@ interface RunEnd {
  */
 async function finishRun(
   id: RunIdentity, obs: RunObserver, emit: Emitter, startedAt: string, end: RunEnd, agentLogKey?: string,
+  hintMoved?: HintMoved,
 ): Promise<{ ms: number; ticket: string | undefined; handoffPending: boolean }> {
   // The ticket this run's tracker writes targeted (hand-off, then claim, then
   // comment); only a run with no such write falls back to the ticket it spent
   // the most tokens on, then the pre-run poll hint (CREW-2364).
-  const { ticket: attributedTicket, by: attributedBy } = obs.attribution.decide(obs.liveTicket);
+  // The read-back only matters when no write was observed; a failed GET is
+  // simply "no signal" (CREW-2598).
+  let moved = false;
+  if (hintMoved) { try { moved = await hintMoved(); } catch { /* no signal */ } }
+  const { ticket: attributedTicket, by: attributedBy } = obs.attribution.decide(obs.liveTicket, { hintMoved: moved });
   // Which toolchain, harness and provider produced this run (CREW-1516),
   // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
   // the sidecar and the event only — the Agent Log carries harness+provider.
@@ -803,6 +815,7 @@ async function finishRun(
       ...(pending ? { handoff: 'pending' } : {}),
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
       ...identity,
+      attributedTicket: attributedTicket ?? null, attributedBy,
       ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
       ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
       ...(result?.costUsd !== undefined ? { totalCostUsd: result.costUsd } : {}),
@@ -887,7 +900,7 @@ async function finishRun(
  * systemd taking down the daemon's group does not take the run with it, and a
  * `<stream>.pid` sidecar so the next daemon can find it (`reattachRun`).
  */
-export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
+export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Promise<RunResult> {
   const adapter = adapterFor(plan.harness ?? LEGACY_TOOLCHAIN_HARNESS);
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
@@ -947,7 +960,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter): Promise<RunResult> {
       obs.end();
       await endSink(eventsSink);
       if (spawnFailed) return;
-      const { ms, handoffPending } = await finishRun(id, obs, emit, startedAt, { code: code ?? 1 }, plan.agentLog?.apiKey);
+      const { ms, handoffPending } = await finishRun(id, obs, emit, startedAt, { code: code ?? 1 }, plan.agentLog?.apiKey, hintMoved);
       resolve({ code: code ?? 1, ms, ...(handoffPending ? { handoffPending } : {}) });
     });
     // An agent that exits (or closes stdin) before the prompt is fully written

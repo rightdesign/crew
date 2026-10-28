@@ -864,7 +864,21 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
   }
   try {
     const runStart = new Date().toISOString();
-    await spawnAgent(plan, emit);
+    // Snapshot the dispatched ticket so the run's end can tell whether it
+    // moved (status/assignee) even when the hand-off went through MCP tools
+    // crew cannot see as tracker writes (CREW-2598).
+    let hintMoved: (() => Promise<boolean>) | undefined;
+    if (workingId) {
+      try {
+        const before = await tracker.ticket(workingId);
+        const col = tracker.contract.columns;
+        hintMoved = async () => {
+          const after = await tracker.ticket(workingId);
+          return after[col.status] !== before[col.status] || after[col.assignee] !== before[col.assignee];
+        };
+      } catch { /* no snapshot, no read-back */ }
+    }
+    await spawnAgent(plan, emit, hintMoved);
     await guardRunHandoff(route, ship, tracker, role, workingId, emit, runStart);
   } finally {
     if (memberId) {

@@ -37,25 +37,32 @@ export function ticketMentions(text: string): string[] {
  */
 export class TicketAttributionTracker {
   #tokensByTicket = new Map<string, number>();
+  #turns = 0;
   #current: string | undefined;
   /** Tracker record uuid → ticket key, learned when a write names both (a claim resolves the key from the last mention). */
   #keyByRecord = new Map<string, string>();
   #lastBy: Partial<Record<'claim' | 'handoff' | 'comment', string>> = {};
 
-  /** The ticket key most recently named in the transcript, or undefined before any. */
+  /**
+   * The ticket key most recently named in the transcript, or undefined before any.
+   * Only the FIRST key in a turn counts: a closing summary names its own
+   * ticket first and then lists others ("Other tickets", "Blocked by", "See
+   * also"), and those trailing keys are not what the run worked (CREW-2598).
+   */
   get current(): string | undefined { return this.#current; }
 
   /** Record the mentions in `text` without crediting tokens (a claim needs "which ticket" before the turn's usage line arrives). */
   note(text: string): void {
     const mentions = ticketMentions(text);
-    if (mentions.length > 0) this.#current = mentions[mentions.length - 1];
+    if (mentions.length > 0) this.#current = mentions[0];
   }
 
   /** One assistant turn: its combined visible text (thinking + text blocks) and its own token cost. */
   add(text: string, tokens: number): void {
     const mentions = ticketMentions(text);
-    if (mentions.length > 0) this.#current = mentions[mentions.length - 1];
+    if (mentions.length > 0) this.#current = mentions[0];
     if (this.#current === undefined || tokens <= 0) return;
+    this.#turns++;
     this.#tokensByTicket.set(this.#current, (this.#tokensByTicket.get(this.#current) ?? 0) + tokens);
   }
 
@@ -79,16 +86,33 @@ export class TicketAttributionTracker {
   /**
    * How the attribution is decided: a hand-off write beats a claim, a claim
    * beats a comment (so a follow-up ticket filed or commented on while
-   * working never displaces the claimed one), and any write beats the
-   * mention-token heuristic, which is only the fallback for runs that made
-   * no ticket-targeted write. The pre-run hint is last.
+   * working never displaces the claimed one), and any write beats everything
+   * below. Next, `hintMoved` — the post-run read-back showed the hinted
+   * ticket changed status or assignee during the run — is a hand-off signal
+   * for a run that wrote through MCP tools crew cannot see. Then the
+   * mention-token heuristic, which with a hint may override it only when a
+   * different ticket holds a strict majority of the credited tokens (a single
+   * credited turn, like a lone end-of-run summary naming another ticket,
+   * must not). A run with no hint
+   * keeps the plain winner. The pre-run hint is last.
    */
-  decide(hint?: string): { ticket: string | undefined; by: 'handoff' | 'claim' | 'comment' | 'mentions' | 'hint' } {
+  decide(hint?: string, opts: { hintMoved?: boolean } = {}): {
+    ticket: string | undefined; by: 'handoff' | 'claim' | 'comment' | 'readback' | 'mentions' | 'hint';
+  } {
     for (const by of ['handoff', 'claim', 'comment'] as const) {
       const ticket = this.#lastBy[by];
       if (ticket) return { ticket, by };
     }
-    if (this.#tokensByTicket.size > 0) return { ticket: this.winner(hint), by: 'mentions' };
+    if (hint && opts.hintMoved) return { ticket: hint, by: 'readback' };
+    if (this.#tokensByTicket.size > 0) {
+      if (!hint) return { ticket: this.winner(), by: 'mentions' };
+      const winner = this.winner(hint);
+      if (winner === hint) return { ticket: hint, by: 'mentions' };
+      let total = 0;
+      for (const n of this.#tokensByTicket.values()) total += n;
+      const share = (this.#tokensByTicket.get(winner!) ?? 0) / total;
+      return share > 0.5 && this.#turns > 1 ? { ticket: winner, by: 'mentions' } : { ticket: hint, by: 'hint' };
+    }
     return { ticket: hint, by: 'hint' };
   }
 
