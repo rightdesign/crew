@@ -18,7 +18,6 @@ export default defineConfig({
     search: { provider: 'local' },
     nav: [
       { text: 'Install', link: '/install' },
-      { text: 'Install', link: '/install' },
       { text: 'Getting started', link: '/getting-started' },
       { text: 'Commands', link: '/commands' },
     ],
