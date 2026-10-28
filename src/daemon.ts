@@ -85,7 +85,7 @@ import { runStalledSweep } from './stalled.ts';
 import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
 import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
 import { listPendingHandoffs } from './pending-handoff.ts';
-import { replayQueuedAgentRuns } from './agent-log.ts';
+import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
@@ -706,6 +706,8 @@ async function replayPendingWrites(ctx: RoleAgentContext): Promise<void> {
       await replayRoutePending(route, ship, new Tracker(route, ship, { apiKey: identity.apiKey }), emit, role);
     }
     await replayQueuedAgentRuns(ship.stateDir, routeSlug(route.route),
+      async (role) => (await resolveSeatKey(route, role as RoleName, ctx.getSessionStore)).apiKey, emit);
+    await replayQueuedTicketCounters(ship.stateDir, routeSlug(route.route),
       async (role) => (await resolveSeatKey(route, role as RoleName, ctx.getSessionStore)).apiKey, emit);
   } catch (e) {
     emit.warn(`could not replay pending writes: ${(e as Error).message}`, { step: 'agent' });

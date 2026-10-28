@@ -223,6 +223,20 @@ test('a resolved route with a resolvedAgentId carries a full agentLog target', (
   });
 });
 
+test('a route with a resolved Issues table lets the Agent Log target accumulate ticket spend (CREW-2580)', () => {
+  const { home, state, ship } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1', models: { issues: 'iss-1', comments: 'c', crew: 'cr' } },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { ...ship, userAgent: 'crew-test' }, stateDir: state,
+    roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1',
+  });
+  assert.equal(plan.agentLog?.tickets?.issuesModelId, 'iss-1');
+  assert.equal(plan.agentLog?.tickets?.counters.costUsd, 'cost_usd');
+});
+
 // ISSUE-670: `resolvedAgentId` is the caller's job to fetch (agents.ts's
 // resolveAgentId, cache-then-seat-fallback) — planAgentRun itself no longer
 // reads `route.resolved.agentPersonas` directly, so a route with neither a

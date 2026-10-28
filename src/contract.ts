@@ -120,6 +120,19 @@ export interface ContractColumns {
    * priority (see `rank` in priority.ts).
    */
   position: string;
+  /**
+   * Per-ticket run-spend counters (CREW-2580), all optional nullable numbers on
+   * Issues: the number of runs attributed to the ticket and the sums of the
+   * Agent Log row's token and cost figures. Each run increments them
+   * atomically after its Agent Log row is written. A table without a column
+   * simply is not written to for it.
+   */
+  agentRuns: string;
+  tokensIn: string;
+  tokensOut: string;
+  cacheReadTokens: string;
+  cacheWriteTokens: string;
+  costUsd: string;
 }
 
 export interface ContractComments {
@@ -289,6 +302,12 @@ export const DEFAULT_CONTRACT: Contract = {
     prRef: 'pr_ref',
     externalId: 'external_id',
     position: 'position',
+    agentRuns: 'agent_runs',
+    tokensIn: 'tokens_in',
+    tokensOut: 'tokens_out',
+    cacheReadTokens: 'cache_read_tokens',
+    cacheWriteTokens: 'cache_write_tokens',
+    costUsd: 'cost_usd',
   },
   comments: {
     parent: 'ticket_id',

@@ -52,6 +52,20 @@ ticket goes after any positioned one. It is a tiebreak, never an override — it
 beats the severity and epic tiebreakers but can never move a ticket across an
 effective-priority band.
 
+The run-spend counters (CREW-2580) are optional numbers on Issues:
+`agent_runs`, `tokens_in`, `tokens_out`, `cache_read_tokens`,
+`cache_write_tokens` (Integer) and `cost_usd` (Float), named in the contract as
+`columns.agentRuns`, `columns.tokensIn`, `columns.tokensOut`,
+`columns.cacheReadTokens`, `columns.cacheWriteTokens` and `columns.costUsd`.
+After every run that reports an Agent Log row, the crew adds that run's own
+usage to the ticket the row cites with Tablation's atomic `{ "$op":
+"increment" }` write, so two ships never lose an update. A figure the harness
+did not report (`cost_usd` on codex and gemini) is left out, never written as
+0; a run with no ticket changes nothing; a table without a column is written
+around, silently. The write is best effort: a failure warns on the run log and
+never fails the run. The same Agent Log row also carries `workItemTable` and
+`workItemRecordId` pointing at the ticket's record.
+
 ### The order of choice values
 
 ```

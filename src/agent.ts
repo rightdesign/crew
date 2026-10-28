@@ -19,7 +19,8 @@ import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
-import { reportAgentRun, queueAgentRun, AgentLogUnreachableError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { resolveContract } from './contract.ts';
+import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
@@ -323,6 +324,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   // seat's own linked Agent row when `crew agents sync` has never run, and
   // the endpoint accepts a run with no Agent reference for the cases even
   // that can't resolve (no seat, no linked Agent, unreachable tracker).
+  const columns = resolveContract(o.route.contract).columns;
   const agentLog: AgentPlan['agentLog'] = o.route.resolved && o.apiKey
     ? {
         baseUrl: o.route.baseUrl,
@@ -330,6 +332,15 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
         apiKey: o.apiKey,
         userAgent: o.ship.userAgent,
         agentId: o.resolvedAgentId,
+        ...(o.route.resolved.models?.issues ? { tickets: {
+          issuesModelId: o.route.resolved.models.issues,
+          keyColumn: columns.key,
+          tagColumn: columns.tag,
+          counters: {
+            agentRuns: columns.agentRuns, tokensIn: columns.tokensIn, tokensOut: columns.tokensOut,
+            cacheReadTokens: columns.cacheReadTokens, cacheWriteTokens: columns.cacheWriteTokens, costUsd: columns.costUsd,
+          },
+        } } : {}),
       }
     : undefined;
 
@@ -813,7 +824,18 @@ async function finishRun(
         promptSha: id.promptSha,
     };
     try {
-      await reportAgentRun({ ...id.agentLog, apiKey: agentLogKey }, report);
+      const sent = await reportAgentRun({ ...id.agentLog, apiKey: agentLogKey }, report);
+      if (sent.counterWarning) emit.warn(sent.counterWarning, { step: 'agent' });
+      // The row exists but the tracker would not take the increment: queue just
+      // that write, so the spend is not lost and the row is not posted twice.
+      if (sent.counterRetry) {
+        try {
+          queueTicketCounters(stateDirOfStream(id.streamPath), basename(id.streamPath, '.jsonl'), {
+            version: 1, route: id.route, role: id.role, target: id.agentLog, write: sent.counterRetry,
+            attempts: 0, nextAttemptAt: new Date().toISOString(),
+          });
+        } catch { /* the warning above already says the spend was not added */ }
+      }
     } catch (e) {
       // The tracker did not answer, so no row exists: keep the report and send
       // it on a later pass rather than losing the run's record (CREW-2363).

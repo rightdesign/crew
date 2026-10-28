@@ -83,15 +83,23 @@ export class FakeTracker {
         const raw = url.searchParams.get('filters');
         let out = rows;
         if (raw) {
-          for (const f of JSON.parse(raw) as Array<{ columnName: string; operator: string; value: unknown }>) {
-            out = out.filter((r) => {
-              const v = r[f.columnName];
-              if (f.operator === 'IN') return (f.value as unknown[]).includes(v);
-              if (f.operator === 'NOT_IN') return !(f.value as unknown[]).includes(v);
-              if (f.operator === 'EQ') return v === f.value;
-              return true;
-            });
-          }
+          // A flat array is an AND of leaves; the real route also takes a
+          // `{ combinator, conditions }` tree (an OR lookup by key or tag).
+          type Leaf = { columnName: string; operator: string; value: unknown };
+          type Node = Leaf | { combinator: 'AND' | 'OR'; conditions: Node[] };
+          const matches = (r: Record<string, unknown>, n: Node): boolean => {
+            if ('conditions' in n) {
+              return n.combinator === 'OR' ? n.conditions.some((c) => matches(r, c)) : n.conditions.every((c) => matches(r, c));
+            }
+            const v = r[n.columnName];
+            if (n.operator === 'IN') return (n.value as unknown[]).includes(v);
+            if (n.operator === 'NOT_IN') return !(n.value as unknown[]).includes(v);
+            if (n.operator === 'EQ') return v === n.value;
+            return true;
+          };
+          const parsedFilters = JSON.parse(raw) as Node | Node[];
+          const tree: Node = Array.isArray(parsedFilters) ? { combinator: 'AND', conditions: parsedFilters } : parsedFilters;
+          out = out.filter((r) => matches(r, tree));
         }
         send(200, out);
         const hook = this.raceHooks.get(model);
