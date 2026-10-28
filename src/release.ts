@@ -113,9 +113,12 @@ export interface ReleaseBlock { kind: 'branch' | 'dirty'; detail: string }
 /**
  * May this checkout be released at all?
  *
- * The deploy builds from the WORKING TREE, so anything uncommitted would
- * ship. Both refusals are correct and stay; what was wrong historically is
- * that refusing was silent — eight commits once sat unreleased behind a
+ * Applies only where a merge lands in THIS checkout's working tree: `crew
+ * merge`, and a repo whose remote has no base branch to cut a release checkout
+ * from. There anything uncommitted would ship, so both refusals are correct.
+ * A normal release runs in a temporary checkout cut from `<remote>/<base>`
+ * (CREW-1383) and never reads the primary's working tree, so it skips this
+ * guard (CREW-2603). What was wrong historically is that refusing was silent — eight commits once sat unreleased behind a
  * single untracked file with nothing saying so (ISSUE-174). So the detail
  * here names the files: the count conveys urgency, the names make it a
  * ten-second fix.
@@ -251,6 +254,8 @@ export function planMerge(
   branchFor: (t: Ticket) => string | null = (t) => branchForIssue(cwd, t.issue_id),
   base = 'main',
   blockerInfo?: BlockerInfo,
+  /** What "the base as it stands" means for the key searches; HEAD unless the decision reads a remote ref. */
+  ref = 'HEAD',
 ): MergeCandidate[] {
   const held = new Set(heldByBlockers(tickets, contract.statuses.verified, blockerInfo).map((h) => h.ticket.id));
   const verified = tickets
@@ -266,7 +271,7 @@ export function planMerge(
       // (`CREW-969` rather than `ISSUE-969`), which is now the branch/commit
       // convention for a ticket that has one.
       const keys = referenceKeys(ticket);
-      const unreleased = lastReleased ? findKeyInRange(cwd, keys, `${lastReleased}..HEAD`) : null;
+      const unreleased = lastReleased ? findKeyInRange(cwd, keys, `${lastReleased}..${ref}`) : null;
       if (unreleased) {
         return {
           ticket, branch: null, entries: [], usedFallback: false,
@@ -282,7 +287,7 @@ export function planMerge(
       // whole local base before concluding anything. With a `lastReleased`,
       // a hit here is necessarily at or before it: already released. With
       // none, nothing has shipped, so it is merged and waiting on a release.
-      const anywhere = findKeyInRange(cwd, keys, 'HEAD');
+      const anywhere = findKeyInRange(cwd, keys, ref);
       if (anywhere) {
         return {
           ticket, branch: null, entries: [], usedFallback: false,
@@ -465,6 +470,14 @@ export interface ReleaseOptions {
    * and reports finished work as never built (ISSUE-977).
    */
   branchFor?: (t: Ticket) => string | null;
+  /**
+   * The ref the decision reads instead of the primary's HEAD: the remote base
+   * (`origin/main`) when the release will run in a temporary checkout cut from
+   * it. Absent means HEAD, as before (CREW-2603).
+   */
+  ref?: string;
+  /** Apply `checkGuards` to the primary checkout. Default true; off for the temporary-checkout path. */
+  guard?: boolean;
 }
 
 /** The subject `runRelease` gives its own version commit: "Release v1.2.3". */
@@ -475,9 +488,9 @@ const RELEASE_COMMIT_SUBJECT = /^Release \S+$/;
  * `null` when `sha` is not an ancestor of HEAD (history was rewritten or the
  * sha is unknown), otherwise the subjects of the commits after it.
  */
-export function subjectsSince(cwd: string, sha: string): string[] | null {
-  if (!isAncestor(cwd, sha, 'HEAD')) return null;
-  return (gitOk(cwd, ['log', '--format=%h %s', `${sha}..HEAD`]) ?? '').split('\n').filter(Boolean);
+export function subjectsSince(cwd: string, sha: string, ref = 'HEAD'): string[] | null {
+  if (!isAncestor(cwd, sha, ref)) return null;
+  return (gitOk(cwd, ['log', '--format=%h %s', `${sha}..${ref}`]) ?? '').split('\n').filter(Boolean);
 }
 
 /** True for a "Release vX" commit line from `subjectsSince` (`<sha> <subject>`). */
@@ -489,20 +502,21 @@ export function decideRelease(
 ): ReleaseDecision {
   const pattern = opts.tagPattern ?? 'v*';
   const base = opts.base ?? 'main';
-  const block = checkGuards(cwd, base);
-  const lastTag = latestReleaseTag(cwd, pattern, 'HEAD');
+  const ref = opts.ref ?? 'HEAD';
+  const block = opts.guard === false ? null : checkGuards(cwd, base);
+  const lastTag = latestReleaseTag(cwd, pattern, ref);
   const lastReleased = lastTag ? tagCommit(cwd, lastTag) : null;
-  const head = resolve(cwd, 'HEAD') ?? '';
+  const head = resolve(cwd, ref) ?? '';
   const merges = block
     ? []
-    : planMerge(cwd, tickets, contract, lastReleased, opts.branchFor ?? ((t) => branchForIssue(cwd, t.issue_id)), base, opts.blockerInfo);
-  const unreleasedCommits = lastReleased ? countCommits(cwd, `${lastReleased}..HEAD`) : 0;
+    : planMerge(cwd, tickets, contract, lastReleased, opts.branchFor ?? ((t) => branchForIssue(cwd, t.issue_id)), opts.ref ?? base, opts.blockerInfo, ref);
+  const unreleasedCommits = lastReleased ? countCommits(cwd, `${lastReleased}..${ref}`) : 0;
   // A "Release vX" commit is the crew's own bookkeeping, never work. When a
   // second ship releases and this ship's last tag is older (the tag has not
   // reached it), that commit alone would read as unreleased and trigger a
   // zero-merge release that the other ship then answers in kind (CREW-1412).
   const unreleasedWork = lastReleased
-    ? (gitOk(cwd, ['log', '--format=%s', `${lastReleased}..HEAD`]) ?? '')
+    ? (gitOk(cwd, ['log', '--format=%s', `${lastReleased}..${ref}`]) ?? '')
         .split('\n').filter((l) => l && !RELEASE_COMMIT_SUBJECT.test(l)).length
     : 0;
   return {

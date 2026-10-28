@@ -20,7 +20,7 @@ import {
 } from './git.ts';
 import type { BlockerInfo } from './blocked.ts';
 import {
-  decideRelease, subjectsSince, isReleaseCommitLine, insertChangelogSection, renderChangelogSection, renderTag,
+  decideRelease, checkGuards, subjectsSince, isReleaseCommitLine, insertChangelogSection, renderChangelogSection, renderTag,
   type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
@@ -1012,8 +1012,16 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
     if (drop.size) releasable = releasable.filter((t) => !drop.has(t.id));
   }
 
+  // CREW-2603: a real release runs in a temporary checkout cut from
+  // `<remote>/<base>`, so the decision reads that ref and the primary's branch
+  // and dirty state are irrelevant to it. The in-place paths (dry run, `crew
+  // merge`, a remote with no base branch) keep reading HEAD behind the guard.
+  const { remote, base } = o.repo.branch;
+  const inPlace = o.dryRun || !!o.mergeOnly || !remoteBranchExists(o.cwd, remote, base);
+  const remoteRef = `${remote}/${base}`;
   const decision = decideRelease(o.cwd, releasable, o.contract, {
-    tagPattern, base: o.repo.branch.base, blockerInfo: o.blockerInfo,
+    tagPattern, base, blockerInfo: o.blockerInfo,
+    ...(inPlace ? {} : { ref: remoteRef, guard: false }),
     // CREW-1364: a branch another ship built and pushed at `fixed` exists
     // here only on the remote. Materialize it so the squash below has a ref.
     // A dry run only looks.
@@ -1060,7 +1068,7 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
   // is not a release commit lifts it.
   const failedAt = o.state?.deployFailedSha();
   if (!o.force && failedAt) {
-    const since = failedAt === decision.head ? [] : subjectsSince(o.cwd, failedAt);
+    const since = failedAt === decision.head ? [] : subjectsSince(o.cwd, failedAt, inPlace ? 'HEAD' : remoteRef);
     const real = since?.filter((l) => !isReleaseCommitLine(l)) ?? null;
     if (real && real.length === 0) {
       o.emit.warn(
@@ -1101,9 +1109,14 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
   // (it never pushes, so a discarded checkout would throw them away). A repo with
   // no base on its remote has no `origin/<base>` to cut from, so it releases the
   // way it always has.
-  const { remote, base } = o.repo.branch;
-  if (o.dryRun || o.mergeOnly || !remoteBranchExists(o.cwd, remote, base)) {
+  if (inPlace) {
     return mergeAndRelease(o, decision, fresh);
+  }
+  // Informational only: the release does not depend on the primary, but an
+  // operator should still see why it is behind (CREW-2603).
+  const primary = checkGuards(o.cwd, base);
+  if (primary) {
+    o.emit.emit(scoped(`primary checkout not fast-forwarded: ${primary.detail}; its dist/ is stale until rebuilt`), { step: 'release' });
   }
   let checkout: ReleaseCheckout;
   const stranded = recoverStrandedReleaseCheckouts(o.cwd);

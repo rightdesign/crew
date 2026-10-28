@@ -1485,8 +1485,12 @@ async function releasePhase(
       // list, so every repo can read as idle and skip before the report below
       // — which would leave it stranded in silence. Reporting takes no lock.
       reportUnplaceable(c.route, preUnplaceable, tracker.contract.statuses.verified, remit);
+      // CREW-2603: same ref the release itself will decide on, so a dirty or
+      // off-base primary does not read as "blocked" or stale before the lock.
+      const remoteBase = remoteBranchExists(target.dir, repo.branch.remote, repo.branch.base);
       const d = decideRelease(target.dir, pre, tracker.contract, {
         tagPattern: repo.release.tagPattern ?? 'v*', base: repo.branch.base,
+        ...(remoteBase ? { ref: `${repo.branch.remote}/${repo.branch.base}`, guard: false } : {}),
       });
       const unstamped = planReleasedBranches(
         target.dir, pre, tracker.contract,

@@ -570,3 +570,35 @@ test('planMerge dedupes a bounced branch whose fix commit rewords the Changelog 
   const [c] = planMerge(dir, [T('ISSUE-40')], DEFAULT_CONTRACT, null);
   assert.deepEqual(c!.entries, ['ISSUE-40 New wording']);
 });
+
+test('the decision reads the remote base ref, not a dirty off-base primary (CREW-2603)', () => {
+  const { dir, g } = repo();
+  writeFileSync(join(dir, 'a.txt'), '1'); g('add', '.'); g('commit', '-qm', 'Release v1.0.0');
+  g('tag', '-a', 'v1.0.0', '-m', 'Release v1.0.0');
+  writeFileSync(join(dir, 'b.txt'), '1'); g('add', '.'); g('commit', '-qm', 'real work');
+  g('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  // The primary wanders off: another branch, one commit behind the remote, with a stray file.
+  g('checkout', '-q', '-b', 'feature', 'v1.0.0');
+  writeFileSync(join(dir, 'stray.txt'), 'x');
+
+  const remote = decideRelease(dir, [], DEFAULT_CONTRACT, { ref: 'origin/main', guard: false });
+  assert.equal(remote.block, null);
+  assert.equal(remote.lastTag, 'v1.0.0');
+  assert.equal(remote.head, g('rev-parse', 'origin/main').toString().trim());
+  assert.equal(remote.unreleasedCommits, 1);
+  assert.equal(remote.upToDate, false);
+
+  // Reading HEAD instead would call the repo released and up to date.
+  const local = decideRelease(dir, [], DEFAULT_CONTRACT, { guard: false });
+  assert.equal(local.unreleasedCommits, 0);
+  assert.equal(local.upToDate, true);
+});
+
+test('the guard still applies unless the caller opts out (CREW-2603)', () => {
+  const { dir, g } = repo();
+  writeFileSync(join(dir, 'stray.txt'), 'x');
+  assert.equal(decideRelease(dir, [], DEFAULT_CONTRACT).block!.kind, 'dirty');
+  assert.match(decideRelease(dir, [], DEFAULT_CONTRACT).block!.detail, /working tree has 1 change\(s\)/);
+  g('checkout', '-q', '-b', 'feature');
+  assert.equal(decideRelease(dir, [], DEFAULT_CONTRACT).block!.kind, 'branch');
+});
