@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.79.3] — 2026-10-28
+
+- CREW-2605 `crew selftest` no longer prints the keychain-locked remedy twice.
+
 ## [0.79.2] — 2026-10-28
 
 - CREW-2602 The release phase and `crew doctor` name the table, method and grant when a seat is refused (Ships, Locks, Epics, Repos included), and the seat-read probe now uses the real records route instead of one that always returned 404.
