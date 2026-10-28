@@ -41,7 +41,7 @@ import { repoTargetFor, routeSlug, type Route, type Ship, type RoleName } from '
 import { replayPendingHandoffs } from './pending-handoff.ts';
 import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
-import type { RunnerEvent, Ticket, Tracker } from './tracker.ts';
+import type { Comment, RunnerEvent, Ticket, Tracker } from './tracker.ts';
 import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
 
@@ -51,6 +51,31 @@ export const HANDOFF_BOUNCED_MARKER = calloutHeader('WARNING', 'Hand-off Bounced
 /** The fixed shape QA reads: `pushed <full sha> to origin/<branch>`. */
 export const pushedEventBody = (sha: string, remote: string, branch: string): string =>
   `pushed ${sha} to ${remote}/${branch}`;
+
+/** The `## Acceptance` bullets of a ticket body, text only; empty when the ticket has no such section (CREW-2600). */
+export function acceptanceLines(description: unknown): string[] {
+  if (typeof description !== 'string') return [];
+  const out: string[] = [];
+  let inside = false;
+  for (const raw of description.split('\n')) {
+    const heading = /^#{1,6}\s+(.*?)\s*$/.exec(raw);
+    if (heading) { inside = /^acceptance\b/i.test(heading[1]!); continue; }
+    if (!inside) continue;
+    const bullet = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+?)\s*$/.exec(raw);
+    if (bullet) out.push(bullet[1]!);
+  }
+  return out;
+}
+
+const flat = (s: string): string => s.replace(/[`*_>]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** The acceptance lines `comment` does not quote, compared without markdown emphasis, case or line breaks. */
+export function unquotedAcceptance(lines: string[], comment: string): string[] {
+  const body = flat(comment);
+  return lines.filter((l) => !body.includes(flat(l)));
+}
+
+export const ACCEPTANCE_BOUNCED_MARKER = calloutHeader('WARNING', 'Acceptance Checklist Missing');
 
 export type HandoffVerdict =
   /** `<remote>/<branch>` is at the worktree's HEAD. */
@@ -136,6 +161,8 @@ export interface HandoffWriter {
   postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
   /** Event-log reader (CREW-1973); absent in a writer that cannot read it, which then skips the takeover check. */
   events?(type: string): Promise<RunnerEvent[]>;
+  /** Comment reader (CREW-2600); absent in a writer that cannot read it, which then skips the acceptance check. */
+  comments?(limit?: number): Promise<Comment[]>;
 }
 
 export interface HandoffLog {
@@ -182,6 +209,35 @@ async function takenOverSince(i: HandoffGuardInput, ticketRow: string): Promise<
 }
 
 /**
+ * CREW-2600: the acceptance lines the seat's newest comment on this ticket does
+ * not quote, or `null` when the check does not apply (no Acceptance section, or
+ * a writer that cannot read comments). A seat with no comment at all misses all.
+ */
+async function missingAcceptance(i: HandoffGuardInput, t: Ticket): Promise<string[] | null> {
+  const lines = acceptanceLines(t.description);
+  if (lines.length === 0 || !i.writer.comments) return null;
+  const cc = i.contract.comments;
+  const mine = (await i.writer.comments())
+    .map((c) => c as unknown as Record<string, unknown>)
+    .filter((r) => r[cc.parent] === t.id && r[cc.author] === i.seatId)
+    .sort((a, b) => String(a[cc.createdAt] ?? '').localeCompare(String(b[cc.createdAt] ?? '')));
+  const last = mine.at(-1);
+  const missing = unquotedAcceptance(lines, last ? String(last[cc.body] ?? '') : '');
+  return missing.length > 0 ? missing : null;
+}
+
+export function acceptanceBounceComment(missing: string[], shipName: string | undefined): string {
+  return `${ACCEPTANCE_BOUNCED_MARKER}
+
+**Hand-off bounced: the hand-off comment does not quote every line of the ticket's Acceptance section.**
+
+${shipName ? `Ship: ${shipName}\n\n` : ''}Not quoted verbatim:
+${missing.map((l) => `- ${l}`).join('\n')}
+
+Set back to \`in_progress\`. Post a comment that lists every Acceptance line verbatim, each followed by the test, command or manual check that exercised it in this run and its result (a line you could not exercise is listed with the reason, never omitted), then set \`fixed\` again. The branch is already pushed.`;
+}
+
+/**
  * Run after a dev/design session ends. A ticket not at `fixed` (or already
  * claimed past it) is none of this guard's business (the session is mid-work, parked at `needs_info`, ...).
  * Non-fatal throughout: a tracker blip here must not fail a run that already
@@ -204,6 +260,26 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     if (v.kind === 'unverified') {
       i.log.warn(`${t.issue_id} is at ${t.status} but the push was not checked: ${v.why}`, log);
       return { kind: 'unverified', why: v.why };
+    }
+    if (v.kind === 'pushed' && !claimed) {
+      const missing = await missingAcceptance(i, t);
+      if (missing) {
+        const heldNow = i.hold ? t[i.hold.column] : undefined;
+        if ((i.hold && heldNow && heldNow !== i.hold.shipId) || await takenOverSince(i, t.id)) {
+          i.log.warn(`${t.issue_id} is held by another ship now — the acceptance check is stale, left alone`, log);
+          return { kind: 'unverified', why: 'ticket is held by another ship' };
+        }
+        await i.writer.updateTicket(t.id, {
+          status: i.contract.statuses.building,
+          ...(t.assignee_id ? {} : { assignee_id: i.seatId }),
+          ...(i.hold && !heldNow ? { [i.hold.column]: i.hold.shipId } : {}),
+        });
+        await i.writer.postEvent(t.id, acceptanceBounceComment(missing, i.shipName), i.seatId, 'bounced').catch(() => {
+          i.log.warn('bounced, but the note failed to post', log);
+        });
+        i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: hand-off comment lacks the acceptance checklist`, log);
+        return { kind: 'bounced' };
+      }
     }
     if (v.kind === 'pushed') {
       await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');

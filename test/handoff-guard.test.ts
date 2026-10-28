@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
 import {
-  inspectHandoff, enforceHandoff, describeHandoffPush, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
+  inspectHandoff, enforceHandoff, acceptanceLines, describeHandoffPush, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
   type HandoffWriter, type HandoffLog,
 } from '../src/handoff-guard.ts';
 import type { Ticket } from '../src/tracker.ts';
@@ -352,4 +352,51 @@ test('stray: a ticket held by this ship, or with no branch here, is not bounced'
   assert.deepEqual(h.patches, []);
   assert.deepEqual(h.notes, []);
   assert.ok(h.warns.length > 0);
+});
+
+// CREW-2600: the hand-off comment quotes every Acceptance line.
+const ACCEPT = '## What\n\nx\n\n## Acceptance\n\n- A hand-off with four lines passes.\n- A comment with no checklist is **bounced**.\n- No section is unaffected.\n\n## Context\n\n- not acceptance\n';
+const acceptHarness = (comment: string | null) => {
+  const h = harness(ticket({ description: ACCEPT }));
+  h.w.comments = async () => (comment === null ? [] : [
+    { id: 'c1', ticket_id: 'row-9', team_member_id: 'seat-dev', body: comment, created_at: '2026-01-01T00:00:00Z' },
+  ]);
+  return h;
+};
+
+test('acceptanceLines reads only the Acceptance bullets', () => {
+  assert.deepEqual(acceptanceLines(ACCEPT), [
+    'A hand-off with four lines passes.', 'A comment with no checklist is **bounced**.', 'No section is unaffected.',
+  ]);
+  assert.deepEqual(acceptanceLines('## What\n\n- a'), []);
+  assert.deepEqual(acceptanceLines(null), []);
+});
+
+test('enforce: a comment quoting every acceptance line is accepted', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = acceptHarness('- A hand-off with four lines passes. — `npm test` ok\n- A comment with no checklist is bounced. — guard test ok\n- No section is unaffected. — guard test ok');
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'pushed');
+  assert.equal(h.patches.length, 0);
+});
+
+test('enforce: a comment without the checklist is bounced naming the missing lines', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = acceptHarness('Done, tests pass.');
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'bounced');
+  assert.equal(h.patches[0]!.status, DEFAULT_CONTRACT.statuses.building);
+  assert.match(h.notes[0]!, /Acceptance Checklist Missing/);
+  assert.match(h.notes[0]!, /No section is unaffected\./);
+});
+
+test('enforce: no comment at all is bounced; a ticket with no Acceptance section is unaffected', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  assert.equal((await enforceHandoff(input(f, acceptHarness(null)))).kind, 'bounced');
+  const h = harness(ticket({ description: '## What\n\nno acceptance here' }));
+  h.w.comments = async () => [];
+  assert.equal((await enforceHandoff(input(f, h))).kind, 'pushed');
 });

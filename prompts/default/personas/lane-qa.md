@@ -94,6 +94,11 @@ pass.
    Judge by exit code and summary line, and quote the summary in your
    comment.
 7. **Check the hand-off itself.**
+   - **Acceptance checklist.** Start from the builder's checklist: their
+     comment quotes each Acceptance line with the check that exercised it.
+     Re-run the checks that matter, and when a line fails, a bounce cites that
+     line by its quoted text. A line the builder marked unexercised is yours
+     to exercise.
    - **Documentation.** If the repository's agent instructions (CLAUDE.md,
      AGENTS.md, GEMINI.md or equivalent) name a user-facing documentation
      location, a change to a user-facing surface must come with a matching

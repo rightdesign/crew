@@ -416,6 +416,14 @@ before going further, and never change a ticket's `report_type` yourself.
    used, and anything you could not test yourself. Anything not committed and
    pushed is gone.
 
+   **When the ticket has an Acceptance section, your last progress comment
+   quotes it.** List every line of that section verbatim, each followed by the
+   test, command or manual check that exercised it in this run and its result.
+   A line you could not exercise is listed with the reason, never omitted. The
+   runner checks your newest comment for every line and, if one is missing,
+   sets the ticket back to `in_progress` instead of passing it to QA. A ticket
+   with no Acceptance section is unaffected.
+
 ## Step 4 — you never merge, and you never deploy
 
 **Nothing you do touches the base branch.** The release phase takes every
