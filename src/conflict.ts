@@ -36,7 +36,7 @@
  * real wherever the branch lives, and the ship that owns it will find it.
  */
 
-import { git, gitOk, worktrees, isAncestor, GitError } from './git.ts';
+import { git, gitOk, worktrees, isAncestor, pushBranch, GitError } from './git.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
 import type { Ticket, RunnerEvent } from './tracker.ts';
@@ -64,11 +64,23 @@ export interface ConflictBounce {
   priorBaseSha: string | null;
   /** Branches already squash-merged earlier in this same release that changed one of `paths`. */
   siblings?: { key: string; branch: string }[];
+  /** The remote a clean base merge is pushed to (plain, never forced); absent means it stays local. */
+  remote?: string;
+}
+
+/** What a clean merge of the base brought into the branch (CREW-2599). */
+export interface CleanMerge {
+  /** The branch tip after the merge. */
+  sha: string;
+  /** Files the merge brought in from the base. */
+  files: string[];
+  /** The subset of `files` the ticket's own diff also touches: what QA would need to re-check. */
+  overlap: string[];
 }
 
 export type ConflictOutcome =
   /** Merging the base in applied cleanly — the next cycle's squash will too. */
-  | { kind: 'refreshed' }
+  | { kind: 'refreshed'; merge?: CleanMerge }
   /** The conflict is real; the ticket is back with the dev lane. */
   | { kind: 'handed-back' }
   /** Handed back before and conflicting again — a person owes an answer. */
@@ -166,7 +178,7 @@ export function planConflictBounce(
  */
 export function refreshBranch(
   worktree: string, base: string,
-): { clean: boolean; paths: string[]; why?: string; behind?: boolean } {
+): { clean: boolean; paths: string[]; why?: string; behind?: boolean; merge?: CleanMerge } {
   // A worktree with uncommitted work of its own is not ours to merge into:
   // git would refuse anyway, and forcing it would destroy work nobody has
   // seen. Treat it as a conflict to hand back — a person or agent looking at
@@ -183,7 +195,7 @@ export function refreshBranch(
   }
   try {
     git(worktree, ['merge', '--no-edit', base]);
-    return { clean: true, paths: [] };
+    return { clean: true, paths: [], merge: describeMerge(worktree, head) };
   } catch (e) {
     const paths = (gitOk(worktree, ['diff', '--name-only', '--diff-filter=U']) ?? '')
       .split('\n').filter(Boolean);
@@ -195,6 +207,22 @@ export function refreshBranch(
     }
     return { clean: false, paths };
   }
+}
+
+/**
+ * What a merge just made brought in, and how much of it the ticket's own work
+ * overlaps. `before` is the branch tip before the merge; null when the merge
+ * was a no-op or a fast-forward (nothing for QA to re-check beyond the base's
+ * own commits, which the ticket does not touch).
+ */
+function describeMerge(worktree: string, before: string | null | undefined): CleanMerge | undefined {
+  const sha = gitOk(worktree, ['rev-parse', 'HEAD']);
+  if (!sha || !before || sha === before) return undefined;
+  const lines = (a: string[]) => (gitOk(worktree, a) ?? '').split('\n').filter(Boolean);
+  const files = lines(['diff', '--name-only', before, sha]);
+  const mergeBase = gitOk(worktree, ['merge-base', before, `${sha}^2`]);
+  const own = new Set(mergeBase ? lines(['diff', '--name-only', mergeBase, before]) : []);
+  return { sha, files, overlap: files.filter((f) => own.has(f)) };
 }
 
 export function handBackComment(b: ConflictBounce, merged: boolean): string {
@@ -212,6 +240,42 @@ ${merged
     : `This ship has no worktree for \`${b.branch}\`, so nothing has been merged for you. Merge \`${b.base}\` into the branch wherever it lives, resolve the conflict, and commit.`}
 
 ${b.baseSha ? `Base tip: \`${b.baseSha}\`\n\n` : ''}Nothing was written to \`${b.base}\`: the failed merge was rewound, and the rest of the release shipped without this ticket. Re-verifying is what puts it back in the merge queue.`;
+}
+
+/**
+ * After a clean merge of the base (CREW-2599): push it as a plain fast-forward,
+ * record `merged <base> at <sha>`, and say whether QA needs to look again.
+ *
+ * No overlap between the merge and the ticket's own files: the verification
+ * still stands, so `verified_sha` (when the board has the column) moves to the
+ * new tip and the release does not requeue the ticket for having "moved past"
+ * what QA saw. Overlap: `verified_sha` is left alone, so the existing
+ * moved-past check sends the ticket back to QA, and the event names the files.
+ * Non-fatal throughout, like the rest of this module.
+ */
+async function recordCleanMerge(
+  writer: ConflictWriter, b: ConflictBounce, m: CleanMerge, contract: Contract, memberId: string, log: ConflictLog,
+): Promise<void> {
+  const t = { ticket: b.ticket.issue_id, step: 'merge' };
+  let pushed = false;
+  if (b.worktree && b.remote) {
+    try { pushBranch(b.worktree, b.remote, b.branch); pushed = true; }
+    catch (e) { log.warn(`merged ${b.base} into ${b.branch} but could not push it: ${(e as Error).message}`, t); }
+  }
+  const short = m.sha.slice(0, 8);
+  const list = (fs: string[]) => fs.map((f) => `\`${f}\``).join(', ');
+  const body = `merged ${b.base} at ${short}${pushed ? ` and pushed to ${b.remote}/${b.branch}` : ''}.\n\n` +
+    (m.overlap.length
+      ? `The merge touched files this ticket also changed (${list(m.overlap)}), so QA re-verifies it. The change under test is the merge diff (\`git diff ${m.sha}^1 ${m.sha}\`), not the whole ticket.`
+      : `The merge touched no file this ticket changed (${m.files.length} file(s) from \`${b.base}\`), so the earlier verification still stands.`);
+  try {
+    if (!m.overlap.length && pushed && (b.ticket as Record<string, unknown>)[contract.columns.verifiedSha]) {
+      await writer.updateTicket(b.ticket.id, { [contract.columns.verifiedSha]: m.sha }, b.ticket.updated_at);
+    }
+    await writer.postEvent(b.ticket.id, body, memberId, 'merged_main', { merge_sha: m.sha, overlap: m.overlap });
+  } catch (e) {
+    log.warn(`merged ${b.base} into ${b.branch} but could not record it: ${(e as Error).message}`, t);
+  }
 }
 
 export function escalateComment(b: ConflictBounce): string {
@@ -309,7 +373,8 @@ export async function applyConflictBounce(
       // cycle's squash applies cleanly and the ticket stays verified — nobody
       // is woken and nothing is written to the board.
       log.emit(`merged ${b.base} into ${b.branch} cleanly — it was stale, not conflicting`, t);
-      return { kind: 'refreshed' };
+      if (r.merge) await recordCleanMerge(writer, b, r.merge, contract, memberId, log);
+      return { kind: 'refreshed', ...(r.merge ? { merge: r.merge } : {}) };
     }
     if (r.behind) {
       // Not a real conflict: the local copy is stale. Leave the ticket at

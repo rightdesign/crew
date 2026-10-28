@@ -94,7 +94,10 @@ test('a stale branch is merged with the base and nothing is written to the board
 
   assert.equal(out.kind, 'refreshed');
   assert.deepEqual(patches, [], 'a branch that was merely stale must not wake a lane');
-  assert.deepEqual(notes, []);
+  assert.equal(notes.length, 1, 'the merge is recorded as an event');
+  assert.match(notes[0]!, /^merged main at [0-9a-f]{8}/);
+  assert.match(notes[0]!, /earlier verification still stands/, 'no file overlap with the ticket');
+  assert.deepEqual(out.kind === 'refreshed' && out.merge?.overlap, []);
   // The branch really did take the base's commit.
   const log = execFileSync('git', ['log', '--format=%s'], { cwd: wt, stdio: 'pipe' }).toString();
   assert.match(log, /base moved/);
@@ -331,4 +334,53 @@ test('the third consecutive overtaken conflict escalates', async () => {
   assert.equal(out.kind, 'escalated');
   assert.match(notes[0]!, /2 times/);
   assert.match(notes[0]!, /moved underneath/);
+});
+
+test('a clean merge is pushed, and a non-overlapping one advances verified_sha', async () => {
+  const { dir, wt, g } = staleRepo();
+  const remote = realpathSync(mkdtempSync(join(tmpdir(), 'crew-conflict-remote-')));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: remote, stdio: 'pipe' });
+  g('remote', 'add', 'origin', remote);
+  execFileSync('git', ['push', '-q', '-u', 'origin', 'issue-9'], { cwd: wt, stdio: 'pipe' });
+  moveBase(g, dir);
+  const { w, patches, notes } = writer();
+  const t = ticket({ verified_sha: 'old' } as Partial<Ticket>);
+
+  const b = { ...planConflictBounce(dir, t, 'issue-9', 'main', [], []), remote: 'origin' };
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+
+  assert.equal(out.kind, 'refreshed');
+  const tip = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wt, stdio: 'pipe' }).toString().trim();
+  const remoteTip = execFileSync('git', ['rev-parse', 'issue-9'], { cwd: remote, stdio: 'pipe' }).toString().trim();
+  assert.equal(remoteTip, tip, 'pushed as a plain fast-forward');
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0]!.patch[DEFAULT_CONTRACT.columns.verifiedSha], tip);
+  assert.match(notes[0]!, /pushed to origin\/issue-9/);
+});
+
+test('a clean merge that touches the ticket\'s own file leaves verified_sha alone and names the file', async () => {
+  const { dir, wt, g } = staleRepo();
+  const remote = realpathSync(mkdtempSync(join(tmpdir(), 'crew-conflict-remote-')));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: remote, stdio: 'pipe' });
+  g('remote', 'add', 'origin', remote);
+  // Branch edits the tail of a long file, main edits the head: textually clean, same path.
+  const lines = Array.from({ length: 30 }, (_, i) => `l${i}`);
+  writeFileSync(join(dir, 'long.txt'), lines.join('\n') + '\n');
+  g('add', '.'); g('commit', '-qm', 'add long');
+  execFileSync('git', ['merge', '-q', 'main'], { cwd: wt, stdio: 'pipe' });
+  writeFileSync(join(wt, 'long.txt'), lines.slice(0, 29).concat('branch tail').join('\n') + '\n');
+  execFileSync('git', ['commit', '-qam', 'branch edits tail'], { cwd: wt, stdio: 'pipe' });
+  execFileSync('git', ['push', '-q', '-u', 'origin', 'issue-9'], { cwd: wt, stdio: 'pipe' });
+  writeFileSync(join(dir, 'long.txt'), ['main head'].concat(lines.slice(1)).join('\n') + '\n');
+  g('commit', '-qam', 'main edits head');
+  const { w, patches, notes } = writer();
+  const t = ticket({ verified_sha: 'old' } as Partial<Ticket>);
+
+  const b = { ...planConflictBounce(dir, t, 'issue-9', 'main', [], []), remote: 'origin' };
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+
+  assert.equal(out.kind, 'refreshed');
+  assert.deepEqual(patches, []);
+  assert.match(notes[0]!, /`long\.txt`/);
+  assert.match(notes[0]!, /QA re-verifies/);
 });
