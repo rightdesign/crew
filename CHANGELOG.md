@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.76.0] — 2026-10-28
+
+- CREW-2579 The hand-off guard now completes a missing or behind push itself (plain fast-forward) instead of bouncing the ticket, and still bounces with git's error when the remote moved or the push is refused.
+
 ## [0.75.6] — 2026-10-28
 
 - CREW-2578 The dev lane brief and the hand-off bounce note now say plainly that pushing the ticket branch is authorized, so a seat no longer parks a ticket asking permission to push.
