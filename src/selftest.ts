@@ -24,6 +24,7 @@ import { scrubbedEnv } from './agent.ts';
 import type { Ship } from './config.ts';
 import { pathFor } from './install.ts';
 import { describeClaudeAuth } from './adapters/claude.ts';
+import { keychainExitCode } from './seat-keys.ts';
 import { adapterFor, type ToolchainSpec } from './toolchain.ts';
 
 export const SELFTEST_TIMEOUT_MS = 120_000;
@@ -42,6 +43,7 @@ export type SelftestFailure =
   | 'mcp-unavailable'
   | 'key-refused'
   | 'keychain-locked'
+  | 'keychain-error'
   | 'timeout'
   | 'wrong-answer';
 
@@ -187,6 +189,7 @@ export const REMEDY: Record<SelftestFailure, string> = {
   'mcp-unavailable': 'register the tracker MCP server (`crew doctor` shows how), then re-run `crew selftest`',
   'key-refused': 'the dev seat\'s key was refused — ask a workspace admin to mint a fresh one (`crew agents sync`)',
   'keychain-locked': 'unlock the OS keychain from a logged-in session (`security unlock-keychain`), then re-run',
+  'keychain-error': 'run `security find-generic-password -s com.tablation.cli -g` by hand, and check `security list-keychains -d user` and `security default-keychain -d user`',
   timeout: 'the harness did not answer in time — run it by hand to see where it stalls',
   'wrong-answer': 'the agent answered but did not name the workspace — run it by hand to see what it said',
 };
@@ -228,7 +231,11 @@ export async function runSelftest(i: SelftestInput, deps: SelftestDeps = realDep
     ({ ...base, ...r, ms: now() - started, ranAt: new Date(started).toISOString() });
   const failed = (failure: SelftestFailure, what: string) => finish({ ok: false, failure, detail: `${what} — ${REMEDY[failure]}` });
 
-  if (!i.apiKey) return failed('keychain-locked', i.keyProblem ?? 'no seat key could be read');
+  if (!i.apiKey) {
+    // Exit 36 is "User interaction is not allowed" (locked); any other read failure is not fixed by unlocking.
+    const locked = keychainExitCode(i.keyProblem ?? '') === 36;
+    return failed(locked ? 'keychain-locked' : 'keychain-error', i.keyProblem ?? 'no seat key could be read');
+  }
 
   const adapter = adapterFor(spec.harness);
   const invocation = adapter.invocation(spec, { role: 'dev', model: spec.model, mcp: { url: `${i.baseUrl.replace(/\/+$/, '')}/api/mcp`, keyVar: KEY_VAR } });

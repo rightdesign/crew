@@ -707,5 +707,6 @@ is stored in plaintext there.
   | `mcp-unavailable` | The tracker MCP tool was not available to the agent | Register the Tablation MCP server (`crew doctor` shows how), then re-run |
   | `key-refused` | The dev seat's key was refused | Ask a workspace admin to mint a fresh one with `crew agents sync` |
   | `keychain-locked` | The OS keychain is locked | Unlock it from a logged-in session (`security unlock-keychain`), then re-run |
+  | `keychain-error` | Reading the seat key from the OS keychain failed for a reason other than a lock (the detail names the `security` exit code) | Run `security find-generic-password -s com.tablation.cli -g` by hand, and check `security list-keychains -d user` and `security default-keychain -d user` |
   | `timeout` | The harness did not answer in time | Run it by hand to see where it stalls |
   | `wrong-answer` | The agent answered but did not name the workspace | Run it by hand to see what it said |

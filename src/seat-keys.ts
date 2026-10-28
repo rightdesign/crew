@@ -79,8 +79,8 @@ export async function resolveReleaseKey(
     const session = await getStore().get(hostFromUrl(route.baseUrl), slugFor(route, agentId));
     if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
     return ship(keyIsAdmin(route) ? 'no agent key stored for the release seat (run `crew agents sync`)' : MEMBER_NO_KEY);
-  } catch {
-    return ship('OS keychain unavailable');
+  } catch (e) {
+    return ship(describeReadError(e));
   }
 }
 
@@ -102,9 +102,42 @@ export async function resolveSeatKey(
     const session = await getStore().get(hostFromUrl(route.baseUrl), slugFor(route, agentId));
     if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
     return ship(keyIsAdmin(route) ? 'no agent key stored for this seat (run `crew agents sync`)' : MEMBER_NO_KEY);
-  } catch {
-    return ship('OS keychain unavailable');
+  } catch (e) {
+    return ship(describeReadError(e));
   }
+}
+
+/** The first stderr line of a failed `security` read that is safe to print: never an argv echo (`Command failed: ...`, anything with `-w`). */
+function safeStderrLine(e: unknown): string | undefined {
+  const err = e as { stderr?: unknown; message?: unknown } | null;
+  const raw = typeof err?.stderr === 'string' && err.stderr.trim() ? err.stderr : typeof err?.message === 'string' ? err.message : '';
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t || /^Command failed:/i.test(t) || /(^|\s)-w(\s|$)/.test(t)) continue;
+    return t.slice(0, 120);
+  }
+  return undefined;
+}
+
+/**
+ * CREW-2606: why a keychain READ failed, as `OS keychain unavailable (security
+ * exited 128: User canceled)`. `selftest` parses the exit code back out of this
+ * to tell a locked keychain (36) from every other failure. A read's argv holds
+ * only the service and account names, but the stderr line is still filtered
+ * the way CREW-1800 requires for writes.
+ */
+export function describeReadError(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  const line = safeStderrLine(e);
+  const what = typeof code === 'number' ? `security exited ${code}` : typeof code === 'string' ? `security failed: ${code}` : undefined;
+  const detail = [what, line].filter(Boolean).join(what && line ? ': ' : '');
+  return detail ? `OS keychain unavailable (${detail})` : 'OS keychain unavailable';
+}
+
+/** The `security` exit code `describeReadError` put in a reason, if any. */
+export function keychainExitCode(reason: string): number | undefined {
+  const m = /security exited (\d+)/.exec(reason);
+  return m ? Number(m[1]) : undefined;
 }
 
 /**

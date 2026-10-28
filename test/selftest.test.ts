@@ -68,16 +68,25 @@ test('tracker 401/403 to the MCP call → key refused', async () => {
   assert.equal(res.failure, 'key-refused');
 });
 
-test('no seat key readable → keychain locked, nothing launched', async () => {
+test('no seat key readable (security exit 36) → keychain locked, nothing launched', async () => {
   let launched = false;
   const res = await runSelftest(
-    { ship, toolchain: toolchain!, baseUrl: 'https://t.test', workspaceId: 'w', workspaceName: 'x', keyProblem: 'OS keychain unavailable' },
+    { ship, toolchain: toolchain!, baseUrl: 'https://t.test', workspaceId: 'w', workspaceName: 'x', keyProblem: 'OS keychain unavailable (security exited 36: User interaction is not allowed.)' },
     { run: async () => { launched = true; return run({}); } },
   );
   assert.equal(res.failure, 'keychain-locked');
   assert.equal(launched, false);
-  assert.equal(res.detail, `OS keychain unavailable — ${REMEDY['keychain-locked']}`);
+  assert.equal(res.detail, `OS keychain unavailable (security exited 36: User interaction is not allowed.) — ${REMEDY['keychain-locked']}`);
   assert.equal(res.detail.split(REMEDY['keychain-locked']).length - 1, 1);
+});
+
+test('no seat key readable (security exit 128) → keychain-error with its own remedy', async () => {
+  const res = await runSelftest(
+    { ship, toolchain: toolchain!, baseUrl: 'https://t.test', workspaceId: 'w', workspaceName: 'x', keyProblem: 'OS keychain unavailable (security exited 128: User canceled)' },
+    { run: async () => run({}) },
+  );
+  assert.equal(res.failure, 'keychain-error');
+  assert.equal(res.detail, `OS keychain unavailable (security exited 128: User canceled) — ${REMEDY['keychain-error']}`);
 });
 
 test('timeout and an answer that is not the name', async () => {

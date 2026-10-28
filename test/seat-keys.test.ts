@@ -245,3 +245,13 @@ test('canMintAgentKeys reads 200 as yes, 403 as no, anything else as unknown (CR
   assert.equal(await at(500), undefined);
   assert.equal(await canMintAgentKeys({ ...route(), resolved: undefined } as Route), undefined);
 });
+
+test('a failed keychain read names the security exit code and stderr, never an argv or a secret', async () => {
+  const canceled = Object.assign(new Error('Command failed: security find-generic-password -s x -a y -w\nUser canceled'), { code: 128, stderr: 'User canceled\n' });
+  const r = await resolveSeatKey(route(), 'dev', () => { throw canceled; });
+  assert.equal((r as { reason: string }).reason, 'OS keychain unavailable (security exited 128: User canceled)');
+  const leaky = Object.assign(new Error('Command failed: security add-generic-password -w sk_secret'), { code: 1, stderr: 'security add-generic-password -w sk_secret\n' });
+  const l = await resolveReleaseKey(releaseRoute('agent-release'), () => { throw leaky; });
+  assert.equal((l as { reason: string }).reason, 'OS keychain unavailable (security exited 1)');
+  assert.doesNotMatch(JSON.stringify(l), /sk_secret/);
+});
