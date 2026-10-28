@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.78.0] — 2026-10-28
+
+- CREW-2590 `crew repos check [PATH]` validates a checkout's .crew.yaml (parse errors, release readiness, hook syntax, shadowed ship settings) before the repo is attached to a route.
+
 ## [0.77.0] — 2026-10-28
 
 - CREW-2580 Each run's token spend is added to its ticket's counters, and an increment the tracker could not take is queued and sent later instead of being lost.
