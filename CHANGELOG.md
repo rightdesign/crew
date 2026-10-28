@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.79.0] — 2026-10-28
+
+- CREW-2600 The dev hand-off comment must quote each Acceptance line with the check that exercised it, and the hand-off guard bounces one that does not.
+
 ## [0.78.1] — 2026-10-28
 
 - CREW-2593 The Agent Log now receives each run's turn count and first-turn prefix tokens, shown in the run sidecar and `crew logbook`.
