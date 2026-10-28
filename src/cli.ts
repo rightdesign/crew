@@ -54,7 +54,7 @@ import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
 import { unitAbandonsAgents, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
-import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate } from './repo-config.ts';
+import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
@@ -92,6 +92,7 @@ import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPro
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
+import { checkRepoSpec, renderRepoCheck } from './repos-check.ts';
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
@@ -365,6 +366,7 @@ function usage(problem?: string, requested = false): never {
   crew skills sync [route]      push only crew's skill files (e.g. grill-me) into the workspace Agent Skills table
   crew ship rename NAME [--json] rename this ship in crew.yaml and on every workspace's Ships row
   crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml (--dry-run previews)
+  crew repos check [PATH]       validate a checkout's .crew.yaml without attaching it (--route ROUTE, --strict, --json)
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches (--json: every Repos row too)
@@ -440,6 +442,29 @@ const KNOWN_COMMANDS = new Set([
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
+
+/**
+ * `crew repos check` (CREW-2590): print the report for the spec file in `dir`
+ * and set the exit status. Prints nothing else, so `--json` stays parseable.
+ */
+function runReposCheck(dir: string, ship?: ShipRepoSettings): void {
+  const report = checkRepoSpec(dir, { ship, strict: flag('strict') });
+  if (flag('json')) {
+    const { exitCode: _exit, ...rest } = report;
+    process.stdout.write(`${JSON.stringify(rest)}\n`);
+  } else {
+    process.stdout.write(renderRepoCheck(report));
+  }
+  process.exitCode = report.exitCode;
+}
+
+// A bare `repos check [PATH]` names no route, so it must work on a machine
+// with no crew.yaml (a freshly cloned repo, CI): answer before config loads.
+const reposCheckBare = command === 'repos' && positional[1] === 'check' && !value('route') && positional.length < 4;
+if (reposCheckBare) {
+  runReposCheck(resolvePath(positional[2] ?? '.'));
+  process.exit(process.exitCode ?? 0);
+}
 
 /**
  * Route for `agents sync` / `skills sync`, which write to a workspace. Unlike
@@ -2760,11 +2785,33 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos check [PATH | --route ROUTE [PATH] | ROUTE NAME] [--strict] [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
       process.exit(2);
     };
-    if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks') usage();
+    if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks' && sub !== 'check') usage();
     const configText = readFileSync(cfg.configFile, 'utf8');
+    if (sub === 'check') {
+      // The route forms (the bare form exited above): `--route ROUTE [PATH]`, or `ROUTE NAME`.
+      try {
+        const routeArg = value('route') ?? positional[2];
+        const found = cfg.routes.find((r) => r.route === routeArg);
+        if (!found) throw new ReposError(`no route "${routeArg}" in the config (have: ${cfg.routes.map((r) => r.route).join(', ') || 'none'})`);
+        const named = value('route') ? undefined : positional[3];
+        const dir = named ? repoDirOf(configText, dirname(cfg.configFile), found.route, named) : resolvePath(positional[value('route') ? 2 : 3] ?? '.');
+        const target = reposOf(found).find((t) => resolvePath(t.dir) === dir || t.name === named);
+        const o = target ? found.repoOverrides[target.name] : undefined;
+        runReposCheck(dir, {
+          hooks: { ...found.hooks, ...o?.hooks }, labels: { ...found.labels, ...o?.labels },
+          release: mergeRouteRelease(found.release, o?.release),
+          branch: { ...found.branch, ...o?.branch },
+          worktrees: { prefix: shipWorktreePrefixFor(found), nameOverride: o?.worktreeName },
+        });
+      } catch (e) {
+        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        throw e;
+      }
+      break;
+    }
     if (sub === 'hooks') {
       // `crew repos hooks` (CREW-2238): propose hooks for a checkout and
       // optionally write them route-level or as a starter `.crew.yaml`.

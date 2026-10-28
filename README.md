@@ -263,6 +263,7 @@ crew inbox [--member NAME]    your tickets across every workspace
 crew connect WS[/PROJECT]     resolve a workspace/project's ids into the state tree
 crew repos add [ROUTE] [NAME] [PATH]  attach a local checkout to a route in crew.yaml, creating its Repos row if missing (--dry-run previews)
 crew repos list ROUTE         the checkouts a route has, and the tracker Repos row each matches
+crew repos check [PATH]        validate a checkout's .crew.yaml (parse, release readiness, hook syntax) without attaching it (--route ROUTE, --strict, --json)
 crew repos hooks [ROUTE] NAME  suggest test/build hooks for a checkout (--write route|repo [--replace] writes them, --clear route removes them, --recipes, --hook KEY=CMD, --agent, --json)
 crew install [--replace]     write and load this platform's scheduler unit (macOS: clears a crew installed from another path)
 crew uninstall [--all]        unload and remove it (--all: every crew launchd unit, whichever path it came from)

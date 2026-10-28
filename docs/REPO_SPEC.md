@@ -422,6 +422,9 @@ in — so the hook prints that, and the crew carries it.
 - **Unknown keys are an error, not a warning.** A typo in a hook name would
   otherwise mean a suite that silently never runs, which is the worst
   possible failure for a test hook.
+  `crew repos check [PATH]` surfaces this (and every other load-time rule)
+  for a file in a checkout, before the repo is attached to any route; see
+  [Commands](/commands).
 - **An absent `.crew.yaml` is not an error.** The crew falls back to whatever
   the ship's own `crew.yaml` declares for that repo, which is how a repo that
   has not adopted this file yet still gets worked.
