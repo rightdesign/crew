@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.79.6] — 2026-10-28
+
+- CREW-2611 The docs site's top bar no longer lists "Install" twice.
+
 ## [0.79.5] — 2026-10-28
 
 - CREW-2610 The repo-spec field reference table fits the page on wide screens with field names intact, and still scrolls on narrow ones.
