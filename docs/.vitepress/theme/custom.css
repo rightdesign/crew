@@ -1,0 +1,42 @@
+/*
+ * VitePress caps the article column at 688px (with the outline aside) and
+ * renders every table as a horizontally scrolling block. The field reference
+ * on the repo-spec page has a long "meaning" column, so it was unreadable
+ * without scrolling sideways. Give the article more of the screen on wide
+ * viewports, and let tables lay out at the column width with wrapping cells.
+ */
+/* The default theme scopes its 688px cap with a data-v attribute, hence !important below.
+   On desktops the outline aside takes the room the table needs; drop it and let the article use the space. */
+@media (min-width: 960px) {
+  .VPDoc .aside {
+    display: none !important;
+  }
+
+  .VPDoc.has-aside .content-container {
+    max-width: 1000px !important;
+  }
+}
+
+/* Below the wide breakpoint keep VitePress's own scrolling block table, so a narrow screen scrolls rather than clips. */
+@media (min-width: 1280px) {
+  .vp-doc table {
+    display: table;
+    width: 100%;
+  }
+}
+
+.vp-doc th,
+.vp-doc td {
+  vertical-align: top;
+}
+
+/* Field names stay whole; only the prose columns may break a long dotted path. */
+.vp-doc td:first-child code,
+.vp-doc th:first-child code {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.vp-doc td:not(:first-child) code {
+  overflow-wrap: break-word;
+}
