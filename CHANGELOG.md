@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.79.8] — 2026-10-29
+
+- CREW-2634 The toolchain docs now explain how to run the claude harness on Vertex or an API key through `env:`, and why shell exports never reach scheduled runs.
+
 ## [0.79.7] — 2026-10-29
 
 - CREW-2628 Seat keys are readable on a Mac whose ship name contains a non-ASCII character such as a typographic apostrophe, and `crew selftest` names an unparseable stored key.
