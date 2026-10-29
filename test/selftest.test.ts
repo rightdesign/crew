@@ -89,6 +89,18 @@ test('no seat key readable (security exit 128) → keychain-error with its own r
   assert.equal(res.detail, `OS keychain unavailable (security exited 128: User canceled) — ${REMEDY['keychain-error']}`);
 });
 
+test('an unparseable stored seat key (JSON Parse) → keychain-error naming the value, not the generic remedy', async () => {
+  const keyProblem = 'OS keychain unavailable (JSON Parse error: Unable to parse JSON string)';
+  const res = await runSelftest(
+    { ship, toolchain: toolchain!, baseUrl: 'https://t.test', workspaceId: 'w', workspaceName: 'x', keyProblem },
+    { run: async () => run({}) },
+  );
+  assert.equal(res.failure, 'keychain-error');
+  assert.match(res.detail, /could not be parsed/);
+  assert.match(res.detail, /hex `password:` line/);
+  assert.ok(!res.detail.includes(REMEDY['keychain-error']));
+});
+
 test('timeout and an answer that is not the name', async () => {
   assert.equal((await go(run({ code: null, timedOut: true }))).res.failure, 'timeout');
   assert.equal((await go(run({ stdout: text('Something else') + result() }))).res.failure, 'wrong-answer');

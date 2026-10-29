@@ -194,7 +194,7 @@ export async function mintMissingSeatKeys(
     const probeSlug = seatKeySlug(splitRoute(route.route)[0], '_probe');
     try {
       await store.set(host, probeSlug, {
-        apiKey: 'probe', shipId: '', workspaceId: resolved.workspaceId, identityId: '_probe', createdAt: new Date().toISOString(),
+        apiKey: 'probe', workspaceId: resolved.workspaceId, identityId: '_probe', createdAt: new Date().toISOString(),
       });
       await store.clear(host, probeSlug);
     } catch (e) {
@@ -230,7 +230,6 @@ export async function mintMissingSeatKeys(
         // StoredSession is the ship-login shape; only `apiKey` is read back.
         const session: SeatSession = {
           apiKey: body.key,
-          shipId: o.shipName ?? '',
           workspaceId: resolved.workspaceId,
           identityId: agentId,
           createdAt: new Date().toISOString(),

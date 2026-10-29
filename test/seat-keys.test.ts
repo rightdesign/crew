@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getSessionStore } from '@tablation/client';
 import type { SessionStore, StoredSession } from '@tablation/client';
 import type { Route } from '../src/config.ts';
 import { canMintAgentKeys, describeMintOutcome, mintMissingSeatKeys, revokeSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
@@ -232,7 +237,7 @@ test('revokeSeatKeys deletes each stored key server-side and clears it, then a s
 
 test('revokeSeatKeys keeps the keychain entry when the server refuses or no key id was recorded (CREW-1802)', async () => {
   const store = memoryStore();
-  store.data.set('example.test/issues#agent:agent-dev', { apiKey: 'sk_old', shipId: '', workspaceId: 'ws-1', identityId: 'agent-dev', createdAt: 'x' });
+  store.data.set('example.test/issues#agent:agent-dev', { apiKey: 'sk_old', workspaceId: 'ws-1', identityId: 'agent-dev', createdAt: 'x' });
   const noId = await revokeSeatKeys(route({ dev: 'agent-dev' }), { getStore: () => store, fetchImpl: async () => new Response(null, { status: 204 }) });
   assert.equal(noId[0]!.action, 'failed');
   assert.equal(store.data.size, 1);
@@ -254,4 +259,41 @@ test('a failed keychain read names the security exit code and stderr, never an a
   const l = await resolveReleaseKey(releaseRoute('agent-release'), () => { throw leaky; });
   assert.equal((l as { reason: string }).reason, 'OS keychain unavailable (security exited 1)');
   assert.doesNotMatch(JSON.stringify(l), /sk_secret/);
+});
+
+// CREW-2628: the real DarwinKeychainSessionStore against a stubbed `security`
+// that, like the real tool, prints any value holding a non-ASCII byte as hex.
+test('a ship name with a typographic apostrophe round-trips through the real macOS keychain store', { skip: process.platform !== 'darwin' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-sec-'));
+  const stub = join(dir, 'security');
+  writeFileSync(stub, `#!/usr/bin/env node
+const fs = require('fs'), path = require('path');
+const args = process.argv.slice(2);
+const val = (f) => args[args.indexOf(f) + 1];
+const file = path.join(${JSON.stringify(dir)}, Buffer.from(val('-a')).toString('hex'));
+if (args[0] === 'add-generic-password') {
+  fs.writeFileSync(file, Buffer.from(val('-w'), 'utf8'));
+} else if (args[0] === 'find-generic-password') {
+  if (!fs.existsSync(file)) { console.error('The specified item could not be found in the keychain.'); process.exit(44); }
+  const raw = fs.readFileSync(file);
+  console.log(raw.every((b) => b >= 0x20 && b < 0x7f) ? raw.toString('utf8') : raw.toString('hex'));
+}
+`, { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${dir}:${oldPath}`;
+  try {
+    const getStore = () => getSessionStore();
+    // An item crew 0.79.6 stored: raw UTF-8 with the ship name as `shipId`, which `security -w` reads back as hex.
+    const slug = seatKeySlug('issues', 'agent-dev');
+    execFileSync('security', ['add-generic-password', '-U', '-s', 'com.tablation.cli', '-a', `example.test/${slug}`, '-w',
+      JSON.stringify({ apiKey: 'sk_agent_dev', shipId: 'Robin’s MacBook Pro', workspaceId: 'ws-1', identityId: 'agent-dev', createdAt: 'x' })]);
+    assert.deepEqual(await resolveSeatKey(route(), 'dev', getStore), { kind: 'agent', apiKey: 'sk_agent_dev', agentId: 'agent-dev' });
+    // A newly minted key is read back too, and an existing key is not re-minted.
+    const fetchImpl = async () => new Response(JSON.stringify({ key: 'sk_agent_qa' }), { status: 201 });
+    const out = await mintMissingSeatKeys(route(), { getStore, fetchImpl, shipName: 'Robin’s MacBook Pro' });
+    assert.equal(out.find((o) => o.role === 'dev')?.action, 'already_stored');
+    assert.deepEqual(await resolveSeatKey(route(), 'qa', getStore), { kind: 'agent', apiKey: 'sk_agent_qa', agentId: 'agent-qa' });
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });

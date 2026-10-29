@@ -35,7 +35,7 @@ function fakeStore(
 }
 
 function session(apiKey: string): StoredSession {
-  return { apiKey, shipId: 'shp_test', workspaceId: 'ws-1', identityId: 'id-1', createdAt: '2026-09-21T00:00:00Z' };
+  return { apiKey, workspaceId: 'ws-1', identityId: 'id-1', createdAt: '2026-09-21T00:00:00Z' };
 }
 
 let n = 0;

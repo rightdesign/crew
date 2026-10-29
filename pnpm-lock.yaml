@@ -15,8 +15,8 @@ importers:
         specifier: ^2026.8.31
         version: 2026.8.31(zod@3.25.76)
       '@tablation/client':
-        specifier: ^0.1.1
-        version: 0.1.1
+        specifier: ^0.1.8
+        version: 0.1.8
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -645,6 +645,7 @@ packages:
 
   '@modelcontextprotocol/server-filesystem@2026.8.31':
     resolution: {integrity: sha512-kKaFkyAh6oipvc9+EAbJ552JafnMnOq5nzmzWkp1jJdBhTAAGpmIpWihUG1+rfNhmEFM98gUZDdCHCDD4v6a7Q==}
+    deprecated: 'Date-based versions are no longer published. This package has resumed semantic versioning at 1.0.0: install the latest version.'
     hasBin: true
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -816,8 +817,8 @@ packages:
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
 
-  '@tablation/client@0.1.1':
-    resolution: {integrity: sha512-X34Uns077+8GlcxvZxd+BUKnPePz/nLtj/ekd0L4Xyo6oxm023jD1RUIdprShl3xeu62M9UGbUhswSWMzrrpzg==}
+  '@tablation/client@0.1.8':
+    resolution: {integrity: sha512-W6proquK1kK7GzuVa84Cv+BWcK21SJ4MzBHYN98ew/vAk8bvO8IOeST9LYR4inT5UTb8H9H/hdm2eX5HCCfnJw==}
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -2315,7 +2316,7 @@ snapshots:
 
   '@shikijs/vscode-textmate@10.0.2': {}
 
-  '@tablation/client@0.1.1': {}
+  '@tablation/client@0.1.8': {}
 
   '@types/estree@1.0.9': {}
 

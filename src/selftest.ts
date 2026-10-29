@@ -221,6 +221,15 @@ export function classify(spec: ToolchainSpec, run: SpawnedRun, seen: Seen): { fa
   return fail('wrong-answer', `the agent replied "${(seen.finalText ?? seen.texts.at(-1) ?? '').trim().slice(0, 80)}"`);
 }
 
+/**
+ * CREW-2628: a keychain read that reached `JSON.parse` and threw. `security -w`
+ * prints a value holding any non-ASCII byte (a ship named `Robin’s Mac`) as hex,
+ * which an older `@tablation/client` could not parse.
+ */
+const UNPARSEABLE = /JSON Parse|Unexpected (token|non-whitespace)|is not valid JSON|in JSON at position/i;
+const UNPARSEABLE_REMEDY =
+  'the stored seat key could not be parsed. If `security find-generic-password -s com.tablation.cli -g` shows a hex `password:` line, the value holds non-ASCII text (often a ship name with a typographic apostrophe); update crew, which reads it without re-minting';
+
 /** Runs one toolchain's self-test; never throws and never touches the tracker. */
 export async function runSelftest(i: SelftestInput, deps: SelftestDeps = realDeps): Promise<SelftestResult> {
   const now = i.now ?? (() => Date.now());
@@ -234,6 +243,9 @@ export async function runSelftest(i: SelftestInput, deps: SelftestDeps = realDep
   if (!i.apiKey) {
     // Exit 36 is "User interaction is not allowed" (locked); any other read failure is not fixed by unlocking.
     const locked = keychainExitCode(i.keyProblem ?? '') === 36;
+    if (!locked && UNPARSEABLE.test(i.keyProblem ?? '')) {
+      return finish({ ok: false, failure: 'keychain-error', detail: `${i.keyProblem} — ${UNPARSEABLE_REMEDY}` });
+    }
     return failed(locked ? 'keychain-locked' : 'keychain-error', i.keyProblem ?? 'no seat key could be read');
   }
 

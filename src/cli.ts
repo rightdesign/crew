@@ -83,7 +83,7 @@ import {
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIERS, resolveIssuesTemplateKeys,
 } from './connect.ts';
 import {
-  getSessionStore, hostFromUrl, loginWithDeviceCode, getOrCreateShipId, DeviceLoginError,
+  getSessionStore, hostFromUrl, loginWithDeviceCode, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
 import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
@@ -3335,7 +3335,6 @@ switch (command) {
         try {
           await store.set(hostFromUrl(baseUrl), deviceWorkspace, {
             apiKey: result.apiKey.key,
-            shipId: getOrCreateShipId(),
             workspaceId: result.workspace.id,
             identityId: result.identity.id,
             createdAt: result.apiKey.createdAt,
