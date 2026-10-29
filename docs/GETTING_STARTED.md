@@ -703,7 +703,7 @@ is stored in plaintext there.
   | Class | Meaning | Remedy |
   | --- | --- | --- |
   | `binary-not-found` | The agent binary is not on the scheduler's `PATH` | Add its directory to `ship.extraPath` in `crew.yaml`, then `crew doctor` |
-  | `login-missing` | The vendor CLI is not signed in | Log in to it in a terminal on this machine, then re-run `crew selftest` (the app's **Open Terminal** runs the command) |
+  | `login-missing` | The vendor CLI is not signed in | Log in to it in a terminal on this machine, then re-run `crew selftest`. If the machine bills through Vertex or an API key, set those variables under the toolchain's `env:` instead (see [Running on Vertex or an API key](toolchains.md#running-on-vertex-or-an-api-key)) (the app's **Open Terminal** runs the command) |
   | `mcp-unavailable` | The tracker MCP tool was not available to the agent | Register the Tablation MCP server (`crew doctor` shows how), then re-run |
   | `key-refused` | The dev seat's key was refused | Ask a workspace admin to mint a fresh one with `crew agents sync` |
   | `keychain-locked` | The OS keychain is locked | Unlock it from a logged-in session (`security unlock-keychain`), then re-run |

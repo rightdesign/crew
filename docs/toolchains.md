@@ -47,8 +47,9 @@ time (a bad route override drops only that route, with a warning).
 
 ### Forcing the subscription login (`auth`)
 
-Crew unsets the billing variables (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_VERTEX`
-and friends) in a run's shell environment. It cannot reach the `env` block that
+Crew unsets the billing variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `ANTHROPIC_VERTEX_REGION`,
+`CLOUD_ML_REGION` and `ANTHROPIC_MODEL`) in a run's shell environment. It cannot reach the `env` block that
 the Vertex onboarding wizard writes into `~/.claude/settings.json`, which Claude
 Code applies itself. On a machine where your interactive Claude Code bills a
 corporate Vertex account but crew's runs should use your personal subscription,
@@ -69,6 +70,39 @@ project and local settings, so the override wins. `inherit` changes nothing.
 subscription (settings override)`, or `inherit: vertex from
 ~/.claude/settings.json`), and a passing `crew selftest` repeats it. Only the
 `claude` harness accepts `auth`.
+
+### Running on Vertex or an API key
+
+The strip above is deliberate, so a Vertex-billed or API-key-billed machine has
+to opt back in: variables under a toolchain's `env:` are merged after the strip
+and reach every run and `crew selftest`.
+
+```yaml
+ship:
+  toolchains:
+    claude:
+      harness: claude
+      bin: /opt/homebrew/bin/claude
+      env:
+        CLAUDE_CODE_USE_VERTEX: "1"
+        CLOUD_ML_REGION: us-east5
+        ANTHROPIC_VERTEX_PROJECT_ID: my-gcp-project
+```
+
+Leave `auth` absent or `inherit`; `subscription` blanks these variables again.
+A `ship.toolchains.claude` entry replaces the implicit `ship.agent` block, so
+carry `bin` over. `model` and `tiers` may need the model ids your Vertex project
+exposes. Credentials must be findable without your shell; see
+[What the scheduler sees](#what-the-scheduler-sees).
+
+### What the scheduler sees
+
+The launchd job (and the systemd unit) carries only `PATH`. Nothing exported in
+a shell profile reaches a scheduled run, stripped or not, so credentials must be
+found without the shell. For Vertex that means `gcloud auth application-default
+login` (the default credentials file needs no variable) or
+`GOOGLE_APPLICATION_CREDENTIALS` under `env:`. The same applies to
+`OPENAI_API_KEY` for Codex: set it under `env:`, not in a profile.
 
 ## Codex
 
@@ -99,7 +133,8 @@ mcp_servers.tablation.*` overrides (`url`, `bearer_token_env_var`, and
 MCP call under `approval_policy="never"`), with the key named by `CREW_API_KEY`,
 never written. `OPENAI_API_KEY`-style variables are removed from the inherited
 environment so the run bills the operator's Codex login; set them under `env:` to
-opt in. Cost is not reported, only tokens.
+opt in (the scheduler passes only `PATH`; see
+[What the scheduler sees](#what-the-scheduler-sees)). Cost is not reported, only tokens.
 
 For a local OpenAI-compatible endpoint, define a
 provider in `~/.codex/config.toml` (`[model_providers.local]`, `base_url`,

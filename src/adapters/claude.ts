@@ -26,6 +26,8 @@ import { profileFor, type CapabilityProfile } from '../capability.ts';
  * merely left unassigned, because ~/.claude/settings.json has flipped billing
  * before and a local override cannot be relied on to win.
  */
+// docs/toolchains.md ("Forcing the subscription login") names every variable
+// here; keep the two in step (test/toolchain.test.ts checks it).
 export const BILLING_VARS_TO_UNSET = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',

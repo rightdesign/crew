@@ -407,3 +407,20 @@ test('describeClaudeAuth reports the resolved billing path', () => {
   assert.equal(describeClaudeAuth({}, {}, home), 'inherit: vertex from ~/.claude/settings.json');
   assert.equal(describeClaudeAuth({ auth: 'subscription' }, {}, home), 'subscription (settings override)');
 });
+
+test('docs/toolchains.md names every billing variable and its Vertex example loads', async () => {
+  const { readFileSync } = await import('node:fs');
+  const doc = readFileSync(new URL('../docs/toolchains.md', import.meta.url), 'utf8');
+  for (const v of BILLING_VARS_TO_UNSET) assert.ok(doc.includes('`' + v + '`'), `docs/toolchains.md must name ${v}`);
+  const cfg = cfgFrom(`ship:
+  toolchains:
+    claude:
+      harness: claude
+      bin: /opt/homebrew/bin/claude
+      env:
+        CLAUDE_CODE_USE_VERTEX: "1"
+        CLOUD_ML_REGION: us-east5
+        ANTHROPIC_VERTEX_PROJECT_ID: my-gcp-project
+routes:${ROUTE()}`);
+  assert.equal(shipToolchains(cfg.ship)[0]!.env?.CLAUDE_CODE_USE_VERTEX, '1');
+});
