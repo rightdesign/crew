@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.79.9] — 2026-10-30
+
+- CREW-2668 `crew connect` now stores a device sign-in under a secondary workspace's full `<primary>:<slug>` address, so later runs and the macOS setup wizard find the key.
+
 ## [0.79.8] — 2026-10-29
 
 - CREW-2634 The toolchain docs now explain how to run the claude harness on Vertex or an API key through `env:`, and why shell exports never reach scheduled runs.
