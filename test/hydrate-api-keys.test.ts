@@ -155,3 +155,14 @@ test('a keychain-only route builds a Tracker once hydrated, as `crew repos add` 
   await hydrateApiKeys([route], () => fakeStore({ 'example.test/issues': session('sk_from_keychain') }));
   assert.doesNotThrow(() => new Tracker(route, ship));
 });
+
+test('a secondary-workspace route looks its key up under the full <primary>:<slug> address (CREW-2668)', async () => {
+  const route = fakeRoute({ route: 'acme:design-team/issues' });
+  const calls: string[] = [];
+  await hydrateApiKeys([route], () => fakeStore({
+    'example.test/acme:design-team': session('sk_full'),
+    'example.test/design-team': session('sk_bare'),
+  }, calls));
+  assert.equal(resolveApiKey(route), 'sk_full');
+  assert.deepEqual(calls, ['example.test/acme:design-team']);
+});

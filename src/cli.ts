@@ -27,7 +27,7 @@ import {
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
-import { resumableSessions, rememberSession, rememberedSessions, signOutSessions } from './connect-resume.ts';
+import { adoptSessionAddress, rememberedAddressFor, resumableSessions, rememberSession, rememberedSessions, signOutSessions } from './connect-resume.ts';
 import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
@@ -3211,6 +3211,9 @@ switch (command) {
     // `hydrateApiKeys` (config.ts) resolves this route's key from the
     // keychain on every future `crew` run regardless of how it got there.
     let keychainBacked = false;
+    // CREW-2668: the address the keychain session is stored under, so it can be
+    // moved to the address the route carries once `discover` has resolved that.
+    let sessionAddress: string | undefined;
     // Reuse an already-stored session for this exact host+workspace instead
     // of starting a second browser round-trip — only possible when the
     // workspace is already known (an explicit `crew connect ws[/proj]` or
@@ -3218,10 +3221,18 @@ switch (command) {
     // look up until AFTER a login (device or otherwise) says so.
     if (!apiKey && workspace && store) {
       try {
-        const existing = await store.get(hostFromUrl(baseUrl), workspace);
+        // CREW-2668: a bare slug of a secondary workspace finds the session
+        // stored under its full address, and the other way round.
+        let existing = await store.get(hostFromUrl(baseUrl), workspace);
+        let found = workspace;
+        if (!existing?.apiKey) {
+          const full = rememberedAddressFor(cfg.ship.stateDir, hostFromUrl(baseUrl), workspace);
+          if (full !== workspace) { existing = await store.get(hostFromUrl(baseUrl), full); found = full; }
+        }
         if (existing?.apiKey) {
           apiKey = existing.apiKey;
           keychainBacked = true;
+          sessionAddress = found;
           process.stderr.write(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.\n`);
         }
       } catch {
@@ -3252,6 +3263,7 @@ switch (command) {
         apiKey = resumed.apiKey;
         workspace = resumed.workspace;
         keychainBacked = true;
+        sessionAddress = resumed.workspace;
         signInSource = 'keychain';
         process.stderr.write(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.\n`);
       }
@@ -3315,13 +3327,8 @@ switch (command) {
       );
       apiKey = result.apiKey.key;
       mintedFromDevice = true;
-      signedInEmitted = true;
-      connectEvents.emit('signed_in', `signed in as ${result.identity.email}`, {
-        identity: { id: result.identity.id, email: result.identity.email },
-        workspaces: [{ slug: result.workspace.slug, name: result.workspace.name }],
-        session: 'device',
-        host: hostFromUrl(baseUrl),
-      });
+      // CREW-2668: `signed_in` is emitted by `runConnect` once `discover` has
+      // resolved the workspace, so it carries the full address, not the bare slug.
       // The device flow just said exactly which workspace this key is
       // scoped to — no reason to make the operator retype what there was
       // no ambiguity in, the same reasoning as the single-workspace
@@ -3340,6 +3347,7 @@ switch (command) {
             createdAt: result.apiKey.createdAt,
           });
           keychainBacked = true;
+          sessionAddress = deviceWorkspace;
           rememberSession(cfg.ship.stateDir, hostFromUrl(baseUrl), deviceWorkspace);
           process.stderr.write(
             `API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${deviceWorkspace}.\n`,
@@ -3401,9 +3409,16 @@ switch (command) {
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
       let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json });
+      // CREW-2668: the route and `hydrateApiKeys` use `found.workspaceSlug`, so
+      // the keychain entry and remembered pointer must sit under it too.
+      if (store && keychainBacked && sessionAddress && sessionAddress !== found.workspaceSlug) {
+        if (await adoptSessionAddress({
+          store, stateDir: cfg.ship.stateDir, host: hostFromUrl(baseUrl), from: sessionAddress, to: found.workspaceSlug,
+        })) sessionAddress = found.workspaceSlug;
+      }
       if (!signedInEmitted && found.meId) {
         signedInEmitted = true;
-        connectEvents.emit('signed_in', `key belongs to ${found.meEmail ?? found.meId}`, {
+        connectEvents.emit('signed_in', mintedFromDevice ? `signed in as ${found.meEmail ?? found.meId}` : `key belongs to ${found.meEmail ?? found.meId}`, {
           identity: { id: found.meId, email: found.meEmail, name: found.meName },
           workspaces: [{ slug: found.workspaceSlug, name: found.workspaceName, role: found.role }],
           session: signInSource,

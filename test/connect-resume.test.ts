@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lastSessionFile, rememberSession, resumeKeychainSession } from '../src/connect-resume.ts';
+import { adoptSessionAddress, lastSessionFile, rememberedAddressFor, rememberSession, resumeKeychainSession } from '../src/connect-resume.ts';
 
 const HOST = 'app.example.test';
 const dir = () => mkdtempSync(join(tmpdir(), 'crew-resume-'));
@@ -121,4 +121,48 @@ test('CREW-2498: a pointer file from before several workspaces were remembered s
   const stateDir = dir();
   (await import('node:fs')).writeFileSync(lastSessionFile(stateDir), JSON.stringify({ [HOST]: 'ws' }));
   assert.deepEqual(rememberedSessions(stateDir), [{ host: HOST, workspace: 'ws' }]);
+});
+
+/** A mutable fake keychain, keyed `host/workspace`. */
+function mutableStore(entries: Record<string, string>) {
+  const sess = (apiKey: string) => ({ apiKey, workspaceId: 'w', identityId: 'i', createdAt: 'now' });
+  return {
+    entries,
+    get: async (host: string, ws: string) => {
+      const k = entries[`${host}/${ws}`];
+      return k ? sess(k) : undefined;
+    },
+    set: async (host: string, ws: string, s: { apiKey: string }) => { entries[`${host}/${ws}`] = s.apiKey; },
+    clear: async (host: string, ws: string) => { delete entries[`${host}/${ws}`]; },
+  };
+}
+
+test('adoptSessionAddress moves a bare-slug session to the full address, leaving one entry and one pointer (CREW-2668)', async () => {
+  const stateDir = dir();
+  const store = mutableStore({ [`${HOST}/design-team`]: 'k1' });
+  rememberSession(stateDir, HOST, 'design-team');
+  assert.equal(await adoptSessionAddress({ store, stateDir, host: HOST, from: 'design-team', to: 'acme:design-team' }), true);
+  assert.deepEqual(store.entries, { [`${HOST}/acme:design-team`]: 'k1' });
+  assert.deepEqual(JSON.parse(readFileSync(lastSessionFile(stateDir), 'utf8')), { [HOST]: ['acme:design-team'] });
+  const again = await resumeKeychainSession({ store, stateDir, host: HOST, verify: async () => true });
+  assert.deepEqual(again, { workspace: 'acme:design-team', apiKey: 'k1' });
+});
+
+test('adoptSessionAddress is a no-op for the same address, an empty keychain or a failing store', async () => {
+  const stateDir = dir();
+  const store = mutableStore({ [`${HOST}/ws`]: 'k' });
+  assert.equal(await adoptSessionAddress({ store, stateDir, host: HOST, from: 'ws', to: 'ws' }), false);
+  assert.equal(await adoptSessionAddress({ store, stateDir, host: HOST, from: 'gone', to: 'a:gone' }), false);
+  const broken = { get: async () => { throw new Error('locked'); }, set: async () => {}, clear: async () => {} };
+  assert.equal(await adoptSessionAddress({ store: broken, stateDir, host: HOST, from: 'x', to: 'a:x' }), false);
+  assert.deepEqual(store.entries, { [`${HOST}/ws`]: 'k' });
+});
+
+test('rememberedAddressFor finds the full address of a bare secondary slug', () => {
+  const stateDir = dir();
+  rememberSession(stateDir, HOST, 'acme:design-team');
+  assert.equal(rememberedAddressFor(stateDir, HOST, 'design-team'), 'acme:design-team');
+  assert.equal(rememberedAddressFor(stateDir, HOST, 'acme:design-team'), 'acme:design-team');
+  assert.equal(rememberedAddressFor(stateDir, HOST, 'other'), 'other');
+  assert.equal(rememberedAddressFor(stateDir, 'else.test', 'design-team'), 'design-team');
 });

@@ -53,6 +53,56 @@ export function rememberSession(stateDir: string, host: string, workspaceSlug: s
   } catch { /* the pointer only saves a re-approval; losing it is not a failure */ }
 }
 
+/** Drop one workspace from `host`'s pointer, keeping the rest. Best-effort: never throws. */
+function forgetWorkspace(stateDir: string, host: string, workspaceSlug: string): void {
+  try {
+    const all = readPointers(stateDir);
+    const left = (all[host] ?? []).filter((w) => w !== workspaceSlug);
+    const { [host]: _old, ...rest } = all;
+    const next = left.length ? { ...rest, [host]: left } : rest;
+    if (Object.keys(next).length) writePointers(stateDir, next);
+    else rmSync(lastSessionFile(stateDir), { force: true });
+  } catch { /* a stale pointer only costs a failed keychain lookup */ }
+}
+
+/**
+ * CREW-2668: a route carries the workspace's full address (`<primary>:<slug>`
+ * for a secondary workspace) and `hydrateApiKeys` looks the key up under it,
+ * but a device sign-in may have stored the session under the bare slug the
+ * token response named. Move the keychain entry and the remembered pointer to
+ * `to` so exactly one of each is left; `from` is cleared. A no-op when both
+ * are the same, when nothing is stored under `from`, and (leaving `from` alone)
+ * when the write to `to` fails. Never throws.
+ */
+export async function adoptSessionAddress(o: {
+  store: Pick<SessionStore, 'get' | 'set' | 'clear'>;
+  stateDir: string;
+  host: string;
+  from: string;
+  to: string;
+}): Promise<boolean> {
+  if (o.from === o.to) return false;
+  try {
+    const stored = await o.store.get(o.host, o.from);
+    if (!stored?.apiKey) return false;
+    if (!(await o.store.get(o.host, o.to))?.apiKey) await o.store.set(o.host, o.to, stored);
+    await o.store.clear(o.host, o.from);
+  } catch { return false; }
+  forgetWorkspace(o.stateDir, o.host, o.from);
+  rememberSession(o.stateDir, o.host, o.to);
+  return true;
+}
+
+/**
+ * The address a session was remembered under for `host` that ends in
+ * `:<workspace>`, when `workspace` is a bare slug of a secondary workspace.
+ * `workspace` itself when it already has a prefix or nothing matches.
+ */
+export function rememberedAddressFor(stateDir: string, host: string, workspace: string): string {
+  if (workspace.includes(':')) return workspace;
+  return (readPointers(stateDir)[host] ?? []).find((w) => w.endsWith(`:${workspace}`)) ?? workspace;
+}
+
 export interface ResumedSession {
   workspace: string;
   apiKey: string;
