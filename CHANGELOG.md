@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.80.0] — 2026-10-31
+
+- CREW-2777 A failed release gate now isolates the culprit branch (alone, by pair, then by bisecting), hands it back with the sibling named and releases the rest; the fallback alert says what isolation tried.
+
 ## [0.79.10] — 2026-10-31
 
 - CREW-2679 The release-stale alert no longer fires for a paused ship or during a long release.
