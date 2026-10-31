@@ -302,12 +302,18 @@ test('ISSUE-1372: a paused crew or paused releases refuses `release --fleet` bef
       return `${stdout}${stderr}`;
     };
 
+    // CREW-2679: a refused release still proves the timer fired, so it
+    // touches the heartbeat instead of letting `release_stale` fire.
+    const heartbeat = join(stateDir, '.release-last-run');
     writeFileSync(join(stateDir, '.crew-paused'), '');
     assert.match(await release(), /the crew is paused — release skipped/);
+    assert.ok(existsSync(heartbeat), 'a paused crew still touches the release heartbeat');
     rmSync(join(stateDir, '.crew-paused'));
+    rmSync(heartbeat);
 
     writeFileSync(join(stateDir, '.release-paused'), '');
     assert.match(await release(), /releases are paused — release skipped/);
+    assert.ok(existsSync(heartbeat), 'paused releases still touch the release heartbeat');
     rmSync(join(stateDir, '.release-paused'));
 
     assert.equal(t.writes.length, 0, 'a refused release must not write to the board');

@@ -953,6 +953,9 @@ async function releaseFleet(
 function releaseRefused(): boolean {
   const why = state.releaseSkipReason();
   if (!why) return false;
+  // The timer fired and crew ran; declining to release is the operator's
+  // choice, not a stalled timer (CREW-2679).
+  if (!dryRun) state.releaseHeartbeat().touch();
   emit.emit(`${why} — release skipped`, { step: 'release' });
   return true;
 }

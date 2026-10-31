@@ -341,9 +341,15 @@ export function reconcileHeldWorktrees(
   }
 }
 
-/** Every open item: the persisted ones plus the derived `release_stale`. */
+/**
+ * Every open item: the persisted ones plus the derived `release_stale`.
+ * A release in progress counts as fresh whatever the heartbeat's age: the
+ * scheduler does not start a second instance, so nothing refreshes the
+ * heartbeat while a long release runs, and the item means "the release
+ * process has not started in three intervals" (CREW-2679).
+ */
 export function openShipAttention(state: State, nowMs = Date.now()): ShipAttentionItem[] {
-  const stale = staleRelease(state.releaseHeartbeat().at(), nowMs);
+  const stale = state.releaseInProgress() ? null : staleRelease(state.releaseHeartbeat().at(), nowMs);
   const stored = state.shipAttention().previous();
   return stale ? [...stored, stale] : stored;
 }

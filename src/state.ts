@@ -7,7 +7,7 @@
  * node:path throughout — a state dir on Windows is as valid as one on POSIX.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName } from './config.ts';
 import type { ShipAttentionItem } from './ship-attention.ts';
@@ -141,6 +141,24 @@ export class State {
       ok: true,
       release: () => { try { rmSync(file, { force: true }); } catch { /* ignore */ } },
     };
+  }
+
+  /**
+   * Whether a release is running right now: any `.release-<scope>.lock` in the
+   * state directory naming a live process (the locks `releasePhase` takes per
+   * scope). A lock naming a dead pid is ignored, as `acquire` ignores it.
+   */
+  releaseInProgress(): boolean {
+    let names: string[];
+    try { names = readdirSync(this.dir); } catch { return false; }
+    for (const n of names) {
+      if (!/^\.release-.+\.lock$/.test(n)) continue;
+      let pid = 0;
+      try { pid = Number.parseInt(readFileSync(this.path(n), 'utf8').trim(), 10); } catch { continue; }
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      try { process.kill(pid, 0); return true; } catch { /* dead pid: stale lock */ }
+    }
+    return false;
   }
 
   /**

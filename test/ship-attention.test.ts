@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, utimesSync } from 'node:fs';
+import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -62,6 +62,21 @@ test('openShipAttention merges persisted items with a derived release_stale, whi
 
   state.releaseHeartbeat().touch();
   assert.deepEqual(openShipAttention(state).map((i) => i.key), ['role_parked:qa']);
+});
+
+test('openShipAttention: a live release lock suppresses release_stale; a dead-pid lock does not (CREW-2679)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-shipatt-'));
+  const state = new State(dir);
+  state.releaseHeartbeat().touch();
+  const old = new Date(Date.now() - 3600_000);
+  utimesSync(join(dir, '.release-last-run'), old, old);
+  assert.deepEqual(openShipAttention(state).map((i) => i.key), ['release_stale']);
+
+  writeFileSync(join(dir, '.release-route_repo.lock'), `${process.pid}\n`);
+  assert.deepEqual(openShipAttention(state), [], 'a release in progress is not a stopped timer');
+
+  writeFileSync(join(dir, '.release-route_repo.lock'), '2147483646\n');
+  assert.deepEqual(openShipAttention(state).map((i) => i.key), ['release_stale'], 'a dead pid is ignored');
 });
 
 test('raise announces once as a sweep event with attention ship:<kind> and no ticket; clear is silent', async () => {
