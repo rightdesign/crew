@@ -11,7 +11,7 @@ import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
 import {
   failingPaths, culpritByFiles, planBuildFailureBounce, applyBuildFailureBounce,
-  buildFailureComment, BUILD_FAILURE_MARKER,
+  buildFailureComment, BUILD_FAILURE_MARKER, priorBuildFailures,
 } from '../src/build-failure.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -177,4 +177,33 @@ test('the hand-back clears the assignee, posts the tail, and respects a stale wr
   assert.equal((await applyBuildFailureBounce(stale, bounce, DEFAULT_CONTRACT, 'm', silent, false)).kind, 'stale');
   assert.equal((await applyBuildFailureBounce(w, bounce, DEFAULT_CONTRACT, 'm', silent, true)).kind, 'handed-back');
   assert.equal(patches.length, 1);
+});
+
+test('a pair culprit names the sibling to merge first (CREW-2777)', () => {
+  const bounce = planBuildFailureBounce('/nonexistent', {
+    ticket: T('ISSUE-9'), branch: 'issue-9', hook: 'test', tail: 'boom', how: 'pair',
+    sibling: { key: 'ISSUE-8', branch: 'issue-8' },
+  }, 'main', 'origin');
+  const c = buildFailureComment(bounce);
+  assert.match(c, /passes the hook alone/);
+  assert.match(c, /git merge origin\/issue-8/);
+});
+
+test('a second hand-back after a push escalates to a person instead of looping (CREW-2777)', async () => {
+  const t = T('ISSUE-10');
+  const ev = [
+    { record_id: t.id, event_type: 'build_failed', occurred_at: '2026-01-01T00:00:00Z' },
+    { record_id: t.id, event_type: 'pushed', occurred_at: '2026-01-02T00:00:00Z' },
+  ];
+  assert.equal(priorBuildFailures(t, ev), 1);
+  assert.equal(priorBuildFailures(t, ev.slice(0, 1)), 0);
+  const patches: Array<Record<string, unknown>> = [];
+  const w = {
+    updateTicket: async (_id: string, p: Record<string, unknown>) => { patches.push(p); return {}; },
+    postEvent: async () => {},
+  };
+  const bounce = planBuildFailureBounce('/nonexistent', { ticket: t, branch: 'issue-10', hook: 'build', tail: 'x', how: 'solo' }, 'main', 'origin');
+  const r = await applyBuildFailureBounce(w, bounce, DEFAULT_CONTRACT, 'm', silent, false, { count: 1, operatorId: 'op' });
+  assert.equal(r.kind, 'escalated');
+  assert.deepEqual(patches[0], { status: DEFAULT_CONTRACT.statuses.needsHuman, assignee_id: 'op' });
 });

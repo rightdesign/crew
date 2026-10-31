@@ -196,6 +196,8 @@ export interface ReleaseOutcome {
   hookFailure?: { hook: string; label: string; tail: string };
   /** On a failed test gate: what it ran on (base, candidate head, merged branches), for the alert. */
   composition?: GateComposition;
+  /** Why culprit isolation named nobody, when the gate failed and it ran (CREW-2777). */
+  isolation?: string;
   /**
    * Merged branches a failed build/test was pinned on and left out of this
    * release (CREW-1581). The caller hands each back to the dev lane; the rest
@@ -1150,6 +1152,37 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
   }
 }
 
+/** Most pairs the interaction search will build (CREW-2777). */
+const MAX_ISOLATE_PAIRS = 10;
+
+/**
+ * The pairs the interaction search builds, in order: by the later branch's
+ * verification position, then the earlier's, so the first failing pair names
+ * the later-verified branch as the fix owner. Bounded; a longer list is the
+ * caller's cue to bisect instead.
+ */
+export function pairOrder(n: number, max: number = MAX_ISOLATE_PAIRS): { pairs: Array<[number, number]>; truncated: boolean } {
+  const pairs: Array<[number, number]> = [];
+  let truncated = false;
+  outer: for (let j = 1; j < n; j++) {
+    for (let i = 0; i < j; i++) {
+      if (pairs.length >= max) { truncated = true; break outer; }
+      pairs.push([i, j]);
+    }
+  }
+  return { pairs, truncated };
+}
+
+export const ISOLATE_MAX_PAIRS = MAX_ISOLATE_PAIRS;
+
+/** The `crew doctor` line for the isolation bound and loop guard (CREW-2777). */
+export function selfRepairLine(maxCandidates: number | undefined): string {
+  const cap = maxCandidates ?? DEFAULT_ISOLATE_MAX_CANDIDATES;
+  return cap === 0
+    ? 'culprit isolation is off (release.isolateFailures.maxCandidates: 0); a failed gate files an alert'
+    : `culprit isolation up to ${cap} merged branches, ${MAX_ISOLATE_PAIRS} pairs before bisecting; a ticket handed back twice after a push escalates with an alert`;
+}
+
 const isolateCap = (o: ReleaseRunOptions): number =>
   o.repo.release.isolateFailures?.maxCandidates ?? DEFAULT_ISOLATE_MAX_CANDIDATES;
 
@@ -1174,7 +1207,7 @@ async function isolateAndRetry(
   decision: ReleaseDecision,
   fresh: ReturnType<typeof refreshBase>,
   releaseBranch: string | undefined,
-): Promise<ReleaseOutcome | null> {
+): Promise<ReleaseOutcome | { tried: string } | null> {
   const applied = merged.filter((c) => c.sha && c.branch);
   const cap = isolateCap(o);
   if (o.dryRun || !preMerge || applied.length < 1 || cap === 0) return null;
@@ -1187,7 +1220,7 @@ async function isolateAndRetry(
       (gitOk(o.cwd, ['diff', '--name-only', `${preMerge}...${c.branch}`]) ?? '').split('\n').filter(Boolean),
     ),
   }));
-  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo'; tail: string }> = [];
+  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo' | 'pair'; tail: string; sibling?: MergeCandidate }> = [];
   const byFile = culpritByFiles(withFiles, failingPaths(output, o.cwd));
   if (byFile) {
     o.emit.warn(`${name} failed; its output names files only ${byFile.c.branch} changed — treating it as the culprit`, { ticket: byFile.c.ticket.issue_id });
@@ -1206,13 +1239,13 @@ async function isolateAndRetry(
     if (baseRun && baseRun.code !== 0) {
       o.emit.warn(`${name} fails on the base without ${only.branch} — not blaming the branch`, { ticket: only.ticket.issue_id });
       gitOk(o.cwd, ['reset', '--hard', head]);
-      return null;
+      return { tried: `Isolation found no culprit: the ${name} hook also fails on the base alone, without ${only.branch}, so there is no branch to hand back.` };
     }
     o.emit.warn(`${name} failed with only ${only.branch} merged and passes without it — treating it as the culprit`, { ticket: only.ticket.issue_id });
     culprits.push({ c: only, how: 'solo', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) });
   } else if (applied.length > cap) {
     o.emit.warn(`${name} failed with ${applied.length} branches merged, over release.isolateFailures.maxCandidates (${cap}) — not isolating`);
-    return null;
+    return { tried: `Isolation was skipped: ${applied.length} branches were merged, over release.isolateFailures.maxCandidates (${cap}).` };
   } else {
     // 2. Build each alone on the pre-merge base (node_modules is reused).
     o.emit.warn(`${name} failed with ${applied.length} branches merged — building each alone to find the culprit`);
@@ -1226,13 +1259,53 @@ async function isolateAndRetry(
         culprits.push({ c, how: 'solo', tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES) });
       }
     }
+    // 3. Every branch passes alone: the failure is an interaction. Try pairs
+    // in verification order (CREW-2777); the later-verified branch of the
+    // first failing pair owns the fix. Bounded; beyond the bound the release
+    // fails as a whole and the alert says so.
+    if (culprits.length === 0) {
+      const { pairs, truncated } = pairOrder(applied.length);
+      for (const [i, j] of pairs) {
+        gitOk(o.cwd, ['reset', '--hard', preMerge]);
+        const a = mergeOne(o, applied[i]!);
+        const b = typeof a === 'object' && 'conflict' in a ? a : mergeOne(o, applied[j]!);
+        if (typeof b === 'object' && 'conflict' in b) continue;
+        const r = await hook(o, name);
+        if (r && r.code !== 0) {
+          o.emit.warn(`${applied[j]!.branch} fails the ${name} hook together with ${applied[i]!.branch}`, { ticket: applied[j]!.ticket.issue_id });
+          culprits.push({ c: applied[j]!, how: 'pair', sibling: applied[i]!, tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES) });
+          break;
+        }
+      }
+      if (culprits.length === 0 && truncated) {
+        // Past the pair bound: bisect by halves over the verification-ordered
+        // prefix. The smallest failing prefix ends at the later-verified owner;
+        // the earlier branches in that prefix are its siblings.
+        let lo = 2, hi = applied.length;   // the whole set is known to fail
+        let tail = lastLines(output, HOOK_FAILURE_TAIL_LINES);
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          gitOk(o.cwd, ['reset', '--hard', preMerge]);
+          let clean = true;
+          for (const c of applied.slice(0, mid)) {
+            const m = mergeOne(o, c);
+            if (typeof m === 'object' && 'conflict' in m) { clean = false; break; }
+          }
+          const r = clean ? await hook(o, name) : null;
+          if (r && r.code !== 0) { hi = mid; tail = lastLines(r.output, HOOK_FAILURE_TAIL_LINES); } else lo = mid + 1;
+        }
+        const owner = applied[hi - 1]!;
+        o.emit.warn(`${owner.branch} is the first branch whose prefix fails the ${name} hook (bisected over ${applied.length})`, { ticket: owner.ticket.issue_id });
+        culprits.push({ c: owner, how: 'pair', sibling: applied[hi - 2]!, tail });
+      }
+    }
   }
 
   gitOk(o.cwd, ['reset', '--hard', preMerge]);
   if (culprits.length === 0) {
     o.emit.warn('no single branch could be blamed — failing the release as a whole');
     gitOk(o.cwd, ['reset', '--hard', head]);
-    return null;
+    return { tried: `Isolation found no culprit: each of the ${applied.length} merged branches passes the ${name} hook alone and no pair among them fails it.` };
   }
   const out = new Set(culprits.map((x) => x.c.ticket.id));
   const rest = decision.merges.filter((c) => !out.has(c.ticket.id));
@@ -1243,6 +1316,7 @@ async function isolateAndRetry(
     ...retried,
     buildCulprits: culprits.map((x) => ({
       ticket: x.c.ticket, branch: x.c.branch!, hook: name, tail: x.tail, how: x.how,
+      ...(x.sibling ? { sibling: { key: x.sibling.ticket.issue_tag ?? x.sibling.ticket.issue_id, branch: x.sibling.branch! } } : {}),
     })),
   };
 }
@@ -1271,6 +1345,8 @@ async function mergeAndRelease(
   // caller turns this into work on the board; see stranded-verified.ts.
   const unbuildable: MergeCandidate[] = [];
   let applied = 0;
+  // What culprit isolation tried when it found nobody (CREW-2777), for the alert.
+  let isolation: string | undefined;
   for (const c of decision.merges) {
     if (!c.branch || c.mergedSha) {
       if (c.skipReason === 'already-released') {
@@ -1413,7 +1489,8 @@ async function mergeAndRelease(
       }
       if (r && r.code !== 0 && !isolated) {
         const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch);
-        if (out) return out;
+        if (out && 'tried' in out) isolation = out.tried;
+        else if (out) return out;
       }
       if (r && r.code !== 0) {
         o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
@@ -1431,7 +1508,7 @@ async function mergeAndRelease(
         const hookFailure = {
           hook: 'test', label: hookLabel(o.repo, 'test'), tail: failureSummary(r.output, HOOK_FAILURE_TAIL_LINES),
         };
-        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed, hookFailure, composition };
+        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed, hookFailure, composition, ...(isolation ? { isolation } : {}) };
       }
       o.state?.clearTestGateFailed?.();
     }
@@ -1478,7 +1555,8 @@ async function mergeAndRelease(
       }
       if (r && r.code !== 0 && !isolated) {
         const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch);
-        if (out) return out;
+        if (out && 'tried' in out) isolation = out.tried;
+        else if (out) return out;
       }
       if (r && r.code !== 0) {
         o.emit.error('build failed — not deploying');
@@ -1490,7 +1568,7 @@ async function mergeAndRelease(
           git(o.cwd, ['reset', '--hard', preBump]);
           o.emit.warn(`dropped the unreleased version commit for ${version} (reset ${o.repo.branch.base} to ${preBump.slice(0, 8)}) so a retry starts clean`);
         }
-        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision, hookFailure: hookFailure(o, 'build', r.output) };
+        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision, hookFailure: hookFailure(o, 'build', r.output), ...(isolation ? { isolation } : {}) };
       }
     }
   }

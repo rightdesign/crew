@@ -38,7 +38,7 @@ import { resolveTopCandidate } from './claim.ts';
 import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
-import { planBuildFailureBounce, applyBuildFailureBounce } from './build-failure.ts';
+import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures } from './build-failure.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
@@ -55,7 +55,7 @@ import {
 } from './connect-json.ts';
 import { unitAbandonsAgents, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
-import { runRelease, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
+import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
 import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
@@ -1696,6 +1696,21 @@ async function releasePhase(
       );
     }
 
+    // File an alert under the failing repo's project so that project's lanes can
+    // take it (CREW-1632). A failed lookup files it unplaced, as before.
+    const alertPlacement = async (): Promise<{ repo_id?: string; project_id?: string }> => {
+      const placement: { repo_id?: string; project_id?: string } = {};
+      try {
+        const repoId = repoIdForName(c, target.name);
+        if (repoId) {
+          placement.repo_id = repoId;
+          const projectId = (await tracker.repoRow(repoId))?.project_id;
+          if (projectId) placement.project_id = projectId;
+        }
+      } catch { /* unplaced beats no alert */ }
+      return placement;
+    };
+
     // Last, and non-fatal: whatever happened has happened, and telling someone
     // about it must not be able to change the outcome.
     const news = describeRelease(outcome, scope);
@@ -1709,17 +1724,7 @@ async function releasePhase(
       // has always done for a deploy failure.
       if (!notified && news.level === 'fail') {
         const memberId = releaseSeat(c);
-        // File it under the failing repo's project so that project's lanes can
-        // take it (CREW-1632). A failed lookup files it unplaced, as before.
-        const placement: { repo_id?: string; project_id?: string } = {};
-        try {
-          const repoId = repoIdForName(c, target.name);
-          if (repoId) {
-            placement.repo_id = repoId;
-            const projectId = (await tracker.repoRow(repoId))?.project_id;
-            if (projectId) placement.project_id = projectId;
-          }
-        } catch { /* unplaced beats no alert */ }
+        const placement = await alertPlacement();
         await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun, placement).catch((e) => {
           remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
@@ -1749,12 +1754,28 @@ async function releasePhase(
     // escalated to a person (ISSUE-379).
     if (outcome.buildCulprits?.length) {
       const seat = releaseSeat(c);
+      const prior = [...await tracker.events('build_failed'), ...await tracker.events('pushed')];
       for (const cu of outcome.buildCulprits) {
         try {
           const bounce = planBuildFailureBounce(target.dir, cu, repo.branch.base, repo.branch.remote);
-          const r = await applyBuildFailureBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
+          const r = await applyBuildFailureBounce(
+            tracker, bounce, tracker.contract, seat, remit, dryRun,
+            { count: priorBuildFailures(cu.ticket, prior), operatorId: c.resolved?.operator },
+          );
           if (r.kind === 'failed') {
             remit.warn(`could not hand back ${cu.ticket.issue_id}: ${r.why}`, { step: 'release' });
+          }
+          if (r.kind === 'escalated' && !dryRun) {
+            // Loop guard (CREW-2777): the same ticket broke the gate again after
+            // a hand-back, so the alert is the fallback and says what was tried.
+            const key = cu.ticket.issue_tag ?? cu.ticket.issue_id;
+            await applyFailureAlert(tracker, {
+              level: 'fail',
+              headline: `${scope}: release blocked — ${key} broke the ${cu.hook} gate twice`,
+              detail: `${key} (\`${cu.branch}\`) was handed back after a failed ${cu.hook} gate, pushed and re-verified, and failed it again. Isolation found it both times (${cu.how}), so it is escalated to the operator instead of another lap.\n\n\`\`\`\n${cu.tail.trimEnd()}\n\`\`\``,
+            }, scope, all, seat, remit, dryRun, await alertPlacement()).catch((e) => {
+              remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
+            });
           }
         } catch (e) {
           remit.warn(`could not hand back ${cu.ticket.issue_id}: ${(e as Error).message}`, { step: 'release' });
@@ -5249,6 +5270,7 @@ switch (command) {
       for (const p2 of validateEffective(config)) {
         process.stdout.write(`                   - release readiness: ${p2}\n`);
       }
+      process.stdout.write(`                   release self-repair: ${selfRepairLine(config.release.isolateFailures?.maxCandidates)}\n`);
       const dh = doctorBaseReport(r, config.branch.base, baseHealth);
       process.stdout.write(dh.text);
       if (dh.failed) process.exitCode = 1;

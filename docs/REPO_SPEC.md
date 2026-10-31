@@ -251,12 +251,26 @@ of holding the whole release:
 2. Otherwise each merged branch is built alone on the pre-merge base; a branch
    that fails alone is a culprit. At most `release.isolateFailures.maxCandidates`
    branches are tried — past that the release fails as a whole.
+3. If every branch passes alone, pairs are built in verification order (at most
+   the first 10). The first failing pair names the later-verified branch as the
+   culprit and the earlier one as the sibling; the hand-back comment tells the
+   owner to `git merge <remote>/<sibling>` first and fix on the same branch.
+   Past 10 pairs the search bisects by halves over the verification-ordered
+   prefix instead; the branch that completes the smallest failing prefix owns the
+   fix. A `release_culprit` event is posted beside the hand-back note.
 
 Each culprit goes back to `in_progress`, unassigned, with a comment carrying the
 hook's output tail and `git merge <remote>/<base>` as the first step. The other
 branches are re-merged and the release continues, so no failure-alert ticket is
-filed. If no culprit can be named (everything passes alone, over the cap, or only
-one branch was merged) the release fails and alerts as before. QA is told to
+filed. A ticket handed back this way that is pushed, re-verified and breaks the
+same hook again goes to `needs_info` assigned to the operator, and a failure
+alert is filed, instead of another lap (counted per ticket, which belongs to one
+route). If no culprit can be named (over the cap, the base fails alone, or no
+single branch or pair fails) the release fails and files the usual alert, whose
+text says what isolation tried. Two verified branches that conflict are handled
+at merge time by the existing conflict hand-back (file list, sibling named); the
+isolation runs reuse the release checkout and create no extra worktrees. `crew
+doctor` prints the bound and the loop guard per repo. QA is told to
 re-verify bounced branches against the current base so this surfaces earlier.
 
 ### The release lock row

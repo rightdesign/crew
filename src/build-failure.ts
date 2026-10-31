@@ -83,8 +83,10 @@ export interface BuildCulprit {
   hook: string;
   /** The tail of that hook's output. */
   tail: string;
-  /** How the culprit was found: named by the output, or by building it alone. */
-  how: 'files' | 'solo';
+  /** How the culprit was found: named by the output, by building it alone, or as half of a failing pair. */
+  how: 'files' | 'solo' | 'pair';
+  /** For `pair`: the earlier-verified branch it fails together with. */
+  sibling?: { key: string; branch: string };
 }
 
 export interface BuildFailureBounce extends BuildCulprit {
@@ -94,14 +96,16 @@ export interface BuildFailureBounce extends BuildCulprit {
   worktree: string | null;
 }
 
-export type BuildFailureOutcome = { kind: 'handed-back' } | { kind: 'stale' } | { kind: 'failed'; why: string };
+export type BuildFailureOutcome = { kind: 'handed-back' } | { kind: 'escalated' } | { kind: 'stale' } | { kind: 'failed'; why: string };
 
 export function planBuildFailureBounce(cwd: string, c: BuildCulprit, base: string, remote: string): BuildFailureBounce {
   return { ...c, base, remote, worktree: worktreeForBranch(cwd, c.branch) };
 }
 
 export function buildFailureComment(b: BuildFailureBounce): string {
-  const how = b.how === 'files'
+  const how = b.how === 'pair' && b.sibling
+    ? `Each branch passes the hook alone; \`${b.branch}\` together with ${b.sibling.key} (\`${b.sibling.branch}\`) fails it. ${b.sibling.key} was verified first, so the fix belongs on this branch: \`git merge ${b.remote}/${b.sibling.branch}\` first, then fix what disagrees. Fix it on this branch, never a fresh one.`
+    : b.how === 'files'
     ? `The failing output names files that only \`${b.branch}\` changed among the branches in that release.`
     : `Built alone on the previous \`${b.base}\`, \`${b.branch}\` fails the same hook.`;
   return `${BUILD_FAILURE_MARKER}
@@ -119,6 +123,31 @@ ${b.tail.trimEnd()}
 Nothing was written to \`${b.base}\` for this ticket; the rest of the release shipped without it.`;
 }
 
+interface BuildFailureEvent { record_id?: string | null; event_type?: string | null; occurred_at?: string | null; created_at?: string | null }
+
+/**
+ * Hand-backs of this ticket for a failed hook that a lane has answered with a
+ * push since (loop guard, CREW-2777): a second one means the fix did not hold.
+ */
+export function priorBuildFailures(ticket: Ticket, events: readonly BuildFailureEvent[]): number {
+  const stamp = (e: BuildFailureEvent): string => e.occurred_at ?? e.created_at ?? '';
+  const mine = events.filter((e) => e.record_id === ticket.id);
+  const pushes = mine.filter((e) => e.event_type === 'pushed').map(stamp);
+  return mine.filter((e) => e.event_type === 'build_failed' && pushes.some((p) => p > stamp(e))).length;
+}
+
+export function buildFailureEscalation(b: BuildFailureBounce): string {
+  return `${BUILD_FAILURE_MARKER}
+
+**Failed the release gate again after a hand-back — stopping rather than looping.**
+
+\`${b.branch}\` was handed back for breaking the \`${b.hook}\` hook, pushed, verified again, and breaks it once more. That is a call for a person, not another lap through the lanes.
+
+\`\`\`
+${b.tail.trimEnd()}
+\`\`\``;
+}
+
 /**
  * Hand a culprit back to the dev lane. Non-fatal and stale-write-safe for the
  * same reasons as `applyConflictBounce`; the assignee is cleared so
@@ -126,9 +155,30 @@ Nothing was written to \`${b.base}\` for this ticket; the rest of the release sh
  */
 export async function applyBuildFailureBounce(
   writer: ConflictWriter, b: BuildFailureBounce, contract: Contract, memberId: string,
-  log: ConflictLog, dryRun: boolean,
+  log: ConflictLog, dryRun: boolean, prior: { count: number; operatorId?: string } = { count: 0 },
 ): Promise<BuildFailureOutcome> {
   const t = { ticket: b.ticket.issue_id, step: 'release' };
+  if (prior.count > 0) {
+    if (dryRun) {
+      log.emit(`would escalate to ${contract.statuses.needsHuman} — handed back for the ${b.hook} hook before`, t);
+      return { kind: 'escalated' };
+    }
+    try {
+      await writer.updateTicket(
+        b.ticket.id,
+        { status: contract.statuses.needsHuman, ...(prior.operatorId ? { assignee_id: prior.operatorId } : {}) },
+        b.ticket.updated_at,
+      );
+      await writer.postEvent(b.ticket.id, buildFailureEscalation(b), memberId, 'build_failed_escalated').catch(() => {
+        log.warn('escalated, but the note failed to post', t);
+      });
+      log.warn(`breaks the ${b.hook} hook again after a hand-back — escalated to ${contract.statuses.needsHuman}`, t);
+      return { kind: 'escalated' };
+    } catch (e) {
+      if (e instanceof StaleWriteError) return { kind: 'stale' };
+      return { kind: 'failed', why: (e as Error).message };
+    }
+  }
   if (dryRun) {
     log.emit(`would hand ${b.ticket.issue_id} back to ${contract.statuses.building} — its branch breaks the ${b.hook} hook`, t);
     return { kind: 'handed-back' };
@@ -140,6 +190,13 @@ export async function applyBuildFailureBounce(
     await writer.postEvent(b.ticket.id, buildFailureComment(b), memberId, 'build_failed').catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });
+    // One compact record of who was blamed and how (CREW-2777), apart from the
+    // comment the lane reads, for anything that wants to count or list them.
+    await writer.postEvent(
+      b.ticket.id,
+      `${b.ticket.issue_tag ?? b.ticket.issue_id} left out of the release: ${b.hook} hook, found by ${b.how}${b.sibling ? `, together with ${b.sibling.key} (${b.sibling.branch})` : ''}`,
+      memberId, 'release_culprit',
+    ).catch(() => { /* the build_failed note above is the one that matters */ });
     log.emit(`handed back to ${contract.statuses.building} — breaks the ${b.hook} hook once merged with the rest`, t);
     return { kind: 'handed-back' };
   } catch (e) {

@@ -97,6 +97,7 @@ export function describeRelease(o: {
   blockedCycles?: number; blockKind?: 'branch' | 'dirty';
   hookFailure?: { hook: string; label: string; tail: string };
   composition?: GateComposition;
+  isolation?: string;
 }, route: string): Notification | null {
   if (o.integrated) {
     // Worth saying: something shipped, in the only sense this repo ships.
@@ -123,9 +124,9 @@ export function describeRelease(o: {
       level: 'fail',
       headline: `${route}: release blocked — tests failed`,
       detail: withHookTail(
-        o.composition
+        (o.composition
           ? `the target stays on the previous release\n\n${describeComposition(o.composition)}`
-          : 'the target stays on the previous release',
+          : 'the target stays on the previous release') + (o.isolation ? `\n\n${o.isolation}` : ''),
         o.hookFailure,
       ),
       ...(o.composition ? { head: o.composition.head } : {}),
@@ -155,7 +156,7 @@ export function describeRelease(o: {
     return {
       level: 'fail',
       headline: `${route}: build FAILED`,
-      detail: withHookTail('the target stays on the previous release — nothing was deployed', o.hookFailure),
+      detail: withHookTail(`the target stays on the previous release — nothing was deployed${o.isolation ? `\n\n${o.isolation}` : ''}`, o.hookFailure),
     };
   }
   // A dirty tree or a non-main checkout is normal for one cycle — someone is
