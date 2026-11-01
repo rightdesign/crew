@@ -1014,6 +1014,40 @@ test('a ci_* release whose confirm timed out is re-confirmed on a later cycle, t
   })();
 });
 
+test('ci_auto: the merge is reported once base is pushed, before CI confirms; local mode is not asked (CREW-2820)', () => {
+  return (async () => {
+    const bare = bareRemote();
+    const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+    writeFileSync(file, '1.2.3\n');
+    const { dir, repo } = projectWithRemote(CI_VERSION(bare, file), bare);
+    const seen: { id: string; sha?: string; baseOnRemote: string }[] = [];
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+      onBasePushed: async (merged) => {
+        const remoteMain = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
+        for (const m of merged) seen.push({ id: m.ticket.issue_id, sha: m.sha, baseOnRemote: remoteMain });
+      },
+    });
+    assert.equal(out.confirmed, false, 'CI has not reported the release live');
+    const first = seen[0]!;
+    assert.equal(seen.length, 1);
+    assert.equal(first.id, 'ISSUE-7');
+    assert.ok(first.sha, 'the squash sha is available');
+    // The squash is already on the remote's base when the callback runs
+    // (throws if it is not an ancestor).
+    execFileSync('git', ['--git-dir', bare, 'merge-base', '--is-ancestor', first.sha, first.baseOnRemote]);
+
+    const bare2 = bareRemote();
+    const { dir: dir2, repo: repo2 } = projectWithRemote(LOCAL, bare2);
+    let asked = false;
+    await runRelease({
+      cwd: dir2, repo: repo2, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+      onBasePushed: async () => { asked = true; },
+    });
+    assert.equal(asked, false);
+  })();
+});
+
 test('re-confirm does not poll when no verified ticket was in the last release', () => {
   return (async () => {
     const bare = bareRemote();

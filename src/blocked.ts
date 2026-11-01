@@ -86,7 +86,10 @@ export function computeBlockedIds(tickets: Ticket[], info: BlockerInfo): Set<str
  * only an unmerged branch — the release phase has not squash-merged it yet —
  * so the dependent could only be built by stacking on that branch, which then
  * diverges when the squash lands. Such a blocker stays unresolved until the
- * release stamps `merged_at`/`commit_sha` (or it reaches a closed status). A
+ * release stamps `merged_at`/`commit_sha` (or it reaches a closed status). In
+ * `ci_*` modes that stamp is written when the merge lands on base, before the
+ * deploy is confirmed (CREW-2820), so `verified` with `commit_sha` set and no
+ * deployed status yet is an expected state that already releases dependents. A
  * blocker in another repo, or either side with no `repo_id`, keeps the plain
  * rule: a dependent cannot stack on a branch in a different repository anyway.
  *

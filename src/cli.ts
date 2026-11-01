@@ -58,7 +58,7 @@ import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConf
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
-import { planStamp, applyStamp, applyExternalClosures } from './stamp.ts';
+import { planStamp, applyStamp, applyMergeStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
 import { renderEnvironment } from './environment.ts';
@@ -1574,6 +1574,15 @@ async function releasePhase(
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',
+      // ci_* modes: record the merge on the board when it lands on base,
+      // not only once CI confirms the release live (CREW-2820).
+      onBasePushed: async (merged) => {
+        remit.enter('reconcile');
+        await applyMergeStamp(
+          tracker, new Map(merged.map((m) => [m.ticket.issue_id, m.sha])),
+          merged.map((m) => m.ticket), remit, dryRun, target.dir,
+        );
+      },
       // `deploy` is the "go now" button: it exists for a commit a previous
       // deploy failed on, where nothing new will merge but the work is
       // genuinely unreleased.

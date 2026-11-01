@@ -6,6 +6,9 @@
  * `released_version` is written, and it is what turns "this shipped" from a
  * commit message into something the board can be filtered by.
  *
+ * In `ci_*` modes a ticket may already be at `verified` with `commit_sha` set
+ * (see `applyMergeStamp`); this then only adds the deploy fields.
+ *
  * Deliberately NOT fatal: this runs *after* a successful deploy, and a
  * tracker that is briefly unreachable must not turn a good release into a
  * failed one. The stamp is retried next cycle, because the tickets are still
@@ -90,6 +93,45 @@ function mergedAtFor(cwd: string | undefined, sha: string, fallback: string): st
   return (cwd && commitDate(cwd, sha)) || fallback;
 }
 
+/**
+ * `release.mode: ci_auto`/`ci_manual`: write `commit_sha`/`merged_at` as soon
+ * as the squash merge is on the base branch, leaving `status` at `verified`
+ * (CREW-2820). The deployed status and `released_version`/`released_at` follow
+ * from `applyStamp` once `hooks.released` confirms the release live, which in
+ * a repo where merge-to-base is not a production deploy can be hours later.
+ * Until then `verified` + `commit_sha` set is an expected intermediate state:
+ * it is what releases a same-repo dependent from `blocked` (`unresolvedBlockers`).
+ *
+ * Same shape as `applyExternalClosures` and equally non-fatal: a tracker error
+ * is warned and the sha is written by the confirming `applyStamp` (or the next
+ * cycle's stamp) instead. A no-op merge (no sha) has nothing to record.
+ */
+export async function applyMergeStamp(
+  tracker: Tracker, merged: ReadonlyMap<string, string | undefined>, tickets: Ticket[],
+  emit: Emitter, dryRun: boolean, cwd?: string,
+): Promise<number> {
+  let stamped = 0;
+  const at = new Date().toISOString();
+  for (const ticket of tickets) {
+    const sha = merged.get(ticket.issue_id);
+    // A dry run commits nothing, so there is no sha to show; it still says what it would do.
+    if (dryRun) {
+      emit.emit(`would stamp commit_sha${sha ? ` (${sha.slice(0, 8)})` : ''}`, { ticket: ticket.issue_id });
+      stamped++;
+      continue;
+    }
+    if (!sha || ticket.commit_sha === sha) continue;
+    try {
+      await tracker.updateTicket(ticket.id, { commit_sha: sha, merged_at: mergedAtFor(cwd, sha, at) });
+      emit.emit(`stamped commit_sha (${sha.slice(0, 8)})`, { ticket: ticket.issue_id });
+      stamped++;
+    } catch (e) {
+      emit.warn(`could not stamp commit_sha: ${(e as Error).message}`, { ticket: ticket.issue_id });
+    }
+  }
+  return stamped;
+}
+
 export async function applyStamp(
   tracker: Tracker, plan: StampPlan[], version: string | undefined,
   contract: Contract, emit: Emitter, dryRun: boolean, cwd?: string,
@@ -105,6 +147,10 @@ export async function applyStamp(
       stamped++;
       continue;
     }
+    // CREW-2820: in ci_* modes the merge was already recorded when it landed
+    // on base (`applyMergeStamp`), so a ticket that carries `commit_sha`
+    // keeps it — the confirmation only adds the deploy.
+    const recordMerge = !!sha && !ticket.commit_sha;
     try {
       await tracker.updateTicket(ticket.id, {
         status: contract.statuses.deployed,
@@ -115,7 +161,7 @@ export async function applyStamp(
         // ticket's record should mean the same thing regardless of which
         // release mode closed it (ISSUE-218). `merged_at` is the commit's own
         // date, not the stamp time (which trails the deploy in ci_* modes).
-        ...(sha ? { commit_sha: sha, merged_at: mergedAtFor(cwd, sha, at) } : {}),
+        ...(recordMerge && sha ? { commit_sha: sha, merged_at: mergedAtFor(cwd, sha, at) } : {}),
       });
       emit.emit(`stamped ${contract.statuses.deployed}${version ? ` (${version})` : ''}${shaNote}`, {
         ticket: ticket.issue_id,

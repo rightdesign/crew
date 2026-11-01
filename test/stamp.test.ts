@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { planStamp, applyStamp, applyExternalClosures } from '../src/stamp.ts';
+import { planStamp, applyStamp, applyMergeStamp, applyExternalClosures } from '../src/stamp.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
 import type { Ticket } from '../src/tracker.ts';
@@ -323,4 +323,44 @@ test('merged_at falls back to stamp time when the sha cannot be read', async () 
   } as unknown as Parameters<typeof applyStamp>[0];
   await applyStamp(tracker, [{ ticket: T('ISSUE-1'), reason: 'r', sha: 'deadbeef'.repeat(5) }], '1.0.0', DEFAULT_CONTRACT, emitter([]), false, dir);
   assert.equal(calls[0]!.merged_at, calls[0]!.released_at);
+});
+
+test('applyMergeStamp writes commit_sha/merged_at and leaves status alone (CREW-2820)', async () => {
+  const { dir, to } = repoWith(['squash (ISSUE-1)']);
+  const patches: Record<string, unknown>[] = [];
+  const tracker = { updateTicket: async (_id: string, p: Record<string, unknown>) => { patches.push(p); return {} as Ticket; } } as unknown as Parameters<typeof applyMergeStamp>[0];
+  const lines: string[] = [];
+  const n = await applyMergeStamp(tracker, new Map([['ISSUE-1', to], ['ISSUE-2', undefined]]), [T('ISSUE-1'), T('ISSUE-2')], emitter(lines), false, dir);
+  assert.equal(n, 1);
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0]!.commit_sha, to);
+  assert.ok(patches[0]!.merged_at);
+  assert.ok(!('status' in patches[0]!) && !('released_version' in patches[0]!));
+});
+
+test('applyMergeStamp dry run prints would-stamp and writes nothing (CREW-2820)', async () => {
+  let called = false;
+  const tracker = { updateTicket: async () => { called = true; return {} as Ticket; } } as unknown as Parameters<typeof applyMergeStamp>[0];
+  const lines: string[] = [];
+  await applyMergeStamp(tracker, new Map(), [T('ISSUE-1')], emitter(lines), true);
+  assert.equal(called, false);
+  assert.ok(lines.some((l) => /would stamp commit_sha/.test(l)));
+});
+
+test('a failed early stamp is a warning, not an error (CREW-2820)', async () => {
+  const tracker = { updateTicket: async () => { throw new Error('tracker down'); } } as unknown as Parameters<typeof applyMergeStamp>[0];
+  const lines: string[] = [];
+  const n = await applyMergeStamp(tracker, new Map([['ISSUE-1', 'abcdef123456']]), [T('ISSUE-1')], emitter(lines), false);
+  assert.equal(n, 0);
+  assert.ok(lines.some((l) => /could not stamp commit_sha: tracker down/.test(l)));
+});
+
+test('applyStamp keeps a commit_sha the early stamp already recorded (CREW-2820)', async () => {
+  const patches: Record<string, unknown>[] = [];
+  const tracker = { updateTicket: async (_id: string, p: Record<string, unknown>) => { patches.push(p); return {} as Ticket; } } as unknown as Parameters<typeof applyStamp>[0];
+  const ticket = { ...T('ISSUE-1'), commit_sha: 'aaaa1111' } as Ticket;
+  await applyStamp(tracker, [{ ticket, reason: 'r', sha: 'bbbb2222' }], '1.0.0', DEFAULT_CONTRACT, emitter([]), false);
+  assert.equal(patches[0]!.status, DEFAULT_CONTRACT.statuses.deployed);
+  assert.equal(patches[0]!.released_version, '1.0.0');
+  assert.ok(!('commit_sha' in patches[0]!) && !('merged_at' in patches[0]!));
 });

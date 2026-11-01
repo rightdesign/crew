@@ -76,6 +76,13 @@ export interface ReleaseRunOptions {
     raise(item: ShipAttentionItem): Promise<unknown> | void;
     clear(key: string): void;
   };
+  /**
+   * `ci_auto`/`ci_manual` only (CREW-2820): called once the squash merges are
+   * on `<remote>/<base>` (or would be, in a dry run), before the wait for CI
+   * to confirm the release. The caller records `commit_sha`/`merged_at` then.
+   * Failures here must not reach the release; the caller swallows them.
+   */
+  onBasePushed?: (merged: MergeCandidate[]) => Promise<void>;
   cwd: string;
   repo: EffectiveRepoConfig;
   contract: Contract;
@@ -1620,6 +1627,11 @@ async function mergeAndRelease(
         };
       }
     }
+  }
+
+  if (o.repo.release.mode === 'ci_auto' || o.repo.release.mode === 'ci_manual') {
+    try { await o.onBasePushed?.(merged); }
+    catch (e) { o.emit.warn(`could not record merged tickets: ${(e as Error).message}`); }
   }
 
   let deployed = false;

@@ -324,3 +324,10 @@ test('unroutableChanges: a synced ticket is flagged for the softer wording', () 
   const r = unroutableChanges([synced, hand], [], [synced, hand], 'external_id');
   assert.deepEqual(r.added.map((a) => a.synced), [true, false]);
 });
+
+test('a verified same-repo blocker with commit_sha set and no deployed status releases its dependent (CREW-2820)', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'blocked', repo_id: 'r1', blocked_by: ['s'] });
+  const landed = T({ id: 's', issue_id: 'ISSUE-2', status: 'verified', repo_id: 'r1', commit_sha: 'abc123' });
+  assert.deepEqual(unresolvedBlockers(t, blockerInfoMap([t, landed])), []);
+  assert.equal(computeBlockedIds([t, landed], blockerInfoMap([t, landed])).has('a'), false);
+});
