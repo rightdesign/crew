@@ -26,6 +26,7 @@ import { promisify } from 'node:util';
 import type { AgentPlan } from './agent.ts';
 import type { Emitter } from './events.ts';
 import { killRunGroup } from './run-limit.ts';
+import { cloneScript, parseRemote, DEFAULT_CACHE_SETTINGS } from './sandbox-cache.ts';
 
 const execFileP = promisify(execFile);
 
@@ -84,6 +85,18 @@ export interface SandboxConfig {
   agentBin?: string;
   /** Host environment variable carrying the forge token, injected without touching argv. */
   forgeTokenVar?: string;
+  /** Container engine CLI that owns the cache volume (CREW-2799). */
+  engine?: string;
+  /** Value of the OpenShell workspace label on the cache volume. */
+  cacheWorkspace?: string;
+  /** Image of the helper containers that refresh the mirrors; needs `git`. */
+  cacheImage?: string;
+  /** Image dependency trees are built in; defaults to `image`. */
+  depsImage?: string;
+  /** Install command whose result is cached per lockfile hash, for example `pnpm install --frozen-lockfile`. */
+  depsCommand?: string;
+  /** Lockfile that keys the dependency tree. */
+  depsLockfile?: string;
 }
 
 export const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
@@ -148,7 +161,8 @@ export class SandboxRunner implements Runner {
   async start(plan: AgentPlan, o: { env: NodeJS.ProcessEnv; streamFd: number; emit: Emitter }): Promise<StartedRun> {
     const origin = this.originOf(plan.cwd);
     if (!origin) throw new Error(`cannot find the origin remote of ${plan.cwd}, so there is nothing to clone into the sandbox`);
-    const repoName = basename(origin).replace(/\.git$/, '');
+    const repo = parseRemote(origin);
+    if (!repo) throw new Error(`cannot read a forge host and path from the origin remote ${origin}`);
     const name = sandboxName(plan);
     const { cfg } = this;
 
@@ -184,12 +198,9 @@ export class SandboxRunner implements Runner {
     try {
       // The run's checkout: a shared clone of the read-only mirror on a fresh branch.
       const branch = `crew-run-${name.slice(-8)}`;
-      const clone = [
-        `git clone --quiet --shared ${shQuote(`${cfg.mirrorDir}/${repoName}.git`)} ${shQuote(cfg.workDir)}`,
-        `cd ${shQuote(cfg.workDir)}`,
-        `git remote set-url origin ${shQuote(origin)}`,
-        `git checkout --quiet -b ${shQuote(branch)}`,
-      ].join(' && ');
+      const clone = cloneScript({
+        mirrorDir: cfg.mirrorDir, repo, workDir: cfg.workDir, origin, branch, lockfile: cfg.depsLockfile ?? DEFAULT_CACHE_SETTINGS.depsLockfile,
+      });
       await this.os(['sandbox', 'exec', '-n', name, '--no-login-shell', '--', 'sh', '-c', clone]);
 
       const harness = cfg.agentBin ?? basename(plan.bin);

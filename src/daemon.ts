@@ -579,6 +579,12 @@ export interface RunOnePassOptions {
    * (tests), no name sync is attempted.
    */
   configFile?: string;
+  /**
+   * CREW-2799: the sandbox cache refresh, called at the start of each pass and
+   * throttled by its owner. A throw is logged and the pass carries on with the
+   * previous mirror state.
+   */
+  sandboxCache?: () => Promise<unknown>;
 }
 
 /**
@@ -632,6 +638,9 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   const spawn = o.spawnRoleAgent ?? runRoleAgent;
   const breaker = o.spawnBreaker ?? new SpawnBreaker();
   const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit, getSessionStore: o.getSessionStore };
+  if (o.sandboxCache) {
+    try { await o.sandboxCache(); } catch (e) { emit.warn(`sandbox cache refresh failed: ${e instanceof Error ? e.message : String(e)}`); }
+  }
 
   // CREW-2495: a rename made in the Ships table (or in crew.yaml) lands before
   // this pass's heartbeat, whose row lookup is by the ship's current name.

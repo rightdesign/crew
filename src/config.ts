@@ -623,7 +623,8 @@ function parseShipRunner(v: unknown): RunnerKind | undefined {
   throw new ConfigError(`ship.runner must be "host" or "sandbox", got ${JSON.stringify(v)}`);
 }
 
-const SANDBOX_KEYS = ['bin', 'image', 'policy', 'cacheVolume', 'mirrorDir', 'workDir', 'agentBin', 'forgeTokenVar'] as const;
+const SANDBOX_KEYS = ['bin', 'image', 'policy', 'cacheVolume', 'mirrorDir', 'workDir', 'agentBin', 'forgeTokenVar',
+  'engine', 'cacheWorkspace', 'cacheImage', 'depsImage', 'depsCommand', 'depsLockfile'] as const;
 
 /** `ship.sandbox`: string settings for the sandbox runner; every one is optional. */
 export function parseShipSandbox(v: unknown): Partial<SandboxConfig> | undefined {

@@ -30,7 +30,7 @@ import {
   ticketsByRepo, configuredMembers, crewVersion, routeSlug,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
-  splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat, shipPair,
+  splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, type Ship, releaseSeat, shipPair,
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
@@ -82,7 +82,8 @@ import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
-import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote } from './forges.ts';
+import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor } from './forges.ts';
+import { SandboxCache, cacheSettingsOf, makeCachePass, parseRemote, type PassRepo } from './sandbox-cache.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
@@ -123,7 +124,7 @@ import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } 
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
-  ensureRepoCheckout, originUrlOf, setCloneRecorder, setForgeTokenHosts, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
+  ensureRepoCheckout, acquireCheckoutLock, originUrlOf, setCloneRecorder, setForgeTokenHosts, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, draftWorktrees, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -421,6 +422,7 @@ function usage(problem?: string, requested = false): never {
   crew shell-init [--shell zsh|bash|fish]   print the periscope shell function (install: eval "\$(crew shell-init)")
   crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
+  crew sandbox cache [--prune|--reset] [--json]   list the sandbox cache volume's mirrors; --prune drops unserved repositories, --reset recreates the volume
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [route] [R|release]  pause everything, one role, or releases only (merge/deploy/release; passengers keeps running).
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
@@ -808,7 +810,7 @@ const named = worktreeArgs
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'sandbox' || command === 'whoami' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'whoami' || command === 'sandbox' || releaseFleetWide ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
   (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
@@ -1498,6 +1500,32 @@ function baseHealth(r: { dir: string; config: { branch: { remote: string; base: 
  * before ISSUE-350: they read the route's `dir` and `worktreePrefix` and
  * so saw only the first repo of an area that has several.
  */
+/** CREW-2799: the repositories of a route as the sandbox cache knows them, with the forge credential for each host. */
+function sandboxCacheRepos(c: typeof route, ship: Ship): PassRepo[] {
+  const out: PassRepo[] = [];
+  for (const t of reposOf(c)) {
+    const origin = originUrlOf(t.dir, 'origin');
+    const repo = origin ? parseRemote(origin) : null;
+    if (!repo) continue;
+    let token: string | null = null;
+    try { token = readForgeToken(ship.forges, repo.host, ship.stateDir); } catch { /* the doctor reports an unreadable token */ }
+    out.push({ ...repo, dir: t.dir, token, username: forgeFor(ship.forges, repo.host)?.entry.username });
+  }
+  return out;
+}
+
+function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: Emitter): (() => Promise<unknown>) | undefined {
+  const settings = cacheSettingsOf(ship.sandbox);
+  if (!settings) return undefined;
+  return makeCachePass({
+    cache: new SandboxCache(settings), volume: settings.volume,
+    repos: () => sandboxCacheRepos(c, ship),
+    lock: (dir) => acquireCheckoutLock(dir),
+    fail: (key, message) => raiseShipAttention({ state, emit, route: c, ship }, { kind: 'sandbox_cache', key, message, since: new Date().toISOString() }).then(() => undefined),
+    ok: (key) => clearShipAttention(state, key),
+  });
+}
+
 async function resolvedRepos(c: typeof route) {
   return Promise.all(reposOf(c).map((t) => resolveOneRepo(c, t)));
 }
@@ -2895,6 +2923,7 @@ switch (command) {
     });
     if (controlServer) emit.emit(`control API listening on ${controlServer.path}`);
     const inFlight = new Set<Promise<void>>();
+    const sandboxCachePass = cfg.ship.runner === 'sandbox' ? buildSandboxCachePass(route, cfg.ship, state, emit) : undefined;
     // CREW-2794: sandbox images build in the background between passes, one at
     // a time, never on the cycle path. A build still running skips the tick.
     let sandboxBuilding = false;
@@ -2905,6 +2934,7 @@ switch (command) {
       ),
       runPass: () => runOnePass({
         inFlight,
+        sandboxCache: sandboxCachePass,
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
         roleConcurrency: cfg.ship.roleConcurrency,
@@ -5688,6 +5718,35 @@ switch (command) {
     recordSelftest(cfg.ship.stateDir, results);
     process.stdout.write(flag('json') ? `${JSON.stringify(results, null, 2)}\n` : `${results.map(formatResult).join('\n')}\n`);
     if (results.some((r) => !r.ok)) process.exitCode = 1;
+    break;
+  }
+
+  case 'sandbox': {
+    // CREW-2799: the sandbox cache volume of bare mirrors.
+    const settings = cacheSettingsOf(cfg.ship.sandbox);
+    if (positional[1] !== 'cache') { process.stderr.write('crew sandbox cache [--prune|--reset] [--json]\n'); process.exit(2); }
+    if (!settings) { process.stderr.write('crew sandbox cache: ship.sandbox.cacheVolume is not set, so there is no cache volume\n'); process.exit(2); }
+    const cache = new SandboxCache(settings);
+    const served = cfg.routes.flatMap((r) => sandboxCacheRepos(r, cfg.ship));
+    try {
+      if (flag('reset')) {
+        await cache.reset();
+        process.stdout.write(`recreated volume ${settings.volume}; the next daemon pass refreshes every mirror\n`);
+        break;
+      }
+      const dropped = flag('prune') ? await cache.prune(served) : [];
+      const mirrors = await cache.list();
+      if (flag('json')) {
+        process.stdout.write(`${JSON.stringify({ volume: settings.volume, mirrors, dropped }, null, 2)}\n`);
+      } else {
+        for (const d of dropped) process.stdout.write(`dropped ${d.host}/${d.path}\n`);
+        if (mirrors.length === 0) process.stdout.write(`volume ${settings.volume}: no mirrors yet\n`);
+        for (const m of mirrors) process.stdout.write(`${m.repo.host}/${m.repo.path}  last refresh ${m.lastRefresh ?? 'never'}\n`);
+      }
+    } catch (e) {
+      process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exitCode = 1;
+    }
     break;
   }
 
