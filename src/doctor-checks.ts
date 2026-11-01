@@ -184,3 +184,24 @@ export function roleCapWarnings(ship: { maxConcurrentAgents: number; maxConcurre
     .filter(([, n]) => (n ?? 0) > ship.maxConcurrentAgents)
     .map(([role, n]) => `ship.roleConcurrency.${role} is ${n}, above ship.maxConcurrentAgents (${ship.maxConcurrentAgents}); the ship-wide cap wins`);
 }
+
+/**
+ * A Tablation-managed ship (Ships.kind `managed_instance` or `pooled`/`pooled_instance`, CREW-2910) has no harness binary on the host and no
+ * provider key: it must run agents in the sandbox and reach a model through the workspace's inference endpoint (`auth: workspace`). Names each
+ * setting that says otherwise. Only claude toolchains are checked: `workspace` is not available for the other harnesses. Empty for any other kind.
+ */
+export function managedRuntimeWarnings(
+  kind: string | null | undefined,
+  ship: { runner?: string; toolchains?: Array<{ name: string; harness: string; auth?: string }> },
+): string[] {
+  if (kind !== 'managed_instance' && kind !== 'pooled_instance' && kind !== 'pooled') return [];
+  const out: string[] = [];
+  // The legacy `agent:` block defines an implicit `claude` toolchain (inherit auth) unless the map names its own.
+  const explicit = ship.toolchains ?? [];
+  const effectiveToolchains = explicit.some((t) => t.name === 'claude') ? explicit : [{ name: 'claude', harness: 'claude' }, ...explicit];
+  if ((ship.runner ?? 'host') !== 'sandbox') out.push(`ship.runner is "${ship.runner ?? 'host'}" on a ${kind} ship; a managed ship should run agents in the sandbox (set ship.runner: sandbox)`);
+  for (const t of effectiveToolchains) {
+    if (t.harness === 'claude' && t.auth !== 'workspace') out.push(`ship.toolchains.${t.name}.auth is "${t.auth ?? 'inherit'}" on a ${kind} ship; a managed ship reaches a model only through the workspace endpoint (set auth: workspace)`);
+  }
+  return out;
+}

@@ -82,3 +82,20 @@ test('roleCapWarnings flags an explicit ship cap below a role cap, never a deriv
   // A derived cap (maxConcurrentAgents not written in crew.yaml) never warns.
   assert.deepEqual(roleCapWarnings({ maxConcurrentAgents: 6, maxConcurrentAgentsSet: false, roleConcurrency: { dev: 3 } }), []);
 });
+
+test('managedRuntimeWarnings names a managed ship left on the host runner or non-workspace auth (CREW-2910)', async () => {
+  const { managedRuntimeWarnings } = await import('../src/doctor-checks.ts');
+  const good = { runner: 'sandbox', toolchains: [{ name: 'claude', harness: 'claude', auth: 'workspace' }, { name: 'a', harness: 'claude', auth: 'workspace' }] };
+  assert.deepEqual(managedRuntimeWarnings('pooled_instance', good), []);
+  assert.deepEqual(managedRuntimeWarnings('managed_instance', good), []);
+  assert.deepEqual(managedRuntimeWarnings('developer_machine', { toolchains: [{ name: 'a', harness: 'claude' }] }), []);
+  assert.deepEqual(managedRuntimeWarnings(null, {}), []);
+  const bad = managedRuntimeWarnings('managed_instance', { toolchains: [{ name: 'claude', harness: 'claude', auth: 'workspace' }, { name: 'a', harness: 'claude', auth: 'inherit' }, { name: 'b', harness: 'codex' }] });
+  assert.equal(bad.length, 2);
+  assert.match(bad[0]!, /ship\.runner is "host"/);
+  assert.match(bad[1]!, /ship\.toolchains\.a\.auth is "inherit"/);
+  // No explicit map: the implicit legacy claude toolchain is on inherit.
+  const implicit = managedRuntimeWarnings('pooled_instance', { runner: 'sandbox' });
+  assert.equal(implicit.length, 1);
+  assert.match(implicit[0]!, /ship\.toolchains\.claude\.auth is "inherit"/);
+});

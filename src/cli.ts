@@ -16,7 +16,7 @@ import {
   planSandbox, readWarmFiles, type WarmFiles, readSandboxState, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
@@ -67,7 +67,7 @@ import {
 import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
-import { runProvision, provisionOptionsFrom, realProvisionDeps } from './provision.ts';
+import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
 import { unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
@@ -1451,6 +1451,15 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
     problems.push(`tracker unreachable: ${e instanceof Error ? e.message : String(e)}`);
   }
   return { problems, readiness };
+}
+
+/** CREW-2910: this ship's `Ships.kind` on a route's workspace, null when there is no Ships table, no single matching row or no kind column. Never throws. */
+async function doctorShipKind(route: Route, ship: Ship): Promise<string | null> {
+  try {
+    const rows = await new Tracker(route, ship).shipRows();
+    const mine = matchShipRows(rows, ship.name, doctorMachineId(ship.stateDir)).rows;
+    return mine.length === 1 ? mine[0]!.kind ?? null : null;
+  } catch { return null; }
 }
 
 /** This machine's hashed id for doctor's read-only row matching; `--machine-id` is honored like connect's. */
@@ -4215,7 +4224,8 @@ switch (command) {
       // this ran. 0600: this file holds a live credential.
       let apiKeyFile: string | undefined;
       const apiKeyVar = 'CREW_API_KEY';
-      if (firstRunFromFlags && agentBinSearched && !dryRun) {
+      // CREW-2910: a managed ship runs its agents in the sandbox image, which carries the harness; the host has none, so a missing `claude` is expected there.
+      if (firstRunFromFlags && agentBinSearched && !dryRun && !isManagedShipKind(value('ship-kind'))) {
         const msg = `no agent binary: "claude" was not found on PATH or in ${agentBinSearched.join(', ')} — pass --agent-bin /absolute/path`;
         process.stderr.write(`crew connect: ${msg}\n`);
         stopWithProblem(msg, 'wizard');
@@ -6195,6 +6205,9 @@ switch (command) {
         }
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
+      if (!flag('offline')) {
+        for (const message of managedRuntimeWarnings(await doctorShipKind(route, cfg.ship), cfg.ship)) problems.push({ severity: 'attention', kind: 'managed_runtime_default', message });
+      }
       const previewProblem = await previewHostProblem(cfg);
       if (previewProblem) problems.push(previewHostFinding(previewProblem));
       if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
@@ -6477,6 +6490,7 @@ switch (command) {
             `${declared && declared !== host ? ` — MISMATCH, this host is ${host}` : ''}\n` +
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
+        for (const w of managedRuntimeWarnings(row.kind, cfg.ship)) process.stdout.write(`managed runtime:  WARN ${w}\n`);
       }
     }
 

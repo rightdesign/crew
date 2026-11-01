@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { parseDocument } from 'yaml';
+import { loadConfig } from '../src/config.ts';
+import { renderShipBlock } from '../src/connect-wizard.ts';
+import { managedRuntimeWarnings } from '../src/doctor-checks.ts';
 import {
-  runProvision, provisionOptionsFrom, tokensFromEnv, envKey, parseEvents,
+  runProvision, provisionOptionsFrom, applyManagedDefaultsToDoc, isManagedShipKind, tokensFromEnv, envKey, parseEvents,
   type ProvisionDeps, type ProvisionOptions, type InstallState, type RunResult,
 } from '../src/provision.ts';
 
@@ -12,13 +16,14 @@ const base = (over: Partial<ProvisionOptions> = {}): ProvisionOptions => ({
   key: 'sk_test', routes: ['acme'], forgeHosts: [], tokens: {}, json: true, dryRun: false, choices: [], ...over,
 });
 
-interface Fake { deps: ProvisionDeps; calls: Array<{ args: string[]; env?: Record<string, string>; input?: string }>; state: InstallState; enabled: Set<string>; settings: Record<string, string | number> }
+interface Fake { managed: string[][]; deps: ProvisionDeps; calls: Array<{ args: string[]; env?: Record<string, string>; input?: string }>; state: InstallState; enabled: Set<string>; settings: Record<string, string | number> }
 function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: Record<string, string>; enabled?: string[]; crew?: (args: string[]) => RunResult | undefined } = {}): Fake {
   const state: InstallState = { mechanism: 'systemd', unitsStale: false, running: true, lingering: true, ...o.state };
   const calls: Fake['calls'] = [];
   const enabled = new Set(o.enabled ?? ['acme/issues']);
   const stored = { ...(o.stored ?? {}) };
   const settings: Record<string, string | number> = {};
+  const managed: string[][] = [];
   const deps: ProvisionDeps = {
     crew(args, opts) {
       calls.push({ args, env: opts?.env, input: opts?.input });
@@ -33,10 +38,11 @@ function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: 
     enableRoute: (r) => { if (enabled.has(r)) return false; enabled.add(r); return true; },
     installState: () => ({ ...state }),
     setShipSetting: (k, v) => { settings[k] = v; return true; },
+    applyManagedDefaults: () => { const w = ['ship.runner', 'ship.sandbox.cacheVolume']; managed.push(w); return w; },
     storedToken: (h) => stored[h] ?? null,
     defaultShipName: () => 'host-1',
   };
-  return { deps, calls, state, enabled, settings };
+  return { deps, calls, state, enabled, settings, managed };
 }
 
 const run = (o: ProvisionOptions, f: Fake) => {
@@ -198,4 +204,70 @@ test('CREW_CONNECT_KEY_<WORKSPACE> variables become per-workspace keys; by hand 
   const plain = provisionOptionsFrom(['provision'], { CREW_CONNECT_KEY: 'k', CREW_PROVISION_ROUTES: 'a' });
   assert.deepEqual(plain.keys, {});
   assert.equal(plain.key, 'k');
+});
+
+test('a managed ship kind gets the sandbox defaults without any flag; a developer machine gets none (CREW-2910)', async () => {
+  for (const kind of ['pooled_instance', 'managed_instance']) {
+    const f = fake();
+    const r = await run(base({ shipKind: kind }), f);
+    assert.equal(f.managed.length, 1, kind);
+    assert.equal(r.summary.changed, true);
+  }
+  const plain = fake();
+  await run(base(), plain);
+  assert.equal(plain.managed.length, 0);
+  assert.equal(plain.settings.runner, undefined);
+});
+
+test('--runner host on a managed ship skips the defaults and logs the explicit choice (CREW-2910)', async () => {
+  const f = fake();
+  const r = await run(base({ shipKind: 'managed_instance', runner: 'host' }), f);
+  assert.equal(f.managed.length, 0);
+  assert.equal(f.settings.runner, 'host');
+  assert.ok(r.out.join('').includes('--runner host'));
+});
+
+test('--runner is parsed from argv (CREW-2910)', () => {
+  assert.equal(provisionOptionsFrom(['--runner', 'host'], {}).runner, 'host');
+  assert.equal(provisionOptionsFrom(['--runner=sandbox'], {}).runner, 'sandbox');
+  assert.equal(provisionOptionsFrom(['--runner', 'bogus'], {}).runner, undefined);
+});
+
+test('applyManagedDefaultsToDoc sets runner, cache volume and claude toolchain auth, leaving existing values alone (CREW-2910)', () => {
+  const doc = parseDocument('ship:\n  name: x\n  toolchains:\n    a: {harness: claude}\n    b: {harness: codex}\n    c: {harness: claude, auth: inherit}\n');
+  assert.deepEqual(applyManagedDefaultsToDoc(doc), ['ship.runner', 'ship.sandbox.cacheVolume', 'ship.toolchains.a.auth', 'ship.toolchains.claude.auth']);
+  const js = doc.toJS().ship;
+  assert.equal(js.runner, 'sandbox');
+  assert.equal(js.sandbox.cacheVolume, 'crew-cache');
+  assert.equal(js.toolchains.a.auth, 'workspace');
+  assert.equal(js.toolchains.b.auth, undefined);
+  assert.equal(js.toolchains.c.auth, 'inherit');
+  assert.deepEqual(applyManagedDefaultsToDoc(doc), []);
+  const fresh = parseDocument('ship:\n  name: m1\n  platform: linux\n  agent:\n    bin: /opt/claude\n    model: m-x\n');
+  assert.deepEqual(applyManagedDefaultsToDoc(fresh), ['ship.runner', 'ship.sandbox.cacheVolume', 'ship.toolchains.claude.auth']);
+  assert.deepEqual(fresh.toJS().ship.toolchains.claude, { harness: 'claude', bin: '/opt/claude', model: 'm-x', auth: 'workspace' });
+  const host = parseDocument('ship:\n  runner: host\n');
+  applyManagedDefaultsToDoc(host);
+  assert.equal(host.toJS().ship.runner, 'host');
+  assert.ok(isManagedShipKind('pooled_instance') && !isManagedShipKind('developer_machine'));
+});
+
+test('a provisioned managed ship yaml loads, and doctor is quiet about it; runner: host loads and warns (CREW-2910)', () => {
+  const route = '\nroutes:\n  - route: issues/issues\n    enabled: false\n';
+  const render = (edit?: (d: ReturnType<typeof parseDocument>) => void): string => {
+    const doc = parseDocument(renderShipBlock({ name: 'm1', platform: 'linux', agentBin: '/opt/claude', hostPassengers: false }));
+    applyManagedDefaultsToDoc(doc);
+    edit?.(doc);
+    return String(doc) + route;
+  };
+  const cfg = loadConfig('/nonexistent', 'crew.yaml', { text: render() });
+  assert.equal(cfg.ship.runner, 'sandbox');
+  assert.equal(cfg.ship.sandbox?.cacheVolume, 'crew-cache');
+  const claude = cfg.ship.toolchains?.find((t) => t.name === 'claude');
+  assert.equal(claude?.auth, 'workspace');
+  assert.equal(claude?.bin, '/opt/claude');
+  assert.deepEqual(managedRuntimeWarnings('pooled_instance', cfg.ship), []);
+  const host = loadConfig('/nonexistent', 'crew.yaml', { text: render((d) => d.setIn(['ship', 'runner'], 'host')) });
+  assert.equal(host.ship.runner, 'host');
+  assert.equal(managedRuntimeWarnings('managed_instance', host.ship).length, 1);
 });

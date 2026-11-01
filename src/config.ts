@@ -670,7 +670,7 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
-  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'secretStore', 'env',
+  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'secretStore', 'env', 'runner', 'sandbox',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',

@@ -24,7 +24,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { parseDocument } from 'yaml';
+import { parseDocument, isMap, isScalar, type Document } from 'yaml';
 import { findConfigFile, loadConfig } from './config.ts';
 import { hostPlatform } from './platform.ts';
 import {
@@ -51,6 +51,11 @@ export interface ProvisionOptions {
   relayHost?: string;
   maxConcurrentAgents?: number;
   agentBin?: string;
+  /**
+   * CREW-2910: `--runner`. Unset on a managed ship (`managed_instance` / `pooled_instance`) means `sandbox`, with `auth: workspace` on every
+   * claude toolchain; `host` is the operator's explicit choice and is logged as one. Unset on any other ship writes nothing.
+   */
+  runner?: 'host' | 'sandbox';
   extraPath?: string;
   baseUrl?: string;
   /** Forge hosts to store a token for; each token comes from `tokens`. */
@@ -86,6 +91,8 @@ export interface ProvisionDeps {
   installState(): InstallState;
   /** Sets `ship.<key>` in crew.yaml; true when the value changed. */
   setShipSetting(key: string, value: string | number): boolean;
+  /** CREW-2910: writes the managed-ship runtime defaults into crew.yaml where unset; returns the dotted keys it wrote. */
+  applyManagedDefaults(): string[];
   /** The token the credential helper currently answers for a host, or null. */
   storedToken(host: string): string | null;
   defaultShipName(): string;
@@ -207,6 +214,17 @@ export async function runProvision(
     }
   }
 
+  // 1c. CREW-2910: a managed ship reaches a model only through the platform's inference endpoint and has no harness on the host, so it defaults to the sandbox runner and workspace auth.
+  if (o.runner === 'host') {
+    emit('connect', 'runner: host chosen explicitly (--runner host); not applying the managed sandbox defaults', { setting: 'ship.runner', value: 'host' });
+    if (deps.setShipSetting('runner', 'host')) summary.changed = true;
+  } else if (o.runner === 'sandbox' || isManagedShipKind(o.shipKind)) {
+    for (const key of deps.applyManagedDefaults()) {
+      summary.changed = true;
+      emit('connect', `set ${key}`, { setting: key });
+    }
+  }
+
   // 2. forge tokens, compared through the credential helper so a re-run with the same token changes nothing.
   for (const host of o.forgeHosts) {
     const token = o.tokens[host]!;
@@ -254,6 +272,44 @@ export async function runProvision(
   summary.state = summary.changed ? 'provisioned' : 'already provisioned';
   emit('done', summary.state, { summary });
   return { code: PROVISION_EXIT.ok, summary };
+}
+
+/** Ship kinds that run on Tablation-managed hosts (Ships.kind): a reserved host or a pool lease. */
+export function isManagedShipKind(kind: string | null | undefined): boolean {
+  return kind === 'managed_instance' || kind === 'pooled_instance' || kind === 'pooled';
+}
+
+/** The named volume `docs/sandbox-runner.md` uses for the bare-mirror cache. */
+export const MANAGED_CACHE_VOLUME = 'crew-cache';
+
+/**
+ * CREW-2910: fills the managed-ship runtime defaults into a parsed crew.yaml, touching only what is unset so an operator's edit (and a
+ * re-provision) is never overwritten; `crew doctor` is what flags a managed ship left on `host`. `auth: workspace` is only valid on the
+ * claude harness. Returns the dotted keys written.
+ */
+export function applyManagedDefaultsToDoc(doc: Document): string[] {
+  const wrote: string[] = [];
+  if (doc.getIn(['ship', 'runner']) === undefined) { doc.setIn(['ship', 'runner'], 'sandbox'); wrote.push('ship.runner'); }
+  if (doc.getIn(['ship', 'sandbox', 'cacheVolume']) === undefined) { doc.setIn(['ship', 'sandbox', 'cacheVolume'], MANAGED_CACHE_VOLUME); wrote.push('ship.sandbox.cacheVolume'); }
+  // A fresh `crew connect` writes only the legacy `agent:` block; its implicit `claude` toolchain has no yaml entry to carry `auth`. Make it
+  // explicit, copying over what an explicit entry would otherwise reset to the adapter default (an explicit `claude` replaces the legacy one).
+  const existing = doc.getIn(['ship', 'toolchains']);
+  const hasClaude = isMap(existing) && existing.items.some((i) => (isScalar(i.key) ? i.key.value : i.key) === 'claude');
+  if (!hasClaude) {
+    doc.setIn(['ship', 'toolchains', 'claude', 'harness'], 'claude');
+    for (const k of ['bin', 'model', 'maxThinkingTokens']) {
+      const v = doc.getIn(['ship', 'agent', k]);
+      if (v !== undefined) doc.setIn(['ship', 'toolchains', 'claude', k], v);
+    }
+  }
+  const toolchains = doc.getIn(['ship', 'toolchains']);
+  for (const name of isMap(toolchains) ? toolchains.items.map((i) => String(isScalar(i.key) ? i.key.value : i.key)) : []) {
+    if (doc.getIn(['ship', 'toolchains', name, 'harness']) !== 'claude') continue;
+    if (doc.getIn(['ship', 'toolchains', name, 'auth']) !== undefined) continue;
+    doc.setIn(['ship', 'toolchains', name, 'auth'], 'workspace');
+    wrote.push(`ship.toolchains.${name}.auth`);
+  }
+  return wrote;
 }
 
 /** `github.com` -> `GITHUB_COM`, the suffix of `CREW_FORGE_TOKEN_<HOST>`. */
@@ -316,6 +372,7 @@ export function provisionOptionsFrom(argv: readonly string[], env: NodeJS.Proces
     relayHost: one('relay-host'),
     maxConcurrentAgents: Number.isInteger(Number(one('max-concurrent-agents'))) && Number(one('max-concurrent-agents')) > 0 ? Number(one('max-concurrent-agents')) : undefined,
     agentBin: one('agent-bin'),
+    runner: one('runner') === 'host' || one('runner') === 'sandbox' ? one('runner') as 'host' | 'sandbox' : undefined,
     extraPath: one('extra-path'),
     baseUrl: one('base-url'),
     forgeHosts,
@@ -398,6 +455,14 @@ export function realProvisionDeps(crewHome: string): ProvisionDeps {
       doc.setIn(['ship', key], value);
       writeFileSync(file, doc.toString());
       return true;
+    },
+    applyManagedDefaults() {
+      const file = configFile();
+      if (!file) return [];
+      const doc = parseDocument(readFileSync(file, 'utf8'));
+      const wrote = applyManagedDefaultsToDoc(doc);
+      if (wrote.length) writeFileSync(file, doc.toString());
+      return wrote;
     },
     storedToken(host) {
       const res = spawnCrew(['credential', 'get'], { input: `protocol=https\nhost=${host}\n\n` });
