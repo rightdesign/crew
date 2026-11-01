@@ -979,3 +979,31 @@ test('ship.roleConcurrency rejects a non-positive value and an unknown role (CRE
     assert.throws(() => loadConfig(dir, file), /roleConcurrency/, bad);
   }
 });
+
+test('hostPeriscopes and the periscope ship settings default, and validate (CREW-2853)', () => {
+  const { dir, file } = withConfig(ONE);
+  const cfg = loadConfig(dir, file);
+  assert.equal(cfg.routes[0]!.hostPeriscopes, false);
+  assert.equal(cfg.ship.maxPeriscopes, 3);
+  assert.equal(cfg.ship.periscopeIdleMinutes, 120);
+  assert.equal(cfg.ship.previewHost, undefined);
+
+  const on = withConfig(ONE
+    .replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    hostPassengers: true\n    hostPeriscopes: true')
+    .replace('agent: { bin: /bin/true }', 'agent: { bin: /bin/true }\n  previewHost: brads-mac.local\n  maxPeriscopes: 5\n  periscopeIdleMinutes: 30'));
+  const c2 = loadConfig(on.dir, on.file);
+  assert.equal(c2.routes[0]!.hostPeriscopes, true);
+  assert.equal(c2.ship.previewHost, 'brads-mac.local');
+  assert.equal(c2.ship.maxPeriscopes, 5);
+  assert.equal(c2.ship.periscopeIdleMinutes, 30);
+
+  for (const bad of ['maxPeriscopes: 0', 'periscopeIdleMinutes: 1.5']) {
+    const b = withConfig(ONE.replace('agent: { bin: /bin/true }', `agent: { bin: /bin/true }\n  ${bad}`));
+    assert.throws(() => loadConfig(b.dir, b.file), new RegExp(`ship\\.${bad.split(':')[0]} must be a positive integer`));
+  }
+});
+
+test('hostPeriscopes without hostPassengers on the same route fails to load, naming the route (CREW-2853)', () => {
+  const { dir, file } = withConfig(ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    hostPeriscopes: true'));
+  assert.throws(() => loadConfig(dir, file), /route "issues\/dev-crew"\) sets hostPeriscopes: true without hostPassengers: true/);
+});

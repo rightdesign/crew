@@ -65,6 +65,33 @@ every repo the ship has connected there.
 `ssh-keygen` are available, the container image and whether it is present, and
 the relay host. `crew status` shows the same.
 
+### Periscopes
+
+A route that hosts Passengers can also let them open a periscope, a preview of
+the work in progress served from this ship:
+
+```yaml
+ship:
+  previewHost: brads-mac.local   # how a Passenger reaches this ship
+  maxPeriscopes: 3               # open at once (default 3)
+  periscopeIdleMinutes: 120      # closed after this long idle (default 120)
+routes:
+  - route: my-workspace/issues
+    hostPassengers: true
+    hostPeriscopes: true
+```
+
+`hostPeriscopes: true` without `hostPassengers: true` on the same route is
+refused when `crew.yaml` loads, and the message names the route.
+`previewHost` is a LAN name or private-network hostname; it reaches the
+`preview` hook as `CREW_PREVIEW_HOST` for periscopes a Passenger opens
+(`localhost` otherwise). It is required once any route hosts periscopes.
+`maxPeriscopes` and `periscopeIdleMinutes` must be positive integers.
+`crew connect` syncs `hostPeriscopes` onto the Ships row's `host_periscopes`
+column, and skips it on a workspace whose Ships table has no such column.
+`crew status` and `crew doctor` print the periscope settings; `crew doctor`
+reports a missing or unresolvable `previewHost`.
+
 To run a locally built image instead, set `ship.passengerImage` in `crew.yaml`
 (or export `CREW_PASSENGER_IMAGE`, which takes precedence). Build it from the
 crew repo root with `docker build -f Dockerfile.passenger-mcp -t

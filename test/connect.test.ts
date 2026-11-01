@@ -614,6 +614,38 @@ test('discover() PATCHes host_passengers onto an existing Ships row when it disa
   assert.deepEqual(patchShip?.body, { host_passengers: true });
 });
 
+test('discover() syncs host_periscopes only when the Ships table has the column (CREW-2853)', async (t) => {
+  const run = async (row: Record<string, unknown>, withColumn: boolean) => {
+    const { restore, calls } = mockFetchCalls({
+      '/api/workspaces/issues': { id: 'ws-1' },
+      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+      '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+      '/api/data-models?projectId=proj-1': [
+        { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+        { id: 'ships-model', name: 'Ships' },
+      ],
+      '/api/data-models/ships-model': { fields: [{ columnName: 'host_passengers' }, ...(withColumn ? [{ columnName: 'host_periscopes' }] : [])] },
+      '/api/data-models/ships-model/records?limit=200': [row],
+      '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+      '/api/data-models/crew-model/records?limit=200': [],
+      '/api/data-models/crew-model/records': { id: 'seat-new' },
+    });
+    try {
+      const found = await discover({
+        ...BASE, workspace: 'issues', project: 'bar',
+        ship: { name: "Brad's MacBook", hostPassengers: true, hostPeriscopes: true },
+      });
+      return { found, patch: calls.find((c) => c.method === 'PATCH' && c.key === '/api/data-models/ships-model/records/ship-1') };
+    } finally { restore(); }
+  };
+  const withCol = await run({ id: 'ship-1', name: "Brad's MacBook", host_passengers: true, host_periscopes: false }, true);
+  assert.deepEqual(withCol.patch?.body, { host_periscopes: true });
+  assert.ok(withCol.found.provisioning.some((p) => p.includes('synced host_periscopes=true')));
+  const noCol = await run({ id: 'ship-1', name: "Brad's MacBook", host_passengers: true }, false);
+  assert.equal(noCol.patch, undefined);
+  void t;
+});
+
 test('discover() leaves an existing Ships row alone when host_passengers already matches this route\'s config (ISSUE-644)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },

@@ -8,6 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
+import { periscopeSummary, previewHostProblem } from './periscopes.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth } from './adapters/claude.ts';
@@ -3442,6 +3443,7 @@ switch (command) {
     const ship = {
       name: cfg.ship.name, platform: cfg.ship.platform, machineId,
       hostPassengers: firstRun?.answers.hostPassengers ?? existingRoute?.hostPassengers === true,
+      hostPeriscopes: existingRoute?.hostPeriscopes === true,
       sshPublicKey,
       lastSyncedName: (r: string) => readSyncedName(resolvedPathFor(cfg.ship.stateDir, r)),
     };
@@ -5074,6 +5076,7 @@ switch (command) {
       `ship:       ${cfg.ship.name} (${cfg.ship.platform})\n` +
         `route:      ${route.route} -> ${route.dir}\n` +
         `enabled:    ${route.enabled}\n` +
+        `periscopes: ${periscopeSummary(cfg)}\n` +
         `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
         `release:    ${state.releaseSkipReason() ? 'paused' : 'active'}\n` +
         `watermark:  ${state.watermark()}\n`,
@@ -5190,6 +5193,8 @@ switch (command) {
         }
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
+      const previewProblem = await previewHostProblem(cfg);
+      if (previewProblem) problems.push({ severity: 'blocker', kind: 'preview_host', message: previewProblem });
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
       process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, problems, passed }, null, 2)}\n`);
@@ -5201,6 +5206,14 @@ switch (command) {
     );
 
     for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
+
+    // EPIC-077: periscopes need a host to send a Passenger to.
+    process.stdout.write(`periscopes:        ${periscopeSummary(cfg)}\n`);
+    const previewProblem = await previewHostProblem(cfg);
+    if (previewProblem) {
+      process.stdout.write(`                   BLOCKER ${previewProblem}\n`);
+      process.exitCode = 1;
+    }
 
     // CREW-1509: rotation runs on append, so a live file far past the
     // threshold means nothing is rotating it.

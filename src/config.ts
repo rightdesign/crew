@@ -395,6 +395,15 @@ export interface Route {
    */
   hostPassengers?: boolean;
   /**
+   * Let a Passenger on this route open a periscope: a preview of the work
+   * in progress, served from this ship (EPIC-077). Requires `hostPassengers:
+   * true` on the same route, because a Passenger must be able to board
+   * before they can open one; loading refuses the combination otherwise.
+   * `crew connect` syncs it onto the workspace's `Ships` row (`host_periscopes`)
+   * the way it does `hostPassengers`. Default false.
+   */
+  hostPeriscopes?: boolean;
+  /**
    * Which `ship.toolchains` entry runs this route's agent sessions,
    * overriding `ship.toolchain` (CREW-1511, EPIC-035 §3). A single repo may
    * override it again with `repos.<name>.toolchain` (CREW-1529), see
@@ -529,6 +538,19 @@ export interface Ship {
    * `ssh`; set `https` on a ship whose GitHub access is HTTPS-only.
    */
   cloneScheme?: 'ssh' | 'https';
+  /**
+   * The host a Passenger reaches this ship by (a LAN name or a
+   * private-network hostname). Handed to the `preview` hook as
+   * `CREW_PREVIEW_HOST` for Passenger-opened periscopes; `localhost`
+   * otherwise. Required when any route sets `hostPeriscopes: true`
+   * (`crew doctor` reports it missing). The preview URL is never relayed, so
+   * the bind host is a ship setting rather than a relay URL.
+   */
+  previewHost?: string;
+  /** Most periscopes this ship keeps open at once. Default 3. */
+  maxPeriscopes: number;
+  /** Minutes without traffic before an open periscope is closed. Default 120. */
+  periscopeIdleMinutes: number;
 }
 
 export interface CrewConfig {
@@ -549,6 +571,9 @@ export interface CrewConfig {
 
 export class ConfigError extends Error {}
 
+export const DEFAULT_MAX_PERISCOPES = 3;
+export const DEFAULT_PERISCOPE_IDLE_MINUTES = 120;
+
 function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
   if (v === undefined || v === null || v === '') return undefined;
   if (v === 'ssh' || v === 'https') return v;
@@ -559,11 +584,12 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme',
+  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
-  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'toolchain',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'hostPeriscopes', 'toolchain',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 /** A route repo's `worktreeName`, validated like `worktrees.name` in a repo's own `.crew.yaml`. */
@@ -1012,6 +1038,14 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
     missing.add(`ship.streamRetentionDays must be a positive integer (got "${shipRaw.streamRetentionDays}")`);
   }
+  const maxPeriscopes = shipRaw.maxPeriscopes === undefined ? DEFAULT_MAX_PERISCOPES : Number(shipRaw.maxPeriscopes);
+  if (!Number.isInteger(maxPeriscopes) || maxPeriscopes < 1) {
+    missing.add(`ship.maxPeriscopes must be a positive integer (got "${shipRaw.maxPeriscopes}")`);
+  }
+  const periscopeIdleMinutes = shipRaw.periscopeIdleMinutes === undefined ? DEFAULT_PERISCOPE_IDLE_MINUTES : Number(shipRaw.periscopeIdleMinutes);
+  if (!Number.isInteger(periscopeIdleMinutes) || periscopeIdleMinutes < 1) {
+    missing.add(`ship.periscopeIdleMinutes must be a positive integer (got "${shipRaw.periscopeIdleMinutes}")`);
+  }
   const eventsRotateBytes = shipRaw.eventsRotateBytes === undefined ? DEFAULT_EVENTS_ROTATE_BYTES : Number(shipRaw.eventsRotateBytes);
   if (!Number.isInteger(eventsRotateBytes) || eventsRotateBytes < 1) {
     missing.add(`ship.eventsRotateBytes must be a positive integer (got "${shipRaw.eventsRotateBytes}")`);
@@ -1102,6 +1136,9 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       relayPublicDomain: shipRaw.relayPublicDomain ? String(shipRaw.relayPublicDomain) : undefined,
       passengerImage: shipRaw.passengerImage ? String(shipRaw.passengerImage) : undefined,
       cloneScheme: parseCloneScheme(shipRaw.cloneScheme),
+      previewHost: shipRaw.previewHost ? String(shipRaw.previewHost).trim() || undefined : undefined,
+      maxPeriscopes,
+      periscopeIdleMinutes,
     },
     routes,
     crewHome,
@@ -1218,6 +1255,9 @@ function parseOneRoute(
     missing.add(`${where}.toolchain "${toolchain}" is not defined in ship.toolchains (have: ${[...toolchainNames].join(', ')})`);
   }
   const route = missing.req(c?.route, `${where}.route`) as string;
+  if (c?.hostPeriscopes === true && c?.hostPassengers !== true) {
+    missing.add(`${where} (route "${route}") sets hostPeriscopes: true without hostPassengers: true — a Passenger must be able to board before they can open a periscope`);
+  }
   const routeParts = route ? route.split('/') : [];
   const routeWellFormed = routeParts.length === 2 && routeParts.every(Boolean);
   if (route && !routeWellFormed) {
@@ -1308,6 +1348,7 @@ function parseOneRoute(
     release: parseReleaseOverride(c?.release, where, file),
     branch: parseBranchOverride(c?.branch, where, file),
     hostPassengers: c?.hostPassengers === true,
+    hostPeriscopes: c?.hostPeriscopes === true,
   };
   // The state-tree file wins when both exist: it's what `crew connect`
   // manages going forward, and an authored `resolved:`/`contract:` block in
