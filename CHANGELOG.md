@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.100.1] — 2026-11-01
+
+- CREW-2885 The dev lane no longer skips tickets whose Repos row was created after crew connect; the map refreshes itself and a truly unservable ticket raises an attention item.
+
 ## [0.100.0] — 2026-11-01
 
 - CREW-2862 A periscope's MCP endpoint serves worktree-scoped read, edit, hook and git tools behind a per-periscope secret, registered on up and removed on down.
