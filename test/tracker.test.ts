@@ -535,3 +535,26 @@ test('attachmentsProbe() reads null when the Issues metadata cannot be read', as
   mockIssuesModel(t, null);
   assert.deepEqual(await new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' }).attachmentsProbe(), { mediaLibraryModelId: null });
 });
+
+test('periscopesStatus() reports an absent table as absent, not as a fault (EPIC-077)', async () => {
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  assert.deepEqual(await tracker.periscopesStatus(), { present: false, missing: [] });
+});
+
+test('periscopesStatus() names each column a present Periscopes table lacks (EPIC-077)', async (t) => {
+  const route = makeRoute();
+  route.resolved!.periscopesModelId = 'periscopes-model-id';
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    const fields = path === '/api/data-models/periscopes-model-id'
+      ? ['ship_id', 'url', 'host', 'worktree', 'branch', 'isolated', 'started_at', 'last_activity_at', 'expires_at']
+      : [];
+    return new Response(JSON.stringify({ id: 'x', fields: fields.map((columnName) => ({ columnName })) }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const tracker = new Tracker(route, { userAgent: 'crew-test', name: 'test-ship' });
+  assert.deepEqual(await tracker.periscopesStatus(), {
+    present: true, modelId: 'periscopes-model-id', missing: ['ticket_id', 'state'],
+  });
+});

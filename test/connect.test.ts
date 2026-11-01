@@ -1221,3 +1221,47 @@ test('discover() matches the sign-in email against the linked member when the ro
   assert.equal(found.operator, 'p-sync');
   assert.equal(found.operatorAction, 'linked');
 });
+
+test('discover() resolves the optional Periscopes table by name, and leaves it unset when absent (EPIC-077)', async (t) => {
+  const mk = (extra: Array<{ id: string; name: string }>) => mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' }, ...extra,
+    ],
+    '/api/data-models/crew-model/records?limit=200': [],
+  });
+  const with_ = mk([{ id: 'per-model', name: 'Periscopes' }]);
+  t.after(with_.restore);
+  assert.equal((await discover({ ...BASE, workspace: 'issues', project: 'bar' })).periscopesModelId, 'per-model');
+  with_.restore();
+  const without = mk([]);
+  t.after(without.restore);
+  assert.equal((await discover({ ...BASE, workspace: 'issues', project: 'bar' })).periscopesModelId, undefined);
+});
+
+test('discover() syncs host_periscopes only when the route sets it and the Ships table has the column (EPIC-077)', async (t) => {
+  const run = async (columns: string[]) => {
+    const { restore, calls } = mockFetchCalls({
+      '/api/workspaces/issues': { id: 'ws-1' },
+      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+      '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+      '/api/data-models?projectId=proj-1': [
+        { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+        { id: 'ships-model', name: 'Ships' },
+      ],
+      '/api/data-models/ships-model': { fields: columns.map((columnName) => ({ columnName })) },
+      '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook", host_passengers: false }],
+      '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+      '/api/data-models/crew-model/records?limit=200': [],
+      '/api/data-models/crew-model/records': { id: 'seat-new' },
+    });
+    t.after(restore);
+    await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook", hostPeriscopes: true } });
+    restore();
+    return calls.find((c) => c.method === 'PATCH' && c.key === '/api/data-models/ships-model/records/ship-1')?.body;
+  };
+  assert.deepEqual(await run(['host_periscopes']), { host_periscopes: true });
+  assert.equal(await run([]), undefined);
+});

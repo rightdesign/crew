@@ -121,6 +121,12 @@ export interface ResolvedIds {
   /** The `Epics` table, when this workspace has one (ISSUE-384). */
   epicsModelId?: string;
   /**
+   * The `Periscopes` table, when this workspace has one (EPIC-077). Optional
+   * like Epics: a workspace without it cannot host periscopes, nothing else
+   * changes.
+   */
+  periscopesModelId?: string;
+  /**
    * The `Locks` table, when this workspace has one (ISSUE-394) — rows this
    * route's ships CAS against for cross-machine exclusion (the release
    * lock today; ISSUE-395's ticket-claim lock will share the mechanism).
@@ -904,6 +910,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     areaId: raw.areaId,
     shipsModelId: raw.shipsModelId,
     epicsModelId: raw.epicsModelId,
+    periscopesModelId: raw.periscopesModelId,
     locksModelId: raw.locksModelId,
     recordLinkViewId: raw.recordLinkViewId,
     reposModelId: raw.reposModelId,

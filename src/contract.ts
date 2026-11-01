@@ -470,3 +470,17 @@ export function orderFromChoiceOptions(
 /** What `crew connect` and doctor say when the Issues table has no event log (CREW-1574). */
 export const EVENT_LOG_MISSING =
   "the Issues table has no event log — crew writes its audit trail there (CREW-1574). In the app, open the Issues table's Data & lifecycle tab and turn on Event log, then rerun.";
+
+/**
+ * The columns the crew writes on an optional `Periscopes` table (EPIC-077).
+ * Fixed, not overridable per route: the table is discovered by name like
+ * `Epics`, and a workspace without it simply cannot host periscopes. `crew
+ * doctor` names any of these a present table lacks.
+ */
+export const PERISCOPE_COLUMNS = [
+  'ticket_id', 'ship_id', 'url', 'host', 'worktree', 'branch', 'state', 'isolated',
+  'started_at', 'last_activity_at', 'expires_at',
+] as const;
+
+/** The `state` choice values of a Periscopes row. */
+export const PERISCOPE_STATES = ['live', 'kept', 'discarded'] as const;

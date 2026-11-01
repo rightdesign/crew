@@ -153,6 +153,33 @@ An epic with no tickets, a `cancelled` one, one at a status not named here,
 and one whose remaining tickets are open but untouched are all left as they
 are. See `src/epics.ts`.
 
+### The optional Periscopes table (EPIC-077)
+
+A workspace may have a table named `Periscopes`, found by name the way `Epics`
+is and recorded as `resolved.periscopesModelId` by `crew connect`. A workspace
+without it simply cannot host periscopes; nothing else changes. One row is one
+periscope (a live view of a ticket's worktree). The crew writes these columns,
+which are fixed rather than contract-overridable:
+
+| column | type | meaning |
+| --- | --- | --- |
+| `ticket_id` | reference to Issues | the ticket the periscope shows |
+| `ship_id` | reference to Ships | the ship hosting it |
+| `url` | text | where the periscope is reached |
+| `host`, `worktree`, `branch` | text | the machine, checkout and branch it serves |
+| `state` | choice: `live`, `kept`, `discarded` | `live` is being served; `kept` is retained after its run ended; `discarded` is torn down |
+| `isolated` | yes/no | whether it runs against state of its own rather than the shared one |
+| `started_at` | date and time | when it first came up |
+| `last_activity_at` | date and time | the last time it was used or refreshed |
+| `expires_at` | date and time | when a `live` periscope is torn down if left unused |
+
+`crew doctor` prints one `periscopes:` line per route: absent (not a fault), present,
+or present with the columns it lacks named, as it does for a missing Comments column.
+
+On Ships, an optional yes/no `host_periscopes` column mirrors the route's
+`hostPeriscopes` setting, synced by `crew connect` alongside `host_passengers`.
+A Ships table without the column is written as before, with no error.
+
 ## Overriding it
 
 An org that renames its statuses, adds one, or orders priority differently

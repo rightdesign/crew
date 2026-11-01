@@ -3701,7 +3701,7 @@ switch (command) {
       const resolved = {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
-        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, locksModelId: found.locksModelId,
+        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, periscopesModelId: found.periscopesModelId, locksModelId: found.locksModelId,
         recordLinkViewId: found.recordLinkViewId,
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
@@ -5334,6 +5334,16 @@ switch (command) {
       await tracker.hasPublicReplyColumn()
         ? `public replies:  Comments.${tracker.contract.comments.publicReply} present — public reporters are labelled in the digest\n`
         : `public replies:  Comments.${tracker.contract.comments.publicReply} absent — no public intake form, nothing to guard\n`,
+    );
+    // EPIC-077: the optional Periscopes table. Absent is a legitimate shape;
+    // a present table missing a column the crew writes is named by column.
+    const periscopes = await tracker.periscopesStatus();
+    process.stdout.write(
+      !periscopes.present
+        ? 'periscopes:      Periscopes table absent — this workspace cannot host periscopes\n'
+        : periscopes.missing.length === 0
+          ? `periscopes:      Periscopes table present (${periscopes.modelId})\n`
+          : `periscopes:      Periscopes table present (${periscopes.modelId}) but missing ${periscopes.missing.join(', ')} — update the Issues template\n`,
     );
     // Release seat (CREW-1371 D5). Absent is not a fault: release comments are
     // credited to the dev seat instead, which is what they were before.

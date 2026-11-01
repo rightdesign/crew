@@ -47,6 +47,13 @@ export interface DiscoverOptions extends AuthOptions {
   ship?: {
     name: string; platform?: string; hostPassengers?: boolean; sshPublicKey?: string;
     /**
+     * Whether this route hosts periscopes (EPIC-077). Undefined (the route
+     * does not set it): the Ships row's `host_periscopes` is left alone. Set,
+     * it is synced like `hostPassengers`, but only onto a Ships table that has
+     * the column — an older template is written as before, with no error.
+     */
+    hostPeriscopes?: boolean;
+    /**
      * This machine's hashed id (`machine-id.ts`, ISSUE-2249). Matched against
      * the Ships row's `machine_id` before the name, so a drifted hostname does
      * not provision a second ship. Absent: name matching only, as before.
@@ -150,6 +157,8 @@ export interface Discovered {
   repoRemotes?: Record<string, string>;
   shipsModelId?: string;
   epicsModelId?: string;
+  /** The optional `Periscopes` table (EPIC-077); its columns are checked by `crew doctor`. */
+  periscopesModelId?: string;
   locksModelId?: string;
   /** The record-link-only View bound to Issues (ISSUE-928) — see the field's matching doc comment on `ResolvedIds` in config.ts. */
   recordLinkViewId?: string;
@@ -561,6 +570,8 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // Optional, like Ships: an unmodified Issue Tracker template has no Epics
   // table, and that is a legitimate shape, not a problem to report.
   out.epicsModelId = find('Epics');
+  // Optional too: a workspace without it cannot host periscopes (EPIC-077).
+  out.periscopesModelId = find('Periscopes');
   // Optional, like Ships and Epics: a workspace that has not adopted a
   // board-visible release lock (ISSUE-394) still works with the local-only
   // pid lock it always had.
@@ -632,7 +643,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   let shipRowId: string | undefined;
   if (out.shipsModelId && o.ship && !o.dryRun) {
     const shipRows = await get<Array<{
-      id: string; name?: string | null; host_passengers?: boolean | null; ssh_public_key?: string | null;
+      id: string; name?: string | null; host_passengers?: boolean | null; host_periscopes?: boolean | null; ssh_public_key?: string | null;
       owner_id?: string | null; machine_id?: string | null;
     }>>(
       o, `/data-models/${out.shipsModelId}/records?limit=200`,
@@ -657,6 +668,9 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // unavailable) means "leave whatever is on the row alone" rather than
     // clobbering a working key with nothing.
     const sshPublicKey = o.ship.sshPublicKey;
+    // `host_periscopes` (EPIC-077) arrives with a template update, so it is
+    // synced only when the route sets it AND the Ships table has the column.
+    // Declared before the metadata read below, resolved after it.
     // The caller's own identity as the ship's owner (CREW-1286). The column
     // arrives with a template update, so an install that has not taken it yet
     // has no `owner_id` field on Ships: that is skipped (and said so in
@@ -670,6 +684,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       const shipsModel = await get<{ fields?: Array<{ columnName: string }> }>(o, `/data-models/${out.shipsModelId}`);
       shipColumns = new Set((shipsModel.fields ?? []).map((f) => f.columnName));
     } catch { /* see above */ }
+    const hostPeriscopes = shipColumns.has('host_periscopes') ? o.ship.hostPeriscopes : undefined;
     let ownerId: string | undefined;
     if (out.meId) {
       if (shipColumns.has('owner_id')) ownerId = out.meId;
@@ -716,6 +731,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       }
       if (writeMachineId) patchBody.machine_id = machineId;
       if ((mine[0]!.host_passengers ?? false) !== hostPassengers) patchBody.host_passengers = hostPassengers;
+      if (hostPeriscopes !== undefined && (mine[0]!.host_periscopes ?? false) !== hostPeriscopes) patchBody.host_periscopes = hostPeriscopes;
       if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
         patchBody.ssh_public_key = sshPublicKey;
       }
@@ -723,6 +739,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       if (Object.keys(patchBody).length > 0) {
         await patch(o, `/data-models/${out.shipsModelId}/records/${shipRowId}`, patchBody);
         if ('host_passengers' in patchBody) provisioning.push(`synced host_passengers=${hostPassengers} onto Ships row "${o.ship.name}"`);
+        if ('host_periscopes' in patchBody) provisioning.push(`synced host_periscopes=${hostPeriscopes} onto Ships row "${o.ship.name}"`);
         if ('ssh_public_key' in patchBody) provisioning.push(`synced ssh_public_key onto Ships row "${o.ship.name}"`);
         if ('owner_id' in patchBody) provisioning.push(`recorded owner on Ships row "${o.ship.name}"`);
       }
@@ -731,6 +748,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         name: o.ship.name,
         ...(o.ship.platform ? { platform: o.ship.platform } : {}),
         host_passengers: hostPassengers,
+        ...(hostPeriscopes !== undefined ? { host_periscopes: hostPeriscopes } : {}),
         ...(sshPublicKey !== undefined ? { ssh_public_key: sshPublicKey } : {}),
         ...(ownerId !== undefined ? { owner_id: ownerId } : {}),
         ...(writeMachineId ? { machine_id: machineId } : {}),

@@ -122,7 +122,7 @@ export function forbiddenDetail(e: unknown, route?: Route): ForbiddenDetail {
   const r = route?.resolved;
   const known: Array<[string | undefined, string]> = [
     [r?.models?.issues, 'Issues'], [r?.models?.comments, 'Comments'], [r?.models?.crew, 'Crew'],
-    [r?.shipsModelId, 'Ships'], [r?.locksModelId, 'Locks'], [r?.epicsModelId, 'Epics'], [r?.reposModelId, 'Repos'],
+    [r?.shipsModelId, 'Ships'], [r?.locksModelId, 'Locks'], [r?.epicsModelId, 'Epics'], [r?.periscopesModelId, 'Periscopes'], [r?.reposModelId, 'Repos'],
   ];
   const table = modelId ? known.find(([id]) => id && id === modelId)?.[1] ?? `table ${modelId}` : undefined;
   return { method: m?.[1], path: m?.[2], table, verb };

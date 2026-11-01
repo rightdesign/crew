@@ -12,7 +12,7 @@ import { hostname } from 'node:os';
 import { TablationClient } from '@tablation/client';
 import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
-import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, closedStatuses, resolveContract, type Contract } from './contract.ts';
+import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, PERISCOPE_COLUMNS, closedStatuses, resolveContract, type Contract } from './contract.ts';
 import type { EpicRow } from './epics.ts';
 import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
@@ -931,6 +931,20 @@ export class Tracker {
    */
   async hasPublicReplyColumn(): Promise<boolean> {
     return (await this.authorshipProbe()).commentPublicReply;
+  }
+
+  /**
+   * Whether this workspace has the optional Periscopes table (EPIC-077), and
+   * which of the columns the crew writes (`PERISCOPE_COLUMNS`) it lacks.
+   * `present: false` is a legitimate shape, never a fault. A table whose
+   * metadata cannot be read reports every column missing, as the authorship
+   * probe reads an unreadable table as "column absent".
+   */
+  async periscopesStatus(): Promise<{ present: boolean; modelId?: string; missing: string[] }> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    if (!modelId) return { present: false, missing: [] };
+    const have = await this.columnNames(modelId);
+    return { present: true, modelId, missing: PERISCOPE_COLUMNS.filter((c) => !have.has(c)) };
   }
 
   /**
