@@ -55,7 +55,8 @@ import { planStrandedVerified, applyStrandedVerified } from './stranded-verified
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
 import { checkSandboxRunner } from './runner.ts';
-import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
+import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR, sandboxPolicyInputFor } from './agent.ts';
+import { generateSandboxPolicy } from './sandbox-policy.ts';
 import { guardRunHandoff, describeHandoffPush, repoConfigFor, pushedEventBody } from './handoff-guard.ts';
 import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
@@ -411,6 +412,7 @@ function usage(problem?: string, requested = false): never {
   crew selftest [route] [--toolchain NAME] [--json]   launch each toolchain as a run would and prove it reaches the tracker
   crew sample-ticket [route] [--remove] [--dry-run] [--json]   file one ticket on a throwaway repo that walks the dev, QA and release loop
   crew ports [route]             which checkout owns which ports, and what is up
+  crew sandbox policy --route R --role ROLE [--repo NAME] [--json]   print the sandbox policy a run of that role would get
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
@@ -4529,6 +4531,38 @@ switch (command) {
         `${String(r.port).padEnd(6)} ${r.t!.role.padEnd(9)} ISSUE-${String(r.t!.n).padEnd(5)} ` +
           `pid ${String(r.pid).padEnd(7)} ${live ? 'worktree present' : 'ORPHAN — worktree gone'}\n`,
       );
+    }
+    break;
+  }
+
+  case 'sandbox': {
+    // CREW-2801: the policy a sandboxed run would get, derived exactly as
+    // `planAgentRun` derives it. Prints; writes nothing.
+    if (positional[1] !== 'policy') {
+      process.stderr.write('crew sandbox policy --route ROUTE --role ROLE [--repo NAME] [--json]\n');
+      process.exit(2);
+    }
+    const only = value('route');
+    const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
+    if (wanted.length !== 1) {
+      process.stderr.write(`crew sandbox policy: ${only ? `no route "${only}"` : 'name the route with --route'} (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
+      process.exit(2);
+    }
+    const role = (value('role') ?? 'dev') as RoleName;
+    if (!ROLE_NAMES.includes(role)) {
+      process.stderr.write(`crew sandbox policy: --role must be one of ${ROLE_NAMES.join(', ')}\n`);
+      process.exit(2);
+    }
+    const r = wanted[0]!;
+    const repoName = value('repo');
+    const seat = resolveSeat(cfg.ship, r, role, {}, repoName);
+    const input = sandboxPolicyInputFor(r, seat.toolchain, { harnessBin: seat.toolchain.bin, repo: repoName, sandbox: cfg.ship.sandbox });
+    try {
+      const policy = generateSandboxPolicy({ mirrorDir: cfg.ship.sandbox?.mirrorDir, workDir: cfg.ship.sandbox?.workDir, ...input });
+      process.stdout.write(flag('json') ? `${JSON.stringify({ route: r.route, role, input, groups: policy.groups, yaml: policy.yaml }, null, 2)}\n` : policy.yaml);
+    } catch (e) {
+      process.stderr.write(`crew sandbox policy: ${(e as Error).message}\n`);
+      process.exit(1);
     }
     break;
   }

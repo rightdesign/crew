@@ -19,13 +19,14 @@
  */
 
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { AgentPlan } from './agent.ts';
 import type { Emitter } from './events.ts';
 import { killRunGroup } from './run-limit.ts';
+import { generateSandboxPolicy, parseDeniedRequests, policyPathFor, type SandboxPolicy } from './sandbox-policy.ts';
 import { cloneScript, parseRemote, DEFAULT_CACHE_SETTINGS } from './sandbox-cache.ts';
 
 const execFileP = promisify(execFile);
@@ -173,8 +174,23 @@ export class SandboxRunner implements Runner {
     const createEnv: NodeJS.ProcessEnv = { ...process.env, ...plan.setEnv };
     if (cfg.forgeTokenVar && o.env[cfg.forgeTokenVar] !== undefined) createEnv[cfg.forgeTokenVar] = o.env[cfg.forgeTokenVar];
 
+    // CREW-2801: crew writes the policy for every run, beside the stream files.
+    // An explicit `ship.sandbox.policy` is the operator's override and wins.
+    let policyFile = cfg.policy;
+    let generated: SandboxPolicy | undefined;
+    if (!policyFile && plan.sandboxPolicy) {
+      try {
+        generated = generateSandboxPolicy({ mirrorDir: cfg.mirrorDir, workDir: cfg.workDir, ...plan.sandboxPolicy });
+      } catch (e) {
+        throw new Error(`cannot generate the sandbox policy: ${(e as Error).message}`);
+      }
+      policyFile = policyPathFor(plan.streamPath);
+      mkdirSync(dirname(policyFile), { recursive: true });
+      writeFileSync(policyFile, generated.yaml, { mode: 0o600 });
+    }
+
     const create = ['sandbox', 'create', '--name', name, '--detach'];
-    if (cfg.policy) create.push('--policy', cfg.policy);
+    if (policyFile) create.push('--policy', policyFile);
     if (cfg.image) create.push('--from', cfg.image);
     if (cfg.cacheVolume) {
       create.push('--driver-config-json', JSON.stringify({
@@ -194,6 +210,13 @@ export class SandboxRunner implements Runner {
     }
     o.emit.emit(`sandbox_created: ${name}`, { role: plan.role, data: { event: 'sandbox_created', sandbox: name, ms: Date.now() - t0 } });
     const handle: RunHandle = { runner: 'sandbox', sandbox: name, sandboxBin: cfg.bin };
+    if (generated) {
+      // The run log records what the policy let through, and any host the repository added.
+      const hosts = generated.groups.flatMap((g) => g.endpoints.map((e) => `${e.host}:${e.port}`));
+      o.emit.emit(`sandbox_policy: ${hosts.length} allowed endpoint(s)${generated.extraHosts.length ? `; declared by the repository: ${generated.extraHosts.join(', ')}` : ''}`, {
+        role: plan.role, data: { event: 'sandbox_policy', sandbox: name, file: policyFile, allowed: hosts, declared: generated.extraHosts },
+      });
+    }
 
     try {
       // The run's checkout: a shared clone of the read-only mirror on a fresh branch.
@@ -243,9 +266,24 @@ export class SandboxRunner implements Runner {
 
   async release(handle: RunHandle, emit: Emitter): Promise<void> {
     if (!handle.sandbox) return;
+    await this.foldDenied(handle.sandbox, handle.sandboxBin, emit);
     const t0 = Date.now();
     await this.deleteQuietly(handle.sandbox, handle.sandboxBin);
     emit.emit(`sandbox_deleted: ${handle.sandbox}`, { data: { event: 'sandbox_deleted', sandbox: handle.sandbox, ms: Date.now() - t0 } });
+  }
+
+  /**
+   * Denied requests from the sandbox log become `sandbox_denied` events in the
+   * run's event stream (CREW-2801), so an agent blocked by policy is diagnosable
+   * from the Mac app. Read before the delete, which takes the log with it.
+   */
+  private async foldDenied(name: string, bin: string | undefined, emit: Emitter): Promise<void> {
+    let log: string;
+    try { log = (await execFileP(bin ?? this.cfg.bin, ['logs', name], { timeout: 15_000, maxBuffer: 16 * 1024 * 1024 })).stdout; } catch { return; }
+    for (const d of parseDeniedRequests(log)) {
+      const where = `${d.host}${d.port !== undefined ? `:${d.port}` : ''}${d.binary ? ` by ${d.binary}` : ''}`;
+      emit.warn(`sandbox_denied: ${where}${d.count > 1 ? ` (${d.count}x)` : ''} — blocked by the sandbox policy`, { data: { event: 'sandbox_denied', sandbox: name, ...d } });
+    }
   }
 
   private async deleteQuietly(name: string, bin = this.cfg.bin): Promise<void> {

@@ -48,6 +48,30 @@ section needs `supervisor_network_mode = "bridge"` (otherwise every create fails
 `ControlSupervisorStartFailed` after 12 s), and `allow_driver_config = true` for the cache volume. Linux
 hosts use host mode. The first create on a host pulls the supervisor and runtime images (about 12 s on a Mac).
 
+## The network policy
+
+Crew writes the sandbox policy for every run (it is not a hand-maintained file) and writes it beside the
+run's stream files as `<stream>.policy.yaml`, so what a run was allowed is inspectable afterwards. `crew sandbox policy --route R --role ROLE [--repo NAME] [--json]` prints the policy a run would get.
+Setting `ship.sandbox.policy` replaces the generated policy with your own file.
+
+Everything is denied except:
+
+- the **forge host(s)** of the route's repositories (`github.com` when a repository names none), for clone and push;
+- the route's **Tablation host**, for the tracker;
+- the **model route** for the toolchain's `auth`: under `workspace` the Tablation inference endpoint is the
+  only route (the provider's hosts are not in the policy at all); under `subscription` or `inherit` the
+  provider's hosts (`api.anthropic.com` and the login hosts for Claude, and so on);
+- the hosts the repository's `.crew.yaml` `sandbox:` section declares, and the download hosts of the
+  toolchains it names. A declared host is recorded in the run's event stream (`sandbox_policy`).
+
+Rules are bound to binary paths inside the sandbox: the model route is open to the harness and `node` only, the forge to `git`, so a
+stray `curl` cannot reach a provider directly. Landlock is generated as `hard_requirement`: a host that cannot enforce it fails the run rather than running unconfined. The cloud metadata address `169.254.169.254` is never
+reachable; a declared host that is that address, loopback or a private range is refused when the policy is generated, and the run fails before a sandbox exists.
+
+A request the policy denies shows up in the run's event stream as `sandbox_denied` (host, port, binary and a count),
+read from the sandbox log just before the sandbox is deleted, so an agent blocked by policy is diagnosable from the app.
+Hot-reloading the network section of a running sandbox is not supported.
+
 ## The cache volume
 
 `cacheVolume` names one volume per route on the container engine. Crew creates it on first use with the labels

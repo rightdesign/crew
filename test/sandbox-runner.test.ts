@@ -194,3 +194,57 @@ test('doctor: reports a missing CLI, a dead gateway and a healthy setup', () => 
   assert.equal(down.ok, false);
   assert.match(down.detail, /supervisor_network_mode/);
 });
+
+test('CREW-2801: the run gets a generated policy written beside its stream file, and the log records declared hosts', async () => {
+  const r = rig();
+  const plan = r.plan(STREAM, {
+    sandboxConfig: { bin: r.bin, agentBin: process.execPath, cacheVolume: 'cache-vol' },
+    sandboxPolicy: {
+      forgeHosts: ['github.com'], tablationUrl: 'https://app.tablation.com', authMode: 'workspace', provider: 'anthropic',
+      harnessBin: 'claude', extraHosts: ['api.example.com'],
+    },
+  });
+  await spawnAgent(plan, r.emitter());
+  const create = r.calls().find((c) => c.argv[1] === 'create')!;
+  const file = create.argv[create.argv.indexOf('--policy') + 1]!;
+  assert.equal(file, plan.streamPath.replace(/\.jsonl$/, '.policy.yaml'));
+  const yaml = readFileSync(file, 'utf8');
+  assert.match(yaml, /hard_requirement/);
+  assert.match(yaml, /api\.example\.com/);
+  assert.doesNotMatch(yaml, /api\.anthropic\.com/);
+  const ev = r.logged().find((e) => e.data?.event === 'sandbox_policy')!;
+  assert.deepEqual(ev.data!.declared, ['api.example.com']);
+});
+
+test('CREW-2801: an operator-set ship.sandbox.policy overrides the generated one', async () => {
+  const r = rig();
+  const plan = r.plan(STREAM, { sandboxPolicy: { forgeHosts: [], tablationUrl: 'https://app.tablation.com', authMode: 'workspace', provider: 'anthropic', harnessBin: 'claude' } });
+  await spawnAgent(plan, r.emitter());
+  const create = r.calls().find((c) => c.argv[1] === 'create')!;
+  assert.equal(create.argv[create.argv.indexOf('--policy') + 1], '/p.yaml');
+  assert.ok(!existsSync(plan.streamPath.replace(/\.jsonl$/, '.policy.yaml')));
+});
+
+test('CREW-2801: a policy that would reach the metadata address fails the run before any sandbox exists', async () => {
+  const r = rig();
+  const plan = r.plan(STREAM, {
+    sandboxConfig: { bin: r.bin, agentBin: process.execPath },
+    sandboxPolicy: { forgeHosts: [], tablationUrl: 'https://app.tablation.com', authMode: 'workspace', provider: 'anthropic', harnessBin: 'claude', extraHosts: ['169.254.169.254'] },
+  });
+  await assert.rejects(spawnAgent(plan, r.emitter()), /cannot generate the sandbox policy/);
+  assert.ok(!existsSync(join(r.osDir, 'calls.jsonl')), 'openshell was never invoked');
+});
+
+test('CREW-2801: denied requests in the sandbox log are folded into the run events before the delete', async () => {
+  const r = rig();
+  const logFile = join(r.dir, 'sandbox.log');
+  writeFileSync(logFile, 'WARN network deny host=api.anthropic.com port=443 binary=/usr/bin/curl\n');
+  process.env.FAKE_OS_LOG_FILE = logFile;
+  try {
+    await spawnAgent(r.plan(STREAM), r.emitter());
+  } finally { delete process.env.FAKE_OS_LOG_FILE; }
+  const denied = r.logged().find((e) => e.data?.event === 'sandbox_denied')!;
+  assert.match(denied.message, /api\.anthropic\.com:443 by \/usr\/bin\/curl/);
+  const verbs = r.calls().map((c) => c.argv[0]);
+  assert.ok(verbs.indexOf('logs') < verbs.lastIndexOf('sandbox'), 'the log is read before the sandbox is deleted');
+});

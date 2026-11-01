@@ -18,11 +18,13 @@ import { State } from './state.ts';
 import { forgeRunEnv, crewCommandLine } from './forges.ts';
 import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRefusedKey } from './ship-attention.ts';
 import type { Route, RoleName, Ship } from './config.ts';
-import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
+import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
+import { loadRepoConfig } from './repo-config.ts';
+import type { SandboxPolicyInput } from './sandbox-policy.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { inferenceBaseUrl } from './adapters/claude.ts';
-import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
+import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice, type ToolchainSpec } from './toolchain.ts';
 import { resolveContract } from './contract.ts';
 import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
@@ -121,6 +123,8 @@ export interface AgentPlan {
    */
   runner?: RunnerKind;
   sandboxConfig?: Partial<import('./runner.ts').SandboxConfig>;
+  /** CREW-2801: what the generated sandbox policy is derived from. Set with `runner: sandbox`. */
+  sandboxPolicy?: SandboxPolicyInput;
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -273,6 +277,34 @@ export class AgentError extends Error {}
  * Nothing ran, so there is no run to log, and the daemon treats it as a
  * failed start rather than a started role (ISSUE-1365).
  */
+/**
+ * What a sandboxed run's policy is derived from (CREW-2801): the forge hosts
+ * of the route's repositories, the route's Tablation host, the auth mode and
+ * provider of the run's toolchain, and the hosts and toolchains the ticket's
+ * repository declares in its `.crew.yaml` `sandbox:` section.
+ */
+export function sandboxPolicyInputFor(
+  route: Route,
+  toolchain: ToolchainSpec,
+  o: { harnessBin: string; repo?: string | null; sandbox?: { agentBin?: string; mirrorDir?: string; workDir?: string } },
+): SandboxPolicyInput {
+  const repos = reposOf(route);
+  const forgeHosts = [...new Set(repos.map((r) => r.forgeHost ?? 'github.com'))];
+  const dir = repos.find((r) => r.name === o.repo)?.dir ?? route.dir;
+  let declared: ReturnType<typeof loadRepoConfig> = null;
+  try { declared = loadRepoConfig(dir); } catch { /* a malformed .crew.yaml is reported where it is read; the policy then carries no extras */ }
+  return {
+    forgeHosts,
+    tablationUrl: route.baseUrl,
+    authMode: toolchain.auth ?? 'inherit',
+    provider: toolchainProvider(toolchain),
+    harnessBin: o.sandbox?.agentBin ?? o.harnessBin,
+    ...(declared?.sandboxNetwork ? { extraHosts: declared.sandboxNetwork.hosts, toolchains: declared.sandboxNetwork.toolchains } : {}),
+    ...(o.sandbox?.mirrorDir ? { mirrorDir: o.sandbox.mirrorDir } : {}),
+    ...(o.sandbox?.workDir ? { workDir: o.sandbox.workDir } : {}),
+  };
+}
+
 export class AgentSpawnError extends AgentError {}
 
 /**
@@ -448,7 +480,13 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     workspaceAuth: toolchain.auth === 'workspace',
     provider: toolchainProvider(toolchain),
     maxRunMinutes: resolveMaxRunMinutes(o.route.maxRunMinutes, toolchain.maxRunMinutes),
-    ...(o.ship.runner === 'sandbox' ? { runner: 'sandbox' as const, ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}) } : {}),
+    ...(o.ship.runner === 'sandbox'
+      ? {
+          runner: 'sandbox' as const,
+          ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}),
+          sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox }),
+        }
+      : {}),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
     warnings: [...(seat.warnings ?? []), ...expanded.warnings],
     prompt,

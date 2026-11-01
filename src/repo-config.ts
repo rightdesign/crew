@@ -15,6 +15,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { parse } from 'yaml';
+import { parseSandboxNetwork } from './sandbox-policy.ts';
 import { isPlatformRequirement, type PlatformRequirement } from './platform.ts';
 
 export const SPEC_VERSION = 1;
@@ -332,6 +333,13 @@ export interface RepoConfig {
   shell?: string;
   hooks: RepoHooks;
   labels: Partial<Record<keyof RepoHooks, string>>;
+  /**
+   * What a sandboxed run of this repo may reach beyond the forge, the tracker
+   * and the model route (CREW-2801): `sandbox.hosts` (`host` or `host:port`)
+   * and `sandbox.toolchains` (names crew knows the run-time download hosts of).
+   * See `sandbox-policy.ts`.
+   */
+  sandboxNetwork?: { hosts: string[]; toolchains: string[] };
   release: {
     mode: ReleaseMode;
     /**
@@ -500,6 +508,10 @@ function parseSandbox(raw: unknown, file: string): RepoSandbox | undefined {
       throw new RepoConfigError(`${file}: sandbox.image and sandbox.packages are alternatives — a published image already carries its packages; put the rest in sandbox.setup`);
     }
   }
+  // A section that only declares network access (`hosts`, `toolchains`; parsed
+  // by `parseSandboxNetwork`) declares no image, so it must not make the repo
+  // look like it wants one built (CREW-2801). `warm` counts as a build input.
+  if (!image && packages.length === 0 && setup.length === 0 && warm.length === 0) return undefined;
   return { ...(image ? { image } : {}), packages, setup, warm };
 }
 
@@ -522,7 +534,9 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
   rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
-  rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup', 'warm']), 'sandbox', file);
+  rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup', 'warm', 'hosts', 'toolchains']), 'sandbox', file);
+
+  const sandboxNetwork = parseSandboxNetwork(raw.sandbox, file, (m) => new RepoConfigError(m));
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
   if (raw.version !== SPEC_VERSION) {
@@ -760,6 +774,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     shell: raw.shell ? String(raw.shell) : undefined,
     hooks,
     labels,
+    ...(sandboxNetwork ? { sandboxNetwork } : {}),
     release: {
       mode,
       ship,

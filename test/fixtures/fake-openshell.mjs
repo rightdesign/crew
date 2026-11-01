@@ -24,6 +24,10 @@ if (group === 'sandbox' && verb === 'create') {
   writeFileSync(join(dir, 'sandboxes', nameOf()), '');
   process.exit(0);
 }
+if (group === 'logs') {   // FAKE_OS_LOG_FILE: what the sandbox log would say
+  if (process.env.FAKE_OS_LOG_FILE && existsSync(process.env.FAKE_OS_LOG_FILE)) process.stdout.write(readFileSync(process.env.FAKE_OS_LOG_FILE, 'utf8'));
+  process.exit(0);
+}
 if (group === 'sandbox' && verb === 'upload') process.exit(0);
 if (group === 'sandbox' && verb === 'delete') {
   const name = argv[2];

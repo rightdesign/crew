@@ -240,6 +240,8 @@ release:
 | `release.isolateFailures.maxCandidates` | no | `4` | When the release's combined `test`/`build` fails with several branches merged, how many may be built one at a time to find the one that broke it. `0` turns isolation off. See [A failed combined build](#a-failed-combined-build). |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
+| `sandbox.hosts` | no | `[]` | Extra hosts (`host` or `host:port`) a sandboxed run may reach, for a test that calls a public API. Everything else, package registries included, is denied. Loopback, private and cloud-metadata addresses are refused. Recorded in the run's event stream. |
+| `sandbox.toolchains` | no | `[]` | Toolchains whose run-time downloads the policy must allow: `corepack`, `pnpm`, `yarn`, `npm`, `prisma`, `playwright`, `pip`, `cargo`, `go`, `swift`. |
 
 ### Sandbox images
 
