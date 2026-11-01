@@ -223,3 +223,177 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
 
   return { ticket: draft.tag, ticketRecordId: draft.id, worktree: wt.path, branch: wt.branch, url, periscopeRecordId: row.id };
 }
+
+// ---------------------------------------------------------------------------
+// `crew periscope down` and `crew periscope list` (CREW-2855)
+// ---------------------------------------------------------------------------
+
+export interface PeriscopeDownArgs {
+  route?: string;
+  /** The ticket number, digits only. */
+  number: string;
+  mode: 'keep' | 'discard';
+  allowEmpty: boolean;
+  json: boolean;
+}
+
+/**
+ * `periscope down|end [route] NNN --keep|--discard [--allow-empty]`. Exactly
+ * one of the two flags is required: crew never picks the ending path for the
+ * viewer.
+ */
+export function parsePeriscopeDownArgs(
+  positional: string[],
+  flags: { keep: boolean; discard: boolean; allowEmpty: boolean; json: boolean },
+): PeriscopeDownArgs {
+  const usage = 'usage: crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]';
+  const rest = positional.slice(2);   // [periscope, down|end, ...]
+  if (rest.length === 0 || rest.length > 2) throw new PeriscopeError(usage);
+  if (flags.keep === flags.discard) throw new PeriscopeError(`pass exactly one of --keep or --discard\n${usage}`);
+  const m = /^(?:[A-Za-z]+-)?(\d+)$/.exec(rest[rest.length - 1]!);
+  if (!m) throw new PeriscopeError(`"${rest[rest.length - 1]}" is not a ticket number\n${usage}`);
+  return {
+    ...(rest.length === 2 ? { route: rest[0] } : {}),
+    number: m[1]!,
+    mode: flags.keep ? 'keep' : 'discard',
+    allowEmpty: flags.allowEmpty,
+    json: flags.json,
+  };
+}
+
+/** A Periscopes row joined to its ticket. */
+export interface PeriscopeRowInfo {
+  id: string;
+  ticketRecordId: string;
+  ticket: string;
+  number: string;
+  repo: string;
+  state: string;
+  url: string;
+  worktree: string;
+  branch: string;
+  lastActivityAt: string | null;
+}
+
+export interface ChangedFile { path: string; added: number; removed: number }
+
+export interface PeriscopeDownDeps {
+  /** This ship's row(s) for the ticket number, any state, newest first. */
+  rowsForTicket(number: string): Promise<PeriscopeRowInfo[]>;
+  /** Uncommitted changes in the worktree. */
+  hasChanges(worktree: string): boolean;
+  /** Stages and commits everything with `message`. */
+  commitAll(worktree: string, message: string): void;
+  /** Pushes the branch (a plain fast-forward) and returns the pushed sha and remote name. */
+  push(worktree: string, branch: string): { sha: string; remote: string };
+  /** Files the branch changes against the remote base. */
+  changedFiles(worktree: string): ChangedFile[];
+  /** The ticket's current description, project and repo. */
+  readTicket(ticketRecordId: string): Promise<{ description: string; hasProject: boolean; hasRepo: boolean }>;
+  updateTicket(ticketRecordId: string, patch: { description?: string; fillProjectAndRepo: boolean; status: 'new' | 'discarded'; note?: string }): Promise<void>;
+  postPushed(ticketRecordId: string, sha: string, remote: string, branch: string): Promise<void>;
+  /** Kills what listens for the worktree. Returns how many processes were stopped. */
+  stopServer(worktree: string, number: string): Promise<number>;
+  /** Removes the worktree; with `deleteBranch` also the local branch. */
+  removeWorktree(worktree: string, branch: string, deleteBranch: boolean): void;
+  setRowState(rowId: string, state: 'kept' | 'discarded'): Promise<void>;
+  say(event: string, message: string, data?: Record<string, unknown>): void;
+}
+
+export const PROTOTYPE_HEADING = '## Prototype';
+
+/** The section `down --keep` appends to the ticket description. */
+export function prototypeSection(files: ChangedFile[]): string {
+  const added = files.reduce((n, f) => n + f.added, 0);
+  const removed = files.reduce((n, f) => n + f.removed, 0);
+  return [
+    PROTOTYPE_HEADING,
+    '',
+    'This branch began as a Periscope prototype and may be rewritten rather than treated as reviewed work.',
+    '',
+    ...(files.length === 0 ? ['No files differ from the base.'] : files.map((f) => `- \`${f.path}\` (+${f.added} −${f.removed})`)),
+    '',
+    `${files.length} file${files.length === 1 ? '' : 's'} changed, ${added} insertion${added === 1 ? '' : 's'}(+), ${removed} deletion${removed === 1 ? '' : 's'}(−)`,
+  ].join('\n');
+}
+
+export interface PeriscopeDownResult {
+  ticket: string;
+  mode: 'keep' | 'discard';
+  /** `unchanged` when the row was already kept or discarded. */
+  outcome: 'done' | 'unchanged';
+  state: string;
+  sha?: string;
+}
+
+export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDownArgs): Promise<PeriscopeDownResult> {
+  const rows = await d.rowsForTicket(args.number);
+  if (rows.length === 0) throw new PeriscopeError(`no periscope for ticket ${args.number} on this ship`);
+  const row = rows.find((r) => r.state === 'live');
+  if (!row) {
+    const done = rows[0]!;
+    d.say('unchanged', `${done.ticket} is already ${done.state}; nothing to do`);
+    return { ticket: done.ticket, mode: args.mode, outcome: 'unchanged', state: done.state };
+  }
+
+  if (args.mode === 'discard') {
+    const killed = await d.stopServer(row.worktree, row.number);
+    d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
+    d.removeWorktree(row.worktree, row.branch, true);
+    d.say('worktree', `removed ${row.worktree} and branch ${row.branch}`);
+    await d.updateTicket(row.ticketRecordId, {
+      status: 'discarded', fillProjectAndRepo: false, note: 'The periscope was discarded; nothing was pushed.',
+    });
+    d.say('ticket', `${row.ticket} closed as obsolete`);
+    await d.setRowState(row.id, 'discarded');
+    d.say('row', 'row is discarded');
+    return { ticket: row.ticket, mode: 'discard', outcome: 'done', state: 'discarded' };
+  }
+
+  // Keep. Refuse before changing anything when there is nothing to keep.
+  const dirty = d.hasChanges(row.worktree);
+  if (!dirty && !args.allowEmpty) {
+    throw new PeriscopeError(`${row.ticket} has nothing to commit; pass --allow-empty to keep the branch anyway, or --discard`);
+  }
+  if (dirty) {
+    d.commitAll(row.worktree, `${row.ticket} Periscope prototype`);
+    d.say('commit', `committed the worktree on ${row.branch}`);
+  }
+  const pushed = d.push(row.worktree, row.branch);
+  d.say('push', `pushed ${pushed.sha} to ${pushed.remote}/${row.branch}`, { sha: pushed.sha });
+
+  const t = await d.readTicket(row.ticketRecordId);
+  const section = prototypeSection(d.changedFiles(row.worktree));
+  const description = t.description.includes(PROTOTYPE_HEADING) ? t.description : `${t.description.trimEnd()}\n\n${section}`;
+  await d.updateTicket(row.ticketRecordId, {
+    description, fillProjectAndRepo: !t.hasProject || !t.hasRepo, status: 'new',
+  });
+  d.say('ticket', `${row.ticket} is new and unassigned with a Prototype section`);
+  await d.postPushed(row.ticketRecordId, pushed.sha, pushed.remote, row.branch);
+
+  const killed = await d.stopServer(row.worktree, row.number);
+  d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
+  d.removeWorktree(row.worktree, row.branch, false);
+  d.say('worktree', `removed ${row.worktree}; ${row.branch} stays, pushed`);
+  await d.setRowState(row.id, 'kept');
+  d.say('row', 'row is kept');
+  return { ticket: row.ticket, mode: 'keep', outcome: 'done', state: 'kept', sha: pushed.sha };
+}
+
+export interface PeriscopeListEntry extends PeriscopeRowInfo { idleMinutes: number | null; listening: boolean }
+
+export function periscopeListEntries(rows: PeriscopeRowInfo[], now: Date, isListening: (r: PeriscopeRowInfo) => boolean): PeriscopeListEntry[] {
+  return rows.filter((r) => r.state === 'live').map((r) => {
+    const at = r.lastActivityAt ? new Date(r.lastActivityAt).getTime() : NaN;
+    return { ...r, idleMinutes: Number.isNaN(at) ? null : Math.max(0, Math.floor((now.getTime() - at) / 60_000)), listening: isListening(r) };
+  });
+}
+
+export function formatPeriscopeList(entries: PeriscopeListEntry[]): string {
+  if (entries.length === 0) return 'no live periscopes on this ship';
+  return entries.map((e) => [
+    e.ticket, e.repo, e.worktree, e.url, e.state,
+    e.idleMinutes === null ? 'idle ?' : `idle ${e.idleMinutes} min`,
+    e.listening ? 'listening' : 'not listening',
+  ].join('  ')).join('\n');
+}

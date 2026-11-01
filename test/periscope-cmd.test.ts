@@ -143,3 +143,107 @@ test('runPeriscopeUp: a failed progress comment does not undo the periscope', as
   assert.equal(res.periscopeRecordId, 'per1');
   assert.ok(!h.calls.includes('teardown'));
 });
+
+import {
+  parsePeriscopeDownArgs, runPeriscopeDown, prototypeSection, periscopeListEntries, formatPeriscopeList,
+  type PeriscopeDownDeps, type PeriscopeRowInfo,
+} from '../src/periscope-cmd.ts';
+
+const dflags = { keep: false, discard: false, allowEmpty: false, json: false };
+const ROW: PeriscopeRowInfo = {
+  id: 'per1', ticketRecordId: 'rec1', ticket: 'TABL-900', number: '900', repo: 'synthesis', state: 'live',
+  url: 'http://localhost:40900', worktree: '/w/tablation-tabl-900', branch: 'tabl-900', lastActivityAt: '2026-11-01T11:30:00Z',
+};
+
+test('parsePeriscopeDownArgs: needs exactly one of --keep and --discard and a ticket number', () => {
+  assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', '900'], dflags), /exactly one/);
+  assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', '900'], { ...dflags, keep: true, discard: true }), /exactly one/);
+  assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down'], { ...dflags, keep: true }), PeriscopeError);
+  assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', 'abc'], { ...dflags, keep: true }), /not a ticket number/);
+  assert.deepEqual(parsePeriscopeDownArgs(['periscope', 'end', 'TABL-900'], { ...dflags, discard: true }),
+    { number: '900', mode: 'discard', allowEmpty: false, json: false });
+  assert.equal(parsePeriscopeDownArgs(['periscope', 'down', 'issues/issues', '900'], { ...dflags, keep: true }).route, 'issues/issues');
+});
+
+function downHarness(over: Partial<PeriscopeDownDeps> = {}, rows: PeriscopeRowInfo[] = [ROW]) {
+  const calls: string[] = [];
+  const patches: Record<string, unknown>[] = [];
+  const deps: PeriscopeDownDeps = {
+    rowsForTicket: async () => rows,
+    hasChanges: () => true,
+    commitAll: (_w, m) => { calls.push(`commit:${m}`); },
+    push: () => { calls.push('push'); return { sha: 'abc123', remote: 'origin' }; },
+    changedFiles: () => [{ path: 'src/a.ts', added: 3, removed: 1 }],
+    readTicket: async () => ({ description: 'A periscope.', hasProject: false, hasRepo: true }),
+    updateTicket: async (_id, p) => { calls.push(`ticket:${p.status}`); patches.push(p); },
+    postPushed: async (_id, sha, rem, br) => { calls.push(`pushed:${sha}:${rem}/${br}`); },
+    stopServer: async () => { calls.push('stop'); return 2; },
+    removeWorktree: (_w, _b, del) => { calls.push(`remove:${del}`); },
+    setRowState: async (_id, s) => { calls.push(`row:${s}`); },
+    say: () => {},
+    ...over,
+  };
+  return { deps, calls, patches };
+}
+
+test('runPeriscopeDown --keep: commits, pushes, updates the ticket, then tears down and marks the row kept', async () => {
+  const h = downHarness();
+  const res = await runPeriscopeDown(h.deps, { number: '900', mode: 'keep', allowEmpty: false, json: false });
+  assert.deepEqual(h.calls, ['commit:TABL-900 Periscope prototype', 'push', 'ticket:new', 'pushed:abc123:origin/tabl-900', 'stop', 'remove:false', 'row:kept']);
+  assert.deepEqual(res, { ticket: 'TABL-900', mode: 'keep', outcome: 'done', state: 'kept', sha: 'abc123' });
+  const p = h.patches[0] as { description: string; fillProjectAndRepo: boolean };
+  assert.match(p.description, /^A periscope\.\n\n## Prototype/);
+  assert.match(p.description, /`src\/a\.ts` \(\+3 −1\)/);
+  assert.match(p.description, /may be rewritten/);
+  assert.equal(p.fillProjectAndRepo, true);
+});
+
+test('runPeriscopeDown --keep: nothing to commit refuses and changes nothing; --allow-empty proceeds without a commit', async () => {
+  const h = downHarness({ hasChanges: () => false });
+  await assert.rejects(runPeriscopeDown(h.deps, { number: '900', mode: 'keep', allowEmpty: false, json: false }), /nothing to commit/);
+  assert.equal(h.calls.length, 0);
+  await runPeriscopeDown(h.deps, { number: '900', mode: 'keep', allowEmpty: true, json: false });
+  assert.ok(!h.calls.some((c) => c.startsWith('commit')));
+  assert.ok(h.calls.includes('push'));
+});
+
+test('runPeriscopeDown --keep: a rejected push leaves the ticket, server, worktree and row alone', async () => {
+  const h = downHarness({ push: () => { throw new Error('rejected'); } });
+  await assert.rejects(runPeriscopeDown(h.deps, { number: '900', mode: 'keep', allowEmpty: false, json: false }), /rejected/);
+  assert.ok(!h.calls.some((c) => /^(ticket|stop|remove|row)/.test(c)));
+});
+
+test('runPeriscopeDown --keep does not append a second Prototype section', async () => {
+  const h = downHarness({ readTicket: async () => ({ description: 'x\n\n## Prototype\nold', hasProject: true, hasRepo: true }) });
+  await runPeriscopeDown(h.deps, { number: '900', mode: 'keep', allowEmpty: false, json: false });
+  assert.equal((h.patches[0] as { description: string }).description, 'x\n\n## Prototype\nold');
+});
+
+test('runPeriscopeDown --discard: stops, removes worktree and branch, closes the ticket, pushes nothing', async () => {
+  const h = downHarness();
+  const res = await runPeriscopeDown(h.deps, { number: '900', mode: 'discard', allowEmpty: false, json: false });
+  assert.deepEqual(h.calls, ['stop', 'remove:true', 'ticket:discarded', 'row:discarded']);
+  assert.equal(res.state, 'discarded');
+});
+
+test('runPeriscopeDown: an already kept or discarded row is reported and nothing changes', async () => {
+  const h = downHarness({}, [{ ...ROW, state: 'kept' }]);
+  const res = await runPeriscopeDown(h.deps, { number: '900', mode: 'discard', allowEmpty: false, json: false });
+  assert.equal(res.outcome, 'unchanged');
+  assert.deepEqual(h.calls, []);
+  await assert.rejects(runPeriscopeDown(downHarness({}, []).deps, { number: '900', mode: 'keep', allowEmpty: false, json: false }), /no periscope for ticket 900/);
+});
+
+test('prototypeSection counts files and lines', () => {
+  assert.match(prototypeSection([{ path: 'a', added: 1, removed: 0 }]), /1 file changed, 1 insertion\(\+\), 0 deletions\(−\)/);
+});
+
+test('list shows live periscopes with idle minutes and listening, hiding kept and discarded', () => {
+  const rows = [ROW, { ...ROW, ticket: 'TABL-901', state: 'kept' }, { ...ROW, ticket: 'TABL-902', state: 'discarded' }];
+  const entries = periscopeListEntries(rows, new Date('2026-11-01T12:00:00Z'), () => true);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.idleMinutes, 30);
+  assert.equal(entries[0]!.listening, true);
+  assert.match(formatPeriscopeList(entries), /TABL-900 {2}synthesis .*idle 30 min {2}listening/);
+  assert.equal(formatPeriscopeList([]), 'no live periscopes on this ship');
+});

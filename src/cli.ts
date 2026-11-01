@@ -44,7 +44,7 @@ import { planStrandedVerified, applyStrandedVerified } from './stranded-verified
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
-import { guardRunHandoff, describeHandoffPush, repoConfigFor } from './handoff-guard.ts';
+import { guardRunHandoff, describeHandoffPush, repoConfigFor, pushedEventBody } from './handoff-guard.ts';
 import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
 import { hostPlatform, satisfies, explain } from './platform.ts';
 import {
@@ -107,14 +107,17 @@ import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } 
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
-  ensureRepoCheckout, originUrlOf, setCloneRecorder, status as gitWorkingTreeStatus, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
+  ensureRepoCheckout, originUrlOf, setCloneRecorder, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
 import { realpathSync, readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { runScript, resolveShell } from './shell.ts';
-import { PeriscopeError, parsePeriscopeUpArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, type PeriscopeDeps, type PeriscopeLimits } from './periscope-cmd.ts';
+import {
+  PeriscopeError, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
+  periscopeListEntries, formatPeriscopeList, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeLimits, type PeriscopeRowInfo,
+} from './periscope-cmd.ts';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
@@ -356,6 +359,9 @@ function usage(problem?: string, requested = false): never {
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
   crew periscope up [route] REPO --topic TEXT [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]
                                  file a draft ticket, cut and prepare its worktree, start the repo's preview hook and record a Periscopes row (alias: start)
+  crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]
+                                 end a periscope: commit and push its branch (ticket back to new), or throw it away (alias: end)
+  crew periscope list [route] [--json]   the live periscopes on this ship, their idle minutes and whether each server is listening
   crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
@@ -4391,13 +4397,129 @@ switch (command) {
     // ordering, refusals and tear-down live in periscope-cmd.ts; this only
     // supplies the real git, shell and tracker.
     const subP = positional[1];
-    if (subP !== 'up' && subP !== 'start') {
+    if (subP !== 'up' && subP !== 'start' && subP !== 'down' && subP !== 'end' && subP !== 'list') {
       process.stderr.write('crew periscope up [route] REPO --topic TEXT [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]\n');
+      process.stderr.write('crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]\n');
+      process.stderr.write('crew periscope list [route] [--json]\n');
       process.exit(2);
     }
     const jsonP = flag('json');
     const say = (event: string, message: string, data: Record<string, unknown> = {}) =>
       process.stderr.write(jsonP ? `${JSON.stringify({ ...data, event, message })}\n` : `${message}\n`);
+    if (subP === 'down' || subP === 'end' || subP === 'list') {
+      // CREW-2855: ending a periscope and listing the live ones. The decisions
+      // live in periscope-cmd.ts; this supplies the real git, ports and tracker.
+      try {
+        const downArgs = subP === 'list' ? undefined
+          : parsePeriscopeDownArgs(positional, { keep: flag('keep'), discard: flag('discard'), allowEmpty: flag('allow-empty'), json: jsonP });
+        const routeName = subP === 'list' ? (positional[2] as string | undefined) : downArgs!.route;
+        const routesP = (routeName ? [findRoute(cfg, routeName)] : cfg.routes.filter((r) => r.enabled))
+          .filter((r) => r.resolved?.periscopesModelId);
+        if (routesP.length === 0) throw new PeriscopeError('no connected route has a Periscopes table');
+        // Every row of this ship on the candidate routes, joined to its ticket and repository.
+        const gather = async (rt: typeof route): Promise<PeriscopeRowInfo[]> => {
+          const tr = new Tracker(rt, cfg.ship);
+          const repos = await resolvedRepos(rt);
+          return (await tr.periscopeRows()).map(({ row, ticket }) => {
+            const repo = repos.find((r) => r.id && r.id === ticket[tr.contract.columns.repo]) ?? (repos.length === 1 ? repos[0] : undefined);
+            const str = (v: unknown) => (typeof v === 'string' ? v : '');
+            return {
+              id: row.id, ticketRecordId: ticket.id, ticket: ticket.issue_tag ?? ticket.issue_id,
+              number: /(\d+)$/.exec(ticket.issue_id)?.[1] ?? '', repo: repo?.name ?? '?',
+              state: str(row.state), url: str(row.url), worktree: str(row.worktree), branch: str(row.branch),
+              lastActivityAt: str(row.last_activity_at) || null,
+            };
+          });
+        };
+        if (subP === 'list') {
+          const entries = periscopeListEntries(
+            (await Promise.all(routesP.map(gather))).flat(), new Date(),
+            (r) => pidsInWorktree(r.worktree, Number(r.number)).length > 0,
+          );
+          process.stdout.write(jsonP ? `${JSON.stringify(entries)}\n` : `${formatPeriscopeList(entries)}\n`);
+          break;
+        }
+        const a = downArgs!;
+        const hits: { rt: typeof route; rows: PeriscopeRowInfo[] }[] = [];
+        for (const rt of routesP) {
+          const rows = (await gather(rt)).filter((r) => r.number === a.number);
+          if (rows.length) hits.push({ rt, rows });
+        }
+        if (hits.length !== 1) {
+          throw new PeriscopeError(hits.length === 0
+            ? `no periscope for ticket ${a.number} on this ship`
+            : `ticket ${a.number} has periscopes on more than one route (${hits.map((h) => h.rt.route).join(', ')}) — name the route`);
+        }
+        const { rt: routeD, rows: rowsD } = hits[0]!;
+        const trD = new Tracker(routeD, cfg.ship);
+        const cD = trD.contract;
+        const reposD = await resolvedRepos(routeD);
+        const repoD = reposD.find((r) => r.name === rowsD[0]!.repo);
+        if (!repoD) throw new PeriscopeError(`cannot tell which repository ${rowsD[0]!.ticket} belongs to`);
+        const { remote, base } = repoD.config.branch;
+        const memberD = routeD.resolved!.seats.pair ?? routeD.resolved!.operator;
+        const closedD = cD.statuses.resolved.includes('closed_obsolete') ? 'closed_obsolete' : cD.statuses.wontFix;
+        const depsD: PeriscopeDownDeps = {
+          rowsForTicket: async () => rowsD,
+          hasChanges: (wt) => gitWorkingTreeStatus(wt).length > 0,
+          commitAll: (wt, msg) => { git(wt, ['add', '-A']); git(wt, ['commit', '-m', msg]); },
+          push: (wt, branch) => { pushBranchUpstream(wt, remote, branch); return { sha: headSha(wt), remote }; },
+          changedFiles: (wt) => {
+            const out = gitOk(wt, ['diff', '--numstat', `${remote}/${base}...HEAD`]) ?? '';
+            return out.split('\n').filter(Boolean).map((l) => {
+              const [add, rem, ...p] = l.split('\t');
+              return { path: p.join('\t'), added: Number(add) || 0, removed: Number(rem) || 0 };
+            });
+          },
+          readTicket: async (id) => {
+            const t = await trD.ticket(id);
+            return { description: String(t.description ?? ''), hasProject: !!t[cD.columns.slice], hasRepo: !!t[cD.columns.repo] };
+          },
+          updateTicket: async (id, p) => {
+            const patch: Record<string, unknown> = {};
+            if (p.status === 'new') {
+              patch[cD.columns.status] = 'new';
+              patch[cD.columns.assignee] = null;
+              if (p.description !== undefined) patch.description = p.description;
+              if (p.fillProjectAndRepo) {
+                if (routeD.resolved!.areaId) patch[cD.columns.slice] = routeD.resolved!.areaId;
+                if (repoD.id) patch[cD.columns.repo] = repoD.id;
+              }
+            } else {
+              patch[cD.columns.status] = closedD;
+              patch[cD.columns.resolutionNote] = p.note;
+            }
+            await trD.updateTicket(id, patch);
+          },
+          postPushed: (id, sha, rem, branch) => trD.postEvent(id, pushedEventBody(sha, rem, branch), memberD, 'pushed'),
+          stopServer: async (wt, n) => {
+            const pids = pidsInWorktree(wt, Number(n));
+            if (pids.length) await killGently(pids);
+            return pids.length;
+          },
+          removeWorktree: (wt, branch, deleteBranch) => {
+            gitOk(repoD.dir, ['worktree', 'remove', '--force', wt]);
+            if (deleteBranch) gitOk(repoD.dir, ['branch', '-D', branch]);
+          },
+          setRowState: (id, state) => trD.updatePeriscope(id, { state }),
+          say,
+        };
+        if (dryRun) {
+          say('dry-run', `would end the periscope for ${rowsD[0]!.ticket} (${a.mode})`);
+          break;
+        }
+        const res = await runPeriscopeDown(depsD, a);
+        if (jsonP) process.stdout.write(`${JSON.stringify({ event: 'done', ...res })}\n`);
+        else process.stdout.write(`${res.ticket} ${res.state}\n`);
+      } catch (e) {
+        if (e instanceof PeriscopeError || e instanceof ConfigError) {
+          process.stderr.write(`crew periscope: ${e.message}\n`);
+          process.exit(1);
+        }
+        throw e;
+      }
+      break;
+    }
     try {
       const a = parsePeriscopeUpArgs(positional, { topic: value('topic'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
       // The route is the one named, else the one whose checkout serves REPO.

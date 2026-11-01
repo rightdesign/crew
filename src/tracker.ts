@@ -976,6 +976,36 @@ export class Tracker {
   }
 
   /**
+   * This ship's Periscopes rows (EPIC-077), newest first, with the ticket each
+   * belongs to. Empty when there is no Periscopes table or no Ships row yet.
+   */
+  async periscopeRows(states?: string[]): Promise<Array<{ row: Record<string, unknown> & { id: string }; ticket: Ticket }>> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    const { shipId } = await this.authorshipProbe();
+    if (!modelId || !shipId) return [];
+    const conds: Filter[] = [{ columnName: 'ship_id', operator: 'EQ', value: shipId }];
+    if (states?.length) conds.push({ columnName: 'state', operator: 'IN', value: states });
+    const rows = await this.client.records.list<Record<string, unknown> & { id: string }>(modelId, { filters: encodeFilters(conds), limit: 200 });
+    const refId = (v: unknown): string | undefined =>
+      typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { id?: unknown }).id === 'string' ? (v as { id: string }).id : undefined;
+    const ids = [...new Set(rows.map((r) => refId(r.issue_id)).filter((x): x is string => !!x))];
+    const tickets = new Map((await this.ticketsByIds(ids)).map((t) => [t.id, t]));
+    const out: Array<{ row: Record<string, unknown> & { id: string }; ticket: Ticket }> = [];
+    for (const row of rows) {
+      const t = tickets.get(refId(row.issue_id) ?? '');
+      if (t) out.push({ row, ticket: t });
+    }
+    return out.sort((a, b) => String(b.row.started_at ?? '').localeCompare(String(a.row.started_at ?? '')));
+  }
+
+  /** Updates one Periscopes row (EPIC-077). */
+  async updatePeriscope(id: string, patch: Record<string, unknown>): Promise<void> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    if (!modelId) throw new Error('this workspace has no Periscopes table');
+    await this.client.records.update(modelId, id, patch);
+  }
+
+  /**
    * The authorship columns this workspace is missing, as `table.column` names
    * for `crew doctor` to report (CREW-1371). Empty on a fully updated install.
    */
