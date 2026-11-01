@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { crewVersion, findConfigFile, loadConfig } from './config.ts';
-import { readForgeMisses } from './forges.ts';
+import { eraseForgeToken, readForgeMisses } from './forges.ts';
 import { crewInvocation } from './install.ts';
 import { ensureMachineId } from './machine-id.ts';
 import { hostArchitecture, type LeasePayload, type PoolApi, type PoolMemberDeps, type MemberStore } from './pool-member.ts';
@@ -70,6 +70,24 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
       for (const l of lines) o.log(`provision: ${l}`);
       if (outcome.code === PROVISION_EXIT.ok) return { ok: true };
       return { ok: false, reason: `crew provision exited ${outcome.code}: ${lines.at(-1) ?? 'no detail'}` };
+    },
+
+    async applyTokens(forges) {
+      const want = new Map(forges.map((f) => [f.host.toLowerCase(), f.token]));
+      // Tokens never reach argv or a log line: they go to `crew forge` on stdin.
+      for (const [host, token] of want) {
+        const stored = provisionDeps.storedToken(host);
+        if (stored === token) continue;
+        const res = provisionDeps.crew(['forge', stored === null ? 'set' : 'rotate', host, '--token-stdin'], { input: `${token}\n` });
+        if (res.status !== 0) return { ok: false, reason: `forge ${host}: ${res.stderr.trim() || `crew forge exited ${res.status}`}` };
+      }
+      const cfg = loadShip(o.crewHome);
+      if (!cfg) return { ok: false, reason: 'no ship config to apply forge tokens to' };
+      for (const host of Object.keys(cfg.ship.forges ?? {})) {
+        if (want.has(host.toLowerCase())) continue;
+        try { eraseForgeToken(cfg.ship.forges, host, cfg.ship.stateDir, env); } catch (e) { return { ok: false, reason: `forge ${host}: ${(e as Error).message}` }; }
+      }
+      return { ok: true };
     },
 
     async reconcile() {

@@ -61,6 +61,7 @@ The long poll. The server holds the request up to `wait` (clamped to
   payload from an older platform build with a single `connectKey` is accepted
   as the key for every route. Keys stay in memory: never argv, a log line or
   the JSON summary.
+- **200** `{ action: "tokens", leaseId, forges: [{ host, token }] }`: the organization's current forge token set, sent after a token is set, replaced or deleted while the lease runs. The member replaces its stored tokens with exactly this set: hosts listed are written, hosts absent lose their token, nothing else changes and agent runs in progress continue. It then sends a `running` status report, which the platform takes as the acknowledgement. A message naming a lease the member does not hold is ignored and logged. Tokens are never logged.
 - **200** `{ action: "release", leaseId }`: the lease the member named is being released.
 - **200** `{ action: "retire" }`: the member is being retired; the command exits 0.
 - **409** `{ code: "LEASE_MISMATCH", currentLeaseId }`: the member named a lease that is not its current one. It re-registers and follows the resume table. A stale release can therefore never wipe a newer lease: crew also ignores a release naming any lease other than the one it holds.

@@ -20,6 +20,7 @@ function world(o: {
   statusReply?: (b: StatusBody) => PoolReply<{ memberState?: string }>;
   file?: MemberFile; shipConfig?: boolean;
   provision?: PoolMemberDeps['provision']; deprovision?: PoolMemberDeps['deprovision']; reconcile?: PoolMemberDeps['reconcile'];
+  applyTokens?: PoolMemberDeps['applyTokens'];
   relayUrls?: Array<string | null>; stopAfterSleeps?: number;
 } = {}) {
   const calls: string[] = [];
@@ -51,6 +52,7 @@ function world(o: {
       shipConfig = true;
       return o.provision ? o.provision(l, cls, kind) : { ok: true };
     },
+    async applyTokens(f) { calls.push(`tokens:${f.map((x) => x.host).join(',')}`); return o.applyTokens ? o.applyTokens(f) : { ok: true }; },
     async reconcile() { calls.push('reconcile'); return o.reconcile ? o.reconcile() : { ok: true }; },
     async deprovision() { calls.push('deprovision'); shipConfig = false; return o.deprovision ? o.deprovision() : { ok: true }; },
     machineId: () => 'mach-1',
@@ -303,6 +305,45 @@ test('a register response naming managed_instance sets the ship kind passed to p
   });
   await runPoolMember(w.deps);
   assert.ok(w.calls.includes('provision:L1:c7.large:managed_instance'));
+});
+
+test('a tokens message for the held lease applies the set and reports running as the acknowledgement', async () => {
+  const logged: string[] = [];
+  const w = world({ leases: [
+    { status: 200, body: { action: 'provision', lease: lease() } },
+    { status: 200, body: { action: 'tokens', leaseId: 'L1', forges: [{ host: 'github.com', token: 'ghp_NEW_SECRET' }] } },
+  ] });
+  w.deps.log = (l) => { logged.push(l); };
+  assert.equal(await runPoolMember(w.deps), POOL_EXIT.ok);
+  assert.deepEqual(w.calls.slice(-2), ['tokens:github.com', 'status:running']);
+  assert.ok(!logged.join('\n').includes('SECRET'));
+});
+
+test('a tokens message for another lease is ignored', async () => {
+  const w = world({ leases: [
+    { status: 200, body: { action: 'provision', lease: lease() } },
+    { status: 200, body: { action: 'tokens', leaseId: 'OLD', forges: [] } },
+  ] });
+  await runPoolMember(w.deps);
+  assert.ok(!w.calls.some((c) => c.startsWith('tokens:')));
+});
+
+test('a tokens message with no lease held is ignored', async () => {
+  const w = world({ leases: [{ status: 200, body: { action: 'tokens', leaseId: 'L1', forges: [] } }] });
+  await runPoolMember(w.deps);
+  assert.deepEqual(w.calls, ['register', 'status:unprovisioned']);
+});
+
+test('a failed apply does not acknowledge and the member keeps polling', async () => {
+  const w = world({
+    applyTokens: async () => ({ ok: false, reason: 'boom' }),
+    leases: [
+      { status: 200, body: { action: 'provision', lease: lease() } },
+      { status: 200, body: { action: 'tokens', leaseId: 'L1', forges: [] } },
+    ],
+  });
+  assert.equal(await runPoolMember(w.deps), POOL_EXIT.ok);
+  assert.deepEqual(w.calls.slice(-1), ['tokens:']);
 });
 
 // --- run activity (CREW-2906) -----------------------------------------------

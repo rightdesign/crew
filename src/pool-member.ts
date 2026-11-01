@@ -51,6 +51,7 @@ export interface LeasePayload {
 
 export type LeaseAnswer =
   | { action: 'provision'; lease: LeasePayload }
+  | { action: 'tokens'; leaseId: string; forges: Array<{ host: string; token: string }> }
   | { action: 'release'; leaseId: string }
   | { action: 'retire' };
 
@@ -96,6 +97,8 @@ export interface PoolMemberDeps {
   provision(lease: LeasePayload, instanceClass: string, shipKind: string): Promise<ProvisionResult>;
   /** Brings an already-provisioned host back to running (units, routes, daemon) without a payload. */
   reconcile(): Promise<ProvisionResult>;
+  /** CREW-2902: replaces the stored forge tokens with exactly this set; hosts absent from it lose their token. */
+  applyTokens(forges: Array<{ host: string; token: string }>): Promise<ProvisionResult>;
   /** `crew deprovision`: true only after the host verified clean. */
   deprovision(): Promise<ProvisionResult>;
   /** This ship's hashed machine id and the tunnel URL, once known. */
@@ -281,6 +284,19 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
         if (code !== null) return code;
         current = null;
         relayReported = null;
+        continue;
+      }
+
+      if (body.action === 'tokens') {
+        // Like a release, a tokens message for a lease this member does not hold is ignored.
+        if (body.leaseId !== current) { deps.log(`ignoring a tokens message for ${body.leaseId}; this member holds ${current ?? 'no lease'}`); continue; }
+        const applied = await deps.applyTokens(body.forges ?? []);
+        if (!applied.ok) { deps.log(`tokens: ${applied.reason ?? 'could not apply the delivered forge tokens'}`); continue; }
+        deps.log(`tokens: replaced the forge tokens (${(body.forges ?? []).length} host${(body.forges ?? []).length === 1 ? '' : 's'})`);
+        // The platform treats the next status report as the acknowledgement.
+        const r = await report('running', { leaseId: current });
+        if (r === 'credential') return POOL_EXIT.credential;
+        if (r === 'stopped') return POOL_EXIT.ok;
         continue;
       }
 
