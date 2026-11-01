@@ -118,7 +118,7 @@ import { runScript, resolveShell } from './shell.ts';
 import { runPeriscopeResume } from './periscope-resume.ts';
 import { periscopeIdleKey } from './periscope-idle.ts';
 import {
-  PeriscopeError, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
+  PeriscopeError, existingRefusal, readPeriscopePrior, writePeriscopePrior, removePeriscopePrior, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
   periscopeListEntries, formatPeriscopeList, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeLimits, type PeriscopeRowInfo,
 } from './periscope-cmd.ts';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
@@ -360,7 +360,7 @@ function usage(problem?: string, requested = false): never {
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
-  crew periscope up [route] REPO --topic TEXT [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]
+  crew periscope up [route] REPO --topic TEXT|--issue NNN [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]
   crew periscope up --resume NNN restart the preview an idle periscope's server was stopped for
                                  file a draft ticket, cut and prepare its worktree, start the repo's preview hook and record a Periscopes row (alias: start)
   crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]
@@ -4417,7 +4417,7 @@ switch (command) {
     // supplies the real git, shell and tracker.
     const subP = positional[1];
     if (subP !== 'up' && subP !== 'start' && subP !== 'down' && subP !== 'end' && subP !== 'list') {
-      process.stderr.write('crew periscope up [route] REPO --topic TEXT [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]\n');
+      process.stderr.write('crew periscope up [route] REPO --topic TEXT|--issue NNN [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]\n');
       process.stderr.write('crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]\n');
       process.stderr.write('crew periscope list [route] [--json]\n');
       process.exit(2);
@@ -4492,11 +4492,18 @@ switch (command) {
           },
           readTicket: async (id) => {
             const t = await trD.ticket(id);
-            return { description: String(t.description ?? ''), hasProject: !!t[cD.columns.slice], hasRepo: !!t[cD.columns.repo] };
+            return { description: String(t.description ?? ''), hasProject: !!t[cD.columns.slice], hasRepo: !!t[cD.columns.repo], isDraft: t.status === cD.statuses.draft };
           },
+          priorHold: (id) => readPeriscopePrior(cfg.ship.stateDir, id),
+          remoteHasBranch: (_wt, branch) => remoteBranchExists(repoD.dir, remote, branch),
           updateTicket: async (id, p) => {
             const patch: Record<string, unknown> = {};
-            if (p.status === 'new') {
+            if (p.status === 'released') {
+              // An `--issue` periscope: give the hold back, leave the status.
+              patch[cD.columns.assignee] = null;
+              if ((await trD.authorshipProbe()).issueHeld) patch[cD.columns.heldBy] = null;
+              if (p.description !== undefined) patch.description = p.description;
+            } else if (p.status === 'new') {
               patch[cD.columns.status] = 'new';
               patch[cD.columns.assignee] = null;
               if (p.description !== undefined) patch.description = p.description;
@@ -4521,7 +4528,7 @@ switch (command) {
             if (deleteBranch) gitOk(repoD.dir, ['branch', '-D', branch]);
           },
           setRowState: (id, state) => trD.updatePeriscope(id, { state }),
-          forgetLocal: (id) => removePeriscopeSidecar(cfg.ship.stateDir, id),
+          forgetLocal: (id) => { removePeriscopeSidecar(cfg.ship.stateDir, id); removePeriscopePrior(cfg.ship.stateDir, id); },
           say,
         };
         if (dryRun) {
@@ -4576,7 +4583,7 @@ switch (command) {
         else process.stdout.write(`${resumed.ticket}\n${resumed.worktree}\n${resumed.url}\n`);
         break;
       }
-      const a = parsePeriscopeUpArgs(positional, { topic: value('topic'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
+      const a = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
       // The route is the one named, else the one whose checkout serves REPO.
       const candidatesP = a.route ? [findRoute(cfg, a.route)] : cfg.routes.filter((r) => r.enabled);
       const servedP: { route: typeof route; repo: Awaited<ReturnType<typeof resolvedRepos>>[number] }[] = [];
@@ -4660,12 +4667,55 @@ switch (command) {
           const closed = cP.statuses.resolved.includes('closed_obsolete') ? 'closed_obsolete' : cP.statuses.wontFix;
           await trackerP.updateTicket(ticketId, { [cP.columns.status]: closed, [cP.columns.resolutionNote]: note });
         },
+        existing: {
+          load: async (number) => {
+            const t = (await trackerP.ticketsByNumbers([number])).find((x) => String(x[cP.columns.key]).replace(/^\D+/, '').replace(/^0+(?=\d)/, '') === number);
+            if (!t) return undefined;
+            return {
+              id: t.id, tag: t.issue_tag ?? t.issue_id, issueId: t.issue_id, prefix: t.project_issue_prefix,
+              status: t.status,
+              closed: cP.statuses.resolved.includes(t.status) || t.status === cP.statuses.wontFix,
+              repoId: (t[cP.columns.repo] as string | null | undefined) ?? null,
+              assignee: (t[cP.columns.assignee] as string | null | undefined) ?? null,
+              heldByShipId: (t[cP.columns.heldBy] as string | null | undefined) ?? null,
+            };
+          },
+          repoId: repoP.id ?? null,
+          repoName: a.repo,
+          pairId,
+          shipId: (await trackerP.authorshipProbe()).shipId,
+          agentHolder: async (assigneeId) => {
+            const row = crewP.find((r) => r.id === assigneeId);
+            return row?.agent_id ? (row.name ?? assigneeId) : undefined;
+          },
+          hasLiveRun: (ticketRecordId) => liveRuns(cfg.ship.stateDir).some((r) => r.ticketRecordId === ticketRecordId),
+          hold: async (id) => {
+            const auth = await trackerP.authorshipProbe();
+            await trackerP.updateTicket(id, {
+              [cP.columns.assignee]: pairId,
+              ...(auth.issueHeld && auth.shipId ? { [cP.columns.heldBy]: auth.shipId } : {}),
+            });
+          },
+          restore: async (id, assignee) => {
+            const auth = await trackerP.authorshipProbe();
+            await trackerP.updateTicket(id, { [cP.columns.assignee]: assignee, ...(auth.issueHeld ? { [cP.columns.heldBy]: null } : {}) });
+          },
+          remember: (id, prior) => writePeriscopePrior(cfg.ship.stateDir, id, prior),
+        },
         now: () => new Date(),
         host: a.host ?? 'localhost',
         say,
       };
       if (dryRun) {
         await periscopePreflight(deps, a.repo);
+        if (a.issue) {
+          const t = await deps.existing!.load(a.issue);
+          if (!t) throw new PeriscopeError(`no ticket numbered ${a.issue} on this route`);
+          const refused = await existingRefusal(deps.existing!, t);
+          if (refused) throw new PeriscopeError(refused);
+          say('dry-run', `would hold ${t.tag} (status ${t.status} stays) for ${pairId}, cut or reuse its worktree for ${a.repo}, run setup${a.isolate ? ', isolate' : ''}, ports, handoff and preview on ${deps.host}, and record a Periscopes row`);
+          break;
+        }
         say('dry-run', `would file "Periscope: ${a.topic ?? '<topic>'}" as ${cP.statuses.draft} for ${pairId}, cut a worktree for ${a.repo}, run setup${a.isolate ? ', isolate' : ''}, ports, handoff and preview on ${deps.host}, and record a Periscopes row (expires after ${caps.idleMinutes} minutes idle)`);
         break;
       }

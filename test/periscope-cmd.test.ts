@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readPeriscopeSidecars, writePeriscopeSidecar, removePeriscopeSidecar } from '../src/periscope-state.ts';
+import { readPeriscopePrior, writePeriscopePrior, removePeriscopePrior } from '../src/periscope-cmd.ts';
 import {
   parsePeriscopeUpArgs, parseEnvLines, previewUrlFrom, periscopeCaps, runPeriscopeUp, PeriscopeError,
   type PeriscopeDeps, type PeriscopeUpArgs, type HookResult,
@@ -272,4 +277,122 @@ test('list shows live periscopes with idle minutes and listening, hiding kept an
   assert.equal(entries[0]!.listening, true);
   assert.match(formatPeriscopeList(entries), /TABL-900 {2}synthesis .*idle 30 min {2}listening/);
   assert.equal(formatPeriscopeList([]), 'no live periscopes on this ship');
+});
+
+// ---------------------------------------------------------------------------
+// `--issue NNN` (CREW-2865)
+// ---------------------------------------------------------------------------
+
+import type { ExistingDeps, ExistingTicket } from '../src/periscope-cmd.ts';
+
+const EXISTING: ExistingTicket = {
+  id: 'rec7', tag: 'TABL-700', issueId: 'ISSUE-700', status: 'needs_info', closed: false,
+  repoId: 'repo1', assignee: 'operator', heldByShipId: null,
+};
+
+function existingHarness(t: Partial<ExistingTicket> = {}, e: Partial<ExistingDeps> = {}, over: Partial<PeriscopeDeps> = {}) {
+  const log: string[] = [];
+  const existing: ExistingDeps = {
+    load: async () => ({ ...EXISTING, ...t }),
+    repoId: 'repo1', repoName: 'synthesis', pairId: 'pair', shipId: 'ship1',
+    agentHolder: async (id) => (id === 'dev-seat' ? 'Developer agent (Studio)' : undefined),
+    hasLiveRun: () => false,
+    hold: async (id) => { log.push(`hold:${id}`); },
+    restore: async (id, a) => { log.push(`restore:${id}:${a}`); },
+    remember: (id, p) => { log.push(`remember:${id}:${p.assignee}:${p.status}`); },
+    ...e,
+  };
+  const h = harness({ existing, fileDraft: async () => { throw new Error('must not file'); }, ...over });
+  return { ...h, log };
+}
+
+const ISSUE_ARGS: PeriscopeUpArgs = { repo: 'synthesis', issue: '700', isolate: false, json: false };
+
+test('parsePeriscopeUpArgs: --issue takes a number, and is refused with --topic', () => {
+  assert.equal(parsePeriscopeUpArgs(['periscope', 'up', 'synthesis'], { ...flags, issue: 'TABL-0700' }).issue, '700');
+  assert.throws(() => parsePeriscopeUpArgs(['periscope', 'up', 'synthesis'], { ...flags, issue: '700', topic: 'x' }), /cannot be combined/);
+  assert.throws(() => parsePeriscopeUpArgs(['periscope', 'up', 'synthesis'], { ...flags, issue: 'abc' }), /not a ticket number/);
+});
+
+test('runPeriscopeUp --issue: holds the ticket, files nothing, and reports the prior status', async () => {
+  const h = existingHarness();
+  const res = await runPeriscopeUp(h.deps, ISSUE_ARGS);
+  assert.deepEqual(h.log, ['hold:rec7', 'remember:rec7:operator:needs_info']);
+  assert.equal(res.ticket, 'TABL-700');
+  assert.equal(res.existing, true);
+  assert.equal(res.priorStatus, 'needs_info');
+  assert.ok(!h.calls.some((c) => c.startsWith('file:') || c.startsWith('close:')));
+  assert.equal(h.rows[0]!.issue_id, 'rec7');
+});
+
+test('runPeriscopeUp --issue: refuses a closed ticket, another repo, an agent holder, another ship and a live run, writing nothing', async () => {
+  for (const [t, e, re] of [
+    [{ closed: true, status: 'closed_deployed' }, {}, /closed_deployed/],
+    [{ repoId: 'other' }, {}, /different repository/],
+    [{ assignee: 'dev-seat' }, {}, /held by Developer agent \(Studio\)/],
+    [{ heldByShipId: 'ship2' }, {}, /held by another ship \(ship2\)/],
+    [{}, { hasLiveRun: () => true }, /run in flight/],
+  ] as const) {
+    const h = existingHarness(t, e);
+    await assert.rejects(runPeriscopeUp(h.deps, ISSUE_ARGS), re);
+    assert.deepEqual(h.log, []);
+    assert.deepEqual(h.calls, []);
+  }
+});
+
+test('runPeriscopeUp --issue: the Pair row may already hold it; an unknown number is refused', async () => {
+  await runPeriscopeUp(existingHarness({ assignee: 'pair', heldByShipId: 'ship1' }).deps, ISSUE_ARGS);
+  await assert.rejects(runPeriscopeUp(existingHarness({}, { load: async () => undefined }).deps, ISSUE_ARGS), /no ticket numbered 700/);
+});
+
+test('runPeriscopeUp --issue: a failed preview restores the assignee, tears down and does not close the ticket', async () => {
+  const bad = existingHarness({}, {}, {});
+  const res = runPeriscopeUp({ ...bad.deps, runHook: async (n) => (n === 'preview' ? { code: 1, output: 'boom' } : { code: 0, output: '' }) }, ISSUE_ARGS);
+  await assert.rejects(res, /preview exited 1/);
+  assert.deepEqual(bad.log, ['hold:rec7', 'remember:rec7:operator:needs_info', 'restore:rec7:operator']);
+  assert.ok(bad.calls.includes('teardown'));
+  assert.ok(!bad.calls.some((c) => c.startsWith('close:')));
+});
+
+test('runPeriscopeDown --keep on an existing ticket: pushes, adds the section, releases the hold, leaves status', async () => {
+  const h = downHarness({ readTicket: async () => ({ description: 'D', hasProject: true, hasRepo: true, isDraft: false }), priorHold: () => ({ assignee: 'operator', status: 'needs_info' }) });
+  const res = await runPeriscopeDown(h.deps, { number: '900', mode: 'keep', allowEmpty: false, json: false });
+  assert.deepEqual(h.calls, ['commit:TABL-900 Periscope prototype', 'push', 'ticket:released', 'pushed:abc123:origin/tabl-900', 'stop', 'remove:false', 'row:kept']);
+  assert.equal(res.existing, true);
+  assert.equal(res.status, 'needs_info');
+  assert.equal((h.patches[0] as { fillProjectAndRepo: boolean }).fillProjectAndRepo, false);
+});
+
+test('runPeriscopeDown --discard on an existing ticket: releases the hold, keeps the local branch when the remote has it', async () => {
+  const mk = (onRemote: boolean) => downHarness({ readTicket: async () => ({ description: 'D', hasProject: true, hasRepo: true, isDraft: false }), remoteHasBranch: () => onRemote });
+  const a = mk(true);
+  await runPeriscopeDown(a.deps, { number: '900', mode: 'discard', allowEmpty: false, json: false });
+  assert.deepEqual(a.calls, ['stop', 'remove:false', 'ticket:released', 'row:discarded']);
+  const b = mk(false);
+  await runPeriscopeDown(b.deps, { number: '900', mode: 'discard', allowEmpty: false, json: false });
+  assert.deepEqual(b.calls, ['stop', 'remove:true', 'ticket:released', 'row:discarded']);
+});
+
+test('runPeriscopeDown on an existing ticket removes the local record on keep and on discard', async () => {
+  for (const mode of ['keep', 'discard'] as const) {
+    const gone: string[] = [];
+    const h = downHarness({ readTicket: async () => ({ description: 'D', hasProject: true, hasRepo: true, isDraft: false }), forgetLocal: (id) => { gone.push(id); } });
+    await runPeriscopeDown(h.deps, { number: '900', mode, allowEmpty: false, json: false });
+    assert.equal(gone.length, 1, mode);
+  }
+});
+
+test('the prior-hold file round-trips outside the sidecar directory crew status reads', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'prior-'));
+  try {
+    writePeriscopePrior(dir, 'rec1', { assignee: 'op', status: 'needs_info' });
+    assert.deepEqual(readPeriscopePrior(dir, 'rec1'), { assignee: 'op', status: 'needs_info' });
+    assert.deepEqual(readPeriscopeSidecars(dir), []);
+    writePeriscopeSidecar(dir, { ticket: 'T-1', ticketRecordId: 'rec1', periscopeRecordId: 'p', repo: 'r', worktree: 'w', branch: 'b', url: 'http://h:1/', host: 'h', state: 'live', isolated: false, startedAt: '', lastActivityAt: '', expiresAt: '' });
+    assert.deepEqual(readPeriscopePrior(dir, 'rec1'), { assignee: 'op', status: 'needs_info' });
+    assert.equal(readPeriscopeSidecars(dir).length, 1);
+    removePeriscopeSidecar(dir, 'rec1');
+    removePeriscopePrior(dir, 'rec1');
+    assert.equal(readPeriscopePrior(dir, 'rec1'), undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

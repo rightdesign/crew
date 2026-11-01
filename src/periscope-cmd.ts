@@ -13,15 +13,45 @@
  * `cli.ts` supplies the real ones.
  */
 
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PeriscopeSidecar } from './periscope-state.ts';
 
 export class PeriscopeError extends Error {}
+
+/**
+ * Where `up --issue` leaves what it replaced, for `down` to report: one small file per ticket record.
+ * Deliberately NOT under `periscopes/`: that directory holds the CREW-2857 sidecars, which
+ * `crew status --json` reads wholesale and which share the `<ticketRecordId>.json` name.
+ */
+const priorDir = (stateDir: string) => join(stateDir, 'periscope-priors');
+const priorPath = (stateDir: string, ticketRecordId: string) => join(priorDir(stateDir), `${ticketRecordId}.json`);
+
+export function removePeriscopePrior(stateDir: string, ticketRecordId: string): void {
+  rmSync(priorPath(stateDir, ticketRecordId), { force: true });
+}
+
+export function writePeriscopePrior(stateDir: string, ticketRecordId: string, prior: { assignee: string | null; status: string }): void {
+  try {
+    mkdirSync(priorDir(stateDir), { recursive: true });
+    writeFileSync(priorPath(stateDir, ticketRecordId), JSON.stringify(prior));
+  } catch { /* only a convenience for the report; the hold itself is on the ticket */ }
+}
+
+export function readPeriscopePrior(stateDir: string, ticketRecordId: string): { assignee: string | null; status: string } | undefined {
+  try {
+    const p = priorPath(stateDir, ticketRecordId);
+    return existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as { assignee: string | null; status: string }) : undefined;
+  } catch { return undefined; }
+}
 
 export interface PeriscopeUpArgs {
   /** Only when two positional arguments were given; otherwise the repo picks the route. */
   route?: string;
   repo: string;
   topic?: string;
+  /** `--issue NNN`: periscope an existing ticket instead of filing a draft (digits only). */
+  issue?: string;
   isolate: boolean;
   host?: string;
   assignee?: string;
@@ -40,17 +70,24 @@ export const DEFAULT_PERISCOPE_IDLE_MINUTES = 120;
  */
 export function parsePeriscopeUpArgs(
   positional: string[],
-  flags: { topic?: string; host?: string; assignee?: string; isolate: boolean; json: boolean },
+  flags: { topic?: string; issue?: string; host?: string; assignee?: string; isolate: boolean; json: boolean },
 ): PeriscopeUpArgs {
+  const usage = 'usage: crew periscope up [route] REPO [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--json]';
   const rest = positional.slice(2);   // [periscope, up|start, ...]
-  if (rest.length === 0 || rest.length > 2) {
-    throw new PeriscopeError('usage: crew periscope up [route] REPO [--topic TEXT] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--json]');
-  }
+  if (rest.length === 0 || rest.length > 2) throw new PeriscopeError(usage);
   const topic = flags.topic?.trim();
+  let issue: string | undefined;
+  if (flags.issue !== undefined) {
+    if (topic) throw new PeriscopeError(`--issue and --topic cannot be combined: --issue periscopes a ticket that already exists\n${usage}`);
+    const m = /^(?:[A-Za-z]+-)?(\d+)$/.exec(flags.issue.trim());
+    if (!m) throw new PeriscopeError(`"${flags.issue}" is not a ticket number\n${usage}`);
+    issue = String(Number.parseInt(m[1]!, 10));
+  }
   return {
     ...(rest.length === 2 ? { route: rest[0] } : {}),
     repo: rest[rest.length - 1]!,
     ...(topic ? { topic } : {}),
+    ...(issue ? { issue } : {}),
     isolate: flags.isolate,
     ...(flags.host ? { host: flags.host } : {}),
     ...(flags.assignee ? { assignee: flags.assignee } : {}),
@@ -92,6 +129,57 @@ export interface PeriscopeResult {
   branch: string;
   url: string;
   periscopeRecordId: string;
+  /** `--issue`: the ticket already existed. */
+  existing?: true;
+  /** `--issue`: the ticket's status, which up and down leave alone. */
+  priorStatus?: string;
+}
+
+/** A ticket `--issue` resolved, with what the refusals need to know about it. */
+export interface ExistingTicket extends DraftTicket {
+  status: string;
+  closed: boolean;
+  repoId: string | null;
+  assignee: string | null;
+  heldByShipId: string | null;
+}
+
+/** What `--issue` needs beyond the draft path. Absent when the caller supports only drafts. */
+export interface ExistingDeps {
+  /** The ticket with this number on the route's tracker, or undefined. */
+  load(number: string): Promise<ExistingTicket | undefined>;
+  /** The repository the command names; a ticket of another repository is refused. */
+  repoId: string | null;
+  repoName: string;
+  /** This ship's Pair row, the only agent-less holder `--issue` takes over from. */
+  pairId: string;
+  shipId: string | null;
+  /** The name of an assignee that is an agent seat (not this ship's Pair row), else undefined. */
+  agentHolder(assigneeId: string): Promise<string | undefined>;
+  /** A run sidecar for the ticket exists on this ship. */
+  hasLiveRun(ticketRecordId: string): boolean;
+  /** Sets assignee to the Pair row and held-by to this ship; status is left alone. */
+  hold(ticketId: string): Promise<void>;
+  /** Puts the assignee back as it was and clears held-by (an up that failed). */
+  restore(ticketId: string, assignee: string | null): Promise<void>;
+  /** Records what `down` reports it cleared. */
+  remember(ticketId: string, prior: { assignee: string | null; status: string }): void;
+}
+
+/**
+ * Why `--issue` refuses a ticket, or undefined when it may be periscoped. The
+ * message names the holder; nothing has been written when it is returned.
+ */
+export async function existingRefusal(e: ExistingDeps, t: ExistingTicket): Promise<string | undefined> {
+  if (t.closed) return `${t.tag} is ${t.status}; a closed ticket cannot be periscoped`;
+  if (e.repoId && t.repoId !== e.repoId) return `${t.tag} belongs to a different repository than ${e.repoName}`;
+  if (t.assignee && t.assignee !== e.pairId) {
+    const agent = await e.agentHolder(t.assignee);
+    if (agent) return `${t.tag} is held by ${agent}`;
+  }
+  if (t.heldByShipId && e.shipId && t.heldByShipId !== e.shipId) return `${t.tag} is held by another ship (${t.heldByShipId})`;
+  if (e.hasLiveRun(t.id)) return `${t.tag} has a run in flight on this ship`;
+  return undefined;
 }
 
 export interface PeriscopeDeps {
@@ -119,6 +207,8 @@ export interface PeriscopeDeps {
   teardown(path: string, branch: string): Promise<void>;
   /** Closes the draft as obsolete when nothing usable came of it. */
   closeDraft(ticketId: string, note: string): Promise<void>;
+  /** `--issue` support (CREW-2865). */
+  existing?: ExistingDeps;
   now(): Date;
   host: string;
   say(event: string, message: string, data?: Record<string, unknown>): void;
@@ -152,19 +242,37 @@ export async function periscopePreflight(d: Pick<PeriscopeDeps, 'previewHook' | 
 
 export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): Promise<PeriscopeResult> {
   await periscopePreflight(d, args.repo);
-  const topic = args.topic ?? (await d.askTopic())?.trim();
-  if (!topic) throw new PeriscopeError('a topic is required: pass --topic TEXT');
-  const unsafe = d.baseProblem();
-  if (unsafe) throw new PeriscopeError(`DO NOT CUT A WORKTREE FROM THIS BASE — ${unsafe}`);
-
-  const draft = await d.fileDraft(`Periscope: ${topic}`);
-  d.say('filed', `filed draft ${draft.tag}`, { ticket: draft.tag, ticketRecordId: draft.id });
+  const ex = d.existing;
+  let draft: DraftTicket;
+  let prior: ExistingTicket | undefined;
+  if (args.issue) {
+    if (!ex) throw new PeriscopeError('--issue is not supported here');
+    prior = await ex.load(args.issue);
+    if (!prior) throw new PeriscopeError(`no ticket numbered ${args.issue} on this route`);
+    const refused = await existingRefusal(ex, prior);
+    if (refused) throw new PeriscopeError(refused);
+    const unsafe = d.baseProblem();
+    if (unsafe) throw new PeriscopeError(`DO NOT CUT A WORKTREE FROM THIS BASE — ${unsafe}`);
+    // The hold is the first write; the status is never touched.
+    await ex.hold(prior.id);
+    ex.remember(prior.id, { assignee: prior.assignee, status: prior.status });
+    draft = prior;
+    d.say('held', `holding ${prior.tag} (status ${prior.status} stays)`, { ticket: prior.tag, ticketRecordId: prior.id });
+  } else {
+    const topic = args.topic ?? (await d.askTopic())?.trim();
+    if (!topic) throw new PeriscopeError('a topic is required: pass --topic TEXT');
+    const unsafe = d.baseProblem();
+    if (unsafe) throw new PeriscopeError(`DO NOT CUT A WORKTREE FROM THIS BASE — ${unsafe}`);
+    draft = await d.fileDraft(`Periscope: ${topic}`);
+    d.say('filed', `filed draft ${draft.tag}`, { ticket: draft.tag, ticketRecordId: draft.id });
+  }
 
   let wt: { path: string; branch: string } | undefined;
   const abandon = async (why: string): Promise<never> => {
     // Best effort each: a failure to clean one thing must not hide the reason or skip the rest.
     if (wt) await d.teardown(wt.path, wt.branch).catch(() => {});
-    await d.closeDraft(draft.id, `Periscope abandoned: ${why.split('\n')[0]}`).catch(() => {});
+    if (prior) await d.existing!.restore(prior.id, prior.assignee).catch(() => {});
+    else await d.closeDraft(draft.id, `Periscope abandoned: ${why.split('\n')[0]}`).catch(() => {});
     throw new PeriscopeError(why);
   };
 
@@ -236,7 +344,10 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
     d.say('warning', `progress comment not posted: ${e.message}`);
   });
 
-  return { ticket: draft.tag, ticketRecordId: draft.id, worktree: wt.path, branch: wt.branch, url, periscopeRecordId: row.id };
+  return {
+    ticket: draft.tag, ticketRecordId: draft.id, worktree: wt.path, branch: wt.branch, url, periscopeRecordId: row.id,
+    ...(prior ? { existing: true as const, priorStatus: prior.status } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,8 +415,16 @@ export interface PeriscopeDownDeps {
   /** Files the branch changes against the remote base. */
   changedFiles(worktree: string): ChangedFile[];
   /** The ticket's current description, project and repo. */
-  readTicket(ticketRecordId: string): Promise<{ description: string; hasProject: boolean; hasRepo: boolean }>;
-  updateTicket(ticketRecordId: string, patch: { description?: string; fillProjectAndRepo: boolean; status: 'new' | 'discarded'; note?: string }): Promise<void>;
+  readTicket(ticketRecordId: string): Promise<{ description: string; hasProject: boolean; hasRepo: boolean; isDraft?: boolean }>;
+  /**
+   * `status: 'released'` is an `--issue` periscope ending: clear the assignee and
+   * held-by, change nothing else but the description when one is given.
+   */
+  updateTicket(ticketRecordId: string, patch: { description?: string; fillProjectAndRepo: boolean; status: 'new' | 'discarded' | 'released'; note?: string }): Promise<void>;
+  /** What `up --issue` recorded for the ticket, if anything. */
+  priorHold?(ticketRecordId: string): { assignee: string | null; status: string } | undefined;
+  /** Whether the remote has the branch; a local branch whose remote copy exists is never deleted. */
+  remoteHasBranch?(worktree: string, branch: string): boolean;
   postPushed(ticketRecordId: string, sha: string, remote: string, branch: string): Promise<void>;
   /** Kills what listens for the worktree. Returns how many processes were stopped. */
   stopServer(worktree: string, number: string): Promise<number>;
@@ -341,6 +460,9 @@ export interface PeriscopeDownResult {
   outcome: 'done' | 'unchanged';
   state: string;
   sha?: string;
+  /** `--issue` periscope: the ticket already existed and its status is untouched. */
+  existing?: true;
+  status?: string;
 }
 
 function forgetLocal(d: PeriscopeDownDeps, ticketRecordId: string): void {
@@ -355,6 +477,25 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
     const done = rows[0]!;
     d.say('unchanged', `${done.ticket} is already ${done.state}; nothing to do`);
     return { ticket: done.ticket, mode: args.mode, outcome: 'unchanged', state: done.state };
+  }
+
+  // A draft is the periscope's own ticket; anything else is a ticket someone
+  // else owns, whose status neither ending touches.
+  const existing = (await d.readTicket(row.ticketRecordId)).isDraft === false;
+  const prior = existing ? d.priorHold?.(row.ticketRecordId) : undefined;
+
+  if (existing && args.mode === 'discard') {
+    const killed = await d.stopServer(row.worktree, row.number);
+    d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
+    const onRemote = d.remoteHasBranch?.(row.worktree, row.branch) ?? true;
+    d.removeWorktree(row.worktree, row.branch, !onRemote);
+    d.say('worktree', onRemote ? `removed ${row.worktree}; ${row.branch} stays, it is on the remote` : `removed ${row.worktree} and branch ${row.branch}`);
+    await d.updateTicket(row.ticketRecordId, { status: 'released', fillProjectAndRepo: false });
+    d.say('ticket', `${row.ticket} hold cleared; status unchanged${prior ? ` (assignee before the periscope: ${prior.assignee ?? 'none'})` : ''}`);
+    await d.setRowState(row.id, 'discarded');
+    d.say('row', 'row is discarded');
+    forgetLocal(d, row.ticketRecordId);
+    return { ticket: row.ticket, mode: 'discard', outcome: 'done', state: 'discarded', existing: true, ...(prior ? { status: prior.status } : {}) };
   }
 
   if (args.mode === 'discard') {
@@ -387,10 +528,15 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   const t = await d.readTicket(row.ticketRecordId);
   const section = prototypeSection(d.changedFiles(row.worktree));
   const description = t.description.includes(PROTOTYPE_HEADING) ? t.description : `${t.description.trimEnd()}\n\n${section}`;
-  await d.updateTicket(row.ticketRecordId, {
-    description, fillProjectAndRepo: !t.hasProject || !t.hasRepo, status: 'new',
-  });
-  d.say('ticket', `${row.ticket} is new and unassigned with a Prototype section`);
+  if (existing) {
+    await d.updateTicket(row.ticketRecordId, { description, fillProjectAndRepo: false, status: 'released' });
+    d.say('ticket', `${row.ticket} has a Prototype section and no assignee; status unchanged${prior ? ` (assignee before the periscope: ${prior.assignee ?? 'none'})` : ''}`);
+  } else {
+    await d.updateTicket(row.ticketRecordId, {
+      description, fillProjectAndRepo: !t.hasProject || !t.hasRepo, status: 'new',
+    });
+    d.say('ticket', `${row.ticket} is new and unassigned with a Prototype section`);
+  }
   await d.postPushed(row.ticketRecordId, pushed.sha, pushed.remote, row.branch);
 
   const killed = await d.stopServer(row.worktree, row.number);
@@ -400,7 +546,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   await d.setRowState(row.id, 'kept');
   d.say('row', 'row is kept');
   forgetLocal(d, row.ticketRecordId);
-  return { ticket: row.ticket, mode: 'keep', outcome: 'done', state: 'kept', sha: pushed.sha };
+  return { ticket: row.ticket, mode: 'keep', outcome: 'done', state: 'kept', sha: pushed.sha, ...(existing ? { existing: true as const, ...(prior ? { status: prior.status } : {}) } : {}) };
 }
 
 export interface PeriscopeListEntry extends PeriscopeRowInfo { idleMinutes: number | null; listening: boolean }
