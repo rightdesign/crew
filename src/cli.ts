@@ -10,6 +10,7 @@
 import { doctorBaseReport } from './doctor-repo.ts';
 import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems } from './periscopes.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
+import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth } from './adapters/claude.ts';
@@ -21,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
 import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
-  loadConfig, findConfigFile, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
+  loadConfig, findConfigFile, findRoute, routeForDir, locateDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers, crewVersion, routeSlug,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
@@ -119,6 +120,7 @@ import { runPeriscopeResume } from './periscope-resume.ts';
 import { periscopeIdleKey } from './periscope-idle.ts';
 import {
   PeriscopeError, existingRefusal, readPeriscopePrior, writePeriscopePrior, removePeriscopePrior, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
+  upOutput, shouldOpen, openerFor, rowForCwd, defaultTopic, type PeriscopeUpArgs,
   periscopeListEntries, formatPeriscopeList, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeLimits, type PeriscopeRowInfo,
 } from './periscope-cmd.ts';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
@@ -360,12 +362,13 @@ function usage(problem?: string, requested = false): never {
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
-  crew periscope up [route] REPO --topic TEXT|--issue NNN [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]
+  crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--host H] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]
   crew periscope up --resume NNN restart the preview an idle periscope's server was stopped for
                                  file a draft ticket, cut and prepare its worktree, start the repo's preview hook and record a Periscopes row (alias: start)
-  crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]
+  crew periscope down [[route] NNN] --keep|--discard [--allow-empty] [--json]
                                  end a periscope: commit and push its branch (ticket back to new), or throw it away (alias: end)
   crew periscope list [route] [--json]   the live periscopes on this ship, their idle minutes and whether each server is listening
+  crew shell-init [--shell zsh|bash|fish]   print the periscope shell function (install: eval "\$(crew shell-init)")
   crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
@@ -454,10 +457,21 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
 const KNOWN_COMMANDS = new Set([
   'passenger-sync-daemon', 'agents', 'connect', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
-  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'ship', 'skills', 'status',
+  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
+// CREW-2866: the shell function needs no config (it is installed from an rc
+// file, before or without a ship), so it is answered before one is loaded.
+if (command === 'shell-init') {
+  const asked = value('shell');
+  if (asked !== undefined && !(SHELLS as readonly string[]).includes(asked)) {
+    process.stderr.write(`crew shell-init: unknown shell "${asked}" (have: ${SHELLS.join(', ')})\n`);
+    process.exit(2);
+  }
+  process.stdout.write(shellInitScript(shellFor(asked, process.env.SHELL)));
+  process.exit(0);
+}
 
 /**
  * `crew repos check` (CREW-2590): print the report for the spec file in `dir`
@@ -4417,8 +4431,8 @@ switch (command) {
     // supplies the real git, shell and tracker.
     const subP = positional[1];
     if (subP !== 'up' && subP !== 'start' && subP !== 'down' && subP !== 'end' && subP !== 'list') {
-      process.stderr.write('crew periscope up [route] REPO --topic TEXT|--issue NNN [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]\n');
-      process.stderr.write('crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]\n');
+      process.stderr.write('crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--host H] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]\n');
+      process.stderr.write('crew periscope down [[route] NNN] --keep|--discard [--allow-empty] [--json]\n');
       process.stderr.write('crew periscope list [route] [--json]\n');
       process.exit(2);
     }
@@ -4458,11 +4472,22 @@ switch (command) {
           process.stdout.write(jsonP ? `${JSON.stringify(entries)}\n` : `${formatPeriscopeList(entries)}\n`);
           break;
         }
-        const a = downArgs!;
+        const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+        const gathered = await Promise.all(routesP.map(async (rt) => ({ rt, rows: await gather(rt) })));
+        // No ticket number: the periscope whose worktree holds the working directory.
+        const number = downArgs!.number ?? (() => {
+          const here = real(process.cwd());
+          for (const g of gathered) {
+            const hit = rowForCwd(g.rows.map((r) => ({ ...r, worktree: real(r.worktree) })), here);
+            if (hit) return hit.number;
+          }
+          throw new PeriscopeError('not inside a periscope worktree — name the ticket: crew periscope down NNN --keep|--discard');
+        })();
+        const a = { ...downArgs!, number };
         const hits: { rt: typeof route; rows: PeriscopeRowInfo[] }[] = [];
-        for (const rt of routesP) {
-          const rows = (await gather(rt)).filter((r) => r.number === a.number);
-          if (rows.length) hits.push({ rt, rows });
+        for (const g of gathered) {
+          const rows = g.rows.filter((r) => r.number === a.number);
+          if (rows.length) hits.push({ rt: g.rt, rows });
         }
         if (hits.length !== 1) {
           throw new PeriscopeError(hits.length === 0
@@ -4535,6 +4560,9 @@ switch (command) {
           say('dry-run', `would end the periscope for ${rowsD[0]!.ticket} (${a.mode})`);
           break;
         }
+        // `down` may be run from inside the worktree it removes; leave it for the
+        // checkout first so no later step runs from a directory that is gone.
+        process.chdir(repoD.dir);
         const res = await runPeriscopeDown(depsD, a);
         if (jsonP) process.stdout.write(`${JSON.stringify({ event: 'done', ...res })}\n`);
         else process.stdout.write(`${res.ticket} ${res.state}\n`);
@@ -4583,7 +4611,19 @@ switch (command) {
         else process.stdout.write(`${resumed.ticket}\n${resumed.worktree}\n${resumed.url}\n`);
         break;
       }
-      const a = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
+      const parsedUp = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
+      // CREW-2866: with no REPO, the working directory (a checkout, or a worktree of one) names the route and repository.
+      let a: PeriscopeUpArgs;
+      if (parsedUp.repo !== undefined) a = { ...parsedUp, repo: parsedUp.repo };
+      else {
+        const here = locateDir(cfg, process.cwd(), (d) => gitOk(d, ['rev-parse', '--path-format=absolute', '--git-common-dir']) ?? undefined);
+        if (!here) {
+          const where = cfg.routes.flatMap((r) => reposOf(r).map((x) => `  ${x.name}: ${x.dir}`));
+          throw new PeriscopeError(`run it from inside a configured checkout, or name the repository (crew periscope up REPO). Configured checkouts:\n${where.join('\n')}`);
+        }
+        a = { ...parsedUp, repo: here.repo.name, route: parsedUp.route ?? here.route.route };
+      }
+      const terminal = !!process.stdin.isTTY && !!process.stdout.isTTY && !jsonP;
       // The route is the one named, else the one whose checkout serves REPO.
       const candidatesP = a.route ? [findRoute(cfg, a.route)] : cfg.routes.filter((r) => r.enabled);
       const servedP: { route: typeof route; repo: Awaited<ReturnType<typeof resolvedRepos>>[number] }[] = [];
@@ -4615,9 +4655,12 @@ switch (command) {
         caps,
         baseProblem: () => { const h = baseHealth(repoP); return h.unsafe ? h.detail : undefined; },
         askTopic: async () => {
-          if (!process.stdin.isTTY || jsonP) return undefined;
+          if (!terminal) return undefined;
           const rl = createInterface({ input: process.stdin, output: process.stderr });
-          try { return await rl.question('Periscope topic: '); } finally { rl.close(); }
+          try {
+            const answer = (await rl.question(`Periscope topic for ${a.repo} (blank for "${defaultTopic(a.repo, new Date())}"): `)).trim();
+            return answer || undefined;
+          } finally { rl.close(); }
         },
         fileDraft: async (title) => {
           const t = await trackerP.fileTicket({
@@ -4716,12 +4759,19 @@ switch (command) {
           say('dry-run', `would hold ${t.tag} (status ${t.status} stays) for ${pairId}, cut or reuse its worktree for ${a.repo}, run setup${a.isolate ? ', isolate' : ''}, ports, handoff and preview on ${deps.host}, and record a Periscopes row`);
           break;
         }
-        say('dry-run', `would file "Periscope: ${a.topic ?? '<topic>'}" as ${cP.statuses.draft} for ${pairId}, cut a worktree for ${a.repo}, run setup${a.isolate ? ', isolate' : ''}, ports, handoff and preview on ${deps.host}, and record a Periscopes row (expires after ${caps.idleMinutes} minutes idle)`);
+        say('dry-run', `would file "Periscope: ${a.topic ?? defaultTopic(a.repo, new Date())}" as ${cP.statuses.draft} for ${pairId}, cut a worktree for ${a.repo}, run setup${a.isolate ? ', isolate' : ''}, ports, handoff and preview on ${deps.host}, and record a Periscopes row (expires after ${caps.idleMinutes} minutes idle)`);
         break;
       }
       const res = await runPeriscopeUp(deps, a);
       if (jsonP) process.stdout.write(`${JSON.stringify({ event: 'done', ...res })}\n`);
-      else process.stdout.write(`${res.ticket}\n${res.worktree}\n${res.url}\n`);
+      else {
+        process.stdout.write(upOutput(res, terminal));
+        const opener = openerFor(process.platform);
+        if (opener && shouldOpen({ open: flag('open'), noOpen: flag('no-open'), json: jsonP, terminal })) {
+          const r = spawnSync(opener, [res.url], { stdio: 'ignore' });
+          if (r.error || r.status !== 0) process.stderr.write(`crew periscope: could not open ${res.url} with ${opener}\n`);
+        }
+      }
     } catch (e) {
       if (e instanceof PeriscopeError || e instanceof ConfigError) {
         process.stderr.write(`crew periscope: ${e.message}\n`);

@@ -7,7 +7,7 @@ import { readPeriscopeSidecars, writePeriscopeSidecar, removePeriscopeSidecar } 
 import { readPeriscopePrior, writePeriscopePrior, removePeriscopePrior } from '../src/periscope-cmd.ts';
 import {
   parsePeriscopeUpArgs, parseEnvLines, previewUrlFrom, periscopeCaps, runPeriscopeUp, PeriscopeError,
-  type PeriscopeDeps, type PeriscopeUpArgs, type HookResult,
+  upOutput, shouldOpen, openerFor, defaultTopic, rowForCwd, type PeriscopeDeps, type PeriscopeUpArgs, type HookResult,
 } from '../src/periscope-cmd.ts';
 
 const flags = { isolate: false, json: false };
@@ -21,7 +21,13 @@ test('parsePeriscopeUpArgs: one positional is the repo, two are route then repo'
   assert.equal(a.host, 'h');
   assert.equal(a.assignee, 'x');
   assert.equal(a.isolate, true);
-  assert.throws(() => parsePeriscopeUpArgs(['periscope', 'up'], flags), PeriscopeError);
+  assert.throws(() => parsePeriscopeUpArgs(['periscope', 'up', 'a', 'b', 'c'], flags), PeriscopeError);
+});
+
+test('parsePeriscopeUpArgs: no positional leaves the repo to the working directory', () => {
+  const a = parsePeriscopeUpArgs(['periscope', 'up'], flags);
+  assert.equal(a.repo, undefined);
+  assert.equal(a.route, undefined);
 });
 
 test('parseEnvLines keeps KEY=value lines and drops the rest', () => {
@@ -116,9 +122,31 @@ test('runPeriscopeUp: refuses without a Periscopes table, at the cap, without a 
     await assert.rejects(runPeriscopeUp(h.deps, ARGS), re);
     assert.deepEqual(h.calls, []);
   }
+});
+
+test('runPeriscopeUp: no topic and no prompt defaults to the repo and the date; a prompted topic wins', async () => {
   const h = harness();
-  await assert.rejects(runPeriscopeUp(h.deps, { ...ARGS, topic: undefined }), /topic is required/);
-  assert.deepEqual(h.calls, []);
+  await runPeriscopeUp(h.deps, { ...ARGS, topic: undefined });
+  assert.equal(h.calls[0], 'file:Periscope: synthesis, 2026-11-01');
+  const p = harness({ askTopic: async () => ' spacing ' });
+  await runPeriscopeUp(p.deps, { ...ARGS, topic: undefined });
+  assert.equal(p.calls[0], 'file:Periscope: spacing');
+});
+
+test('upOutput, shouldOpen, openerFor, defaultTopic', () => {
+  const res = { ticket: 'TABL-9', ticketRecordId: 'r', worktree: '/w', branch: 'b', url: 'http://u', periscopeRecordId: 'p' };
+  assert.equal(upOutput(res, false), 'TABL-9\n/w\nhttp://u\n');
+  assert.equal(upOutput(res, true), 'TABL-9\nhttp://u\n/w\n');
+  const base = { open: false, noOpen: false, json: false, terminal: false };
+  assert.equal(shouldOpen(base), false);
+  assert.equal(shouldOpen({ ...base, terminal: true }), true);
+  assert.equal(shouldOpen({ ...base, terminal: true, noOpen: true }), false);
+  assert.equal(shouldOpen({ ...base, open: true }), true);
+  assert.equal(shouldOpen({ ...base, open: true, json: true }), false);
+  assert.equal(openerFor('darwin'), 'open');
+  assert.equal(openerFor('linux'), 'xdg-open');
+  assert.equal(openerFor('win32'), undefined);
+  assert.equal(defaultTopic('crew', new Date('2026-11-01T23:00:00Z')), 'crew, 2026-11-01');
 });
 
 test('runPeriscopeUp: a failing preview tears down and closes the draft, writing no row', async () => {
@@ -178,7 +206,7 @@ const ROW: PeriscopeRowInfo = {
 test('parsePeriscopeDownArgs: needs exactly one of --keep and --discard and a ticket number', () => {
   assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', '900'], dflags), /exactly one/);
   assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', '900'], { ...dflags, keep: true, discard: true }), /exactly one/);
-  assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down'], { ...dflags, keep: true }), PeriscopeError);
+  assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', 'a', 'b', 'c'], { ...dflags, keep: true }), PeriscopeError);
   assert.throws(() => parsePeriscopeDownArgs(['periscope', 'down', 'abc'], { ...dflags, keep: true }), /not a ticket number/);
   assert.deepEqual(parsePeriscopeDownArgs(['periscope', 'end', 'TABL-900'], { ...dflags, discard: true }),
     { number: '900', mode: 'discard', allowEmpty: false, json: false });
@@ -277,6 +305,20 @@ test('list shows live periscopes with idle minutes and listening, hiding kept an
   assert.equal(entries[0]!.listening, true);
   assert.match(formatPeriscopeList(entries), /TABL-900 {2}synthesis .*idle 30 min {2}listening/);
   assert.equal(formatPeriscopeList([]), 'no live periscopes on this ship');
+});
+
+test('parsePeriscopeDownArgs: no ticket number leaves it to the working directory', () => {
+  const a = parsePeriscopeDownArgs(['periscope', 'down'], { ...dflags, discard: true });
+  assert.equal(a.number, undefined);
+  assert.equal(a.mode, 'discard');
+});
+
+test('rowForCwd: the live periscope whose worktree holds the directory', () => {
+  const other = { ...ROW, id: 'p2', number: '901', worktree: '/w/tablation-tabl-90' };
+  assert.equal(rowForCwd([other, ROW], '/w/tablation-tabl-900/apps/x')?.number, '900');
+  assert.equal(rowForCwd([other, ROW], '/w/tablation-tabl-900')?.number, '900');
+  assert.equal(rowForCwd([ROW], '/w/tablation-tabl-9000'), undefined);
+  assert.equal(rowForCwd([{ ...ROW, state: 'kept' }], '/w/tablation-tabl-900'), undefined);
 });
 
 // ---------------------------------------------------------------------------

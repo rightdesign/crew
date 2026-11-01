@@ -1374,12 +1374,42 @@ function parseOneRoute(
  * `SessionStart` hook) treats "not a crew checkout" as a normal, silent case.
  */
 export function routeForDir(cfg: CrewConfig, dir: string): Route | undefined {
-  const target = resolve(dir);
-  const isInside = (base: string) => {
+  return locateDir(cfg, dir)?.route;
+}
+
+/** A configured checkout found from a directory. */
+export interface DirLocation { route: Route; repo: RepoTarget; checkout: string }
+
+/**
+ * Which route and repository own `dir` — `routeForDir` plus the repository,
+ * and able to see through a git worktree (CREW-2866). A worktree lives beside
+ * its checkout (`../crew-2866`), not inside it, so when `dir` is in no
+ * configured checkout `commonDirOf(dir)` (the `.git` directory it shares with
+ * its parent checkout, as `git rev-parse --git-common-dir` prints it) is
+ * resolved and its parent directory tried. Returns undefined rather than
+ * throwing: "not a crew checkout" is an ordinary answer.
+ */
+export function locateDir(
+  cfg: CrewConfig,
+  dir: string,
+  commonDirOf?: (dir: string) => string | undefined,
+): DirLocation | undefined {
+  const within = (base: string, target: string) => {
     const b = resolve(base);
     return target === b || target.startsWith(`${b}/`);
   };
-  return cfg.routes.find((r) => reposOf(r).some((repo) => isInside(repo.dir)));
+  const find = (target: string): DirLocation | undefined => {
+    for (const route of cfg.routes) {
+      const repo = reposOf(route).find((x) => within(x.dir, target));
+      if (repo) return { route, repo, checkout: resolve(repo.dir) };
+    }
+    return undefined;
+  };
+  const target = resolve(dir);
+  const direct = find(target);
+  if (direct) return direct;
+  const common = commonDirOf?.(target);
+  return common ? find(dirname(resolve(target, common))) : undefined;
 }
 
 /** Look a route up by its `workspace/project` string — how `crew run <route>` addresses one. */

@@ -49,6 +49,7 @@ export interface PeriscopeUpArgs {
   /** Only when two positional arguments were given; otherwise the repo picks the route. */
   route?: string;
   repo: string;
+  /** Absent: prompted for in a terminal, else `<repo>, <date>`. */
   topic?: string;
   /** `--issue NNN`: periscope an existing ticket instead of filing a draft (digits only). */
   issue?: string;
@@ -64,17 +65,21 @@ export interface PeriscopeLimits { maxPeriscopes?: number; periscopeIdleMinutes?
 export const DEFAULT_MAX_PERISCOPES = 3;
 export const DEFAULT_PERISCOPE_IDLE_MINUTES = 120;
 
+/** What `periscope up` was typed with; `repo` is absent when the working directory names it. */
+export type ParsedPeriscopeUpArgs = Omit<PeriscopeUpArgs, 'repo'> & { repo?: string };
+
 /**
- * `periscope up [route] REPO [--topic TEXT] ...`. One positional is the repo;
- * two are `route repo`. The flags arrive already read by the caller.
+ * `periscope up [[route] REPO] [--topic TEXT] ...`. One positional is the
+ * repo; two are `route repo`; none leaves both to the working directory
+ * (CREW-2866). The flags arrive already read by the caller.
  */
 export function parsePeriscopeUpArgs(
   positional: string[],
   flags: { topic?: string; issue?: string; host?: string; assignee?: string; isolate: boolean; json: boolean },
-): PeriscopeUpArgs {
-  const usage = 'usage: crew periscope up [route] REPO [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--json]';
+): ParsedPeriscopeUpArgs {
+  const usage = 'usage: crew periscope up [[route] REPO] [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--no-open] [--json]';
   const rest = positional.slice(2);   // [periscope, up|start, ...]
-  if (rest.length === 0 || rest.length > 2) throw new PeriscopeError(usage);
+  if (rest.length > 2) throw new PeriscopeError(usage);
   const topic = flags.topic?.trim();
   let issue: string | undefined;
   if (flags.issue !== undefined) {
@@ -85,7 +90,7 @@ export function parsePeriscopeUpArgs(
   }
   return {
     ...(rest.length === 2 ? { route: rest[0] } : {}),
-    repo: rest[rest.length - 1]!,
+    ...(rest.length > 0 ? { repo: rest[rest.length - 1]! } : {}),
     ...(topic ? { topic } : {}),
     ...(issue ? { issue } : {}),
     isolate: flags.isolate,
@@ -190,7 +195,7 @@ export interface PeriscopeDeps {
   caps: { max: number; idleMinutes: number };
   /** A reason the base branch is not safe to cut from (the `crew worktree` stop), else undefined. */
   baseProblem(): string | undefined;
-  /** The topic when `--topic` was not given (a prompt), else undefined. */
+  /** The topic when `--topic` was not given and a person is at a terminal (a prompt), else undefined. */
   askTopic(): Promise<string | undefined>;
   fileDraft(title: string): Promise<DraftTicket>;
   /** Cuts the worktree for the ticket; throws a PeriscopeError naming why when it cannot. */
@@ -215,6 +220,31 @@ export interface PeriscopeDeps {
 }
 
 const tail = (s: string, n = 20) => s.trimEnd().split('\n').slice(-n).join('\n');
+
+/** The topic when none was given and nobody was asked: the draft reads `Periscope: <repo>, <date>`. */
+export function defaultTopic(repo: string, now: Date): string {
+  return `${repo}, ${now.toISOString().slice(0, 10)}`;
+}
+
+/** The platform's "open this URL" program, or undefined where there is none. */
+export function openerFor(platform: string): string | undefined {
+  return platform === 'darwin' ? 'open' : platform === 'linux' ? 'xdg-open' : undefined;
+}
+
+/**
+ * What `periscope up` prints on stdout. At a terminal the URL comes first and
+ * the worktree path on the line after it, so a person can click the one and
+ * `cd` to the other; piped, the order is unchanged from the first cut.
+ */
+export function upOutput(res: PeriscopeResult, terminal: boolean): string {
+  return terminal ? `${res.ticket}\n${res.url}\n${res.worktree}\n` : `${res.ticket}\n${res.worktree}\n${res.url}\n`;
+}
+
+/** Whether to open the URL: `--open` forces it, `--no-open` forbids it, otherwise only a person at a terminal gets it. */
+export function shouldOpen(f: { open: boolean; noOpen: boolean; json: boolean; terminal: boolean }): boolean {
+  if (f.noOpen || f.json) return false;
+  return f.open || f.terminal;
+}
 
 export function progressComment(url: string, handoff: string | undefined): string {
   return [
@@ -259,8 +289,7 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
     draft = prior;
     d.say('held', `holding ${prior.tag} (status ${prior.status} stays)`, { ticket: prior.tag, ticketRecordId: prior.id });
   } else {
-    const topic = args.topic ?? (await d.askTopic())?.trim();
-    if (!topic) throw new PeriscopeError('a topic is required: pass --topic TEXT');
+    const topic = args.topic ?? (await d.askTopic())?.trim() ?? defaultTopic(args.repo, d.now());
     const unsafe = d.baseProblem();
     if (unsafe) throw new PeriscopeError(`DO NOT CUT A WORKTREE FROM THIS BASE — ${unsafe}`);
     draft = await d.fileDraft(`Periscope: ${topic}`);
@@ -356,8 +385,8 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
 
 export interface PeriscopeDownArgs {
   route?: string;
-  /** The ticket number, digits only. */
-  number: string;
+  /** The ticket number, digits only; absent when the working directory is the periscope's worktree. */
+  number?: string;
   mode: 'keep' | 'discard';
   allowEmpty: boolean;
   json: boolean;
@@ -372,15 +401,15 @@ export function parsePeriscopeDownArgs(
   positional: string[],
   flags: { keep: boolean; discard: boolean; allowEmpty: boolean; json: boolean },
 ): PeriscopeDownArgs {
-  const usage = 'usage: crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]';
+  const usage = 'usage: crew periscope down [[route] NNN] --keep|--discard [--allow-empty] [--json]';
   const rest = positional.slice(2);   // [periscope, down|end, ...]
-  if (rest.length === 0 || rest.length > 2) throw new PeriscopeError(usage);
+  if (rest.length > 2) throw new PeriscopeError(usage);
   if (flags.keep === flags.discard) throw new PeriscopeError(`pass exactly one of --keep or --discard\n${usage}`);
-  const m = /^(?:[A-Za-z]+-)?(\d+)$/.exec(rest[rest.length - 1]!);
-  if (!m) throw new PeriscopeError(`"${rest[rest.length - 1]}" is not a ticket number\n${usage}`);
+  const m = rest.length === 0 ? null : /^(?:[A-Za-z]+-)?(\d+)$/.exec(rest[rest.length - 1]!);
+  if (rest.length > 0 && !m) throw new PeriscopeError(`"${rest[rest.length - 1]}" is not a ticket number\n${usage}`);
   return {
     ...(rest.length === 2 ? { route: rest[0] } : {}),
-    number: m[1]!,
+    ...(m ? { number: m[1]! } : {}),
     mode: flags.keep ? 'keep' : 'discard',
     allowEmpty: flags.allowEmpty,
     json: flags.json,
@@ -399,6 +428,14 @@ export interface PeriscopeRowInfo {
   worktree: string;
   branch: string;
   lastActivityAt: string | null;
+}
+
+/**
+ * The live periscope whose worktree contains `cwd` — how `down` with no ticket
+ * number knows which one is meant. Both sides are expected to be real paths.
+ */
+export function rowForCwd(rows: PeriscopeRowInfo[], cwd: string): PeriscopeRowInfo | undefined {
+  return rows.find((r) => r.state === 'live' && r.worktree !== '' && (cwd === r.worktree || cwd.startsWith(`${r.worktree}/`)));
 }
 
 export interface ChangedFile { path: string; added: number; removed: number }
@@ -469,7 +506,7 @@ function forgetLocal(d: PeriscopeDownDeps, ticketRecordId: string): void {
   try { d.forgetLocal?.(ticketRecordId); } catch (e) { d.say('warn', `could not remove the local periscope record: ${(e as Error).message}`); }
 }
 
-export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDownArgs): Promise<PeriscopeDownResult> {
+export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDownArgs & { number: string }): Promise<PeriscopeDownResult> {
   const rows = await d.rowsForTicket(args.number);
   if (rows.length === 0) throw new PeriscopeError(`no periscope for ticket ${args.number} on this ship`);
   const row = rows.find((r) => r.state === 'live');

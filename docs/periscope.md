@@ -58,6 +58,28 @@ periscope that is already kept or discarded is reported and changes nothing.
 
 An isolated periscope's database is left alone, as with `crew drop`.
 
+## Opening one from a shell
+
+A person at a terminal does not need to name anything: run `crew periscope up`
+inside a configured checkout, or inside any git worktree of one, and the
+working directory picks the route and repository (explicit `[route] REPO`
+arguments still win). The topic is prompted for, or defaults to
+`<repo>, <date>`; the URL is opened in the browser unless `--no-open` is given.
+`crew periscope down --keep|--discard` with no ticket number, run from inside a
+periscope's worktree, ends that periscope.
+
+A process cannot change the directory of the shell that ran it, so the bare
+command never moves you. To land in the worktree, install the shell function
+once, in your rc file:
+
+```sh
+eval "$(crew shell-init)"        # zsh or bash; add --shell fish for fish
+```
+
+`periscope up` then runs the command, changes into the new worktree and opens
+the URL; `periscope down` ends the periscope and changes back to the
+repository's checkout; any other `periscope` subcommand passes through.
+
 ## Shared or isolated state
 
 By default a periscope runs against the same state the repository's `ports`

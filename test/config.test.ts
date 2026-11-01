@@ -6,7 +6,7 @@ import { tmpdir, homedir } from 'node:os';
 import {
   loadConfig, findRoute, configuredMembers, reposOf, shipWorktreePrefixFor, ticketsByRepo, ConfigError,
   resolvedPathFor, apiKeyPathFor, mergeRouteRelease, defaultRepoDir, dirForRepo, passengerRepoTargets,
-  passengerCheckoutDir, passengerCheckoutTargets, releaseSeat, splitRoute,
+  passengerCheckoutDir, passengerCheckoutTargets, releaseSeat, splitRoute, locateDir, routeForDir, type CrewConfig,
 } from '../src/config.ts';
 
 function withConfig(yaml: string) {
@@ -1006,4 +1006,21 @@ test('hostPeriscopes and the periscope ship settings default, and validate (CREW
 test('hostPeriscopes without hostPassengers on the same route fails to load, naming the route (CREW-2853)', () => {
   const { dir, file } = withConfig(ONE.replace('worktreePrefix: proj-issue-', 'worktreePrefix: proj-issue-\n    hostPeriscopes: true'));
   assert.throws(() => loadConfig(dir, file), /route "issues\/dev-crew"\) sets hostPeriscopes: true without hostPassengers: true/);
+});
+
+test('locateDir finds the route and repository from a checkout, a subdirectory or a worktree', () => {
+  // Only the fields reposOf reads exist on these routes, so a partial config is cast; a full
+  // loadConfig would need a tracker-resolved file this test has no use for.
+  const route = (name: string, dir: string) => ({ route: name, dir, repos: {} });
+  const cfg = { routes: [route('a/one', '/co/one'), route('b/two', '/co/two')] } as unknown as CrewConfig;
+  assert.equal(locateDir(cfg, '/co/two')?.repo.name, 'two');
+  assert.equal(locateDir(cfg, '/co/two/src/deep')?.route.route, 'b/two');
+  assert.equal(locateDir(cfg, '/co/twofold'), undefined);
+  assert.equal(locateDir(cfg, '/co/two-wt'), undefined);
+  const common = (d: string) => (d === '/co/two-wt' || d === '/co/two-wt/sub' ? '/co/two/.git' : undefined);
+  const wt = locateDir(cfg, '/co/two-wt/sub', common);
+  assert.equal(wt?.route.route, 'b/two');
+  assert.equal(wt?.checkout, '/co/two');
+  assert.equal(routeForDir(cfg, '/co/one/x')?.route, 'a/one');
+  assert.equal(locateDir(cfg, '/elsewhere', () => '/elsewhere/.git'), undefined);
 });
