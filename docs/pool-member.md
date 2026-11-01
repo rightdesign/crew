@@ -50,11 +50,17 @@ The long poll. The server holds the request up to `wait` (clamped to
 `pollWaitSeconds`) and answers one of:
 
 - **204**: nothing to do; poll again at once.
-- **200** `{ action: "provision", lease: { id, shipName, routes: [{ workspace, project, workspaceId, projectId }], connectKey, forges: [{ host, token }], relayHost, maxConcurrentAgents } }`:
+- **200** `{ action: "provision", lease: { id, shipName, routes: [{ workspace, project, workspaceId, projectId }], connectKeys: [{ workspaceId, workspace, key }], forges: [{ host, token }], relayHost, maxConcurrentAgents } }`:
   only for a member that names no lease and holds a lease at `provisioning`
   whose payload has not been delivered. Delivered once; a second poll never
   repeats it. `workspace` and `project` are the slugs `crew connect WORKSPACE/PROJECT`
   takes. `relayHost` and `maxConcurrentAgents` may be absent.
+  `connectKeys` holds one entry per distinct workspace among the routes: an
+  ordinary admin workspace API key the platform minted for the lease and
+  revokes at its end. Each route connects with its own workspace's key. A
+  payload from an older platform build with a single `connectKey` is accepted
+  as the key for every route. Keys stay in memory: never argv, a log line or
+  the JSON summary.
 - **200** `{ action: "release", leaseId }`: the lease the member named is being released.
 - **200** `{ action: "retire" }`: the member is being retired; the command exits 0.
 - **409** `{ code: "LEASE_MISMATCH", currentLeaseId }`: the member named a lease that is not its current one. It re-registers and follows the resume table. A stale release can therefore never wipe a newer lease: crew also ignores a release naming any lease other than the one it holds.

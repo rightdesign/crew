@@ -167,3 +167,35 @@ test('--ship-kind and --instance-class reach connect, and relay host and agent c
   assert.deepEqual(f.settings, { relayHost: 'crewd@relay.example', maxConcurrentAgents: 3 });
   assert.equal(r.summary.state, 'provisioned');
 });
+
+test('each route connects with its own workspace key, and no key reaches argv or the summary (CREW-2893)', async () => {
+  const f = fake({ enabled: ['acme/issues', 'beta/work'] });
+  const r = await run(base({ key: undefined, keys: { acme: 'sk_acme', beta: 'sk_beta' }, routes: ['acme/issues', 'beta/work'] }), f);
+  assert.equal(r.code, 0);
+  const connects = f.calls.filter((c) => c.args[0] === 'connect');
+  assert.deepEqual(connects.map((c) => c.env?.CREW_CONNECT_KEY), ['sk_acme', 'sk_beta']);
+  const everything = JSON.stringify([f.calls.map((c) => c.args), r.summary]);
+  assert.ok(!everything.includes('sk_acme') && !everything.includes('sk_beta'));
+  assert.ok(!r.out.join('').includes('sk_'));
+});
+
+test('a route without its own key falls back to the shared key; with neither it fails (CREW-2893)', async () => {
+  const f = fake();
+  const r = await run(base({ key: 'sk_shared', keys: { other: 'sk_other' } }), f);
+  assert.equal(r.code, 0);
+  assert.equal(f.calls[0]!.env?.CREW_CONNECT_KEY, 'sk_shared');
+  const g = fake();
+  const bad = await run(base({ key: undefined, keys: { other: 'sk_other' } }), g);
+  assert.equal(bad.code, 2);
+  assert.equal(g.calls.length, 0);
+});
+
+test('CREW_CONNECT_KEY_<WORKSPACE> variables become per-workspace keys; by hand with only CREW_CONNECT_KEY nothing changes (CREW-2893)', () => {
+  const env = { CREW_CONNECT_KEY_MY_WS: 'k1', CREW_CONNECT_KEY_OTHER: 'k2', CREW_PROVISION_ROUTES: 'my-ws/x other' };
+  const o = provisionOptionsFrom(['provision'], env);
+  assert.deepEqual(o.keys, { 'my-ws': 'k1', other: 'k2' });
+  assert.equal(o.key, undefined);
+  const plain = provisionOptionsFrom(['provision'], { CREW_CONNECT_KEY: 'k', CREW_PROVISION_ROUTES: 'a' });
+  assert.deepEqual(plain.keys, {});
+  assert.equal(plain.key, 'k');
+});

@@ -40,7 +40,10 @@ export interface LeasePayload {
   id: string;
   shipName: string;
   routes: Array<{ workspace: string; project: string; workspaceId?: string; projectId?: string }>;
-  connectKey: string;
+  /** One admin workspace key per distinct workspace among the routes, minted for the lease. */
+  connectKeys?: Array<{ workspaceId?: string; workspace: string; key: string }>;
+  /** Older platform builds: one key for every route. */
+  connectKey?: string;
   forges: Array<{ host: string; token: string }>;
   relayHost?: string;
   maxConcurrentAgents?: number;

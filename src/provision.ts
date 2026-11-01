@@ -39,6 +39,8 @@ export const PROVISION_EXIT = { ok: 0, failed: 1, problem: 2, choice: 3 } as con
 export interface ProvisionOptions {
   /** Connect key (`--key` or `CREW_CONNECT_KEY`). */
   key?: string;
+  /** CREW-2893: connect key per workspace slug (`CREW_CONNECT_KEY_<WORKSPACE>`, `envKey` transform), keyed by the raw slug. Wins over `key` for that workspace's routes. */
+  keys?: Record<string, string>;
   /** Routes to connect and serve, each a `workspace[/project]` argument of `crew connect`. */
   routes: string[];
   shipName?: string;
@@ -130,7 +132,18 @@ export async function runProvision(
     return { code, summary: { ...summary, ok: false, state: 'failed' } };
   };
 
-  if (!o.key) return fail(PROVISION_EXIT.problem, 'no connect key: pass --key or set CREW_CONNECT_KEY', { stage: 'input' });
+  // A route's key is its workspace's own, else the shared one (a single-workspace host, `--key`, scripts/provision.sh).
+  const keyFor = (route: string): string | undefined => {
+    const ws = route.split('/')[0]!.toLowerCase();
+    const hit = Object.entries(o.keys ?? {}).find(([k, v]) => k.toLowerCase() === ws && v);
+    return hit?.[1] || o.key || undefined;
+  };
+  for (const route of o.routes) {
+    if (!keyFor(route)) {
+      return fail(PROVISION_EXIT.problem, `no connect key for ${route}: pass --key or set CREW_CONNECT_KEY_${envKey(route.split('/')[0]!)} or CREW_CONNECT_KEY`, { stage: 'input' });
+    }
+  }
+  if (o.routes.length === 0 && !o.key) return fail(PROVISION_EXIT.problem, 'no connect key: pass --key or set CREW_CONNECT_KEY', { stage: 'input' });
   if (o.routes.length === 0) {
     return fail(PROVISION_EXIT.problem, 'no routes to serve: pass --route WORKSPACE[/PROJECT] (repeatable) or set CREW_PROVISION_ROUTES', { stage: 'input' });
   }
@@ -154,7 +167,7 @@ export async function runProvision(
       ...(o.dryRun ? ['--dry-run'] : []),
       ...o.choices.flatMap((c) => ['--choose', c]),
     ];
-    const res = deps.crew(args, { env: { CREW_CONNECT_KEY: o.key } });
+    const res = deps.crew(args, { env: { CREW_CONNECT_KEY: keyFor(route)! } });
     const events = parseEvents(res.stdout);
     for (const e of events) if (o.json) write(`${JSON.stringify({ ...e, phase: 'connect' })}\n`);
     if (res.status !== 0) {
@@ -258,6 +271,17 @@ export function tokensFromEnv(hosts: string[], env: NodeJS.ProcessEnv): Record<s
   return out;
 }
 
+/** CREW-2893: per-workspace connect keys from `CREW_CONNECT_KEY_<WORKSPACE>`, for the workspaces named by the routes. */
+export function keysFromEnv(routes: string[], env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of routes) {
+    const ws = r.split('/')[0]!;
+    const v = env[`CREW_CONNECT_KEY_${envKey(ws)}`]?.trim();
+    if (v) out[ws] = v;
+  }
+  return out;
+}
+
 /** Every occurrence of a repeatable `--name value` (or `--name=value`) in argv. */
 export function repeated(argv: readonly string[], name: string): string[] {
   const out: string[] = [];
@@ -281,9 +305,11 @@ export function provisionOptionsFrom(argv: readonly string[], env: NodeJS.Proces
   const tokenAvailable = !!env.CREW_FORGE_TOKEN?.trim() || Object.keys(env).some((k) => k.startsWith('CREW_FORGE_TOKEN_') && env[k]?.trim());
   const forgeHosts = (forgeFlags.length ? forgeFlags : tokenAvailable ? splitList(env.CREW_FORGE_HOSTS ?? 'github.com') : [])
     .map((h) => h.toLowerCase());
+  const routeList = routes.length ? routes : splitList(env.CREW_PROVISION_ROUTES);
   return {
     key: one('key') ?? env.CREW_CONNECT_KEY,
-    routes: routes.length ? routes : splitList(env.CREW_PROVISION_ROUTES),
+    keys: keysFromEnv(routeList, env),
+    routes: routeList,
     shipName: one('ship-name') ?? env.CREW_SHIP_NAME,
     shipKind: one('ship-kind'),
     instanceClass: one('instance-class'),
@@ -308,6 +334,8 @@ export function realProvisionDeps(crewHome: string): ProvisionDeps {
     // The child must not mistake this process for an agent session, and a token left in the environment would be picked up by `forge set`.
     const env: NodeJS.ProcessEnv = { ...process.env, ...o.env };
     delete env.CREW_FORGE_TOKEN;
+    // Per-workspace keys are provision's input; the connect child gets only the one key for its route.
+    for (const k of Object.keys(env)) if (k.startsWith('CREW_CONNECT_KEY_')) delete env[k];
     const res = spawnSync(bin!, [...pre, ...args], { cwd: crewHome, encoding: 'utf8', env, input: o.input, maxBuffer: 64 * 1024 * 1024 });
     return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: `${res.stderr ?? ''}${res.error ? String(res.error) : ''}` };
   };

@@ -53,6 +53,7 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
       // The payload goes straight into the in-process options: never argv, never a file, never a log line.
       const outcome = await runProvision({
         key: lease.connectKey,
+        keys: Object.fromEntries((lease.connectKeys ?? []).map((k) => [k.workspace, k.key])),
         routes: lease.routes.map((r) => `${r.workspace}/${r.project}`),
         shipName: lease.shipName,
         shipKind,
