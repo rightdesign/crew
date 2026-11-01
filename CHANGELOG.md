@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.94.0] — 2026-11-01
+
+- CREW-2859 The ship control API can open, end and list Passenger periscopes (POST /periscopes, POST /periscopes/TICKET/down, GET /periscopes) on routes that set hostPeriscopes.
+
 ## [0.93.0] — 2026-11-01
 
 - CREW-2785 Headless Linux ships keep ship and seat keys in a file store under the state directory (`ship.secretStore`), and a seat whose key cannot be read is refused with an attention item instead of running as the ship.
