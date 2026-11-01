@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.107.0] — 2026-11-01
+
+- CREW-2900 A repository's sandbox image can warm its pnpm store from its lockfile via `sandbox.warm` in `.crew.yaml`.
+
 ## [0.106.0] — 2026-11-01
 
 - CREW-2799 Sandbox runs clone from a per-route cache volume of bare mirrors refreshed between daemon passes, copy in a warmed dependency tree keyed by lockfile hash, and `crew sandbox cache [--prune|--reset]` manages the volume.
