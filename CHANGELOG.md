@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.96.0] — 2026-11-01
+
+- CREW-2792 Headless Linux hosts: `crew install` enables lingering (or installs system units under root), `ship.env` reaches the unit environment, the lazy clone honors `ship.cloneScheme`, and `crew provision` plus `scripts/provision.sh` set a host up in one re-runnable command.
+
 ## [0.95.0] — 2026-11-01
 
 - CREW-2786 Agent runs on the host runner now have a wall-clock limit (`maxRunMinutes`, default 240, 0 for none) that kills the run's process group at the deadline, survives a daemon restart and shows in `crew status`.
