@@ -105,6 +105,7 @@ const HOOK_PURPOSE: Array<[keyof RepoHooks, string]> = [
   ['isolate', 'point this worktree at state of its own; prints KEY=value overrides to export'],
   ['ports', 'this worktree\'s port assignments; prints KEY=value overrides to export'],
   ['handoff', 'leave the operator able to open what you built; put its output in your progress comment'],
+  ['preview', 'start this worktree\'s dev server for a viewer, bound to CREW_PREVIEW_HOST, detached; its last stdout line is the URL'],
   ['test', 'run the suite'],
   ['build', 'build it'],
   ['ci_status', 'after you push and before you hand off: exit 0 means CI is green for your branch; on failure fix and push again, and say in your progress comment if it is still pending'],

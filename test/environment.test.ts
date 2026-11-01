@@ -30,6 +30,14 @@ test('one repo reads exactly as it always did', () => {
   assert.doesNotMatch(out, /## The repositories this board covers/);
 });
 
+// CREW-2850. A `preview` hook is listed in the brief's table only when the
+// repo declares it.
+test('the hooks table lists preview only for a repo that declares it', () => {
+  const withPreview = render([repo('synthesis', '/w/synthesis', SYN + '  preview: ./preview.sh\n')]);
+  assert.match(withPreview, /\| `preview` \| start this worktree's dev server[^|]*\| `?\.\/preview\.sh`? \|/);
+  assert.doesNotMatch(render([repo('synthesis', '/w/synthesis', SYN)]), /\| `preview` \|/);
+});
+
 // ISSUE-350. The environment is built before the session picks its ticket, so
 // it cannot know which repo applies — it has to describe them all. Rendering
 // only the route's first told a crew ticket to cut

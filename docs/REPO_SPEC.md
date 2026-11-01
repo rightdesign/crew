@@ -103,6 +103,15 @@ hooks:
   deploy: ./deploy.sh                     # only when release.mode is `local`
   ports: scripts/dev-ports.sh             # prints KEY=value port assignments
 
+  # Starts this worktree's dev server for a viewer. Runs after `setup` and
+  # `ports`, with the `ports` output exported plus CREW_PREVIEW_HOST (default
+  # `localhost`, the address to bind), CREW_TICKET and CREW_BRANCH. The server
+  # must outlive the hook (detached); the LAST stdout line is the URL. There is
+  # no stop hook — a caller kills what listens on the worktree's ports.
+  preview: |
+    nohup pnpm dev --host "${CREW_PREVIEW_HOST:-localhost}" >/dev/null 2>&1 &
+    echo "http://${CREW_PREVIEW_HOST:-localhost}:$PORT"
+
   # Prints this repo's CURRENT version, on one line. Where versions live is
   # entirely a repo's business — package.json, Cargo.toml, pyproject.toml, a
   # VERSION file, or `git describe --tags`.
@@ -202,6 +211,7 @@ release:
 | `hooks.isolate` | no | — | Prints `KEY=value` lines pointing this worktree at state of its own — typically its own database. Receives `CREW_TICKET`, `CREW_BRANCH`. Without it, a session that changes a schema has nowhere to run migrations except the operator's own data. |
 | `hooks.ci_status` | no | — | Is CI green for the pushed branch? Exit 0 = yes. Receives `CREW_TICKET`, `CREW_BRANCH`. The dev lane runs it after pushing and before setting the hand-off status; a failure means fix and push again, and a run still pending is stated in the progress comment. Written by the `github-actions-ci-status` recipe of `crew repos hooks --suggest`. |
 | `hooks.handoff` | no | — | Leaves the operator able to open what was built, and prints how. Receives `CREW_TICKET`, `CREW_BRANCH` and whatever `isolate` printed. Its output goes into the session's progress comment. |
+| `hooks.preview` | no | — | Starts this worktree's dev server for a viewer and prints its URL. Runs from the worktree after `setup` and `ports`. Receives the `ports` output exported in its environment, plus `CREW_PREVIEW_HOST` (default `localhost`; the address to bind), `CREW_TICKET` and `CREW_BRANCH`. It must start the server so it outlives the hook (detached), and its **last stdout line is the URL**. There is no stop hook: a caller stops the server by killing what listens on the worktree's ports. `crew repos check` syntax-checks it; `crew repos hooks` never proposes one. |
 | `worktrees.copy` | no | `[]` | Gitignored paths to copy from the main checkout into a new worktree, before `setup` runs. Repo-relative; absolute paths and `..` are rejected. A ship cannot supply or override this. |
 | `worktrees.name` | no | unset | A template for the whole worktree directory name, cut beside the checkout (CREW-1504). Placeholders: `{dir}` (the checkout's directory name), `{issue}` (the ticket's tag, lower-cased — `cmac-1501`), `{number}`, `{key}`, `{slug}`, `{tag}`, `{prefix}`, `{role}`. An unknown placeholder, an unbalanced brace, a path separator, or a template naming no per-ticket placeholder is a config error listing the valid set. **Precedence:** a route's per-repo `worktreeName` (ship `crew.yaml`, `repos.<name>.worktreeName`) → this → an explicit `worktrees.prefix` (or route `worktreePrefix`), `<prefix><number>` → the default `<checkout directory name>-<branch name>` (`crew-macos-cmac-1501`). A worktree already on disk for the ticket number is always reused whatever its name, so tickets in flight across a change are not duplicated. |
 | `worktrees.prefix` | no | unset — see below | Overrides the default worktree naming outright: when set, a ticket's worktree is cut beside the checkout at `../<prefix><number>`, e.g. `../tabl-326`, no matter what its branch is called. **Left unset (the default, and now the common case since ISSUE-969's "Updating worktree naming" commits removed it from every repo but paradium's), a ticket's worktree is instead `<checkout directory name>-<branch name>`** — e.g. checkout `synthesis`, branch `tabl-123` → `../synthesis-tabl-123`; checkout `crew`, branch `crew-971` → `../crew-crew-971` (Brad, Pair session, 2026-09-20). This needs no per-repo or per-ticket configuration: the checkout's own directory name and the ticket's own branch name (`branch.name`'s per-ticket default, above) are the only inputs. No path separator on an explicit `prefix`: a worktree sits beside the checkout, not inside a directory of its own. A route's `worktreePrefix` supplies an explicit prefix for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |

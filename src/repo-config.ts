@@ -91,6 +91,24 @@ export interface RepoHooks {
    */
   handoff?: string;
   /**
+   * Starts this worktree's dev server for a viewer and prints its URL.
+   *
+   * Runs from the worktree after `setup` and `ports`. Receives the `ports`
+   * output exported in its environment, plus `CREW_PREVIEW_HOST` (default
+   * `localhost`; the address the server must bind so the viewer can reach
+   * it), `CREW_TICKET` and `CREW_BRANCH`. It must start the server so it
+   * outlives the hook process (detached), and its LAST stdout line is the URL.
+   * There is no stop hook: a caller stops the server by killing whatever
+   * listens on the worktree's ports.
+   *
+   * A hook, not something a session improvises, because the hooks table is
+   * the only source of commands an agent may run in a worktree. Not `handoff`:
+   * that prints prose for a progress comment and cannot carry a bind host.
+   * `crew repos hooks` never proposes one — a server start is not inferable
+   * from a manifest.
+   */
+  preview?: string;
+  /**
    * Is CI green for the pushed branch? Exit 0 = yes, non-zero = no (or not yet).
    *
    * Receives `CREW_TICKET` and `CREW_BRANCH`. The dev lane runs it after
@@ -336,7 +354,7 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'ci_status',
+  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'ci_status',
   'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
