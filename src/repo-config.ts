@@ -301,8 +301,23 @@ export interface RepoDocs {
   designGuide?: string;
 }
 
+/**
+ * What a sandboxed run of this repo needs installed (CREW-2794). Everything is
+ * baked into an image on the ship at build time; nothing installs inside a
+ * sandbox at run time. See `sandbox-image.ts` for the layers and the tag.
+ */
+export interface RepoSandbox {
+  /** A reference the repository already publishes; used as the repo layer's base instead of crew's layer. Mutually exclusive with `packages`. */
+  image?: string;
+  /** Distribution packages (apt names) installed into the repo layer. */
+  packages: string[];
+  /** Commands baked at build time, in order. Distinct from the per-checkout `hooks.setup`. */
+  setup: string[];
+}
+
 export interface RepoConfig {
   version: number;
+  sandbox?: RepoSandbox;
   branch: BranchNaming;
   worktrees: Worktrees;
   docs: RepoDocs;
@@ -361,7 +376,7 @@ const HOOK_NAMES: Array<keyof RepoHooks> = [
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
 export type BumpSize = (typeof BUMP_SIZES)[number];
 const TOP_LEVEL = new Set([
-  'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release',
+  'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release', 'sandbox',
 ]);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote', 'lowercase']);
 const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag|issue)\}/g;
@@ -441,6 +456,40 @@ function rejectUnknown(obj: unknown, allowed: Set<string>, where: string, file: 
   }
 }
 
+/** A debian package name; narrow on purpose, since it reaches a RUN line unquoted. */
+const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.\-]*(=[A-Za-z0-9.+:~\-]+)?$/;
+
+function stringList(raw: unknown, where: string, file: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new RepoConfigError(`${file}: ${where} must be a list of strings`);
+  return raw.map((v) => {
+    if (typeof v !== 'string' || v.trim() === '') throw new RepoConfigError(`${file}: ${where} entries must be non-empty strings`);
+    return v;
+  });
+}
+
+function parseSandbox(raw: unknown, file: string): RepoSandbox | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new RepoConfigError(`${file}: sandbox must be a mapping`);
+  const r = raw as Record<string, unknown>;
+  const packages = stringList(r.packages, 'sandbox.packages', file);
+  const setup = stringList(r.setup, 'sandbox.setup', file);
+  for (const p of packages) {
+    if (!PACKAGE_NAME.test(p)) throw new RepoConfigError(`${file}: sandbox.packages entry "${p}" is not a package name (lowercase letters, digits, + . - and an optional =version)`);
+  }
+  let image: string | undefined;
+  if (r.image !== undefined && r.image !== null) {
+    if (typeof r.image !== 'string' || r.image.trim() === '' || /\s/.test(r.image)) {
+      throw new RepoConfigError(`${file}: sandbox.image must be an image reference with no whitespace`);
+    }
+    image = r.image;
+    if (packages.length > 0) {
+      throw new RepoConfigError(`${file}: sandbox.image and sandbox.packages are alternatives — a published image already carries its packages; put the rest in sandbox.setup`);
+    }
+  }
+  return { ...(image ? { image } : {}), packages, setup };
+}
+
 export function parseRepoConfig(text: string, file: string): RepoConfig {
   let raw: any;
   try {
@@ -460,6 +509,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
   rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
+  rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup']), 'sandbox', file);
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
   if (raw.version !== SPEC_VERSION) {
@@ -527,6 +577,8 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       );
     }
   }
+
+  const sandbox = parseSandbox(raw.sandbox, file);
 
   const platform = String(raw.platform ?? 'any');
   if (!isPlatformRequirement(platform)) {
@@ -690,6 +742,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     branch,
     worktrees,
     docs,
+    ...(sandbox ? { sandbox } : {}),
     platform: platform as PlatformRequirement,
     shell: raw.shell ? String(raw.shell) : undefined,
     hooks,
@@ -922,6 +975,8 @@ export function resolveRepoConfig(
 
   return {
     version: SPEC_VERSION,
+    // Repo-only, like platform: what a repo needs installed is a fact about it.
+    ...(repo?.sandbox ? { sandbox: repo.sandbox } : {}),
     worktrees: {
       // Not merged: which gitignored files a worktree needs is a fact about
       // the repository and nothing else, so a ship cannot supply or override

@@ -215,6 +215,9 @@ release:
 | `worktrees.copy` | no | `[]` | Gitignored paths to copy from the main checkout into a new worktree, before `setup` runs. Repo-relative; absolute paths and `..` are rejected. A ship cannot supply or override this. |
 | `worktrees.name` | no | unset | A template for the whole worktree directory name, cut beside the checkout (CREW-1504). Placeholders: `{dir}` (the checkout's directory name), `{issue}` (the ticket's tag, lower-cased — `cmac-1501`), `{number}`, `{key}`, `{slug}`, `{tag}`, `{prefix}`, `{role}`. An unknown placeholder, an unbalanced brace, a path separator, or a template naming no per-ticket placeholder is a config error listing the valid set. **Precedence:** a route's per-repo `worktreeName` (ship `crew.yaml`, `repos.<name>.worktreeName`) → this → an explicit `worktrees.prefix` (or route `worktreePrefix`), `<prefix><number>` → the default `<checkout directory name>-<branch name>` (`crew-macos-cmac-1501`). A worktree already on disk for the ticket number is always reused whatever its name, so tickets in flight across a change are not duplicated. |
 | `worktrees.prefix` | no | unset — see below | Overrides the default worktree naming outright: when set, a ticket's worktree is cut beside the checkout at `../<prefix><number>`, e.g. `../tabl-326`, no matter what its branch is called. **Left unset (the default, and now the common case since ISSUE-969's "Updating worktree naming" commits removed it from every repo but paradium's), a ticket's worktree is instead `<checkout directory name>-<branch name>`** — e.g. checkout `synthesis`, branch `tabl-123` → `../synthesis-tabl-123`; checkout `crew`, branch `crew-971` → `../crew-crew-971` (Brad, Pair session, 2026-09-20). This needs no per-repo or per-ticket configuration: the checkout's own directory name and the ticket's own branch name (`branch.name`'s per-ticket default, above) are the only inputs. No path separator on an explicit `prefix`: a worktree sits beside the checkout, not inside a directory of its own. A route's `worktreePrefix` supplies an explicit prefix for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
+| `sandbox.image` | no | — | A reference the repository already publishes (`ghcr.io/owner/repo-dev:1`). Used as the repo layer's base in place of crew's own layer, with crew's contract directory (`/opt/crew`) copied in. Mutually exclusive with `sandbox.packages`: a published image already carries its packages, so the rest goes in `sandbox.setup`. |
+| `sandbox.packages` | no | `[]` | Distribution (apt) packages baked into the sandbox image, `name` or `name=version`. Anything else in a package string is a config error. |
+| `sandbox.setup` | no | `[]` | Commands baked at **build** time, in order, one image layer each, as uid 1000 in `/sandbox`. Not `hooks.setup`, which runs per checkout. See [Sandbox images](#sandbox-images). |
 | `docs.triagePolicy` | no | — | The triage seat's contract for this project — what its statuses mean, when a ticket may be accepted. Where it and a brief disagree, it wins. |
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
@@ -236,6 +239,43 @@ release:
 | `release.isolateFailures.maxCandidates` | no | `4` | When the release's combined `test`/`build` fails with several branches merged, how many may be built one at a time to find the one that broke it. `0` turns isolation off. See [A failed combined build](#a-failed-combined-build). |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
+
+### Sandbox images
+
+Nothing installs inside a sandbox at run time. A repository that runs in one
+declares what it needs and the ship builds an image from it:
+
+```yaml
+sandbox:
+  packages: [postgresql-16, build-essential]
+  setup:
+    - npm install -g pnpm@10      # system npm, not a shim that fetches per user
+    - pnpm config set store-dir /opt/crew/pnpm-store
+```
+
+The image is three layers: the OpenShell base at the harness version crew pins;
+a crew layer with the credential helper, MCP configuration and the environment
+contract; and the repo layer built from this section. The tag is a hash of the
+declaration plus the pinned base, so an unchanged declaration reuses its tag and
+a changed one builds a new one. The previous tag stays in use until the new
+build succeeds; a failed build raises a `sandbox_build_failed` attention item
+with the build log path and sandboxes keep running the previous image. Builds
+run in the background between daemon passes, never on the cycle path. Bumping
+the pinned harness version rebuilds every repository's image.
+
+Three facts a declaration has to respect, all measured in the CREW-2787 spike:
+
+- A sandbox's `HOME` is its workdir (`/sandbox`), not the image user's home. A
+  cache warmed under `~` at build time is invisible at run time. Put caches at
+  absolute paths; the crew layer exports `XDG_CACHE_HOME`, `npm_config_cache`,
+  `npm_config_store_dir` and `PNPM_HOME` pointing under `/opt/crew`.
+- The base image runs as uid 1000 (`ubuntu`) and has no `/sandbox`; the repo
+  layer creates it and the ownership.
+- A download at run time fails under the default network policy, so every
+  toolchain download is a `setup:` step here or a host declared in the policy.
+
+`crew sandbox build [REPO] [--route R]` forces a rebuild, `crew sandbox images`
+lists tags and ages, and `crew doctor` reports a stale, missing or failed image.
 
 ### A branch that moved after QA verified it
 

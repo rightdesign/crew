@@ -12,6 +12,10 @@ import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscop
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
+import {
+  planSandbox, readSandboxState, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
+  sandboxFailedKey, type SandboxRepoRef, type TickDeps,
+} from './sandbox-image.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
@@ -503,7 +507,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
 const KNOWN_COMMANDS = new Set([
   'passenger-sync-daemon', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
-  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'shell-init', 'ship', 'skills', 'status',
+  'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'sandbox', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
@@ -804,7 +808,7 @@ const named = worktreeArgs
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'whoami' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'sandbox' || command === 'whoami' || releaseFleetWide ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
   (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
@@ -1496,6 +1500,29 @@ function baseHealth(r: { dir: string; config: { branch: { remote: string; base: 
  */
 async function resolvedRepos(c: typeof route) {
   return Promise.all(reposOf(c).map((t) => resolveOneRepo(c, t)));
+}
+
+/** Every repo of `routes` that declares a `sandbox:` section, once per repo name (CREW-2794). */
+async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoRef[]> {
+  const out = new Map<string, SandboxRepoRef>();
+  for (const c of routes) {
+    const { settled } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
+    for (const r of settled) if (r.config.sandbox && !out.has(r.name)) out.set(r.name, { name: r.name, decl: r.config.sandbox });
+  }
+  return [...out.values()];
+}
+
+/** The injectable pieces of a sandbox image build, bound to the real container engine and this ship's state. */
+function sandboxTickDeps(emit: Emitter, c: typeof route): TickDeps {
+  return {
+    stateDir: cfg.ship.stateDir,
+    run: spawnBuildRunner(),
+    hasImage: engineHasImage(),
+    removeImage: engineRemoveImage(),
+    raise: (item) => { void raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, item); },
+    clear: (key) => clearShipAttention(state, key),
+    log: (m) => emit.emit(m),
+  };
 }
 
 /** One repo of a route, resolved on its own so a caller can survive a bad contract in a sibling. */
@@ -2868,6 +2895,9 @@ switch (command) {
     });
     if (controlServer) emit.emit(`control API listening on ${controlServer.path}`);
     const inFlight = new Set<Promise<void>>();
+    // CREW-2794: sandbox images build in the background between passes, one at
+    // a time, never on the cycle path. A build still running skips the tick.
+    let sandboxBuilding = false;
     const stopReason = await runDaemonLoop({
       inFlight,
       onStaleDeferred: ({ runs, waitedMs }) => emit.warn(
@@ -2907,6 +2937,13 @@ switch (command) {
       ),
       checkStale: makeStaleChecker(watchPaths, { reloadSentinel: reloadSentinelFor(cfg.ship.stateDir) }),
       onPass: (result) => {
+        if (!sandboxBuilding) {
+          sandboxBuilding = true;
+          void sandboxReposOf(cfg.routes.filter((r) => r.enabled))
+            .then((repos) => (repos.length ? sandboxBuildTick(repos, sandboxTickDeps(emit, route)) : null))
+            .catch((err) => emit.warn(`sandbox image build tick failed: ${err instanceof Error ? err.message : String(err)}`))
+            .finally(() => { sandboxBuilding = false; });
+        }
         if (result.started.length) emit.emit(`daemon pass started: ${result.started.join(', ')}`);
         for (const s of result.skipped) emit.emit(`daemon pass skipped ${s.role} — ${s.reason}`);
       },
@@ -4733,6 +4770,63 @@ switch (command) {
     break;
   }
 
+  case 'sandbox': {
+    // CREW-2794: `crew sandbox build [--route R] [REPO]` forces a rebuild of
+    // the image a repo's `.crew.yaml` `sandbox:` section declares;
+    // `crew sandbox images` lists tags and ages. Planning, tags and the
+    // keep-the-previous-tag rule live in sandbox-image.ts.
+    const subS = positional[1];
+    if (subS !== 'build' && subS !== 'images') {
+      process.stderr.write('crew sandbox build [REPO] [--route ROUTE] [--json]\ncrew sandbox images [--route ROUTE] [--json]\n');
+      process.exit(2);
+    }
+    const jsonS = flag('json');
+    let routesS: Array<typeof route>;
+    try {
+      routesS = value('route') ? [findRoute(cfg, value('route'))] : cfg.routes.filter((r) => r.enabled);
+    } catch (e) {
+      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      throw e;
+    }
+    const declared = await sandboxReposOf(routesS);
+    if (subS === 'images') {
+      const stateS = readSandboxState(cfg.ship.stateDir);
+      const rows = declared.map((r) => {
+        const plan = planSandbox(r.name, r.decl);
+        return { repo: r.name, wants: plan.tag, tags: stateS[r.name]?.tags ?? [], ...sandboxImageStatus(stateS, plan) };
+      });
+      if (jsonS) { process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`); break; }
+      if (rows.length === 0) process.stdout.write('no repository declares a sandbox: section in its .crew.yaml\n');
+      for (const r of rows) {
+        process.stdout.write(`${r.repo}: ${r.status} — ${r.detail}\n`);
+        for (const t of r.tags) {
+          const ageH = Math.max(0, Math.round((Date.now() - Date.parse(t.builtAt)) / 3_600_000));
+          process.stdout.write(`  ${t.tag}  built ${t.builtAt} (${ageH}h ago)\n`);
+        }
+      }
+      break;
+    }
+    const only = positional[2];
+    const targets = only ? declared.filter((r) => r.name === only) : declared;
+    if (targets.length === 0) {
+      process.stderr.write(only ? `crew: no repository "${only}" declares a sandbox: section\n` : 'crew: no repository declares a sandbox: section in its .crew.yaml\n');
+      process.exit(2);
+    }
+    const emitS = new Emitter({ route: routesS[0]!.route, eventFile: eventFileFor(cfg.ship.stateDir), rotateBytes: cfg.ship.eventsRotateBytes, logFile: cfg.ship.logFile, console: (l) => process.stderr.write(`${l}\n`) });
+    const depsS = sandboxTickDeps(emitS, routesS[0]!);
+    let failed = false;
+    for (const t of targets) {
+      // Forced: ignore the retry window, and rebuild even a built tag only if the declaration moved.
+      await sandboxBuildTick([t], depsS, true);
+      const after = readSandboxState(cfg.ship.stateDir);
+      const st = sandboxImageStatus(after, planSandbox(t.name, t.decl));
+      if (st.status === 'failed') failed = true;
+      process.stdout.write(`${t.name}: ${st.status} — ${st.detail}\n`);
+    }
+    if (failed) process.exit(1);
+    break;
+  }
+
   case 'periscope': {
     // EPIC-077 / CREW-2854: `crew periscope up [route] REPO --topic TEXT`. The
     // ordering, refusals and tear-down live in periscope-cmd.ts; this only
@@ -6510,6 +6604,15 @@ switch (command) {
         process.stdout.write(
           `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
+      }
+    }
+    // CREW-2794: a stale or missing sandbox image, per declaring repo.
+    {
+      const declaredS = await sandboxReposOf(cfg.routes.filter((r) => r.enabled));
+      const stateS = readSandboxState(cfg.ship.stateDir);
+      for (const r of declaredS) {
+        const st = sandboxImageStatus(stateS, planSandbox(r.name, r.decl));
+        process.stdout.write(`sandbox image:    ${r.name}: ${st.status.toUpperCase()} — ${st.detail}\n`);
       }
     }
     // CREW-2862: the MCP endpoints live periscopes have registered in their workspaces.
