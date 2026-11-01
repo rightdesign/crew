@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.98.0] — 2026-11-01
+
+- CREW-2796 Toolchain auth mode `workspace` routes a seat's model calls through the Tablation inference endpoint, pausing the role with an attention item when the workspace allowance is spent.
+
 ## [0.97.0] — 2026-11-01
 
 - CREW-2803 The ship tunnel carries the control API to the relay (`<url>/control/...`) even with Host Passengers off, writes the relay URL to the Ships row, shows it in `crew status`, and `crew doctor` probes it end to end.
