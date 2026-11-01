@@ -32,7 +32,9 @@ For the shortest version, see [Install](/install).
 - [If something's stuck](#if-something-s-stuck)
 
 Hosting other people's agent sessions on your machine is a separate, optional
-capability: see [Host Passengers](/host-passengers).
+capability: see [Host Passengers](/host-passengers). A ship that hosts
+Passengers can also let them preview a change live on a throwaway worktree: see
+[Periscope](/periscope).
 
 ---
 

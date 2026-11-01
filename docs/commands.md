@@ -61,6 +61,17 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | `crew ship rename NAME [--json]` | Rename this ship: writes `ship.name` in `crew.yaml` (comments kept) and renames this machine's row on every workspace's Ships table, then records the name each route last saw agree. A route whose key may not edit the table (403) is reported and the local rename still happens; the exit code is 1 then. `--json` prints `{name, previous, configFile, routes: [{route, status}]}`. |
 | `crew unassign [route] NNN` | Hand back a session's ticket: clears the assignee so the next cycle picks it up. |
 
+### Periscope settings
+
+See [Periscope](/periscope) for the commands above. The settings live in `crew.yaml`:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `routes[].hostPeriscopes` | `false` | Lets Passengers open periscopes. Refused at load unless the same route has `hostPassengers: true`; synced onto the Ships row's `host_periscopes` by `crew connect` (skipped on a workspace whose Ships table lacks the column). |
+| `ship.previewHost` | — | The host a Passenger reaches this ship by (a LAN name or private-network hostname). Passed to the `preview` hook as `CREW_PREVIEW_HOST` for Passenger-opened periscopes; required once any route hosts periscopes. |
+| `ship.maxPeriscopes` | `3` | Periscopes live at once on this ship. A positive integer. |
+| `ship.periscopeIdleMinutes` | `120` | Idle time after which a periscope's recorded expiry falls. A positive integer. |
+
 ### Ship name sync
 
 The ship's name lives in two places: `ship.name` in `crew.yaml` and the `name` of this machine's Ships row in each workspace. Each pass of the daemon (and each `crew run`/`poll` cycle), and `crew connect`, compares them against the name that route last saw agree (`shipName` in its resolved file):

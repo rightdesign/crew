@@ -92,6 +92,23 @@ column, and skips it on a workspace whose Ships table has no such column.
 `crew status` and `crew doctor` print the periscope settings; `crew doctor`
 reports a missing or unresolvable `previewHost`.
 
+What `hostPeriscopes` grants a Passenger, through their agent chat:
+
+- edits in **throwaway worktrees** the ship cuts for the periscope, never in
+  your checkouts;
+- dev servers on the **ports the ship reserves** for those worktrees;
+- **draft tickets** for the periscope, which the Passenger can end by keeping
+  the work as a ticket at `new` or discarding it.
+
+What it never grants: the primary checkout, any existing ticket, or anything
+outside the periscope's own worktree. The Passenger container itself stays
+read-only, as described above; a periscope is a separate worktree on the ship,
+not a writable view of that container.
+
+The preview URL is an address on `previewHost`, reachable over the LAN or a
+private network only. It is not sent through the relay. See
+[Periscope](/periscope) for the whole flow.
+
 To run a locally built image instead, set `ship.passengerImage` in `crew.yaml`
 (or export `CREW_PASSENGER_IMAGE`, which takes precedence). Build it from the
 crew repo root with `docker build -f Dockerfile.passenger-mcp -t
@@ -136,5 +153,6 @@ workspace's MCP endpoints list.
 
 ## Related
 
+- [Periscope](/periscope)
 - [Getting started](/getting-started)
 - [Command reference](/commands)

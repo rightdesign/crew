@@ -9,6 +9,8 @@ becoming crew.
 - Read the project's source, through a ship that hosts it: files, directory
   listings, search, `git log`, `git blame`.
 - File new work (an Issue or Epic at `new`).
+- On a ship that offers periscopes, open a live preview of a change (see
+  [Looking at a change live](#looking-at-a-change-live)).
 
 ## What a Passenger cannot do
 
@@ -29,6 +31,26 @@ owner runs the machine; you use the agent chat in the Tablation app.
    failing path and states the expected result is one a maintainer can accept
    in a minute.
 
+## Looking at a change live
+
+When a ship also offers periscopes, you can ask the agent to open one:
+"show me what that table would look like with tighter rows". The agent starts
+a throwaway preview of the project on the ship, makes the change you describe
+there, and gives you a URL.
+
+- The URL is reachable only from the ship's network (the same LAN or private
+  network); it does not work from outside it. If you cannot open it, you are
+  probably not on that network.
+- Keep refining in the chat; the preview shows each change.
+- When you are done, ask the agent to keep it or discard it. **Keep** files
+  the idea as a ticket at `new` for a maintainer to look at, with the branch
+  pushed; **discard** throws it away.
+- A periscope never touches existing tickets or the project's real
+  checkouts.
+
+Whether a ship offers periscopes is the ship owner's choice; see
+[Periscope](/periscope).
+
 ## Is a ship hosting?
 
 Code access only works while at least one ship is hosting your workspace. The
@@ -43,4 +65,5 @@ Ships table lists each ship with its tunnel status:
 ## Related
 
 - [Host Passengers](/host-passengers), for the ship owner's side
+- [Periscope](/periscope)
 - [Getting started](/getting-started)
