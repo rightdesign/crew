@@ -5833,6 +5833,14 @@ switch (command) {
         ? 'authorship:       filed_by_id, ship_id present\n'
         : `authorship:       missing ${missingAuthorship.join(', ')} — update the Issues template\n`,
     );
+    // ISSUE-2791: forge host / ship kind / relay URL columns. Absent reads as
+    // the default, so this reports without gating `--fix`.
+    const missingRuntime = await tracker.missingRuntimeColumns();
+    process.stdout.write(
+      missingRuntime.length === 0
+        ? 'runtime columns: forge_host, kind, instance_class, relay_url present\n'
+        : `runtime columns: missing ${missingRuntime.join(', ')} — read as their defaults; update the Issues template\n`,
+    );
     // CREW-1811: informational only — without the column the tracker has no
     // public intake form and nothing to guard against.
     process.stdout.write(

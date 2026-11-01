@@ -752,6 +752,9 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         ...(sshPublicKey !== undefined ? { ssh_public_key: sshPublicKey } : {}),
         ...(ownerId !== undefined ? { owner_id: ownerId } : {}),
         ...(writeMachineId ? { machine_id: machineId } : {}),
+        // ISSUE-2791: a ship connecting by hand is a developer machine; the
+        // column arrives with a template update, so only written when present.
+        ...(shipColumns.has('kind') ? { kind: 'developer_machine' } : {}),
       });
       shipRowId = created.id;
       out.shipRow = { id: shipRowId, name: o.ship.name, action: 'created', matchedBy };

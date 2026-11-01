@@ -463,6 +463,25 @@ test('missingAuthorshipColumns() names each column the workspace lacks, so docto
   assert.deepEqual(await tracker.missingAuthorshipColumns(), ['Issues.ship_id', 'Issues.held_by_ship_id', 'Comments.ship_id']);
 });
 
+test('missingRuntimeColumns() names the forge_host / kind / instance_class / relay_url columns a workspace lacks (ISSUE-2791)', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const fields: Record<string, string[]> = {
+    'repos-model-id': ['name'],
+    'ships-model-id': ['name', 'kind'],
+  };
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    const id = new URL(input instanceof Request ? input.url : String(input)).pathname.split('/').pop()!;
+    return new Response(JSON.stringify({ id, fields: (fields[id] ?? []).map((columnName) => ({ columnName })) }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id', reposModelId: 'repos-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
+  assert.deepEqual(await tracker.missingRuntimeColumns(), ['Repos.forge_host', 'Ships.instance_class', 'Ships.relay_url']);
+
+  fields['repos-model-id'] = ['forge_host'];
+  fields['ships-model-id'] = ['kind', 'instance_class', 'relay_url'];
+  assert.deepEqual(await tracker.missingRuntimeColumns(), []);
+});
+
 test('beatShip() carries the open attention items when the Ships table has the column, omits them when it does not (CREW-1373)', async (t) => {
   const { mkdtempSync } = await import('node:fs');
   const { join } = await import('node:path');

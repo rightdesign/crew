@@ -1047,6 +1047,31 @@ export class Tracker {
   }
 
   /**
+   * The runtime-map columns (ISSUE-2791) this workspace's template has not
+   * taken yet, as `table.column` names for `crew doctor`. Each is read as its
+   * default when absent, so this is informational: `Repos.forge_host`
+   * (default `github.com`), `Ships.kind` (`developer_machine`),
+   * `Ships.instance_class` and `Ships.relay_url` (blank). A table the route
+   * does not have is skipped, not reported.
+   */
+  async missingRuntimeColumns(): Promise<string[]> {
+    const wanted: Array<[string | undefined, string, string[]]> = [
+      [this.route.resolved?.reposModelId, 'Repos', ['forge_host']],
+      [this.route.resolved?.shipsModelId, 'Ships', ['kind', 'instance_class', 'relay_url']],
+    ];
+    const missing: string[] = [];
+    for (const [modelId, label, columns] of wanted) {
+      if (!modelId) continue;
+      const have = await this.columnNames(modelId);
+      // An unreadable model reads as an empty set; say nothing rather than
+      // report every column missing.
+      if (have.size === 0) continue;
+      for (const c of columns) if (!have.has(c)) missing.push(`${label}.${c}`);
+    }
+    return missing;
+  }
+
+  /**
    * The public `/v/<slug>/r/<token>` link for one ticket (ISSUE-928) —
    * fetch-or-create via `POST /views/:viewId/record-links`, so a repeated
    * call for the same (view, model, record) returns the same URL and even

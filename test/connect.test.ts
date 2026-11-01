@@ -505,6 +505,31 @@ test('discover() creates the Ships row when this ship has no row yet, and report
   assert.deepEqual(createShip?.body, { name: "Brad's MacBook", platform: 'macos', host_passengers: false });
 });
 
+test('discover() writes kind=developer_machine on a new Ships row only when the column exists (ISSUE-2791)', async (t) => {
+  const run = async (withColumn: boolean) => {
+    const { restore, calls } = mockFetchCalls({
+      '/api/workspaces/issues': { id: 'ws-1' },
+      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+      '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+      '/api/data-models?projectId=proj-1': [
+        { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+        { id: 'ships-model', name: 'Ships' },
+      ],
+      '/api/data-models/ships-model': { fields: [{ columnName: 'host_passengers' }, ...(withColumn ? [{ columnName: 'kind' }] : [])] },
+      '/api/data-models/ships-model/records?limit=200': [],
+      '/api/data-models/ships-model/records': { id: 'ship-new' },
+      '/api/data-models/crew-model/records?limit=200': [],
+      '/api/data-models/crew-model/records': { id: 'seat-new' },
+    });
+    try {
+      await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" } });
+      return calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records')?.body as Record<string, unknown>;
+    } finally { restore(); }
+  };
+  assert.equal((await run(true)).kind, 'developer_machine');
+  assert.equal('kind' in (await run(false)), false);
+});
+
 test('discover() creates a Release Crew row scoped to this ship, records it as releaseSeat, and never lists it as a hold (CREW-1371)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
