@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.103.0] — 2026-11-01
+
+- CREW-2890 A ship's MCP endpoint registration now carries its control API URL, and periscope endpoints register as not discoverable.
+- CREW-2893 Pool members connect each route with its own workspace's key from the lease's connectKeys; `crew provision` reads CREW_CONNECT_KEY_<WORKSPACE> and falls back to CREW_CONNECT_KEY.
+
 ## [0.102.0] — 2026-11-01
 
 - CREW-2882 `crew pool-member` takes the ship kind from the register response, so a reserved managed instance is the same member with a standing lease.
