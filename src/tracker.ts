@@ -258,6 +258,8 @@ export interface Authorship {
 export interface PeriscopeRow {
   id: string;
   issue_id: string;
+  ship_id?: string | null;
+  state?: string | null;
   worktree: string;
   branch?: string | null;
   url?: string | null;
@@ -1006,6 +1008,32 @@ export class Tracker {
         { columnName: 'state', operator: 'EQ', value: 'live' },
       ]),
       limit: 200,
+    });
+  }
+
+  /**
+   * Every `live` Periscopes row on any ship (CREW-2871), for the one-per-issue
+   * guard and doctor. Empty without the table.
+   */
+  async livePeriscopesAllShips(): Promise<PeriscopeRow[]> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    if (!modelId) return [];
+    return this.client.records.list<PeriscopeRow>(modelId, {
+      filters: encodeFilters([{ columnName: 'state', operator: 'EQ', value: 'live' }]),
+      limit: 500,
+    });
+  }
+
+  /** The `live` Periscopes rows of one ticket, on any ship (CREW-2871). */
+  async livePeriscopesForTicket(ticketRecordId: string): Promise<PeriscopeRow[]> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    if (!modelId) return [];
+    return this.client.records.list<PeriscopeRow>(modelId, {
+      filters: encodeFilters([
+        { columnName: 'issue_id', operator: 'EQ', value: ticketRecordId },
+        { columnName: 'state', operator: 'EQ', value: 'live' },
+      ]),
+      limit: 50,
     });
   }
 

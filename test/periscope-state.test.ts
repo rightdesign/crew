@@ -8,7 +8,7 @@ import {
   periscopesForStatus, portListening, readPeriscopeSidecars, removePeriscopeSidecar, urlPort, writePeriscopeSidecar,
   type PeriscopeSidecar,
 } from '../src/periscope-state.ts';
-import { previewHostFinding, routePeriscopeProblems } from '../src/periscopes.ts';
+import { duplicateLivePeriscopes, previewHostFinding, routePeriscopeProblems } from '../src/periscopes.ts';
 
 const sc = (over: Partial<PeriscopeSidecar> = {}): PeriscopeSidecar => ({
   ticket: 'TABL-9', ticketRecordId: 'rec-1', periscopeRecordId: 'per-1', repo: 'synthesis', worktree: '/w', branch: 'tabl-9',
@@ -54,4 +54,18 @@ test('previewHostFinding: unresolvable is attention, unset stays a blocker', () 
   assert.equal(previewHostFinding('ship.previewHost "x" does not resolve from this machine').kind, 'preview_host_unresolvable');
   assert.equal(previewHostFinding('ship.previewHost "x" does not resolve from this machine').severity, 'attention');
   assert.equal(previewHostFinding('ship.previewHost is not set').severity, 'blocker');
+});
+
+test('duplicateLivePeriscopes flags only an issue with two or more live rows, naming each', () => {
+  const rows = [
+    { id: 'p1', issue_id: 't1', ship_id: 's1', url: 'http://a' },
+    { id: 'p2', issue_id: { id: 't1' }, ship_id: 's2', url: 'http://b' },
+    { id: 'p3', issue_id: 't2', ship_id: 's1', url: 'http://c' },
+  ];
+  const out = duplicateLivePeriscopes(rows, (id) => `CREW-${id}`, (id) => `ship-${id}`, 'r');
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.kind, 'periscope_duplicate_live');
+  assert.equal(out[0]!.severity, 'attention');
+  assert.match(out[0]!.message, /CREW-t1.*p1 on ship-s1 http:\/\/a.*p2 on ship-s2 http:\/\/b/);
+  assert.deepEqual(duplicateLivePeriscopes(rows.slice(2), (i) => i, (i) => String(i)), []);
 });

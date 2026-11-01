@@ -19,6 +19,21 @@ import type { PeriscopeSidecar } from './periscope-state.ts';
 
 export class PeriscopeError extends Error {}
 
+/** A live Periscopes row that already exists for a ticket (CREW-2871). */
+export interface LivePeriscope { ship: string; url: string; worktree: string }
+
+/**
+ * `up --issue` refused because the ticket already has a live periscope. `data` is
+ * what `--json` reports: `{ refused: 'live_periscope_exists', ship, url, worktree }`.
+ */
+export class LivePeriscopeError extends PeriscopeError {
+  readonly data: { refused: 'live_periscope_exists' } & LivePeriscope;
+  constructor(tag: string, number: string, live: LivePeriscope) {
+    super(`${tag} already has a live periscope on ${live.ship}: ${live.url} (worktree ${live.worktree}) — run \`crew periscope down ${number} --keep|--discard\` on ${live.ship}, or resume it there with \`crew periscope up --resume ${number}\``);
+    this.data = { refused: 'live_periscope_exists', ...live };
+  }
+}
+
 /**
  * Where `up --issue` leaves what it replaced, for `down` to report: one small file per ticket record.
  * Deliberately NOT under `periscopes/`: that directory holds the CREW-2857 sidecars, which
@@ -164,6 +179,8 @@ export interface ExistingDeps {
   shipId: string | null;
   /** The name of an assignee that is an agent seat (not this ship's Pair row), else undefined. */
   agentHolder(assigneeId: string): Promise<string | undefined>;
+  /** The ticket's `live` Periscopes rows on any ship; an issue has at most one at a time (CREW-2871). */
+  liveRows(ticketRecordId: string): Promise<LivePeriscope[]>;
   /** A run sidecar for the ticket exists on this ship. */
   hasLiveRun(ticketRecordId: string): boolean;
   /** Sets assignee to the Pair row and held-by to this ship; status is left alone. */
@@ -172,6 +189,16 @@ export interface ExistingDeps {
   restore(ticketId: string, assignee: string | null): Promise<void>;
   /** Records what `down` reports it cleared. */
   remember(ticketId: string, prior: { assignee: string | null; status: string }): void;
+}
+
+/**
+ * Throws when the ticket already has a live periscope, on this ship or another.
+ * Checked before the hold, the worktree or any other write; `--resume` does not
+ * come through here because it reopens the existing row rather than adding one.
+ */
+export async function assertNoLivePeriscope(e: ExistingDeps, t: ExistingTicket, number: string): Promise<void> {
+  const live = (await e.liveRows(t.id))[0];
+  if (live) throw new LivePeriscopeError(t.tag, number, live);
 }
 
 /**
@@ -282,6 +309,7 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
     if (!ex) throw new PeriscopeError('--issue is not supported here');
     prior = await ex.load(args.issue);
     if (!prior) throw new PeriscopeError(`no ticket numbered ${args.issue} on this route`);
+    await assertNoLivePeriscope(ex, prior, args.issue);
     const refused = await existingRefusal(ex, prior);
     if (refused) throw new PeriscopeError(refused);
     const unsafe = d.baseProblem();

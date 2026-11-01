@@ -325,6 +325,7 @@ test('rowForCwd: the live periscope whose worktree holds the directory', () => {
 // `--issue NNN` (CREW-2865)
 // ---------------------------------------------------------------------------
 
+import { LivePeriscopeError } from '../src/periscope-cmd.ts';
 import type { ExistingDeps, ExistingTicket } from '../src/periscope-cmd.ts';
 
 const EXISTING: ExistingTicket = {
@@ -338,6 +339,7 @@ function existingHarness(t: Partial<ExistingTicket> = {}, e: Partial<ExistingDep
     load: async () => ({ ...EXISTING, ...t }),
     repoId: 'repo1', repoName: 'synthesis', pairId: 'pair', shipId: 'ship1',
     agentHolder: async (id) => (id === 'dev-seat' ? 'Developer agent (Studio)' : undefined),
+    liveRows: async () => [],
     hasLiveRun: () => false,
     hold: async (id) => { log.push(`hold:${id}`); },
     restore: async (id, a) => { log.push(`restore:${id}:${a}`); },
@@ -437,6 +439,30 @@ test('the prior-hold file round-trips outside the sidecar directory crew status 
     removePeriscopePrior(dir, 'rec1');
     assert.equal(readPeriscopePrior(dir, 'rec1'), undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('runPeriscopeUp --issue: a live row on another ship refuses before any write, naming ship, URL and worktree', async () => {
+  const live = { ship: 'Brads-Mac-Mini', url: 'http://mini:4000', worktree: '/w/tabl-700' };
+  const h = existingHarness({}, { liveRows: async () => [live] });
+  await assert.rejects(runPeriscopeUp(h.deps, ISSUE_ARGS), (e: unknown) => {
+    assert.ok(e instanceof LivePeriscopeError);
+    assert.match(e.message, /Brads-Mac-Mini/);
+    assert.match(e.message, /http:\/\/mini:4000/);
+    assert.match(e.message, /\/w\/tabl-700/);
+    assert.match(e.message, /periscope down 700/);
+    assert.deepEqual(e.data, { refused: 'live_periscope_exists', ...live });
+    return true;
+  });
+  assert.deepEqual(h.log, []);
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.rows.length, 0);
+});
+
+test('runPeriscopeUp --issue: kept or discarded rows are not live, so it proceeds', async () => {
+  // liveRows only ever returns state=live rows; with none it proceeds.
+  const h = existingHarness({}, { liveRows: async () => [] });
+  const res = await runPeriscopeUp(h.deps, ISSUE_ARGS);
+  assert.equal(res.existing, true);
 });
 
 test('parsePeriscopeUpArgs carries --requested-by, trimmed, and omits it when blank', () => {

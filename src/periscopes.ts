@@ -37,7 +37,7 @@ export async function previewHostProblem(
 
 export interface PeriscopeProblem {
   severity: 'blocker' | 'attention' | 'note';
-  kind: 'preview_hook_missing' | 'periscopes_table_missing' | 'preview_host_unresolvable' | 'preview_host';
+  kind: 'preview_hook_missing' | 'periscope_duplicate_live' | 'periscopes_table_missing' | 'preview_host_unresolvable' | 'preview_host';
   route?: string;
   repo?: string;
   message: string;
@@ -75,4 +75,35 @@ export function previewHostFinding(message: string): PeriscopeProblem {
   return /does not resolve/.test(message)
     ? { severity: 'attention', kind: 'preview_host_unresolvable', message }
     : { severity: 'blocker', kind: 'preview_host', message };
+}
+
+/** A Periscopes row's reference to its ticket, as the board returns it: an id or `{ id }`. */
+const refId = (v: unknown): string | undefined =>
+  typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { id?: unknown }).id === 'string' ? (v as { id: string }).id : undefined;
+
+/**
+ * Doctor findings for an issue with more than one live Periscopes row (CREW-2871).
+ * The Issues `periscope_url` rollup assumes at most one, and `up --issue` is meant
+ * to keep it so; a duplicate means a row was written some other way.
+ */
+export function duplicateLivePeriscopes(
+  rows: { id: string; issue_id: unknown; ship_id?: string | null; url?: string | null }[],
+  tagOf: (ticketRecordId: string) => string,
+  shipName: (shipId: string | null | undefined) => string,
+  route?: string,
+): PeriscopeProblem[] {
+  const byTicket = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const t = refId(r.issue_id);
+    if (t) byTicket.set(t, [...(byTicket.get(t) ?? []), r]);
+  }
+  const out: PeriscopeProblem[] = [];
+  for (const [t, rs] of byTicket) {
+    if (rs.length < 2) continue;
+    out.push({
+      severity: 'attention', kind: 'periscope_duplicate_live', ...(route ? { route } : {}),
+      message: `${tagOf(t)} has ${rs.length} live Periscopes rows (${rs.map((r) => `${r.id} on ${shipName(r.ship_id)}${r.url ? ` ${r.url}` : ''}`).join('; ')}) — the periscope_url rollup assumes one; end all but one with \`crew periscope down\``,
+    });
+  }
+  return out;
 }

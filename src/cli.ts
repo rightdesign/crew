@@ -8,7 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
-import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems } from './periscopes.ts';
+import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems, duplicateLivePeriscopes, type PeriscopeProblem } from './periscopes.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
@@ -123,7 +123,7 @@ import { runScript, resolveShell } from './shell.ts';
 import { runPeriscopeResume } from './periscope-resume.ts';
 import { periscopeIdleKey } from './periscope-idle.ts';
 import {
-  PeriscopeError, existingRefusal, readPeriscopePrior, writePeriscopePrior, removePeriscopePrior, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
+  PeriscopeError, LivePeriscopeError, assertNoLivePeriscope, existingRefusal, readPeriscopePrior, writePeriscopePrior, removePeriscopePrior, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
   upOutput, shouldOpen, openerFor, rowForCwd, defaultTopic, type PeriscopeUpArgs,
   periscopeListEntries, formatPeriscopeList, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeLimits, type PeriscopeRowInfo,
 } from './periscope-cmd.ts';
@@ -183,6 +183,22 @@ const STALE_CYCLES = 3;
  * online-and-idle, online-and-engaged (naming what and since when), and
  * not-seen-recently, per the ticket's own three-way `crew status` split.
  */
+/** CREW-2871: issues with more than one live Periscopes row on this route, for doctor; empty when the table is absent or unreadable. */
+async function duplicateLivePeriscopeProblems(route: Route, ship: ConstructorParameters<typeof Tracker>[1]): Promise<PeriscopeProblem[]> {
+  try {
+    const tr = new Tracker(route, ship);
+    const rows = await tr.livePeriscopesAllShips();
+    const refOf = (v: unknown): string | undefined => (typeof v === 'string' ? v : (v as { id?: string } | null)?.id);
+    const counts = new Map<string, number>();
+    for (const r of rows) { const t = refOf(r.issue_id); if (t) counts.set(t, (counts.get(t) ?? 0) + 1); }
+    const dupIds = [...counts].filter(([, n]) => n > 1).map(([t]) => t);
+    if (dupIds.length === 0) return [];
+    const tags = new Map((await tr.ticketsByIds(dupIds)).map((t) => [t.id, t.issue_tag ?? t.issue_id]));
+    const ships = new Map((await tr.shipRows()).map((x) => [x.id, x.name ?? x.id]));
+    return duplicateLivePeriscopes(rows, (id) => tags.get(id) ?? id, (id) => (id ? ships.get(id) ?? id : 'an unknown ship'), route.route);
+  } catch { return []; }
+}
+
 function renderShipLine(
   s: import('./tracker.ts').ShipRow,
   issueLabelById: Map<string, string | null | undefined>,
@@ -4879,6 +4895,10 @@ switch (command) {
             const row = crewP.find((r) => r.id === assigneeId);
             return row?.agent_id ? (row.name ?? assigneeId) : undefined;
           },
+          liveRows: async (ticketRecordId) => {
+            const [rows, ships] = [await trackerP.livePeriscopesForTicket(ticketRecordId), await trackerP.shipRows()];
+            return rows.map((r) => ({ ship: ships.find((x) => x.id === r.ship_id)?.name ?? r.ship_id ?? 'an unknown ship', url: r.url ?? '', worktree: r.worktree }));
+          },
           hasLiveRun: (ticketRecordId) => liveRuns(cfg.ship.stateDir).some((r) => r.ticketRecordId === ticketRecordId),
           hold: async (id) => {
             const auth = await trackerP.authorshipProbe();
@@ -4902,6 +4922,7 @@ switch (command) {
         if (a.issue) {
           const t = await deps.existing!.load(a.issue);
           if (!t) throw new PeriscopeError(`no ticket numbered ${a.issue} on this route`);
+          await assertNoLivePeriscope(deps.existing!, t, a.issue);
           const refused = await existingRefusal(deps.existing!, t);
           if (refused) throw new PeriscopeError(refused);
           say('dry-run', `would hold ${t.tag} (status ${t.status} stays) for ${pairId}, cut or reuse its worktree for ${a.repo}, run setup${a.isolate ? ', isolate' : ''}, ports, handoff and preview on ${deps.host}, and record a Periscopes row`);
@@ -4923,6 +4944,7 @@ switch (command) {
     } catch (e) {
       if (e instanceof PeriscopeError || e instanceof ConfigError) {
         process.stderr.write(`crew periscope: ${e.message}\n`);
+        if (e instanceof LivePeriscopeError && jsonP) process.stdout.write(`${JSON.stringify(e.data)}\n`);
         process.exit(1);
       }
       throw e;
@@ -5768,6 +5790,7 @@ switch (command) {
         const { settled } = await settleRepos(reposOf(route), (t) => t.name, (t) => resolveOneRepo(route, t));
         const tablePresent = flag('offline') ? undefined : (await new Tracker(route, cfg.ship).periscopesStatus().catch(() => ({ present: true }))).present;
         problems.push(...routePeriscopeProblems({ route: route.route, hosts: true, repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })), tablePresent }));
+        if (!flag('offline')) problems.push(...await duplicateLivePeriscopeProblems(route, cfg.ship));
       }
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
@@ -5944,6 +5967,11 @@ switch (command) {
         repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })),
       })) {
         process.stdout.write(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
+      }
+      if (!flag('offline')) {
+        for (const f of await duplicateLivePeriscopeProblems(route, cfg.ship)) {
+          process.stdout.write(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
+        }
       }
     }
     process.stdout.write(
