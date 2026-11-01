@@ -1,0 +1,43 @@
+#!/bin/bash
+# Runs inside the sandbox. Clones synthesis from the read-only mirror on the
+# cache volume, brings the database up, installs from the warmed store,
+# generates the Prisma client, applies migrations, and proves the test suite
+# can start. Prints a timestamped line per step.
+set -euo pipefail
+MODE="${1:-shared}"          # shared (alternates) | copy (--no-hardlinks)
+MIRROR=/cache/synthesis.git
+WORK=/sandbox/work
+t() { date +%s.%N; }
+T0=$(t); LAST=$T0
+step() { NOW=$(t); awk -v a="$1" -v n="$NOW" -v l="$LAST" -v z="$T0" 'BEGIN{printf "STEP %-28s %8.2fs (total %8.2fs)\n", a, n-l, n-z}'; LAST=$NOW; }
+# The sandbox sets HOME to the workspace; pnpm's store and offline metadata
+# were warmed under the image user's home at build time.
+export HOME=/home/ubuntu XDG_CACHE_HOME=/home/ubuntu/.cache
+echo "spike-run mode=$MODE user=$(id -u) kernel=$(uname -r) home=$HOME"
+touch /cache/.rw-probe 2>/dev/null && echo "CACHE WRITABLE (unexpected)" || echo "cache volume is read-only (expected)"
+case "$MODE" in
+  shared) git clone --quiet --shared "$MIRROR" "$WORK" ;;
+  copy)   git clone --quiet --no-hardlinks "$MIRROR" "$WORK" ;;
+esac
+step "clone --$MODE"
+cd "$WORK"
+du -sh .git | sed 's/^/  .git size: /'
+cat > apps/backend/.env <<ENV
+DATABASE_URL="postgresql://synthesis:synthesis@localhost:5432/synthesis?schema=public"
+JWT_SECRET="spike-not-a-secret"
+ENV
+/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/pg-synthesis -l /tmp/pg.log -o "-k /run/postgresql -c listen_addresses=127.0.0.1" -w start >/dev/null
+step "postgres start"
+pnpm install --offline --frozen-lockfile >/tmp/pnpm-install.log 2>&1 || { tail -30 /tmp/pnpm-install.log; exit 1; }
+step "pnpm install --offline"
+pnpm --filter @synthesis/backend run db:generate >/tmp/db-generate.log 2>&1 || { tail -30 /tmp/db-generate.log; exit 1; }
+step "db:generate"
+pnpm --filter @synthesis/backend run db:migrate:deploy >/tmp/db-migrate.log 2>&1 || { tail -30 /tmp/db-migrate.log; exit 1; }
+step "db:migrate:deploy"
+pnpm --filter @synthesis/backend exec jest --listTests > /tmp/jest-list.txt 2>/dev/null
+N=$(wc -l < /tmp/jest-list.txt | tr -d ' ')
+step "jest --listTests ($N files)"
+FIRST=$(grep -v e2e /tmp/jest-list.txt | sed -n 1p)
+pnpm --filter @synthesis/backend exec jest --silent "$FIRST" >/tmp/jest-one.log 2>&1 || { tail -20 /tmp/jest-one.log; exit 1; }
+step "jest one file"
+awk -v n="$(t)" -v z="$T0" 'BEGIN{printf "DONE total %.2fs\n", n-z}' 

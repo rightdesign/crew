@@ -1,0 +1,11 @@
+spike-run mode=shared user=1000 kernel=7.0.14-linuxkit home=/home/ubuntu
+cache volume is read-only (expected)
+STEP clone --shared                   0.52s (total     0.52s)
+  .git size: 716K	.git
+STEP postgres start                   0.13s (total     0.64s)
+STEP pnpm install --offline          22.38s (total    23.03s)
+STEP db:generate                      2.88s (total    25.90s)
+STEP db:migrate:deploy                2.67s (total    28.57s)
+STEP jest --listTests (519 files)     0.66s (total    29.24s)
+STEP jest one file                    4.20s (total    33.43s)
+DONE total 33.44s

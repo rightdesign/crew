@@ -1,0 +1,42 @@
+== crew layer build Sun Nov  1 12:30:21 CST 2026
+#13 exporting manifest list sha256:3232ca67d9fba62882e719e89915bab7f76846a5c97f58bc92498c1de5775b0e done
+#13 naming to docker.io/crew2787/crew:latest done
+#13 unpacking to docker.io/crew2787/crew:latest
+#13 unpacking to docker.io/crew2787/crew:latest 2.2s done
+#13 DONE 6.3s
+real 20.66
+user 0.08
+sys 0.12
+== repo layer build Sun Nov  1 12:30:42 CST 2026
+#18 exporting layers 31.7s done
+#18 exporting manifest sha256:db065194cb0cf4f36e609e4b52b155526ac84f6f7eab0efcaf9b30b7e4f42762 done
+#18 exporting config sha256:abf93d386e7dccbb9f91b15cbc39911082641d4a2d3f5fed4d4cf36a97498006 done
+#18 exporting attestation manifest sha256:21d78c0f5ac0ac6a867482725726e86d1b52dd60a465857b6e2a604be42093cb done
+#18 exporting manifest list sha256:92fbffb4be7f11d78b13893f0b244ddcb56d4d8f0e0657d4a9c1700146b73f91 done
+#18 naming to docker.io/crew2787/repo:latest done
+#18 unpacking to docker.io/crew2787/repo:latest
+#18 unpacking to docker.io/crew2787/repo:latest 17.5s done
+#18 DONE 49.3s
+real 78.30
+user 0.13
+sys 0.14
+== repo layer rebuild, trailing step only Sun Nov  1 12:32:00 CST 2026
+#18 naming to docker.io/crew2787/repo:latest done
+#18 unpacking to docker.io/crew2787/repo:latest 0.0s done
+#18 DONE 0.1s
+real 0.76
+user 0.06
+sys 0.05
+== repo layer rebuild, lockfile touched Sun Nov  1 12:32:01 CST 2026
+#18 unpacking to docker.io/crew2787/repo:latest
+#18 unpacking to docker.io/crew2787/repo:latest 13.4s done
+#18 DONE 42.2s
+real 54.33
+user 0.09
+sys 0.08
+docker: 'docker image ls' requires at most 1 argument
+
+Usage:  docker image ls [OPTIONS] [REPOSITORY[:TAG]]
+
+Run 'docker image ls --help' for more information
+0.92.0

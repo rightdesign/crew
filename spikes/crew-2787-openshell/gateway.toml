@@ -1,0 +1,12 @@
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "docker"
+
+[openshell.drivers.docker]
+# Spike CREW-2787. Docker Desktop: the supervisor reaches the gateway through
+# host.docker.internal, so bridge mode (host mode fails: 127.0.0.1 inside the
+# Desktop VM is not the Mac).
+supervisor_network_mode = "bridge"
+allow_driver_config = true

@@ -1,0 +1,89 @@
+### host: 7.0.0-1014-aws PRETTY_NAME="Ubuntu 24.04.5 LTS" docker=29.9.2 nproc=4
+openshell_0.1.6-1_arm64.deb: OK
+Created symlink /home/ubuntu/.config/systemd/user/default.target.wants/openshell-gateway.service → /usr/lib/systemd/user/openshell-gateway.service.
+✓ TLS certificates present
+### openshell openshell 0.1.6 / Status: Connected
+== base image pull
+real 1.19
+== crew layer build
+real 28.30
+== repo layer build
+real 151.95
+== repo layer rebuild, trailing step only
+real 9.73
+== repo layer rebuild, lockfile touched
+real 121.42
+crew2787/repo:latest 4.19GB
+crew2787/crew:latest 617MB
+nvcr.io/nvidia/base/ubuntu:24.04 143MB
+== cache volume: restore synthesis mirror from tarball
+Unable to find image 'alpine:latest' locally
+latest: Pulling from library/alpine
+d3531b7a4f21: Pulling fs layer
+d3531b7a4f21: Download complete
+d3531b7a4f21: Pull complete
+2a02c517eb64: Download complete
+4f276f238bfa: Download complete
+Digest: sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+Status: Downloaded newer image for alpine:latest
+== mirror clone + refresh timing from GitHub, public repo stand-in (NVIDIA/OpenShell, no token on this host)
+real 18.47
+real 0.63
+size-pack: 205.19 MiB
+== probe sandbox: cold create (runtime images not pulled)
+real 0.76
+== probe sandbox: warm create
+real 0.76
+== enforcement, stdin, streaming, exit code
+1000
+touch: cannot touch '/etc/x': Permission denied
+write /etc exit=1
+write workdir ok
+local: 1416501 e298dab2213b0636
+1416501
+e298dab2213b0636
+real 0.08
+ 0.04s line 1
+ 0.54s line 2
+ 1.04s line 3
+ 1.54s line 4
+ 2.05s line 5
+exit=7
+== delete mid-run
+exec exit=143
+✓ Sandbox probe2 deletion accepted; cleanup is pending
+exec returned 0.26s after delete; lines=7
+== volume mounts: read-only default, read_only:false, unlabeled refused
+/dev/root /cache ext4 ro,relatime,discard,errors=remount-ro,commit=30
+touch: cannot touch '/cache/x': Read-only file system
+/dev/root /cache ext4 rw,relatime,discard,errors=remount-ro,commit=30
+touch: cannot touch '/cache/x': Permission denied
+Error:   × code: 'The system is not in a state required for the operation's
+  │ execution', message: "docker volume 'unl': external resource not admitted
+=== per-run sandbox, clone --shared
+create->Ready 0.78s
+exec exit=0
+STEP clone --shared                   0.41s (total     0.41s)
+  .git size: 716K	.git
+STEP postgres start                   0.12s (total     0.52s)
+STEP pnpm install --offline         157.86s (total   158.38s)
+STEP db:generate                      5.00s (total   163.38s)
+STEP db:migrate:deploy                7.85s (total   171.24s)
+STEP jest --listTests (519 files)     1.90s (total   173.14s)
+STEP jest one file                    8.25s (total   181.39s)
+DONE total 181.39s
+delete 3.68s; whole cycle 185.91s
+=== per-run sandbox, clone --copy
+create->Ready 0.82s
+exec exit=0
+STEP clone --copy                     0.55s (total     0.55s)
+  .git size: 29M	.git
+STEP postgres start                   0.12s (total     0.67s)
+STEP pnpm install --offline         157.80s (total   158.46s)
+STEP db:generate                      4.90s (total   163.37s)
+STEP db:migrate:deploy                7.61s (total   170.98s)
+STEP jest --listTests (519 files)     1.34s (total   172.32s)
+STEP jest one file                    8.05s (total   180.37s)
+DONE total 180.37s
+delete 3.70s; whole cycle 184.95s
+### done

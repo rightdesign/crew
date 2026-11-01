@@ -1,0 +1,21 @@
+# CREW-2787 spike policy: no network; Landlock is a hard requirement so a
+# filesystem-enforcement failure (the Docker Desktop VirtioFS concern) fails
+# the sandbox instead of silently degrading.
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/bin, /usr, /lib, /proc, /dev/urandom, /etc, /var/log, /opt/pnpm-store, /opt/spike, /cache]
+  read_write: [/sandbox, /tmp, /dev/null, /dev/shm, /home/ubuntu, /var/lib/pg-synthesis, /run/postgresql]
+landlock:
+  compatibility: hard_requirement
+network_policies:
+  # prisma generate downloads its query engine on first use; the warmed pnpm
+  # store cannot carry it because @prisma/engines postinstall is disabled in
+  # pnpm-workspace.yaml. This is the one egress the run needs.
+  prisma_engines:
+    endpoints:
+      - host: binaries.prisma.sh
+        port: 443
+        tls: skip
+    binaries:
+      - path: /usr/local/bin/node

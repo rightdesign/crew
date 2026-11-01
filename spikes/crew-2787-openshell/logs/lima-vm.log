@@ -1,0 +1,85 @@
+### host: 7.0.0-34-generic PRETTY_NAME="Ubuntu 26.04.1 LTS" docker=29.9.2 nproc=6
+### openshell openshell 0.1.6 / Status: Connected
+== base image pull
+real 0.67
+== crew layer build
+real 15.87
+== repo layer build
+real 74.91
+== repo layer rebuild, trailing step only
+real 0.67
+== repo layer rebuild, lockfile touched
+real 55.96
+crew2787/repo:latest 4.19GB
+crew2787/crew:latest 617MB
+nvcr.io/nvidia/base/ubuntu:24.04 143MB
+== cache volume: restore synthesis mirror from tarball
+Unable to find image 'alpine:latest' locally
+latest: Pulling from library/alpine
+d3531b7a4f21: Pulling fs layer
+d3531b7a4f21: Already exists
+2a02c517eb64: Download complete
+4f276f238bfa: Download complete
+Digest: sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+Status: Downloaded newer image for alpine:latest
+== mirror clone + refresh timing from GitHub, public repo stand-in (NVIDIA/OpenShell, no token on this host)
+real 12.18
+real 0.61
+size-pack: 205.44 MiB
+== probe sandbox: cold create (runtime images not pulled)
+real 0.57
+== probe sandbox: warm create
+real 0.53
+== enforcement, stdin, streaming, exit code
+1000
+touch: cannot touch '/etc/x': Permission denied
+write /etc exit=1
+write workdir ok
+local: 1416501 52933e369dd5abee
+1416501
+52933e369dd5abee
+real 0.05
+ 0.02s line 1
+ 0.53s line 2
+ 1.03s line 3
+ 1.53s line 4
+ 2.03s line 5
+exit=7
+== delete mid-run
+exec exit=143
+✓ Sandbox probe2 deletion accepted; cleanup is pending
+exec returned 0.13s after delete; lines=6
+== volume mounts: read-only default, read_only:false, unlabeled refused
+/dev/vda1 /cache ext4 ro,relatime,discard,errors=remount-ro,commit=30
+touch: cannot touch '/cache/x': Read-only file system
+/dev/vda1 /cache ext4 rw,relatime,discard,errors=remount-ro,commit=30
+touch: cannot touch '/cache/x': Permission denied
+Error:   × code: 'The system is not in a state required for the operation's
+  │ execution', message: "docker volume 'unl': external resource not admitted
+=== per-run sandbox, clone --shared
+create->Ready 0.32s
+exec exit=0
+STEP clone --shared                   0.31s (total     0.31s)
+  .git size: 716K	.git
+STEP postgres start                   0.14s (total     0.45s)
+STEP pnpm install --offline          22.95s (total    23.40s)
+STEP db:generate                      2.54s (total    25.94s)
+STEP db:migrate:deploy                2.18s (total    28.11s)
+STEP jest --listTests (519 files)     0.56s (total    28.67s)
+STEP jest one file                    3.42s (total    32.09s)
+DONE total 32.09s
+delete 2.25s; whole cycle 34.70s
+=== per-run sandbox, clone --copy
+create->Ready 0.70s
+exec exit=0
+STEP clone --copy                     0.34s (total     0.34s)
+  .git size: 29M	.git
+STEP postgres start                   0.11s (total     0.46s)
+STEP pnpm install --offline          26.12s (total    26.57s)
+STEP db:generate                      2.23s (total    28.80s)
+STEP db:migrate:deploy                2.16s (total    30.96s)
+STEP jest --listTests (519 files)     0.57s (total    31.53s)
+STEP jest one file                    3.39s (total    34.92s)
+DONE total 34.92s
+delete 2.80s; whole cycle 38.47s
+### done
