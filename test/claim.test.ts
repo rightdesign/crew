@@ -131,3 +131,38 @@ test('an unrelated error is not swallowed as a contended claim', async () => {
     /network blip/,
   );
 });
+
+test('a resumption candidate whose ticket lock is held is walked past and counted as contended (CREW-2821)', async () => {
+  const a = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress' });
+  const b = T({ id: 'b', issue_id: 'ISSUE-2', status: 'in_progress' });
+  const { tracker, calls } = fakeTracker([a, b]);
+  const taken: string[] = [];
+  const r = await resolveTopCandidate(tracker, [a, b], 'seat', 'accepted', 'in_progress', undefined, undefined, (t) => {
+    if (t.id === 'a') return null;
+    taken.push(t.id);
+    return () => { taken.pop(); };
+  });
+  assert.equal(r.ticket?.id, 'b');
+  assert.deepEqual(r.contended, ['ISSUE-1']);
+  assert.equal(calls.length, 0, 'a resumption still writes nothing');
+  assert.deepEqual(taken, ['b']);
+  r.releaseTicket?.();
+  assert.deepEqual(taken, []);
+});
+
+test('a claim lost to another run releases that candidate\'s ticket lock and moves on (CREW-2821)', async () => {
+  const a = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' });
+  const b = T({ id: 'b', issue_id: 'ISSUE-2', status: 'accepted' });
+  const { tracker, rows } = fakeTracker([a, b]);
+  // Another run of the same role claimed `a` first: the store has moved on.
+  rows.find((r) => r.id === 'a')!.updated_at = '2026-08-26T00:00:00.000Z';
+  const held = new Set<string>();
+  const r = await resolveTopCandidate(tracker, [a, b], 'seat', 'accepted', 'in_progress', undefined, undefined, (t) => {
+    held.add(t.id);
+    return () => { held.delete(t.id); };
+  });
+  assert.equal(r.ticket?.id, 'b');
+  assert.equal(r.claimed, true);
+  assert.deepEqual(r.contended, ['ISSUE-1']);
+  assert.deepEqual([...held], ['b'], 'only the winner stays locked');
+});

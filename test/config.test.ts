@@ -947,3 +947,35 @@ test('ship.pair defaults to claude, accepts known harnesses, rejects unknown one
 test('splitRoute accepts a <primary>:<slug> workspace segment', () => {
   assert.deepEqual(splitRoute('paradium:issues/issues'), ['paradium:issues', 'issues']);
 });
+
+test('ship.roleConcurrency defaults to empty and accepts positive integers per role (CREW-2821)', () => {
+  const { dir, file } = withConfig(ONE);
+  assert.deepEqual(loadConfig(dir, file).ship.roleConcurrency, {});
+  const set = withConfig(ONE.replace('agent: { bin: /bin/true }', 'agent: { bin: /bin/true }\n  roleConcurrency: { dev: 2, qa: 3 }'));
+  assert.deepEqual(loadConfig(set.dir, set.file).ship.roleConcurrency, { dev: 2, qa: 3 });
+});
+
+test('maxConcurrentAgents derives from roleConcurrency when unset, and stays an explicit ceiling when set (CREW-2821)', () => {
+  const at = (extra: string) => {
+    const { dir, file } = withConfig(ONE.replace('agent: { bin: /bin/true }', `agent: { bin: /bin/true }\n${extra}`));
+    return loadConfig(dir, file).ship;
+  };
+  const none = at('  streamRetentionDays: 7');
+  assert.equal(none.maxConcurrentAgents, 2);
+  assert.equal(none.maxConcurrentAgentsSet, false);
+  // dev 2 + qa 2 + design 1 + triage 1 (roles the map leaves out count 1 each).
+  const derived = at('  roleConcurrency: { dev: 2, qa: 2 }');
+  assert.equal(derived.maxConcurrentAgents, 6);
+  assert.equal(derived.maxConcurrentAgentsSet, false);
+  const capped = at('  maxConcurrentAgents: 3\n  roleConcurrency: { dev: 2, qa: 2 }');
+  assert.equal(capped.maxConcurrentAgents, 3);
+  assert.equal(capped.maxConcurrentAgentsSet, true);
+  assert.equal(at('  maxConcurrentAgents: 2').maxConcurrentAgents, 2);
+});
+
+test('ship.roleConcurrency rejects a non-positive value and an unknown role (CREW-2821)', () => {
+  for (const bad of ['{ dev: 0 }', '{ dev: 1.5 }', '{ nobody: 2 }']) {
+    const { dir, file } = withConfig(ONE.replace('agent: { bin: /bin/true }', `agent: { bin: /bin/true }\n  roleConcurrency: ${bad}`));
+    assert.throws(() => loadConfig(dir, file), /roleConcurrency/, bad);
+  }
+});

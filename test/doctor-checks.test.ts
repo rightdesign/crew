@@ -72,3 +72,13 @@ test('a lock held by this ship with a dead pid is reported; live, foreign and fr
   assert.equal(staleOwnLockClaim(`mini:${process.pid}`, 'mini'), false);
   assert.match(formatStaleOwnLock('r/crew', 'mini:4242'), /lock r\/crew is held by mini:4242/);
 });
+
+test('roleCapWarnings flags an explicit ship cap below a role cap, never a derived one (CREW-2821)', async () => {
+  const { roleCapWarnings } = await import('../src/doctor-checks.ts');
+  assert.deepEqual(roleCapWarnings({ maxConcurrentAgents: 4, maxConcurrentAgentsSet: true, roleConcurrency: { dev: 2, qa: 4 } }), []);
+  const w = roleCapWarnings({ maxConcurrentAgents: 2, maxConcurrentAgentsSet: true, roleConcurrency: { dev: 3 } });
+  assert.equal(w.length, 1);
+  assert.match(w[0]!, /roleConcurrency\.dev is 3.*maxConcurrentAgents \(2\)/);
+  // A derived cap (maxConcurrentAgents not written in crew.yaml) never warns.
+  assert.deepEqual(roleCapWarnings({ maxConcurrentAgents: 6, maxConcurrentAgentsSet: false, roleConcurrency: { dev: 3 } }), []);
+});

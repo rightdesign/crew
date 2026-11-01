@@ -168,6 +168,13 @@ export interface PlanOptions {
    * directory — same id as the `Emitter` driving the run (`emit.cycle`).
    */
   cycle: string;
+  /**
+   * CREW-2821: tells apart two runs of one role started in one cycle. Added to
+   * the stream names and used to find the run's own digest
+   * (`poll.ts#digestPath`), so concurrent runs no longer write or read the
+   * same files. Omitted, names are exactly as before.
+   */
+  runId?: string;
   /** Best-effort — the top actionable ticket the poll saw, if any. */
   ticket?: string;
   /** The claimed ticket's tracker record id; lands in `AgentPlan.ticketRecordId`. */
@@ -246,6 +253,10 @@ export class AgentError extends Error {}
  */
 export class AgentSpawnError extends AgentError {}
 
+/** `poll.ts#digestPath`, restated here because `poll.ts` imports this module. */
+const digestPathFor = (stateDir: string, routeLabel: string, role: string, runId?: string): string =>
+  join(stateDir, `digest-${routeLabel}-${role}${runId ? `-${runId}` : ''}.md`);
+
 /** Everything the run WOULD do, decided without doing any of it. */
 export function planAgentRun(o: PlanOptions): AgentPlan {
   const briefPath = join(o.route.promptsDir, 'personas', `lane-${o.role}.md`);
@@ -261,7 +272,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
 
   const now = o.now ?? (() => Date.now());
   const routeLabel = routeSlug(o.route.route);
-  const digestPath = join(o.stateDir, `digest-${routeLabel}-${o.role}.md`);   // see poll.ts digestPath()
+  // see poll.ts digestPath(): the run's own digest when it has one, else the role's
+  const ownDigest = o.runId ? digestPathFor(o.stateDir, routeLabel, o.role, o.runId) : undefined;
+  const digestPath = ownDigest && existsSync(ownDigest) ? ownDigest : digestPathFor(o.stateDir, routeLabel, o.role);
   let digest: string | undefined;
   let ageSeconds: number | undefined;
   if (existsSync(digestPath)) {
@@ -305,7 +318,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const promptSha = createHash('sha256').update(expanded.text).digest('hex');
 
   const streamsDir = join(o.stateDir, 'streams');
-  const base = `${routeLabel}-${o.role}-${o.cycle}`;
+  const base = `${routeLabel}-${o.role}-${o.cycle}${o.runId ? `-${o.runId}` : ''}`;
   const seat = resolveSeat(o.ship, o.route, o.role, o.agentPersona ?? (o.agentModel ? { model: o.agentModel } : {}), o.repo);
   const { toolchain, model } = seat;
   const adapter = adapterFor(toolchain.harness);

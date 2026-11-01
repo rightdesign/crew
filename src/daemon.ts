@@ -71,6 +71,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { RoleName, Route, Ship } from './config.ts';
 import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, routeSlug } from './config.ts';
 import { State } from './state.ts';
@@ -370,7 +371,23 @@ export interface RoleAgentContext {
 }
 
 /** The real claim+checkout+spawn sequence for one role, or an injectable fake in tests. */
-export type SpawnRoleAgent = (role: RoleName, decision: CycleDecision, ctx: RoleAgentContext) => Promise<void>;
+export type SpawnRoleAgent = (
+  role: RoleName, decision: CycleDecision, ctx: RoleAgentContext, hooks?: RunHooks,
+) => Promise<void>;
+
+/**
+ * What a run tells the pass that started it (CREW-2821). `ready(true)` says the
+ * run has settled which ticket it works and holds that ticket's run lock, so
+ * the pass may start another run of the same role; `ready(false)` says it has
+ * no ticket (nothing claimable, or a failed start), so asking again is
+ * pointless. A run that settles without calling it counts as `false`.
+ */
+export interface RunHooks {
+  ready: (tookTicket: boolean) => void;
+}
+
+/** Roles whose runs claim and lock a ticket, and so may run several at once (CREW-2821). */
+const TICKET_ROLES: ReadonlySet<RoleName> = new Set<RoleName>(['dev', 'design', 'qa']);
 
 /** The real per-cycle decision, or an injectable fake in tests (`decideCycle` needs a live tracker). */
 export type Decide = (ctx: RoleAgentContext) => Promise<CycleDecision>;
@@ -451,6 +468,8 @@ export interface RunOnePassOptions {
   state: State;
   /** This machine's overall agent concurrency capacity — `ship.maxConcurrentAgents`. */
   maxConcurrentAgents: number;
+  /** `ship.roleConcurrency` (CREW-2821): runs of one role allowed at once; absent roles allow 1. */
+  roleConcurrency?: Partial<Record<RoleName, number>>;
   /**
    * A fresh `Emitter` per pass: every `decideCycle`/digest/stream artifact
    * downstream is keyed by `emit.cycle`, the same way one-shot `crew run`
@@ -618,53 +637,79 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   const started: RoleName[] = [];
   const skipped: Array<{ role: RoleName; reason: string }> = [];
 
-  for (const role of order) {
-    if (!breaker.allows(role)) {
-      skipped.push({ role, reason: 'agent recently failed to start — waiting before retry' });
-      continue;
-    }
-    const lock = o.state.acquireRun(role, o.maxConcurrentAgents);
-    if (!lock.ok) {
-      skipped.push({ role, reason: lock.reason });
-      continue;
-    }
-    started.push(role);
-    const run = spawn(role, decision, ctx)
-      .then(() => {
-        breaker.recordSuccess(role);
-        clearShipAttention(o.state, `role_parked:${role}`);
-      })
-      .catch(async (e) => {
-        const message = (e as Error).message;
-        if (!(e instanceof AgentSpawnError)) {
-          emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
-          return;
-        }
-        // Nothing ran, so this is not an agent run failure: warn once per
-        // distinct message, and say so when the role is parked.
-        const report = breaker.recordFailure(role, message);
-        if (report.firstOfMessage || report.parked) {
-          emit.warn(`${role} agent could not start: ${message}`, { step: 'agent', role });
-        }
-        if (report.parked) {
-          emit.error(
-            `${role} parked for ${Math.round(report.retryInMs / 1000)}s after ${report.failures} ` +
-              'consecutive failed starts — check that ship.agent.bin is installed and on PATH',
-          );
-          // CREW-1373: visible from the board and `crew status`, not only this ship's log.
-          await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, {
-            kind: 'role_parked',
-            key: `role_parked:${role}`,
-            message: `${role} agent is parked after ${report.failures} failed starts: ${message}`,
-            since: new Date().toISOString(),
-          });
-        }
-      })
-      .finally(() => lock.release());
-    if (o.inFlight) {
-      const set = o.inFlight;
-      set.add(run);
-      void run.finally(() => set.delete(run));
+  const roleCap = (role: RoleName): number => (TICKET_ROLES.has(role) ? o.roleConcurrency?.[role] ?? 1 : 1);
+
+  // Walk the roles most-urgent-first, and keep going round while any role can
+  // still take a run: below its own cap, a free ship slot, and a run before it
+  // that settled on a ticket (CREW-2821). A role drops out of the rounds on its
+  // first refusal, so a ship with no per-role cap makes exactly one attempt per
+  // role, as before.
+  const live = new Map<RoleName, number>(order.map((r) => [r, 0]));
+  while (live.size) {
+    for (const role of order) {
+      const count = live.get(role);
+      if (count === undefined) continue;
+      if (!breaker.allows(role)) {
+        if (count === 0) skipped.push({ role, reason: 'agent recently failed to start — waiting before retry' });
+        live.delete(role);
+        continue;
+      }
+      const lock = o.state.acquireRun(role, o.maxConcurrentAgents, roleCap(role));
+      if (!lock.ok) {
+        if (count === 0) skipped.push({ role, reason: lock.reason });
+        live.delete(role);
+        continue;
+      }
+      started.push(role);
+      let ready: (tookTicket: boolean) => void = () => {};
+      const settled = new Promise<boolean>((resolve) => { ready = resolve; });
+      const run = spawn(role, decision, ctx, { ready })
+        .then(() => {
+          breaker.recordSuccess(role);
+          clearShipAttention(o.state, `role_parked:${role}`);
+        })
+        .catch(async (e) => {
+          const message = (e as Error).message;
+          if (!(e instanceof AgentSpawnError)) {
+            emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
+            return;
+          }
+          // Nothing ran, so this is not an agent run failure: warn once per
+          // distinct message, and say so when the role is parked.
+          const report = breaker.recordFailure(role, message);
+          if (report.firstOfMessage || report.parked) {
+            emit.warn(`${role} agent could not start: ${message}`, { step: 'agent', role });
+          }
+          if (report.parked) {
+            emit.error(
+              `${role} parked for ${Math.round(report.retryInMs / 1000)}s after ${report.failures} ` +
+                'consecutive failed starts — check that ship.agent.bin is installed and on PATH',
+            );
+            // CREW-1373: visible from the board and `crew status`, not only this ship's log.
+            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, {
+              kind: 'role_parked',
+              key: `role_parked:${role}`,
+              message: `${role} agent is parked after ${report.failures} failed starts: ${message}`,
+              since: new Date().toISOString(),
+            });
+          }
+        })
+        .finally(() => { lock.release(); ready(false); });
+      if (o.inFlight) {
+        const set = o.inFlight;
+        set.add(run);
+        void run.finally(() => set.delete(run));
+      }
+      if (roleCap(role) <= 1) {
+        live.delete(role);
+        continue;
+      }
+      // Wait for this run to settle on its ticket before another run of the
+      // role looks for one: its claim and ticket lock are what the next run
+      // walks past.
+      const tookTicket = await settled;
+      if (tookTicket && count + 1 < roleCap(role)) live.set(role, count + 1);
+      else live.delete(role);
     }
   }
 
@@ -727,7 +772,7 @@ async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): P
   await replayPendingWrites(ctx);
   await reconcileRuns({
     stateDir: ship.stateDir, routeLabel: routeSlug(route.route), emit, state: o.state,
-    maxConcurrentAgents: o.maxConcurrentAgents, inFlight: o.inFlight,
+    maxConcurrentAgents: o.maxConcurrentAgents, roleConcurrency: o.roleConcurrency, inFlight: o.inFlight,
     agentLogKey: async (role) => (await resolveSeatKey(route, role as RoleName, ctx.getSessionStore)).apiKey,
     afterRun: async (sc, result) => {
       const identity = await resolveSeatKey(route, sc.role, ctx.getSessionStore);
@@ -763,8 +808,26 @@ async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): P
   });
 }
 
-async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAgentContext): Promise<void> {
+async function runRoleAgent(
+  role: RoleName, decision: CycleDecision, ctx: RoleAgentContext, hooks?: RunHooks,
+): Promise<void> {
+  // The ticket lock this run takes at claim time lives until the run ends,
+  // whichever way it ends (CREW-2821).
+  const held: { release?: () => void } = {};
+  try {
+    await runRoleAgentLocked(role, decision, ctx, hooks, held);
+  } finally {
+    held.release?.();
+    hooks?.ready(false);
+  }
+}
+
+async function runRoleAgentLocked(
+  role: RoleName, decision: CycleDecision, ctx: RoleAgentContext, hooks: RunHooks | undefined,
+  held: { release?: () => void },
+): Promise<void> {
   const { route, ship, emit } = ctx;
+  const runId = randomBytes(3).toString('hex');
   // CREW-1603: the lane's own writes (claim, status, hand-off) and the key its
   // harness gets use the seat's agent key; a seat without one keeps working as
   // the ship, with the reason on the run log.
@@ -788,7 +851,12 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
         tracker, candidates, seat, claimStatuses(role, contract).approved, claimStatuses(role, contract).building,
         (t) => dirForRepo(route, t.repo_id) !== null,
         withHoldCheck(await tracker.claimAffinity(), decision.selectionInput),
+        (t) => {
+          const got = ctx.state.acquireTicket(t.id);
+          return got.ok ? got.release : null;
+        },
       );
+      held.release = result.releaseTicket;
       if (result.contended.length) {
         emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
           step: 'select', role,
@@ -816,6 +884,11 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
         if (idx >= 0) decision.tickets[idx] = result.ticket;
         writeDigest({ route, ship, state: ctx.state, emit }, decision, role, ship.stateDir);
       }
+      writeDigest({ route, ship, state: ctx.state, emit }, decision, role, ship.stateDir, runId, {
+        ticket: result.ticket,
+        inFlight: (id) => ctx.state.ticketInFlight(id),
+      });
+      hooks?.ready(true);
       ticketHint = result.ticket.issue_id;
       workingId = result.ticket.id;
 
@@ -839,7 +912,7 @@ async function runRoleAgent(role: RoleName, decision: CycleDecision, ctx: RoleAg
     role, route, ship, stateDir: ship.stateDir, roster: rosterFor(decision, route, role),
     environment: await buildEnvironment(route, ship, ticketHint),
     apiKey: identity.apiKey,
-    cycle: emit.cycle, ticket: ticketHint, repo: ticketRepo,
+    cycle: emit.cycle, runId, ticket: ticketHint, repo: ticketRepo,
     ticketRecordId: workingId,
     ...personaPromptOptions(await fetchPersonaPrompt(route, role, { userAgent: ship.userAgent })),
     skillOverrides: await fetchSkillOverrides(route, { userAgent: ship.userAgent }),

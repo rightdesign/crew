@@ -92,6 +92,12 @@ export interface ClaimResult {
    * The caller posts the one audit comment (`noteTakeover`).
    */
   tookOverFrom: string | null;
+  /**
+   * CREW-2821: releases the per-ticket run lock `ticketLock` took for
+   * `ticket`. Present only when a lock was taken; the caller holds it for
+   * the life of the run.
+   */
+  releaseTicket?: () => void;
 }
 
 /** The previous holder when this claim displaces a DIFFERENT ship's hold, else null. */
@@ -152,6 +158,13 @@ async function stampResumption(tracker: ClaimableTracker, t: Ticket, affinity: C
  * claimed). ISSUE-445: a missing `crew.yaml` repo entry let the runner claim
  * ISSUE-402 and ISSUE-420 and then have no worktree to open, leaving both
  * stuck `in_progress` indefinitely with no error surfaced.
+ *
+ * `ticketLock` (CREW-2821), when given, takes the per-ticket run lock for a
+ * candidate BEFORE anything is written or handed back and returns its release,
+ * or null when a live run on this ship already holds the ticket. A null walks
+ * past the candidate and counts it as contended, exactly as a lost conditional
+ * claim does; the lock of a candidate that then loses its claim is released,
+ * and the winner's release comes back as `releaseTicket`.
  */
 export async function resolveTopCandidate(
   tracker: ClaimableTracker,
@@ -161,6 +174,7 @@ export async function resolveTopCandidate(
   buildingStatus: string,
   isServable?: (t: Ticket) => boolean,
   affinity?: ClaimAffinity,
+  ticketLock?: (t: Ticket) => (() => void) | null,
 ): Promise<ClaimResult> {
   const contended: string[] = [];
   const unservable: string[] = [];
@@ -174,51 +188,80 @@ export async function resolveTopCandidate(
       unservable.push(t.issue_id);
       continue;
     }
-    if (t.status !== approvedStatus) {
-      // A resumption needs no claim. A ticket a LIVE other ship holds is handed
-      // back as it is, with no write: it must never let this ship re-stamp
-      // the hold (CREW-1394). Since CREW-1389 only `fixed` is exempt from
-      // `isHeldElsewhere` and `fixed` is the QA claim, not a resumption, so
-      // this is the backstop for a caller whose `isHeldElsewhere` is laxer. Otherwise a ticket with no `ship_id` yet (started
-      // before ship affinity existed), or whose hold names a dead ship, takes
-      // the hold now, or the dead ship's return would resume it a second time.
-      // Conditional: a lost race re-reads the row and walks past the ticket
-      // unless the stamp is ours (`stampResumption`).
-      if (affinity?.isLiveHoldElsewhere?.(t)) {
-        return { ticket: t, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: null };
-      }
-      if (affinity && t[affinity.column] !== affinity.shipId) {
-        const stamp = await stampResumption(tracker, t, affinity);
-        if (stamp.outcome === 'stamped') {
-          return { ticket: stamp.ticket, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: displacedHolder(t, affinity) };
-        }
-        // Lost the race and someone else now holds it (or we could not tell
-        // who): returning it here is how two ships built CREW-1386's own
-        // ticket. Walk past it instead.
-        (stamp.outcome === 'held' ? held : contended).push(t.issue_id);
-        continue;
-      }
-      return { ticket: t, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: null };
-    }
-    try {
-      const claimed = await tracker.updateTicket(
-        t.id,
-        {
-          status: buildingStatus,
-          assignee_id: seat,
-          ...(affinity ? { [affinity.column]: affinity.shipId } : {}),
-        },
-        t.updated_at,
-      );
-      const reaccepted = !!affinity && t[affinity.column] === affinity.shipId;
-      return { ticket: { ...t, ...claimed }, claimed: true, contended, unservable, held, reaccepted, tookOverFrom: displacedHolder(t, affinity) };
-    } catch (e) {
-      if (e instanceof StaleWriteError) {
+    let releaseTicket: (() => void) | undefined;
+    if (ticketLock) {
+      const got = ticketLock(t);
+      if (!got) {
         contended.push(t.issue_id);
         continue;
       }
-      throw e;
+      releaseTicket = got;
     }
+    const result = await resolveOne(tracker, t, seat, approvedStatus, buildingStatus, affinity, contended, unservable, held);
+    if (result === 'walk') {
+      releaseTicket?.();
+      continue;
+    }
+    return releaseTicket ? { ...result, releaseTicket } : result;
   }
   return { ticket: null, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: null };
+}
+
+/** One candidate's claim/resume decision: a result to return, or `'walk'` to try the next. */
+async function resolveOne(
+  tracker: ClaimableTracker,
+  t: Ticket,
+  seat: string,
+  approvedStatus: string,
+  buildingStatus: string,
+  affinity: ClaimAffinity | undefined,
+  contended: string[],
+  unservable: string[],
+  held: string[],
+): Promise<ClaimResult | 'walk'> {
+  if (t.status !== approvedStatus) {
+    // A resumption needs no claim. A ticket a LIVE other ship holds is handed
+    // back as it is, with no write: it must never let this ship re-stamp
+    // the hold (CREW-1394). Since CREW-1389 only `fixed` is exempt from
+    // `isHeldElsewhere` and `fixed` is the QA claim, not a resumption, so
+    // this is the backstop for a caller whose `isHeldElsewhere` is laxer. Otherwise a ticket with no `ship_id` yet (started
+    // before ship affinity existed), or whose hold names a dead ship, takes
+    // the hold now, or the dead ship's return would resume it a second time.
+    // Conditional: a lost race re-reads the row and walks past the ticket
+    // unless the stamp is ours (`stampResumption`).
+    if (affinity?.isLiveHoldElsewhere?.(t)) {
+      return { ticket: t, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: null };
+    }
+    if (affinity && t[affinity.column] !== affinity.shipId) {
+      const stamp = await stampResumption(tracker, t, affinity);
+      if (stamp.outcome === 'stamped') {
+        return { ticket: stamp.ticket, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: displacedHolder(t, affinity) };
+      }
+      // Lost the race and someone else now holds it (or we could not tell
+      // who): returning it here is how two ships built CREW-1386's own
+      // ticket. Walk past it instead.
+      (stamp.outcome === 'held' ? held : contended).push(t.issue_id);
+      return 'walk';
+    }
+    return { ticket: t, claimed: false, contended, unservable, held, reaccepted: false, tookOverFrom: null };
+  }
+  try {
+    const claimed = await tracker.updateTicket(
+      t.id,
+      {
+        status: buildingStatus,
+        assignee_id: seat,
+        ...(affinity ? { [affinity.column]: affinity.shipId } : {}),
+      },
+      t.updated_at,
+    );
+    const reaccepted = !!affinity && t[affinity.column] === affinity.shipId;
+    return { ticket: { ...t, ...claimed }, claimed: true, contended, unservable, held, reaccepted, tookOverFrom: displacedHolder(t, affinity) };
+  } catch (e) {
+    if (e instanceof StaleWriteError) {
+      contended.push(t.issue_id);
+      return 'walk';
+    }
+    throw e;
+  }
 }

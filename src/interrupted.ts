@@ -49,6 +49,8 @@ export interface ReconcileOptions {
   emit: Emitter;
   state: State;
   maxConcurrentAgents: number;
+  /** `ship.roleConcurrency` (CREW-2821); absent roles allow 1. */
+  roleConcurrency?: Partial<Record<string, number>>;
   /** Keeps adopted runs in the pass's in-flight set so a caller can await them. */
   inFlight?: Set<Promise<void>>;
   agentLogKey?: (role: string) => Promise<string | undefined>;
@@ -110,7 +112,10 @@ export async function reconcileRuns(o: ReconcileOptions): Promise<{ adopted: num
     // A run still going holds its role and a capacity slot from this process,
     // so a new run cannot double up on it; if the locks cannot be taken it is
     // adopted anyway — it is running whatever the books say.
-    const lock = isAlive(sidecar) ? o.state.acquireRun(sidecar.role, o.maxConcurrentAgents) : null;
+    const lock = isAlive(sidecar) ? o.state.acquireRun(sidecar.role, o.maxConcurrentAgents, o.roleConcurrency?.[sidecar.role] ?? 1) : null;
+    // CREW-2821: an adopted run also holds its ticket, so selection does not
+    // hand the same ticket to a new run while it carries on.
+    const ticketLock = isAlive(sidecar) && sidecar.ticketRecordId ? o.state.acquireTicket(sidecar.ticketRecordId) : null;
     const work = (async () => {
       try {
         const result = await reattachRun(streamPath, sidecar, o.emit, {
@@ -127,6 +132,7 @@ export async function reconcileRuns(o: ReconcileOptions): Promise<{ adopted: num
         o.emit.warn(`could not reattach ${sidecar.role} run ${streamPath}: ${(e as Error).message}`, { step: 'agent' });
       } finally {
         if (lock?.ok) lock.release();
+        if (ticketLock?.ok) ticketLock.release();
       }
     })();
     if (isAlive(sidecar)) {

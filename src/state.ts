@@ -178,22 +178,35 @@ export class State {
   }
 
   /**
-   * The run lock (ISSUE-381): role-distinct AND capacity-limited, checked
-   * together.
+   * The run lock (ISSUE-381, CREW-2821): role-capped AND capacity-limited,
+   * checked together.
    *
-   * Role queues are disjoint by construction (`sliceFor`), so two sessions
-   * of the SAME role would collide on the same ticket if ever let run at
-   * once — that half is a plain exclusive lock, one per role name, and
-   * never relaxed. `max` is this machine's separate, configurable limit on
-   * how many DIFFERENT roles may run together; a role that clears its own
-   * lock but finds every slot taken must give the slot back its lock too,
-   * or a locked-but-not-running role would wedge itself out for the rest
-   * of the machine's uptime.
+   * Two sessions of one role must never take the same ticket. Before
+   * CREW-2821 that was guaranteed by an exclusive per-role lock; now the
+   * guarantee is the per-ticket lock (`acquireTicket`), so the role lock is a
+   * counted one: `roleMax` interchangeable slots, default 1. Slot 1 keeps the
+   * historical name `crew-role-<role>` (crew-macos reads it for the live pid),
+   * further slots are `crew-role-<role>-<n>`. `max` is this machine's separate
+   * limit on how many runs of ANY role may overlap; a role that clears its own
+   * lock but finds every slot taken must give its role lock back, or a
+   * locked-but-not-running role would wedge itself out for the rest of the
+   * machine's uptime.
    */
-  acquireRun(role: string, max: number): { ok: true; release: () => void } | { ok: false; reason: string } {
-    const roleLock = this.acquire(`crew-role-${role}`);
-    if (!roleLock.ok) {
-      return { ok: false, reason: `${role} is already running (pid ${roleLock.heldBy})` };
+  acquireRun(role: string, max: number, roleMax = 1): { ok: true; release: () => void } | { ok: false; reason: string } {
+    let roleLock: { ok: true; release: () => void } | undefined;
+    const roleHolders: number[] = [];
+    for (let i = 1; i <= roleMax; i++) {
+      const got = this.acquire(i === 1 ? `crew-role-${role}` : `crew-role-${role}-${i}`);
+      if (got.ok) { roleLock = got; break; }
+      roleHolders.push(got.heldBy);
+    }
+    if (!roleLock) {
+      return {
+        ok: false,
+        reason: roleMax === 1
+          ? `${role} is already running (pid ${roleHolders[0]})`
+          : `${role} is already running ${roleMax} agents (its roleConcurrency cap; pid${roleHolders.length > 1 ? 's' : ''} ${[...new Set(roleHolders)].join(', ')})`,
+      };
     }
     const slot = this.acquireN('crew-slot', max);
     if (!slot.ok) {
@@ -203,7 +216,28 @@ export class State {
         reason: `at capacity — ${max} agent(s) already running (pid${slot.heldBy.length > 1 ? 's' : ''} ${slot.heldBy.join(', ')})`,
       };
     }
-    return { ok: true, release: () => { slot.release(); roleLock.release(); } };
+    return { ok: true, release: () => { slot.release(); roleLock!.release(); } };
+  }
+
+  /**
+   * The per-ticket run lock (CREW-2821): held for the life of a run that works
+   * the ticket (`crew-ticket-<record id>`), so a second run of the same role
+   * on this ship walks past it instead of being handed the first run's
+   * ticket. Same stale-pid rule as every lock here.
+   */
+  acquireTicket(recordId: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
+    return this.acquire(`crew-ticket-${recordId}`);
+  }
+
+  /** Whether a live run on this ship holds `recordId`'s ticket lock. */
+  ticketInFlight(recordId: string): boolean {
+    const file = this.path(`.${State.safe(`crew-ticket-${recordId}`)}.lock`);
+    try {
+      const pid = Number.parseInt(readFileSync(file, 'utf8').trim(), 10);
+      if (!Number.isFinite(pid) || pid <= 0) return false;
+      process.kill(pid, 0);
+      return true;
+    } catch { return false; }
   }
 
   /**

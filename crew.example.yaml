@@ -27,6 +27,21 @@ ship:
     # to disable (less latency/cost, no cycles reported).
     # maxThinkingTokens: 4096
 
+  # Optional (CREW-2821): how many agents this ship runs at once. `roleConcurrency`
+  # is the cap on runs of ONE role (default 1 per role, so unset behaves as it
+  # always has: dev beside qa, never two devs). `maxConcurrentAgents` is the
+  # ship-wide cap across every role. Default 2 when `roleConcurrency` is unset;
+  # when `roleConcurrency` is set and `maxConcurrentAgents` is not, it defaults
+  # to the SUM of the role caps (plus 1 for each of dev/design/qa/triage the map
+  # leaves out), so `roleConcurrency: { dev: 2, qa: 2 }` alone allows 6 runs.
+  # Set it explicitly to hold a machine-wide budget below that sum;
+  # `crew doctor` warns when it is lower than any single role's cap. Each run
+  # takes its own ticket (a per-ticket lock keeps two runs off the same one).
+  # `dev`, `design` and `qa` can run several; `triage` is always one at a time.
+  # The release route is unaffected: one release per repository at a time.
+  # maxConcurrentAgents: 4
+  # roleConcurrency: { dev: 2, qa: 2 }
+
   # Optional (CREW-1511): named toolchains — a harness adapter plus the binary
   # and model to run it with. The `agent:` block above keeps working and
   # defines an implicit toolchain named `claude`. Harnesses: claude, codex, gemini. See docs/toolchains.md.

@@ -26,7 +26,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  git, gitOk, status, worktrees, worktreeForNumber, fetchRemote, remoteConfigured,
+  git, gitOk, status, worktrees, worktreeForNumber, fetchRemote, remoteConfigured, acquireCheckoutLock,
   remoteBranchExists, countCommits,
 } from './git.ts';
 import { pidsInWorktree, killGently } from './ports.ts';
@@ -95,7 +95,12 @@ export function planRunWorktree(
 ): RunWorktreePlan {
   const { remote, base } = cfg.branch;
   const hasRemote = remoteConfigured(dir, remote);
-  if (hasRemote) fetchRemote(dir, remote);
+  if (hasRemote) {
+    // CREW-2821: two runs cutting worktrees from one repo at once would race on
+    // this fetch in the primary checkout; the checkout lock serializes them.
+    const unlock = acquireCheckoutLock(dir);
+    try { fetchRemote(dir, remote); } finally { unlock(); }
+  }
 
   const num = t.issue_id.replace(/^\D+/, '');
   const existing = worktreeForNumber(dir, num);

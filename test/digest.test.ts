@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildingDigest, qaDigest, type DigestInput } from '../src/digest.ts';
 import { buildRoster } from '../src/roster.ts';
+import { otherRunsRemoved, ownRunBanner } from '../src/poll.ts';
 
 const MEMBERS = [
   { id: 'dev-1', role: 'Dev', kind: 'seat' as const },
@@ -375,4 +376,22 @@ test('a public reporter\'s reply is never attributed to the view creator who ran
     comments: [custom],
   }));
   assert.match(renamed, /Eve \(public reporter\)/);
+});
+
+// CREW-2821: several runs of one role share one fetched queue. Each run's own
+// digest must name its ticket and not offer the others' as work to resume.
+test('a run\'s digest names its own ticket and leaves out tickets other live runs hold (CREW-2821)', () => {
+  const a = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', assignee_id: 'dev-1' });
+  const b = T({ id: 'b', issue_id: 'ISSUE-2', status: 'in_progress', assignee_id: 'dev-1' });
+  const c = T({ id: 'c', issue_id: 'ISSUE-3', status: 'accepted' });
+  const inFlight = new Set(['a', 'b']); // run 1 holds a, run 2 holds b
+  const second = { ticket: b, inFlight: (id: string) => inFlight.has(id) };
+  const kept = otherRunsRemoved([a, b, c], second).map((t) => t.issue_id);
+  assert.deepEqual(kept, ['ISSUE-2', 'ISSUE-3'], 'run 1\'s ticket is gone, its own and the idle one stay');
+
+  const out = `${ownRunBanner(second)}\n\n${buildingDigest(input({ tickets: otherRunsRemoved([a, b, c], second) }))}`;
+  assert.match(out, /Your ticket for this run: ISSUE-2/);
+  assert.doesNotMatch(out, /ISSUE-1/, 'run 1\'s ticket is not offered');
+  assert.match(out, /ISSUE-2 /);
+  assert.deepEqual(otherRunsRemoved([a, b, c]), [a, b, c], 'without a run, nothing is filtered');
 });

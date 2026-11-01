@@ -148,3 +148,16 @@ export function staleOwnLockClaim(
 export function formatStaleOwnLock(scope: string, holder: string): string {
   return `WARN lock ${scope} is held by ${holder}, but that process is gone — the next release cycle reclaims it\n`;
 }
+
+/**
+ * An EXPLICIT `ship.maxConcurrentAgents` lower than a single role's
+ * `roleConcurrency` cap (CREW-2821): that role could never fill its slots. A
+ * derived (unset) ship cap is the sum of the role caps, so it never warns.
+ * A warning, not a blocker.
+ */
+export function roleCapWarnings(ship: { maxConcurrentAgents: number; maxConcurrentAgentsSet?: boolean; roleConcurrency: Partial<Record<string, number>> }): string[] {
+  if (!ship.maxConcurrentAgentsSet) return [];
+  return Object.entries(ship.roleConcurrency)
+    .filter(([, n]) => (n ?? 0) > ship.maxConcurrentAgents)
+    .map(([role, n]) => `ship.roleConcurrency.${role} is ${n}, above ship.maxConcurrentAgents (${ship.maxConcurrentAgents}); the ship-wide cap wins`);
+}

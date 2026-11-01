@@ -749,3 +749,59 @@ test('a reconcile that throws does not stop the pass (CREW-1775)', async () => {
   });
   assert.deepEqual(result.started, ['dev']);
 });
+
+test('roleConcurrency { dev: 2, qa: 2 } with a ship cap of 4 starts two dev and two qa runs in one pass (CREW-2821)', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev', 'qa']);
+  const queue: Record<string, string[]> = { dev: ['d1', 'd2', 'd3', 'd4'], qa: ['q1', 'q2'] };
+  const taken: string[] = [];
+  const inFlight = new Set<Promise<void>>();
+  const release: Array<() => void> = [];
+  const result = await runOnePass({
+    ...opts,
+    maxConcurrentAgents: 4,
+    roleConcurrency: { dev: 2, qa: 2 },
+    inFlight,
+    decide: async () => decision,
+    spawnRoleAgent: async (role, _d, ctx, hooks) => {
+      // Each run takes the next ticket nobody holds, the way the real claim does.
+      const next = queue[role]!.find((id) => ctx.state.acquireTicket(id).ok && !taken.includes(id));
+      taken.push(next!);
+      hooks?.ready(true);
+      await new Promise<void>((resolve) => { release.push(resolve); });
+    },
+  });
+  assert.deepEqual(result.started.sort(), ['dev', 'dev', 'qa', 'qa']);
+  assert.deepEqual(result.skipped, []);
+  assert.equal(new Set(taken).size, 4, 'four distinct tickets');
+  release.forEach((r) => r());
+  await Promise.all(inFlight);
+});
+
+test('a role stops being refilled once a run reports no ticket (CREW-2821)', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev']);
+  let spawns = 0;
+  const result = await runOnePass({
+    ...opts,
+    roleConcurrency: { dev: 3 },
+    decide: async () => decision,
+    spawnRoleAgent: async (_r, _d, _c, hooks) => { spawns++; hooks?.ready(false); },
+  });
+  assert.equal(spawns, 1);
+  assert.deepEqual(result.started, ['dev']);
+});
+
+test('an unset roleConcurrency still runs one agent per role (CREW-2821)', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev', 'qa']);
+  let spawns = 0;
+  const result = await runOnePass({
+    ...opts,
+    decide: async () => decision,
+    spawnRoleAgent: async (_r, _d, _c, hooks) => { spawns++; hooks?.ready(true); await new Promise((r) => setTimeout(r, 20)); },
+  });
+  assert.equal(spawns, 2);
+  assert.deepEqual(result.started, ['dev', 'qa']);
+  assert.deepEqual(result.skipped, []);
+});

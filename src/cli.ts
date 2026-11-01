@@ -9,7 +9,7 @@
 
 import { doctorBaseReport } from './doctor-repo.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
@@ -2042,7 +2042,7 @@ switch (command) {
       // Role-distinct, capacity-limited (ISSUE-381) — see State.acquireRun.
       // Taken here, once the winning role is known, not up front: the fleet
       // poll above is read-only and must run every cycle regardless.
-      const fleetLock = state.acquireRun(w.role, cfg.ship.maxConcurrentAgents);
+      const fleetLock = state.acquireRun(w.role, cfg.ship.maxConcurrentAgents, cfg.ship.roleConcurrency[w.role] ?? 1);
       if (!fleetLock.ok) {
         wemit.emit(`${w.role} skipped this cycle — ${fleetLock.reason}`);
         if (!skipInlineRelease) await releaseFleet();
@@ -2070,7 +2070,17 @@ switch (command) {
             claimStatuses(w.role, contract).building,
             (t) => dirForRepo(w.route, t.repo_id) !== null,
             withHoldCheck(await fleetTracker.claimAffinity(), w.decision.selectionInput),
+            (t) => {
+              const got = state.acquireTicket(t.id);
+              return got.ok ? got.release : null;
+            },
           );
+          if (result.releaseTicket) {
+            // The ticket lock lives exactly as long as the role/slot lock does (CREW-2821).
+            const roleLock = lock;
+            const releaseTicket = result.releaseTicket;
+            lock = { release: () => { roleLock?.release(); releaseTicket(); } };
+          }
           if (result.contended.length) {
             wemit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: w.role,
@@ -2265,7 +2275,7 @@ switch (command) {
       // role that changed nothing is below; an explicit --role never falls
       // through, so it just stops.
       if (!dryRun) {
-        const got = state.acquireRun(current, cfg.ship.maxConcurrentAgents);
+        const got = state.acquireRun(current, cfg.ship.maxConcurrentAgents, cfg.ship.roleConcurrency[current] ?? 1);
         if (!got.ok) {
           emit.emit(`${current} skipped this cycle — ${got.reason}`);
           if (explicitRole) { current = undefined; break; }
@@ -2296,7 +2306,17 @@ switch (command) {
             claimStatuses(current, contract).building,
             (t) => dirForRepo(route, t.repo_id) !== null,
             withHoldCheck(await tracker2.claimAffinity(), decision.selectionInput),
+            (t) => {
+              const got = state.acquireTicket(t.id);
+              return got.ok ? got.release : null;
+            },
           );
+          if (result.releaseTicket) {
+            // The ticket lock lives exactly as long as the role/slot lock does (CREW-2821).
+            const roleLock = lock;
+            const releaseTicket = result.releaseTicket;
+            lock = { release: () => { roleLock?.release(); releaseTicket(); } };
+          }
           if (result.contended.length) {
             emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: current,
@@ -2549,6 +2569,7 @@ switch (command) {
       runPass: () => runOnePass({
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
+        roleConcurrency: cfg.ship.roleConcurrency,
         spawnBreaker,
         configFile: cfg.configFile,
         newEmitter: () => new Emitter({
@@ -5172,6 +5193,7 @@ switch (command) {
           } else if (p.state === 'ok') passed++;
         }
       }
+      for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
       process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, problems, passed }, null, 2)}\n`);
@@ -5181,6 +5203,8 @@ switch (command) {
       `ship:              ${cfg.ship.name} (${host})\n` +
         `routes:            ${cfg.routes.map((c) => c.route).join(', ')}\n`,
     );
+
+    for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
 
     // CREW-1509: rotation runs on append, so a live file far past the
     // threshold means nothing is rotating it.

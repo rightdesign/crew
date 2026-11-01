@@ -200,10 +200,13 @@ test('reconcile adopts a live run: it holds its role and a capacity slot until i
   assert.equal(sameRole.ok, false, 'the adopted run keeps its role busy');
   const otherRole = state.acquireRun('qa', 1);
   assert.equal(otherRole.ok, false, 'and counts toward maxConcurrentAgents');
+  assert.equal(state.ticketInFlight('row-7'), true, 'and holds its ticket (CREW-2821)');
+  assert.equal(state.acquireTicket('row-7').ok, false, 'so selection cannot hand it to a second run');
 
   alive = false;
   await Promise.all(inFlight);
   assert.deepEqual(followed, ['completed']);
+  assert.equal(state.ticketInFlight('row-7'), false, 'the ticket lock goes with the run');
   assert.ok(existsSync(`${plan.streamPath}.meta.json`));
   const freed = state.acquireRun('dev', 1);
   assert.equal(freed.ok, true);

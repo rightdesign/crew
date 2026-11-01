@@ -435,14 +435,28 @@ export interface Ship {
   /**
    * How many agent sessions this machine will run at once (ISSUE-381).
    *
-   * A fact about this machine's capacity, not about any board — role
-   * queues are already disjoint by construction (`sliceFor`), so raising
-   * this only ever lets two DIFFERENT roles overlap, never two of the same
-   * one. Default 2: dev/design building while QA verifies is the case that
+   * A fact about this machine's capacity, not about any board. On its own
+   * it only lets DIFFERENT roles overlap; two runs of one role also need
+   * `roleConcurrency` (CREW-2821). Default 2: dev/design building while QA verifies is the case that
    * was actually measured costing idle time (ISSUE-353: QA sat behind a
    * 68-minute dev session that held the ship's one lock).
    */
   maxConcurrentAgents: number;
+  /**
+   * Whether `maxConcurrentAgents` was written in crew.yaml. When it is not and
+   * `roleConcurrency` is set, `maxConcurrentAgents` is derived: the sum of the
+   * role caps, plus 1 for each polled role the map leaves out (CREW-2821).
+   */
+  maxConcurrentAgentsSet?: boolean;
+  /**
+   * Per-role cap on simultaneous runs of ONE role (CREW-2821), under the
+   * ship-wide `maxConcurrentAgents`. A role absent from the map is capped
+   * at 1, which is exactly the pre-CREW-2821 behavior (one run per role, the
+   * plain `crew-role-<role>` lock). `dev: 2, qa: 2` lets two builders and two
+   * verifiers run at once; with `maxConcurrentAgents` unset the ship cap is
+   * derived from the map, so nothing else needs raising.
+   */
+  roleConcurrency: Partial<Record<RoleName, number>>;
   /**
    * How many days of `<stateDir>/streams` artifacts (ISSUE-401 — the raw
    * `stream-json` NDJSON, its mapped events, and per-run sidecars) to keep
@@ -537,7 +551,7 @@ function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
 
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
-  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'streamRetentionDays', 'eventsRotateBytes',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme',
 ]);
 const ROUTE_KEYS = new Set([
@@ -956,9 +970,36 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (declaredPlatform && !isShipPlatform(declaredPlatform)) {
     missing.add(`ship.platform must be one of macos|linux|windows (got "${declaredPlatform}")`);
   }
-  const maxConcurrentAgents = shipRaw.maxConcurrentAgents === undefined ? 2 : Number(shipRaw.maxConcurrentAgents);
+  const maxConcurrentAgentsSet = shipRaw.maxConcurrentAgents !== undefined;
+  let maxConcurrentAgents = maxConcurrentAgentsSet ? Number(shipRaw.maxConcurrentAgents) : 2;
   if (!Number.isInteger(maxConcurrentAgents) || maxConcurrentAgents < 1) {
     missing.add(`ship.maxConcurrentAgents must be a positive integer (got "${shipRaw.maxConcurrentAgents}")`);
+  }
+  const roleConcurrency: Partial<Record<RoleName, number>> = {};
+  const roleConcurrencyRaw: unknown = shipRaw.roleConcurrency;
+  if (roleConcurrencyRaw !== undefined && roleConcurrencyRaw !== null) {
+    if (typeof roleConcurrencyRaw !== 'object' || Array.isArray(roleConcurrencyRaw)) {
+      missing.add('ship.roleConcurrency must be a map of role to a positive integer');
+    } else {
+      for (const [role, v] of Object.entries(roleConcurrencyRaw)) {
+        if (!(ROLE_NAMES as string[]).includes(role)) {
+          missing.add(`ship.roleConcurrency.${role} is not a role (expected one of ${ROLE_NAMES.join(', ')})`);
+          continue;
+        }
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1) {
+          missing.add(`ship.roleConcurrency.${role} must be a positive integer (got "${String(v)}")`);
+          continue;
+        }
+        roleConcurrency[role as RoleName] = n;
+      }
+    }
+  }
+  // CREW-2821: an operator who sets roleConcurrency should not also have to raise
+  // the ship cap. Unset, it defaults to the sum of the role caps; set, it stays
+  // an explicit machine-wide ceiling.
+  if (!maxConcurrentAgentsSet && Object.keys(roleConcurrency).length > 0) {
+    maxConcurrentAgents = ROLE_NAMES.filter((r) => r !== 'pair').reduce((n, r) => n + (roleConcurrency[r] ?? 1), 0);
   }
   const streamRetentionDays = shipRaw.streamRetentionDays === undefined ? 7 : Number(shipRaw.streamRetentionDays);
   if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
@@ -1043,6 +1084,8 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       logFile: expand(shipRaw.logFile ?? join(tmpdir(), 'crew.log'), base),
       userAgent: shipRaw.userAgent ?? `Mozilla/5.0 CrewAgent/${crewVersion(crewHome)}`,
       maxConcurrentAgents,
+      maxConcurrentAgentsSet,
+      roleConcurrency,
       streamRetentionDays,
       eventsRotateBytes,
       relayHost: shipRaw.relayHost ? String(shipRaw.relayHost) : undefined,

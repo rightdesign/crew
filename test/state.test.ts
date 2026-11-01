@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { State, EPOCH } from '../src/state.ts';
@@ -281,4 +281,58 @@ test('attention: an unsafe route name still gets its own state', () => {
   s.attention('my repo/v2').persist({ t1: ['needs_review'] });
   assert.deepEqual(s.attention('my repo/v2').previous(), { t1: ['needs_review'] });
   assert.deepEqual(s.attention('other').previous(), {});
+});
+
+test('acquireRun with a role cap of 2 allows two runs of one role, then refuses a third (CREW-2821)', () => {
+  const s = fresh();
+  const a = s.acquireRun('dev', 5, 2);
+  const b = s.acquireRun('dev', 5, 2);
+  const c = s.acquireRun('dev', 5, 2);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(c.ok, false);
+  if (!c.ok) assert.match(c.reason, /already running 2 agents/);
+  if (a.ok) a.release();
+  const d = s.acquireRun('dev', 5, 2);
+  assert.equal(d.ok, true, 'a released role slot is reusable');
+  if (b.ok) b.release();
+  if (d.ok) d.release();
+});
+
+test('the first role slot keeps the historical lock name (CREW-2821)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-state-'));
+  const s = new State(dir);
+  const a = s.acquireRun('qa', 5, 3);
+  assert.equal(existsSync(join(dir, '.crew-role-qa.lock')), true);
+  const b = s.acquireRun('qa', 5, 3);
+  assert.equal(existsSync(join(dir, '.crew-role-qa-2.lock')), true);
+  if (a.ok) a.release();
+  if (b.ok) b.release();
+});
+
+test('a role at its cap leaves the ship slots alone, and a full ship releases the role slot (CREW-2821)', () => {
+  const s = fresh();
+  const a = s.acquireRun('dev', 1, 2);
+  assert.equal(a.ok, true);
+  const b = s.acquireRun('dev', 1, 2);
+  assert.equal(b.ok, false);
+  if (!b.ok) assert.match(b.reason, /at capacity/);
+  if (a.ok) a.release();
+  assert.equal(s.acquireRun('dev', 1, 2).ok, true, 'the refused attempt gave its role slot back');
+});
+
+test('the ticket lock is exclusive, released with its holder, and a dead pid is not honored (CREW-2821)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-state-'));
+  const s = new State(dir);
+  const first = s.acquireTicket('rec-1');
+  assert.equal(first.ok, true);
+  assert.equal(s.ticketInFlight('rec-1'), true);
+  assert.equal(s.acquireTicket('rec-1').ok, false);
+  assert.equal(s.ticketInFlight('rec-2'), false);
+  if (first.ok) first.release();
+  assert.equal(s.ticketInFlight('rec-1'), false);
+  // A crashed run: the lock names a pid that no longer exists.
+  writeFileSync(join(dir, '.crew-ticket-rec-3.lock'), '2147483646\n');
+  assert.equal(s.ticketInFlight('rec-3'), false);
+  assert.equal(s.acquireTicket('rec-3').ok, true);
 });

@@ -15,6 +15,7 @@ const ship = (over: Partial<Ship> = {}): Ship => ({
   logFile: '/tmp/crew.log',
   userAgent: 'Mozilla/5.0 CrewAgent/1.0',
   maxConcurrentAgents: 2,
+  roleConcurrency: {},
   streamRetentionDays: 7,
   eventsRotateBytes: 64 * 1024 * 1024,
   relayPort: 2222, relayHttpPort: 443,

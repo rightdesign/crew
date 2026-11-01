@@ -342,10 +342,33 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
  *
  * `route` here is already filename-safe (`routeSlug`'d by the caller) — a
  * raw `workspace/project` string would put a `/` in what has to be one path
- * segment.
+ * segment. `runId` (CREW-2821) names one run's own copy, so concurrent runs
+ * of one role do not overwrite each other's brief.
  */
-export const digestPath = (stateDir: string, route: string, role: RoleName): string =>
-  join(stateDir, `digest-${route}-${role}.md`);
+export const digestPath = (stateDir: string, route: string, role: RoleName, runId?: string): string =>
+  join(stateDir, `digest-${route}-${role}${runId ? `-${runId}` : ''}.md`);
+
+/**
+ * The ticket one run was handed (CREW-2821), and how to tell whether another
+ * live run on this ship holds some other ticket. Several runs of one role
+ * share the same fetched queue; without this, run 2's digest lists run 1's
+ * `in_progress` ticket as "yours, resume it first".
+ */
+export interface OwnRun {
+  ticket: { id: string; issue_id: string };
+  inFlight: (ticketId: string) => boolean;
+}
+
+/** Drops every ticket another live run on this ship holds; the run's own ticket stays. */
+export function otherRunsRemoved<T extends { id: string }>(tickets: T[], own?: OwnRun): T[] {
+  if (!own) return tickets;
+  return tickets.filter((t) => t.id === own.ticket.id || !own.inFlight(t.id));
+}
+
+export function ownRunBanner(own: OwnRun): string {
+  return `**Your ticket for this run: ${own.ticket.issue_id}.** Work this one. Any other ticket a live run ` +
+    `on this ship is already working has been left out of this digest: it belongs to that run.`;
+}
 
 /**
  * Write the digest the winning seat will be handed.
@@ -359,7 +382,8 @@ export const digestPath = (stateDir: string, route: string, role: RoleName): str
  * agent falls back to fetching, which is slower rather than wrong.
  */
 export function writeDigest(
-  o: CycleOptions, d: CycleDecision, role: RoleName, stateDir: string,
+  o: CycleOptions, d: CycleDecision, role: RoleName, stateDir: string, runId?: string,
+  own?: OwnRun,
 ): boolean {
   const me = o.route.resolved?.seats[role];
   if (!me) return false;
@@ -422,7 +446,7 @@ export function writeDigest(
       },
       tickets: role === 'triage'
         ? triageSlice(d.tickets, o.route.resolved?.seats.triage, d.selectionInput.workModes)
-        : withinWorkMode(sliceFor(d.tickets, role), d.selectionInput.workModes),
+        : withinWorkMode(sliceFor(otherRunsRemoved(d.tickets, own), role), d.selectionInput.workModes),
       workModes: d.selectionInput.workModes,
       comments: d.comments,
       commentColumns: d.selectionInput.contract?.comments,
@@ -441,8 +465,9 @@ export function writeDigest(
       blocked: d.blocked,
       blockerInfo: d.info,
     };
-    const text = role === 'qa' ? qaDigest(input) : buildingDigest(input);
-    const path = digestPath(stateDir, routeSlug(o.route.route), role);
+    const body = role === 'qa' ? qaDigest(input) : buildingDigest(input);
+    const text = own ? `${ownRunBanner(own)}\n\n${body}` : body;
+    const path = digestPath(stateDir, routeSlug(o.route.route), role, runId);
     writeFileSync(path, text);
     o.emit.emit(`queue digest written for ${role} (${Buffer.byteLength(text)} bytes)`, {
       data: { role, bytes: Buffer.byteLength(text) },
