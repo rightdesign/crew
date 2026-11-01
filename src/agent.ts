@@ -21,6 +21,7 @@ import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
+import { inferenceBaseUrl } from './adapters/claude.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
 import { resolveContract } from './contract.ts';
 import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
@@ -103,6 +104,8 @@ export interface AgentPlan {
    */
   toolchain?: string;
   harness?: string;
+  /** CREW-2796: the run authenticates through the workspace inference endpoint. */
+  workspaceAuth?: boolean;
   /** Who serves/bills the model (`adapter.provider`); a hand-built plan means Anthropic. */
   provider?: string;
   /** Why that toolchain and model (`--dry-run`'s resolution chain). */
@@ -173,6 +176,8 @@ export interface PlanOptions {
   environment: string;
   /** The tracker key, handed to the session in the environment. */
   apiKey?: string;
+  /** Whose key `apiKey` is (`resolveSeatKey`). Only `auth: workspace` cares: it refuses `ship`. */
+  seatKind?: 'agent' | 'ship';
   /**
    * Groups this run with the rest of its poll cycle in the streams
    * directory — same id as the `Emitter` driving the run (`emit.cycle`).
@@ -263,6 +268,47 @@ export class AgentError extends Error {}
  */
 export class AgentSpawnError extends AgentError {}
 
+/**
+ * `auth: workspace` cannot run this seat (CREW-2796): the endpoint accepts seat keys only, so a
+ * seat that would fall back to the ship key, or a route `crew connect` has not resolved, is
+ * refused rather than sent to the endpoint to fail. The daemon turns it into an attention item.
+ */
+export class WorkspaceAuthRefused extends AgentSpawnError {}
+
+/**
+ * The endpoint refused a call because the workspace is past its AI allowance (CREW-2796). The
+ * role pauses on this route until a later pass finds the allowance open again.
+ */
+export class WorkspaceAllowanceExhausted extends AgentError {}
+
+/** What the endpoint's allowance refusal carries (`AI_ALLOWANCE_EXCEEDED: ...`); the CLI echoes it into the stream. */
+export const ALLOWANCE_REFUSAL_MARKER = 'AI_ALLOWANCE_EXCEEDED';
+
+/**
+ * Whether a finished run's stream shows the endpoint's allowance refusal. Only the CLI's own error
+ * reporting counts: the final `result` event with `is_error: true`, or an assistant message the CLI
+ * flagged as an API error. The marker anywhere else (a tool result that read a file or ticket
+ * mentioning it, a user turn) is run content, not a refusal, and must not pause a healthy role.
+ */
+export function streamShowsAllowanceRefusal(streamPath: string): boolean {
+  let raw: string;
+  try { raw = readFileSync(streamPath, 'utf8'); } catch { return false; }
+  if (!raw.includes(ALLOWANCE_REFUSAL_MARKER)) return false;
+  for (const line of raw.split('\n')) {
+    if (!line.includes(ALLOWANCE_REFUSAL_MARKER)) continue;
+    let ev: unknown;
+    try { ev = JSON.parse(line); } catch { continue; }
+    if (typeof ev !== 'object' || ev === null) continue;
+    const e = ev as { type?: unknown; is_error?: unknown; isApiErrorMessage?: unknown; error?: unknown; result?: unknown; message?: unknown };
+    if (e.type === 'result' && e.is_error === true) {
+      if (typeof e.result === 'string' && e.result.includes(ALLOWANCE_REFUSAL_MARKER)) return true;
+    } else if (e.type === 'assistant' && (e.isApiErrorMessage === true || e.error !== undefined)) {
+      if (JSON.stringify(e.message ?? '').includes(ALLOWANCE_REFUSAL_MARKER)) return true;
+    }
+  }
+  return false;
+}
+
 /** `poll.ts#digestPath`, restated here because `poll.ts` imports this module. */
 const digestPathFor = (stateDir: string, routeLabel: string, role: string, runId?: string): string =>
   join(stateDir, `digest-${routeLabel}-${role}${runId ? `-${runId}` : ''}.md`);
@@ -330,7 +376,17 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const streamsDir = join(o.stateDir, 'streams');
   const base = `${routeLabel}-${o.role}-${o.cycle}${o.runId ? `-${o.runId}` : ''}`;
   const seat = resolveSeat(o.ship, o.route, o.role, o.agentPersona ?? (o.agentModel ? { model: o.agentModel } : {}), o.repo);
-  const { toolchain, model } = seat;
+  const { model } = seat;
+  let toolchain = seat.toolchain;
+  if (toolchain.auth === 'workspace') {
+    if (!o.apiKey || o.seatKind === 'ship') {
+      throw new WorkspaceAuthRefused(`${o.role}: toolchain ${toolchain.name} has auth: workspace, which needs the seat's own agent key — this seat would fall back to the ship key (run \`crew agents sync\`)`);
+    }
+    if (!o.route.resolved) {
+      throw new WorkspaceAuthRefused(`${o.role}: toolchain ${toolchain.name} has auth: workspace, but route ${o.route.route} is not connected (run \`crew connect\`)`);
+    }
+    toolchain = { ...toolchain, inference: { baseUrl: inferenceBaseUrl(o.route.baseUrl, o.route.resolved.workspaceId), token: o.apiKey } };
+  }
   const adapter = adapterFor(toolchain.harness);
   const invocation = adapter.invocation(toolchain, {
     role: o.role,
@@ -382,6 +438,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     args: invocation.args,
     toolchain: toolchain.name,
     harness: toolchain.harness,
+    workspaceAuth: toolchain.auth === 'workspace',
     provider: toolchainProvider(toolchain),
     maxRunMinutes: resolveMaxRunMinutes(o.route.maxRunMinutes, toolchain.maxRunMinutes),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },

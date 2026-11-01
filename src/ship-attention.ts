@@ -24,7 +24,7 @@ import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -155,6 +155,18 @@ export function agentLogRefusedItem(route: string, role: string, status: number,
   return {
     kind: 'agent_log_refused', key: agentLogRefusedKey(route), since: nowIso,
     message: `${route}: the tracker refused the ${role} seat's run report (${status}) — runs and ticket spend are not being recorded; check the seat key's role`,
+  };
+}
+
+/** CREW-2796: a seat with `auth: workspace` that cannot run; cleared by the role's next accepted start. */
+export const workspaceAuthKey = (role: string): string => `workspace_auth:${role}`;
+export const workspaceAllowanceKey = (role: string): string => `workspace_allowance:${role}`;
+
+/** The endpoint refused a run because the workspace is past its AI allowance. */
+export function workspaceAllowanceItem(route: string, role: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'workspace_allowance', key: workspaceAllowanceKey(role), since: nowIso,
+    message: `${route}: the ${role} seat is paused — the workspace is past its AI allowance; it resumes on its own once the limit is raised`,
   };
 }
 

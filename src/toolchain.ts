@@ -56,8 +56,16 @@ export interface ToolchainSpec {
    * Claude: `subscription` forces the operator's subscription login over any Vertex or API-key
    * billing set up outside the shell (CREW-2539). Absent or `inherit` leaves the CLI's own
    * resolution alone. Other harnesses reject it at load time.
+   *
+   * `workspace` (CREW-2796) sends every model call through the route's Tablation inference
+   * endpoint, authenticated by the run's seat key; nothing else on the machine can reach a model.
    */
-  auth?: 'subscription' | 'inherit';
+  auth?: 'subscription' | 'inherit' | 'workspace';
+  /**
+   * Set by `planAgentRun` for `auth: workspace` only, never read from config: the endpoint base
+   * URL and the seat key a run authenticates with. The key is kept off argv.
+   */
+  inference?: { baseUrl: string; token: string };
   /**
    * Wall-clock limit for one agent run, in minutes; 0 disables it. Absent means the ship default
    * (`DEFAULT_MAX_RUN_MINUTES`). A route's own `maxRunMinutes` outranks it (CREW-2786).

@@ -13,7 +13,7 @@ import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } fr
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
-import { describeClaudeAuth } from './adapters/claude.ts';
+import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6313,6 +6313,14 @@ switch (command) {
     }
     // CREW-2539: which billing path each Claude toolchain resolves to.
     for (const t of shipToolchains(cfg.ship).filter((t) => t.harness === 'claude')) {
+      if (t.auth === 'workspace') {
+        // CREW-2796: the endpoint host is per route, so one line each.
+        for (const r of cfg.routes.filter((r) => r.enabled)) {
+          const inference = r.resolved ? { baseUrl: inferenceBaseUrl(r.baseUrl, r.resolved.workspaceId), token: '' } : undefined;
+          process.stdout.write(`auth:              ${t.name}: ${r.route}: ${describeClaudeAuth({ ...t, inference })}\n`);
+        }
+        continue;
+      }
       process.stdout.write(`auth:              ${t.name}: ${describeClaudeAuth(t)}\n`);
     }
     // CREW-1288: the opt-in action phase. `--fix` is itself the consent (so it

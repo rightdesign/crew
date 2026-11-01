@@ -83,7 +83,7 @@ import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBr
 import { resolveTopCandidate } from './claim.ts';
 import { applySweep } from './blocked.ts';
 import { runStalledSweep } from './stalled.ts';
-import { AgentSpawnError, planAgentRun, spawnAgent } from './agent.ts';
+import { AgentSpawnError, WorkspaceAuthRefused, WorkspaceAllowanceExhausted, streamShowsAllowanceRefusal, planAgentRun, spawnAgent } from './agent.ts';
 import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
 import { listPendingHandoffs } from './pending-handoff.ts';
 import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.ts';
@@ -99,7 +99,7 @@ import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { runKilledComment } from './run-limit.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
-import { raiseShipAttention, clearShipAttention, openShipAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
+import { raiseShipAttention, clearShipAttention, openShipAttention, workspaceAuthKey, workspaceAllowanceKey, workspaceAllowanceItem, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
 import { periscopeCaps, type PeriscopeLimits } from './periscope-cmd.ts';
@@ -116,6 +116,8 @@ export const DEFAULT_FLOOR_MS = 5_000;
  * hardcoded copy of the same number.
  */
 export const DEFAULT_CEILING_MS = INTERVAL_SECONDS * 1000;
+/** CREW-2796: how long a role waits after the endpoint refuses for the AI allowance before a pass tries it again. */
+export const ALLOWANCE_PAUSE_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Layer 1: the scheduler. Pure — no tracker, no filesystem beyond whatever
@@ -461,6 +463,11 @@ export class SpawnBreaker {
     return { parked, firstOfMessage: prev?.lastMessage !== message, failures, retryInMs };
   }
 
+  /** CREW-2796: holds `role` back for `ms` without counting a failed start (an allowance pause). */
+  pause(role: RoleName, ms: number): void {
+    this.states.set(role, { failures: 0, retryAt: this.now() + ms, lastMessage: 'paused' });
+  }
+
   /** A run for `role` spawned: forget its earlier failed starts. */
   recordSuccess(role: RoleName): void {
     this.states.delete(role);
@@ -702,9 +709,26 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
         .then(() => {
           breaker.recordSuccess(role);
           clearShipAttention(o.state, `role_parked:${role}`);
+          clearShipAttention(o.state, workspaceAuthKey(role));
+          clearShipAttention(o.state, workspaceAllowanceKey(role));
         })
         .catch(async (e) => {
           const message = (e as Error).message;
+          if (e instanceof WorkspaceAllowanceExhausted) {
+            // No retry now: hold the role, and let the next pass after the pause try again.
+            breaker.pause(role, ALLOWANCE_PAUSE_MS);
+            emit.warn(`${role} paused: ${message}`, { step: 'agent', role });
+            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, workspaceAllowanceItem(o.route.route, role));
+            return;
+          }
+          if (e instanceof WorkspaceAuthRefused) {
+            breaker.recordFailure(role, message);
+            emit.warn(`${role} agent refused: ${message}`, { step: 'agent', role });
+            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, {
+              kind: 'workspace_auth', key: workspaceAuthKey(role), message: `${o.route.route}: ${message}`, since: new Date().toISOString(),
+            });
+            return;
+          }
           if (!(e instanceof AgentSpawnError)) {
             emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
             return;
@@ -975,7 +999,7 @@ async function runRoleAgentLocked(
   const plan = planAgentRun({
     role, route, ship, stateDir: ship.stateDir, roster: rosterFor(decision, route, role),
     environment: await buildEnvironment(route, ship, ticketHint),
-    apiKey: identity.apiKey,
+    apiKey: identity.apiKey, seatKind: identity.kind,
     cycle: emit.cycle, runId, ticket: ticketHint, repo: ticketRepo,
     ticketRecordId: workingId,
     ...personaPromptOptions(await fetchPersonaPrompt(route, role, { userAgent: ship.userAgent })),
@@ -1020,7 +1044,12 @@ async function runRoleAgentLocked(
       // CREW-2786: stopped at its wall-clock limit — hand back the way an orphaned run is.
       await postRunKilled(route, tracker, workingId, memberId, result.killed.limitMinutes, emit);
     } else {
+      // The hand-off guard runs first: a limit hit after the run already moved the ticket must
+      // still get its push check and replay, then the role pauses.
       await guardRunHandoff(route, ship, tracker, role, workingId, emit, runStart);
+      if (plan.workspaceAuth && streamShowsAllowanceRefusal(plan.streamPath)) {
+        throw new WorkspaceAllowanceExhausted('the inference endpoint refused the run: the workspace is past its AI allowance');
+      }
     }
   } finally {
     await settleRunEnd({

@@ -1303,12 +1303,12 @@ function parseToolchains(raw: unknown, base: string, missing: Missing, file: str
       missing.add(`${where}.maxThinkingTokens must be a non-negative integer (got "${entryRaw.maxThinkingTokens}")`);
     }
     const maxRunMinutes = parseMaxRunMinutes(entryRaw.maxRunMinutes, `${where}.maxRunMinutes`, missing);
-    let auth: 'subscription' | 'inherit' | undefined;
+    let auth: 'subscription' | 'inherit' | 'workspace' | undefined;
     if (entryRaw.auth !== undefined) {
-      if (entryRaw.auth !== 'subscription' && entryRaw.auth !== 'inherit') {
-        missing.add(`${where}.auth must be subscription|inherit (got "${entryRaw.auth}")`);
+      if (entryRaw.auth !== 'subscription' && entryRaw.auth !== 'inherit' && entryRaw.auth !== 'workspace') {
+        missing.add(`${where}.auth must be subscription|inherit|workspace (got "${entryRaw.auth}")`);
       } else if (harness !== 'claude') {
-        missing.add(`${where}.auth is only supported on the claude harness`);
+        missing.add(`${where}.auth is only supported on the claude harness (${entryRaw.auth === 'workspace' ? 'workspace is not available for codex or gemini yet' : 'got ' + harness})`);
       } else {
         auth = entryRaw.auth;
       }

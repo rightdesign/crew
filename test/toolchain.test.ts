@@ -4,9 +4,9 @@ import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadConfig, ConfigError } from '../src/config.ts';
-import { planAgentRun, describePlan } from '../src/agent.ts';
+import { planAgentRun, describePlan, WorkspaceAuthRefused, streamShowsAllowanceRefusal } from '../src/agent.ts';
 import { profileFor } from '../src/capability.ts';
-import { claudeToolsFor, describeClaudeAuth, BILLING_VARS_TO_UNSET } from '../src/adapters/claude.ts';
+import { claudeToolsFor, describeClaudeAuth, BILLING_VARS_TO_UNSET, inferenceBaseUrl } from '../src/adapters/claude.ts';
 import { resolveToolchain, shipToolchains, adapterFor, resolveSeat, toolchainVendor } from '../src/toolchain.ts';
 
 function cfgFrom(yaml: string) {
@@ -398,6 +398,66 @@ test('auth rejects unknown values and non-claude harnesses', () => {
   assert.throws(() => cfgFrom(AUTH_YAML('      auth: subscription', 'codex')), ConfigError);
 });
 
+// CREW-2796: `auth: workspace` routes the model calls through the Tablation inference endpoint.
+test('auth: workspace is claude-only', () => {
+  assert.equal(resolveToolchain(cfgFrom(AUTH_YAML('      auth: workspace')).ship).auth, 'workspace');
+  assert.throws(() => cfgFrom(AUTH_YAML('      auth: workspace', 'codex')), ConfigError);
+  assert.throws(() => cfgFrom(AUTH_YAML('      auth: workspace', 'gemini')), ConfigError);
+});
+
+test('auth: workspace sets the endpoint and seat key, and strips every other provider variable', () => {
+  const t = { ...resolveToolchain(cfgFrom(AUTH_YAML('      auth: workspace\n      env:\n        ANTHROPIC_API_KEY: leak\n        ANTHROPIC_BASE_URL: https://other\n        CLAUDE_CODE_USE_VERTEX: "1"\n        KEEP: yes')).ship),
+    inference: { baseUrl: 'https://h/api/workspaces/w/inference', token: 'sk_seat' } };
+  const env = adapterFor('claude').runEnv(t);
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://h/api/workspaces/w/inference');
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'sk_seat');
+  assert.equal(env.KEEP, 'yes');
+  for (const v of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_VERTEX']) assert.ok(!(v in env), v);
+  const args = adapterFor('claude').invocation(t, { role: 'dev', model: 'm' }).args;
+  const settings = args[args.indexOf('--settings') + 1]!;
+  assert.ok(!settings.includes('sk_seat'), 'the key must not reach argv');
+  const e = (JSON.parse(settings) as { env: Record<string, string> }).env;
+  assert.equal(e.ANTHROPIC_BASE_URL, 'https://h/api/workspaces/w/inference');
+  assert.equal(e.ANTHROPIC_API_KEY, '');
+  assert.ok(!('ANTHROPIC_AUTH_TOKEN' in e));
+});
+
+test('auth: workspace refuses a seat on the ship key and an unresolved route; plans with a seat key', () => {
+  const cfg = cfgFrom(AUTH_YAML('      auth: workspace'));
+  const home = mkdtempSync(join(tmpdir(), 'crew-home-'));
+  mkdirSync(join(home, 'personas'), { recursive: true });
+  writeFileSync(join(home, 'personas', 'common.md'), 'C\n');
+  writeFileSync(join(home, 'personas', 'lane-dev.md'), 'D\n');
+  const route = { ...cfg.routes[0]!, promptsDir: home, resolved: { workspaceId: 'ws1' } as never };
+  const base = { role: 'dev' as const, ship: cfg.ship, stateDir: mkdtempSync(join(tmpdir(), 'crew-st-')), roster: 'R', environment: 'E', cycle: 'c1' };
+  assert.throws(() => planAgentRun({ ...base, route, apiKey: 'k', seatKind: 'ship' }), WorkspaceAuthRefused);
+  assert.throws(() => planAgentRun({ ...base, route }), WorkspaceAuthRefused);
+  assert.throws(() => planAgentRun({ ...base, route: { ...route, resolved: undefined }, apiKey: 'k', seatKind: 'agent' }), WorkspaceAuthRefused);
+  const p = planAgentRun({ ...base, route, apiKey: 'k', seatKind: 'agent' });
+  assert.equal(p.workspaceAuth, true);
+  assert.equal(p.setEnv.ANTHROPIC_BASE_URL, 'https://example.test/api/workspaces/ws1/inference');
+  assert.equal(p.setEnv.ANTHROPIC_AUTH_TOKEN, 'k');
+  assert.equal(inferenceBaseUrl('https://h//', 'w'), 'https://h/api/workspaces/w/inference');
+});
+
+test('an allowance refusal in the stream is recognised', () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'crew-s-')), 's.jsonl');
+  writeFileSync(f, '{"type":"result","is_error":true,"result":"API Error: 422 AI_ALLOWANCE_EXCEEDED: limit"}\n');
+  assert.equal(streamShowsAllowanceRefusal(f), true);
+  writeFileSync(f, '{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 422 AI_ALLOWANCE_EXCEEDED"}]}}\n');
+  assert.equal(streamShowsAllowanceRefusal(f), true);
+  // the marker inside run content (a file read, a user turn, a successful result) is not a refusal
+  writeFileSync(f, [
+    '{"type":"user","message":{"content":[{"type":"tool_result","content":"const M = \'AI_ALLOWANCE_EXCEEDED\'"}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"saw AI_ALLOWANCE_EXCEEDED in agent.ts"}]}}',
+    '{"type":"result","is_error":false,"result":"read AI_ALLOWANCE_EXCEEDED handling"}',
+  ].join('\n') + '\n');
+  assert.equal(streamShowsAllowanceRefusal(f), false);
+  writeFileSync(f, '{"type":"result"}\n');
+  assert.equal(streamShowsAllowanceRefusal(f), false);
+  assert.equal(streamShowsAllowanceRefusal(f + 'x'), false);
+});
+
 test('describeClaudeAuth reports the resolved billing path', () => {
   const home = mkdtempSync(join(tmpdir(), 'crew-auth-'));
   mkdirSync(join(home, '.claude'));
@@ -406,6 +466,7 @@ test('describeClaudeAuth reports the resolved billing path', () => {
   writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_USE_VERTEX: '1' } }));
   assert.equal(describeClaudeAuth({}, {}, home), 'inherit: vertex from ~/.claude/settings.json');
   assert.equal(describeClaudeAuth({ auth: 'subscription' }, {}, home), 'subscription (settings override)');
+  assert.equal(describeClaudeAuth({ auth: 'workspace', inference: { baseUrl: 'https://app.example/api/workspaces/w/inference' } }, {}, home), 'workspace (app.example)');
 });
 
 test('docs/toolchains.md names every billing variable and its Vertex example loads', async () => {

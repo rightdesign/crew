@@ -71,6 +71,26 @@ subscription (settings override)`, or `inherit: vertex from
 ~/.claude/settings.json`), and a passing `crew selftest` repeats it. Only the
 `claude` harness accepts `auth`.
 
+#### `auth: workspace`
+
+```yaml
+      auth: workspace        # inherit (default) | subscription | workspace
+```
+
+`workspace` sends every model call through the route's Tablation inference
+endpoint (`<baseUrl>/api/workspaces/<id>/inference`). The run's
+`ANTHROPIC_BASE_URL` is the endpoint and its `ANTHROPIC_AUTH_TOKEN` is the
+seat's own agent key; every other provider variable, including any set in the
+toolchain's `env:`, is removed, and `--settings` blanks the ones a user settings
+file could set (the key itself never goes on argv). The endpoint accepts seat
+keys only, so a seat that would fall back to the ship key, or a route that is
+not connected, is refused with a `workspace_auth` attention item. When the
+endpoint refuses a run because the workspace is past its AI allowance, the role
+pauses on that route (`workspace_allowance` attention item, five minutes) and
+tries again on its own once a pass finds the allowance open. `crew doctor`
+prints the endpoint host per route. Codex and Gemini reject `workspace` at load
+time.
+
 ### Running on Vertex or an API key
 
 The strip above is deliberate, so a Vertex-billed or API-key-billed machine has

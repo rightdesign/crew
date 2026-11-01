@@ -102,6 +102,20 @@ export const claudePair: PairInstaller = {
   removePair: (o) => removeClaudeMcp({ bin: o.bin ?? 'claude', dryRun: o.dryRun }),
 };
 
+/** The path under a route's base URL where the Tablation inference endpoint lives (the CLI appends `/v1/messages`). */
+export const inferenceBaseUrl = (baseUrl: string, workspaceId: string): string =>
+  `${baseUrl.replace(/\/+$/, '')}/api/workspaces/${workspaceId}/inference`;
+
+/**
+ * The `--settings` payload for `auth: workspace` (CREW-2796): blanks every provider variable a
+ * user settings file could set, and pins the endpoint. The token is not here — a settings payload
+ * is argv, which `ps` shows — so it travels in the environment.
+ */
+export function workspaceSettings(baseUrl: string): string {
+  const blank = BILLING_VARS_TO_UNSET.filter((v) => v !== 'ANTHROPIC_AUTH_TOKEN');
+  return JSON.stringify({ env: { ...Object.fromEntries(blank.map((v) => [v, ''])), ANTHROPIC_BASE_URL: baseUrl } });
+}
+
 /**
  * The `--settings` payload for `auth: subscription` (CREW-2539). The Vertex
  * onboarding wizard writes its variables into the `env` block of
@@ -119,11 +133,12 @@ export function subscriptionSettings(): string {
  * bills anything.
  */
 export function describeClaudeAuth(
-  spec: { auth?: 'subscription' | 'inherit' },
+  spec: { auth?: 'subscription' | 'inherit' | 'workspace'; inference?: { baseUrl: string } },
   env: NodeJS.ProcessEnv = process.env,
   home: string = homedir(),
 ): string {
   if (spec.auth === 'subscription') return 'subscription (settings override)';
+  if (spec.auth === 'workspace') return `workspace${spec.inference ? ` (${new URL(spec.inference.baseUrl).host})` : ' (endpoint resolved per route at run time)'}`;
   // The adapter unsets these shell variables at exec, so only settings.json can still apply.
   let fromSettings: string | undefined;
   try {
@@ -136,6 +151,11 @@ export function describeClaudeAuth(
   if (fromSettings) return `inherit: ${fromSettings}`;
   const shell = BILLING_VARS_TO_UNSET.find((v) => v.startsWith('ANTHROPIC_API') && env[v]);
   return shell ? `inherit: ${shell} in env (unset at exec)` : 'inherit: subscription login';
+}
+
+/** `env` minus every variable that could point a Claude session at a provider directly. */
+function withoutProviderVars(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !BILLING_VARS_TO_UNSET.includes(k) && k !== 'ANTHROPIC_BASE_URL' && !/^(CLAUDE_CODE_USE_|ANTHROPIC_(VERTEX|BEDROCK|FOUNDRY))/.test(k)));
 }
 
 export const claudeAdapter: HarnessAdapter = {
@@ -190,6 +210,7 @@ export const claudeAdapter: HarnessAdapter = {
           })]
         : []),
       ...(spec.auth === 'subscription' ? ['--settings', subscriptionSettings()] : []),
+      ...(spec.auth === 'workspace' && spec.inference ? ['--settings', workspaceSettings(spec.inference.baseUrl)] : []),
       ...spec.args,
     ];
     return wrapInvocation(spec, { model: o.model, args });
@@ -201,7 +222,15 @@ export const claudeAdapter: HarnessAdapter = {
       // blocks at all — without it, Agent Log Cycles reporting has nothing
       // to report (ISSUE-558).
       ...(spec.maxThinkingTokens > 0 ? { MAX_THINKING_TOKENS: String(spec.maxThinkingTokens) } : {}),
-      ...spec.env,
+      // CREW-2796: under `workspace` the only route to a model is the endpoint. The provider
+      // variables are already unset at exec (`unsetEnv`), and a spec-level `env:` entry must not
+      // smuggle one back in.
+      ...(spec.auth === 'workspace'
+        ? withoutProviderVars(spec.env)
+        : spec.env),
+      ...(spec.auth === 'workspace' && spec.inference
+        ? { ANTHROPIC_BASE_URL: spec.inference.baseUrl, ANTHROPIC_AUTH_TOKEN: spec.inference.token }
+        : {}),
     };
   },
 
