@@ -98,7 +98,7 @@ import { ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktre
 import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
-import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
+import { raiseShipAttention, clearShipAttention, openShipAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
 import { periscopeCaps, type PeriscopeLimits } from './periscope-cmd.ts';
@@ -862,6 +862,18 @@ async function runRoleAgentLocked(
   // harness gets use the seat's agent key; a seat without one keeps working as
   // the ship, with the reason on the run log.
   const identity = await resolveSeatKey(route, role, ctx.getSessionStore);
+  // CREW-2785: an unreadable key store is a refusal, not a quiet fall-back to the ship's identity.
+  if (identity.kind === 'ship' && identity.storeError && SEAT_KEY_ROLES.includes(role)) {
+    emit.warn(`${role} run refused: its agent key cannot be read (${identity.storeError})`, { step: 'agent', role });
+    try {
+      await raiseShipAttention({ state: ctx.state, emit, route, ship },
+        seatKeyUnreadableItem(routeSlug(route.route), role, identity.storeError));
+    } catch { /* the warn line above still says it */ }
+    return;
+  }
+  if (SEAT_KEY_ROLES.includes(role)) {
+    try { clearShipAttention(ctx.state, seatKeyUnreadableKey(routeSlug(route.route), role)); } catch { /* attention is a convenience */ }
+  }
   if (identity.kind === 'ship' && SEAT_KEY_ROLES.includes(role)) {
     emit.warn(`${role} writes as the ship, not its own agent: ${identity.reason}`, { step: 'agent', role });
   } else if (identity.kind === 'agent') {

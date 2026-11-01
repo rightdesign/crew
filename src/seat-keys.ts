@@ -16,7 +16,8 @@
  * back to the ship key with a warning, never a failed cycle.
  */
 
-import { getSessionStore, hostFromUrl, type SessionStore, type StoredSession } from '@tablation/client';
+import { hostFromUrl, type SessionStore, type StoredSession } from '@tablation/client';
+import { getSessionStore } from './secret-store.ts';
 import { ROLE_NAMES, resolveApiKey, splitRoute, type RoleName, type Route } from './config.ts';
 
 /** `pair` stays on the ship key: a Pair session is a person's, and must keep writing as `user`. */
@@ -45,7 +46,7 @@ export type SeatIdentity =
   /** The seat writes as its own agent principal. */
   | { kind: 'agent'; apiKey: string; agentId: string }
   /** No seat key: the seat writes with the ship key, and `reason` says why. */
-  | { kind: 'ship'; apiKey: string; reason: string };
+  | { kind: 'ship'; apiKey: string; reason: string; storeError?: string };
 
 /** Keychain slug for one agent's key: unique per workspace + agent, distinct from the ship key's plain workspace slug. */
 export function seatKeySlug(workspaceSlug: string, agentId: string): string {
@@ -80,14 +81,17 @@ export async function resolveReleaseKey(
     if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
     return ship(keyIsAdmin(route) ? 'no agent key stored for the release seat (run `crew agents sync`)' : MEMBER_NO_KEY);
   } catch (e) {
-    return ship(describeReadError(e));
+    // CREW-2785: a store that cannot be read is not "no key stored" — the caller refuses the run.
+    const reason = describeReadError(e);
+    return { kind: 'ship', apiKey: resolveApiKey(route), reason, storeError: reason };
   }
 }
 
 /**
  * The key `role` should write with. The keychain read is async; this never
- * throws, and an unavailable keychain or a missing key is a `ship` identity
- * carrying the reason.
+ * throws. A missing key is a `ship` identity carrying the reason; a store that
+ * cannot be read at all also sets `storeError`, and a lane run must be refused
+ * rather than proceed under the ship's identity (CREW-2785).
  */
 export async function resolveSeatKey(
   route: Route,
@@ -103,7 +107,9 @@ export async function resolveSeatKey(
     if (session?.apiKey) return { kind: 'agent', apiKey: session.apiKey, agentId };
     return ship(keyIsAdmin(route) ? 'no agent key stored for this seat (run `crew agents sync`)' : MEMBER_NO_KEY);
   } catch (e) {
-    return ship(describeReadError(e));
+    // CREW-2785: a store that cannot be read is not "no key stored" — the caller refuses the run.
+    const reason = describeReadError(e);
+    return { kind: 'ship', apiKey: resolveApiKey(route), reason, storeError: reason };
   }
 }
 
@@ -127,6 +133,9 @@ function safeStderrLine(e: unknown): string | undefined {
  * the way CREW-1800 requires for writes.
  */
 export function describeReadError(e: unknown): string {
+  // CREW-2785: the file store's failures are filesystem errors (`path` set), not `security` ones.
+  const fsErr = e as { code?: unknown; path?: unknown } | null;
+  if (typeof fsErr?.path === 'string' && typeof fsErr.code === 'string') return `key file store unreadable (${fsErr.code})`;
   const code = (e as { code?: unknown } | null)?.code;
   const line = safeStderrLine(e);
   const what = typeof code === 'number' ? `security exited ${code}` : typeof code === 'string' ? `security failed: ${code}` : undefined;

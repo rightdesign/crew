@@ -29,7 +29,8 @@ import { DEFAULT_EVENTS_ROTATE_BYTES } from './events.ts';
 import { PAIR_HARNESS_NAMES, DEFAULT_PAIR, isPairHarness } from './pair-install.ts';
 import { TIERS, HARNESS_NAMES, LEGACY_TOOLCHAIN, adapterFor, isHarness, type ToolchainSpec, type ToolchainTier, type Tier } from './toolchain.ts';
 import { ForgeError, parseForges, type ForgesConfig } from './forges.ts';
-import { getSessionStore, hostFromUrl, type SessionStore } from '@tablation/client';
+import { hostFromUrl, type SessionStore } from '@tablation/client';
+import { configureSecretStore, getSessionStore, isSecretStoreMode, SECRET_STORE_MODES, type SecretStoreMode } from './secret-store.ts';
 import {
   hostPlatform, isShipPlatform,
   type ShipPlatform,
@@ -557,6 +558,11 @@ export interface Ship {
   maxPeriscopes: number;
   /** Minutes without traffic before an open periscope is closed. Default 120. */
   periscopeIdleMinutes: number;
+  /**
+   * Where keys live (CREW-2785): `auto` (the OS secret service when one is
+   * reachable, else files under `<stateDir>/keys`), `os`, or `file`.
+   */
+  secretStore?: SecretStoreMode;
 }
 
 export interface CrewConfig {
@@ -599,7 +605,7 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
-  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes',
+  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'secretStore',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -1061,6 +1067,11 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(periscopeIdleMinutes) || periscopeIdleMinutes < 1) {
     missing.add(`ship.periscopeIdleMinutes must be a positive integer (got "${shipRaw.periscopeIdleMinutes}")`);
   }
+  const secretStoreRaw = shipRaw.secretStore === undefined ? 'auto' : shipRaw.secretStore;
+  if (!isSecretStoreMode(secretStoreRaw)) {
+    missing.add(`ship.secretStore must be one of ${SECRET_STORE_MODES.join(' | ')} (got "${String(shipRaw.secretStore)}")`);
+  }
+  const secretStore: SecretStoreMode = isSecretStoreMode(secretStoreRaw) ? secretStoreRaw : 'auto';
   const eventsRotateBytes = shipRaw.eventsRotateBytes === undefined ? DEFAULT_EVENTS_ROTATE_BYTES : Number(shipRaw.eventsRotateBytes);
   if (!Number.isInteger(eventsRotateBytes) || eventsRotateBytes < 1) {
     missing.add(`ship.eventsRotateBytes must be a positive integer (got "${shipRaw.eventsRotateBytes}")`);
@@ -1120,6 +1131,9 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
 
   missing.throwIfAny(file);
 
+  // Every default session store (seat keys, hydrateApiKeys, connect) follows this ship's setting.
+  configureSecretStore({ mode: secretStore, stateDir });
+
   return {
     ship: {
       name: shipRaw.name ?? 'this ship',
@@ -1155,6 +1169,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       previewHost: shipRaw.previewHost ? String(shipRaw.previewHost).trim() || undefined : undefined,
       maxPeriscopes,
       periscopeIdleMinutes,
+      secretStore,
     },
     routes,
     crewHome,

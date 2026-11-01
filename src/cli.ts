@@ -89,9 +89,10 @@ import {
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIERS, resolveIssuesTemplateKeys,
 } from './connect.ts';
 import {
-  getSessionStore, hostFromUrl, loginWithDeviceCode, DeviceLoginError,
+  hostFromUrl, loginWithDeviceCode, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
+import { getSessionStore, describeKeyStore } from './secret-store.ts';
 import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { checkCapabilities, describeCapability, missLine } from './capability-check.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
@@ -142,7 +143,7 @@ import {
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -1530,6 +1531,18 @@ async function releasePhase(
     // release seat's own agent principal; without a stored key they stay on the
     // ship key, with the reason on the run log.
     const releaseIdentity = await resolveReleaseKey(c);
+    // CREW-2785: an unreadable key store refuses the release rather than releasing as the ship.
+    const releaseRouteSlug = routeSlug(c.route);
+    if (releaseIdentity.kind === 'ship' && releaseIdentity.storeError) {
+      const detail = `release refused: its agent key cannot be read (${releaseIdentity.storeError})`;
+      remit.warn(`${scope}: ${detail}`, { step: 'release' });
+      try {
+        await raiseShipAttention({ state: new State(cfg.ship.stateDir), emit: remit, route: c, ship: cfg.ship },
+          seatKeyUnreadableItem(releaseRouteSlug, 'release', releaseIdentity.storeError));
+      } catch { /* the warn line above still says it */ }
+      return { scope, tests: 'skipped', outcome: 'skipped', detail };
+    }
+    try { clearShipAttention(new State(cfg.ship.stateDir), seatKeyUnreadableKey(releaseRouteSlug, 'release')); } catch { /* attention is a convenience */ }
     if (releaseIdentity.kind === 'ship') remit.warn(`release writes as the ship, not its own agent: ${releaseIdentity.reason}`, { step: 'release' });
     const tracker = new Tracker(c, cfg.ship, { apiKey: releaseIdentity.apiKey });
 
@@ -5676,6 +5689,7 @@ switch (command) {
 
     // EPIC-077: periscopes need a host to send a Passenger to.
     process.stdout.write(`periscopes:        ${periscopeSummary(cfg)}\n`);
+    process.stdout.write(`key store:         ${describeKeyStore(cfg.ship)}\n`);
     const previewProblem = await previewHostProblem(cfg);
     if (previewProblem) {
       const blocks = previewHostFinding(previewProblem).severity === 'blocker';

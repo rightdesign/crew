@@ -24,7 +24,7 @@ import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -124,6 +124,22 @@ export function baseAttention(
   }
   if (outcome.action === 'level' || outcome.action === 'fast-forwarded') return { clear: baseUnsafeKey(repo) };
   return null;
+}
+
+/** The key of a seat's `seat_key_unreadable` item (CREW-2785); `seat` is a role name or `release`. */
+export const seatKeyUnreadableKey = (route: string, seat: string): string => `seat_key_unreadable:${route}:${seat}`;
+
+/**
+ * Raised when a seat's agent key cannot be read from the key store. The run is
+ * refused rather than made under the ship key, which would credit the seat's
+ * writes to the ship's identity with nothing saying so. Cleared once the seat's
+ * key resolves again.
+ */
+export function seatKeyUnreadableItem(route: string, seat: string, storeError: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'seat_key_unreadable', key: seatKeyUnreadableKey(route, seat), since: nowIso,
+    message: `${route}: the ${seat} seat's agent key cannot be read (${storeError}) — its runs are refused until the key store is readable. Resumes automatically once it is; \`crew doctor\` names the store in use`,
+  };
 }
 
 /** The key of a route's `agent_log_refused` item; one per route, so a second refused run does not add another. */

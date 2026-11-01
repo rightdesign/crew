@@ -72,6 +72,7 @@ See [Periscope](/periscope) for the commands above. The settings live in `crew.y
 | `ship.previewHost` | — | The host a Passenger reaches this ship by (a LAN name or private-network hostname). Passed to the `preview` hook as `CREW_PREVIEW_HOST` for Passenger-opened periscopes; required once any route hosts periscopes. |
 | `ship.maxPeriscopes` | `3` | Periscopes live at once on this ship. A positive integer. |
 | `ship.periscopeIdleMinutes` | `120` | Idle time after which a periscope's recorded expiry falls. A positive integer. |
+| `ship.secretStore` | `auto` | Where the ship key and per-seat agent keys are kept: `auto` (the desktop secret service where one is reachable; on Linux with no `secret-tool` or no D-Bus session, files under `<stateDir>/keys`, directory `0700` and files `0600`), `os`, or `file`. macOS and Windows resolve `auto` to their own store. A seat whose key cannot be read from the store has its runs refused (a `seat_key_unreadable` attention item and a warning on the event stream) instead of running under the ship key. `crew doctor` prints a `key store:` line naming the store in use and whether it is writable. |
 
 ### Ship name sync
 
