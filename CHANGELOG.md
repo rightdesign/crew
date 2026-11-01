@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.111.1] — 2026-11-01
+
+- CREW-2908 `crew sandbox build`, `images` and `cache` work again; a duplicate `case` clause now fails the build.
+
 ## [0.111.0] — 2026-11-01
 
 - CREW-2903 Pool member status reports include missingForgeHosts, the forge hosts git asked for a token the ship does not hold.
