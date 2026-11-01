@@ -101,3 +101,12 @@ where it stays because a server you left running serves from it; the runner
 records that on the ticket, and QA on another ship cuts its own worktree from
 the remote. Never touch any worktree other than the one for the ticket you
 are working.
+
+## Periscopes
+
+A periscope (a throwaway running preview opened for a person, in a repository
+that declares a `preview` hook) is opened and closed through the `crew
+periscope` group, never by hand. `crew periscope up` cuts the worktree and
+runs `setup`, `ports`, `handoff` and `preview` for you; it skips `isolate`
+unless the person asked for isolated state. `crew periscope down` tears the
+worktree and server down. Do not cut, start or remove any of it yourself.
