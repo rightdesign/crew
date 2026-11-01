@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.86.0] — 2026-11-01
+
+- CREW-2855 `crew periscope down --keep|--discard` ends a periscope by keeping its branch as a prototype ticket or discarding it, and `crew periscope list` shows the live ones.
+
 ## [0.85.0] — 2026-11-01
 
 - CREW-2854 `crew worktree NNN` recognizes the worktree of a draft (periscope) ticket.
