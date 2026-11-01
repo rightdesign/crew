@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.105.0] — 2026-11-01
+
+- CREW-2794 Sandbox images: a `sandbox:` section in `.crew.yaml` and a three-layer image build on the ship, with `crew sandbox build|images` and a doctor check.
+
 ## [0.104.0] — 2026-11-01
 
 - CREW-2793 Sandbox runner (ship.runner: sandbox): run each agent inside an OpenShell sandbox behind the spawn boundary.
