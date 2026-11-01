@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.82.1] — 2026-11-01
+
+- CREW-2832 Crew now raises a ship attention item when the tracker keeps refusing Agent Log run reports, instead of only logging a warning per run.
+
 ## [0.82.0] — 2026-11-01
 
 - CREW-2822 A seat now goes idle when its last run on that route ends even if another route runs the same role, and the ship heartbeat keeps the route name after a sibling run settles.
