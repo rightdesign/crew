@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.99.0] — 2026-11-01
+
+- CREW-2798 Clone and push URLs follow each Repos row's forge host, so a GitLab (or self-hosted GitLab) repository clones over HTTPS with that host's token; rows with no forge host behave as before.
+
 ## [0.98.0] — 2026-11-01
 
 - CREW-2796 Toolchain auth mode `workspace` routes a seat's model calls through the Tablation inference endpoint, pausing the role with an attention item when the workspace allowance is spent.
