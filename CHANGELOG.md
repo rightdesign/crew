@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.92.0] — 2026-11-01
+
+- CREW-2788 The crew daemon serves a bearer-authenticated control API on a unix socket in its state directory: status, event and stream tails, pause/resume, scheduler control and a read-only doctor.
+
 ## [0.91.0] — 2026-11-01
 
 - CREW-2783 A ship can hold its own git forge token (`ship.forges`): `crew credential` serves it to git, `crew forge set|rotate` manages it, and `crew doctor` reports a missing, read-only or refused token.
