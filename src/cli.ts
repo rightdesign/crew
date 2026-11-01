@@ -147,6 +147,7 @@ import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
 } from './daemon.ts';
+import { ControlAuth, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -2611,6 +2612,24 @@ switch (command) {
     // One breaker for the whole daemon process, so a role's failed starts are
     // remembered across passes (ISSUE-1365).
     const spawnBreaker = new SpawnBreaker();
+    // CREW-2788: the ship control API on a unix socket. It reuses the CLI's own
+    // JSON for status and doctor, and the pause sentinels `crew pause` writes.
+    const controlRoutes = cfg.routes.filter((r) => r.resolved?.workspaceId);
+    const controlServer = await startControlServer({
+      stateDir: cfg.ship.stateDir,
+      state,
+      auth: new ControlAuth({
+        baseUrl: route.baseUrl || DEFAULT_BASE_URL,
+        workspaceIds: [...new Set(controlRoutes.map((r) => r.resolved!.workspaceId))],
+        shipKeys: () => cfg.routes.flatMap((r) => { try { return [resolveApiKey(r)]; } catch { return []; } }),
+        userAgent: cfg.ship.userAgent,
+      }),
+      status: () => crewJson(['status', route.route, '--json']),
+      doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
+      scheduler: schedulerHandler(planDaemonControl(CREW_HOME, hostPlatform(), detectSystemd())),
+      log: (m) => emit.warn(m),
+    });
+    if (controlServer) emit.emit(`control API listening on ${controlServer.path}`);
     const stopReason = await runDaemonLoop({
       runPass: () => runOnePass({
         route, ship: cfg.ship, state,
@@ -2649,6 +2668,7 @@ switch (command) {
         for (const s of result.skipped) emit.emit(`daemon pass skipped ${s.role} — ${s.reason}`);
       },
     });
+    await controlServer?.close();
     if (stopReason === 'stale') {
       emit.emit(
         'crew daemon: installed tree, crew.yaml or a reload request changed on disk — exiting cleanly so the OS-level restart relaunches with the update',

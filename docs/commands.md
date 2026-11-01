@@ -152,6 +152,25 @@ On a terminal the wizard still runs unless `--no-wizard` is given. Off a termina
 
 Exit codes: 0 connected, 2 stopped on a problem, 3 stopped on a `choice`.
 
+## Ship control API
+
+While `crew daemon` runs it serves an HTTP API on a unix socket, `control.sock` in the ship's state directory (mode 0600), for monitoring and control of a ship a client cannot read from disk. If the socket cannot be opened (a path too long for a unix socket, another live process on it) the daemon logs that and runs without it.
+
+Every request, including one to an unknown path, needs `Authorization: Bearer <key>`. A key is accepted when it is one of the ship's own tracker keys, or when Tablation accepts it for a workspace the ship serves (`/api/auth/me?workspaceId=`, the check the relay makes), reusing a verdict for 60 seconds. A key Tablation rejects gets 401, a key that belongs to no served workspace gets 403, and a tracker that cannot be reached gets 503 (nothing is accepted without a check).
+
+| Request | Answer |
+| --- | --- |
+| `GET /status` | The `crew status --json` document, plus `daemon` (`alive`, `pid`, `startedAt`, `uptimeSeconds`) and `pause` (`crew`, `release`, `roles`). |
+| `GET /events?after=CURSOR&tail=N&wait=SECONDS` | `{ lines, cursor, reset }`: the event-log lines written since `after`. With no `after`, the last `tail` lines (default 100). `wait` (up to 30) holds the request until a line is written. A rotated log is read to its end before the live file; `reset` is true when the cursor could not be honored and the read restarted. |
+| `GET /streams` | `{ streams }`, one per live run: `run`, `pid`, `ticket`, `role`, `model`, `startedAt`, `deadline` (always `null`: no run limit is enforced). |
+| `GET /streams/RUN?after=CURSOR&tail=N&wait=SECONDS` | The same tail for one run's stream. |
+| `POST /pause`, `POST /resume` | Body `{ "role": "dev" \| "design" \| "qa" }`, or `{}` for the whole crew. The same marker files `crew pause` writes, so the next daemon pass and `crew status` see it. |
+| `POST /release/pause`, `POST /release/resume` | Pause or resume releases only. |
+| `POST /scheduler/start`, `stop`, `restart` | 202 once requested; runs the same service-manager commands as `crew daemon start\|stop\|restart` from a detached shell, since stopping ends the daemon. 409 on a host with no service manager for the daemon. |
+| `GET /doctor` | The `crew doctor --json` report. Read-only: never `--fix`, and the offline form. |
+
+A cursor is opaque; send back the one the last answer returned. Only whole lines are returned. Setup, connect, key minting and provisioning are not exposed, and no endpoint accepts or returns a key.
+
 ## Minimum crew version
 
 A project can set a minimum crew version. A crew below it claims no ticket, keeps its heartbeat, and raises a `crew_outdated` attention item (shown by `crew status`) naming both versions; it clears itself once crew is updated. Tracker writes from an older crew are refused with HTTP 426. The Crew app updates its built-in crew; on the CLI, update with `npm install -g @tablation/crew` or the newest binary release. See [If something's stuck](/getting-started#if-something-s-stuck).
