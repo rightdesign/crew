@@ -56,6 +56,8 @@ export interface PeriscopeUpArgs {
   isolate: boolean;
   host?: string;
   assignee?: string;
+  /** `--requested-by`: who the draft is for when the control API opens it on a Passenger's behalf; recorded as the ticket's reporter. */
+  requestedBy?: string;
   json: boolean;
 }
 
@@ -75,9 +77,9 @@ export type ParsedPeriscopeUpArgs = Omit<PeriscopeUpArgs, 'repo'> & { repo?: str
  */
 export function parsePeriscopeUpArgs(
   positional: string[],
-  flags: { topic?: string; issue?: string; host?: string; assignee?: string; isolate: boolean; json: boolean },
+  flags: { topic?: string; issue?: string; host?: string; assignee?: string; requestedBy?: string; isolate: boolean; json: boolean },
 ): ParsedPeriscopeUpArgs {
-  const usage = 'usage: crew periscope up [[route] REPO] [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--no-open] [--json]';
+  const usage = 'usage: crew periscope up [[route] REPO] [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--requested-by ID] [--no-open] [--json]';
   const rest = positional.slice(2);   // [periscope, up|start, ...]
   if (rest.length > 2) throw new PeriscopeError(usage);
   const topic = flags.topic?.trim();
@@ -96,6 +98,7 @@ export function parsePeriscopeUpArgs(
     isolate: flags.isolate,
     ...(flags.host ? { host: flags.host } : {}),
     ...(flags.assignee ? { assignee: flags.assignee } : {}),
+    ...(flags.requestedBy?.trim() ? { requestedBy: flags.requestedBy.trim() } : {}),
     json: flags.json,
   };
 }

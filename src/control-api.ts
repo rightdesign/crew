@@ -18,6 +18,9 @@
  *  - `POST /release/pause`, `/release/resume`.
  *  - `POST /scheduler/{start,stop,restart}`  wraps `planDaemonControl`; answers 202.
  *  - `GET /doctor`            `crew doctor --json`; read-only, never `--fix`.
+ *  - `POST /periscopes`, `POST /periscopes/<ticket>/down`, `GET /periscopes`
+ *                             Passenger periscopes (CREW-2859, `periscope-control.ts`);
+ *                             404 unless a route sets `hostPeriscopes: true`.
  *
  * Nothing under setup, connect, key minting or provisioning is exposed, and no
  * endpoint accepts or returns a secret. Pause is the same sentinel files
@@ -48,6 +51,7 @@ import { liveRuns, type LiveRun } from './live-runs.ts';
 import { readDaemonStarted } from './daemon.ts';
 import { secretsMatch } from './secret-compare.ts';
 import type { State } from './state.ts';
+import { handlePeriscopes, isPeriscopePath, type PeriscopeHosting } from './periscope-control.ts';
 
 /** The roles `crew pause <role>` accepts and the poll honors (`poll.ts` `pausedRoles`). */
 const PAUSABLE: readonly RoleName[] = ['dev', 'design', 'qa'];
@@ -112,11 +116,27 @@ export class ControlAuth {
     return verdict;
   }
 
-  private async ask(token: string): Promise<AuthVerdict> {
+  /**
+   * Like `verify`, but the token must belong to `workspaceId` itself, not just
+   * to some workspace this ship serves. The ship's own keys pass.
+   */
+  async verifyIn(token: string, workspaceId: string): Promise<AuthVerdict> {
+    if (!token) return 'unauthorized';
+    for (const k of this.o.shipKeys()) if (k && secretsMatch(token, k)) return 'ok';
+    const now = (this.o.now ?? Date.now)();
+    const id = `${workspaceId}:${createHash('sha256').update(token).digest('hex')}`;
+    const hit = this.cache.get(id);
+    if (hit && now - hit.at < (this.o.cacheMs ?? 60_000)) return hit.verdict;
+    const verdict = await this.ask(token, [workspaceId]);
+    if (verdict !== 'unavailable') this.cache.set(id, { verdict, at: now });
+    return verdict;
+  }
+
+  private async ask(token: string, workspaceIds: string[] = this.o.workspaceIds): Promise<AuthVerdict> {
     const doFetch = this.o.fetch ?? fetch;
     const base = this.o.baseUrl.replace(/\/+$/, '');
     let forbidden = false;
-    for (const ws of this.o.workspaceIds) {
+    for (const ws of workspaceIds) {
       let res: Response;
       try {
         res = await doFetch(`${base}/api/auth/me?workspaceId=${encodeURIComponent(ws)}`, {
@@ -278,10 +298,12 @@ export interface ControlDeps {
   /** Begins the action after the response is sent; false when the host has no service manager to drive. */
   scheduler: (a: SchedulerAction['action']) => { accepted: boolean; detail: string };
   startedAt?: number;
+  /** Passenger periscope hosting; absent on a ship that cannot host them. */
+  periscopes?: PeriscopeHosting;
   log?: (m: string) => void;
 }
 
-interface Reply { status: number; body: unknown }
+interface Reply { status: number; body: unknown; stream?: (write: (event: unknown) => void) => Promise<void> }
 const reply = (status: number, body: unknown): Reply => ({ status, body });
 const err = (status: number, message: string): Reply => reply(status, { error: message });
 
@@ -345,6 +367,16 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
   const get = method === 'GET';
   const post = method === 'POST';
 
+  if (isPeriscopePath(p)) {
+    const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1]?.trim() ?? '';
+    // Only a POST has a body worth reading; a malformed one is a 400 from the handler.
+    const body = method === 'POST' ? await readJsonBody(req) : {};
+    return handlePeriscopes(deps.periscopes, {
+      method, path: p, query: url.searchParams, token, body,
+      wantsStream: url.searchParams.get('stream') === '1' || (req.headers.accept ?? '').includes('application/x-ndjson'),
+    });
+  }
+
   if (p === '/status' && get) {
     const doc = await deps.status();
     if (!doc) return err(502, 'could not produce the status document');
@@ -396,7 +428,11 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
   return err(404, 'not found');
 }
 
-function send(res: ServerResponse, r: Reply): void {
+function send(res: ServerResponse, r: Reply): void | Promise<void> {
+  if (r.stream) {
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' });
+    return r.stream((ev) => { if (!res.writableEnded) res.write(`${JSON.stringify(ev)}\n`); }).then(() => { res.end(); });
+  }
   const body = JSON.stringify(r.body);
   res.writeHead(r.status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
   res.end(body);
@@ -439,7 +475,7 @@ export async function startControlServer(deps: ControlDeps): Promise<RunningCont
         if (verdict === 'unauthorized') return send(res, err(401, 'invalid or revoked key'));
         if (verdict === 'forbidden') return send(res, err(403, 'this key does not belong to a workspace this ship serves'));
         if (verdict === 'unavailable') return send(res, err(503, 'could not verify the key right now'));
-        send(res, await route(deps, req.method ?? 'GET', new URL(req.url ?? '/', 'http://ship'), req, abort.signal));
+        await send(res, await route(deps, req.method ?? 'GET', new URL(req.url ?? '/', 'http://ship'), req, abort.signal));
       } catch (e) {
         log(`control API request failed: ${(e as Error).message}`);
         if (!res.headersSent) send(res, err(500, 'internal error'));

@@ -149,6 +149,7 @@ import {
   reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
 } from './daemon.ts';
 import { ControlAuth, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
+import { runCrew } from './periscope-control.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -2628,15 +2629,24 @@ switch (command) {
     // CREW-2788: the ship control API on a unix socket. It reuses the CLI's own
     // JSON for status and doctor, and the pause sentinels `crew pause` writes.
     const controlRoutes = cfg.routes.filter((r) => r.resolved?.workspaceId);
+    const controlAuth = new ControlAuth({
+      baseUrl: route.baseUrl || DEFAULT_BASE_URL,
+      workspaceIds: [...new Set(controlRoutes.map((r) => r.resolved!.workspaceId))],
+      shipKeys: () => cfg.routes.flatMap((r) => { try { return [resolveApiKey(r)]; } catch { return []; } }),
+      userAgent: cfg.ship.userAgent,
+    });
     const controlServer = await startControlServer({
       stateDir: cfg.ship.stateDir,
       state,
-      auth: new ControlAuth({
-        baseUrl: route.baseUrl || DEFAULT_BASE_URL,
-        workspaceIds: [...new Set(controlRoutes.map((r) => r.resolved!.workspaceId))],
-        shipKeys: () => cfg.routes.flatMap((r) => { try { return [resolveApiKey(r)]; } catch { return []; } }),
-        userAgent: cfg.ship.userAgent,
-      }),
+      auth: controlAuth,
+      // CREW-2859: Passenger periscopes, only on a route that sets hostPeriscopes.
+      periscopes: {
+        routes: controlRoutes.filter((r) => r.enabled).map((r) => ({ route: r.route, workspaceId: r.resolved!.workspaceId, hostPeriscopes: r.hostPeriscopes === true })),
+        previewHost: cfg.ship.previewHost,
+        maxPeriscopes: cfg.ship.maxPeriscopes,
+        run: runCrew,
+        verifyIn: (token, ws) => controlAuth.verifyIn(token, ws),
+      },
       status: () => crewJson(['status', route.route, '--json']),
       doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
       scheduler: schedulerHandler(planDaemonControl(CREW_HOME, hostPlatform(), detectSystemd())),
@@ -4676,7 +4686,7 @@ switch (command) {
         else process.stdout.write(`${resumed.ticket}\n${resumed.worktree}\n${resumed.url}\n`);
         break;
       }
-      const parsedUp = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
+      const parsedUp = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), requestedBy: value('requested-by'), isolate: flag('isolate'), json: jsonP });
       // CREW-2866: with no REPO, the working directory (a checkout, or a worktree of one) names the route and repository.
       let a: PeriscopeUpArgs;
       if (parsedUp.repo !== undefined) a = { ...parsedUp, repo: parsedUp.repo };
@@ -4732,7 +4742,7 @@ switch (command) {
             title,
             description: `A periscope: a throwaway preview of ${a.repo} for a viewer, opened by \`crew periscope up\`.`,
             report_type: 'feature',
-            reporter_name: operatorName,
+            reporter_name: a.requestedBy ?? operatorName,
             [cP.columns.status]: cP.statuses.draft,
             [cP.columns.assignee]: pairId,
             ...(routeP.resolved!.areaId ? { [cP.columns.slice]: routeP.resolved!.areaId } : {}),

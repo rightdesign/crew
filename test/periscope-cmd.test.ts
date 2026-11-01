@@ -438,3 +438,9 @@ test('the prior-hold file round-trips outside the sidecar directory crew status 
     assert.equal(readPeriscopePrior(dir, 'rec1'), undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('parsePeriscopeUpArgs carries --requested-by, trimmed, and omits it when blank', () => {
+  const base = { isolate: false, json: true };
+  assert.equal(parsePeriscopeUpArgs(['periscope', 'up', 'app'], { ...base, requestedBy: ' mem-1 ' }).requestedBy, 'mem-1');
+  assert.equal('requestedBy' in parsePeriscopeUpArgs(['periscope', 'up', 'app'], { ...base, requestedBy: ' ' }), false);
+});
