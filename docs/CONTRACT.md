@@ -163,7 +163,7 @@ which are fixed rather than contract-overridable:
 
 | column | type | meaning |
 | --- | --- | --- |
-| `ticket_id` | reference to Issues | the ticket the periscope shows |
+| `issue_id` | reference to Issues | the issue the periscope shows |
 | `ship_id` | reference to Ships | the ship hosting it |
 | `url` | text | where the periscope is reached |
 | `host`, `worktree`, `branch` | text | the machine, checkout and branch it serves |

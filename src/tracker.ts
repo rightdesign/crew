@@ -948,6 +948,34 @@ export class Tracker {
   }
 
   /**
+   * How many `live` Periscopes rows this ship holds (EPIC-077). Zero when the
+   * workspace has no Periscopes table or this ship has no Ships row yet (the
+   * row's `ship_id` could not name it), so the cap only ever counts rows it
+   * can attribute.
+   */
+  async livePeriscopeCount(): Promise<number> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    const { shipId } = await this.authorshipProbe();
+    if (!modelId || !shipId) return 0;
+    const rows = await this.client.records.list<{ id: string }>(modelId, {
+      filters: encodeFilters([
+        { columnName: 'ship_id', operator: 'EQ', value: shipId },
+        { columnName: 'state', operator: 'EQ', value: 'live' },
+      ]),
+      limit: 200,
+    });
+    return rows.length;
+  }
+
+  /** Records a Periscopes row for this ship (EPIC-077); `ship_id` is stamped here, never by the caller. */
+  async createPeriscope(fields: Record<string, unknown>): Promise<{ id: string }> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    if (!modelId) throw new Error('this workspace has no Periscopes table');
+    const { shipId } = await this.authorshipProbe();
+    return this.client.records.create<{ id: string }>(modelId, { ...fields, ...(shipId ? { ship_id: shipId } : {}) });
+  }
+
+  /**
    * The authorship columns this workspace is missing, as `table.column` names
    * for `crew doctor` to report (CREW-1371). Empty on a fully updated install.
    */

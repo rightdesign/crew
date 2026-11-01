@@ -555,6 +555,6 @@ test('periscopesStatus() names each column a present Periscopes table lacks (EPI
   t.after(() => { globalThis.fetch = original; });
   const tracker = new Tracker(route, { userAgent: 'crew-test', name: 'test-ship' });
   assert.deepEqual(await tracker.periscopesStatus(), {
-    present: true, modelId: 'periscopes-model-id', missing: ['ticket_id', 'state'],
+    present: true, modelId: 'periscopes-model-id', missing: ['issue_id', 'state'],
   });
 });

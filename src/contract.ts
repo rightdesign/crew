@@ -478,7 +478,7 @@ export const EVENT_LOG_MISSING =
  * doctor` names any of these a present table lacks.
  */
 export const PERISCOPE_COLUMNS = [
-  'ticket_id', 'ship_id', 'url', 'host', 'worktree', 'branch', 'state', 'isolated',
+  'issue_id', 'ship_id', 'url', 'host', 'worktree', 'branch', 'state', 'isolated',
   'started_at', 'last_activity_at', 'expires_at',
 ] as const;
 
