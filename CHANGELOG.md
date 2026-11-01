@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.87.1] — 2026-11-01
+
+- CREW-2858 The Pair brief and worktree skill now say when to offer a periscope, how to run one through `crew periscope`, and that a periscope is the one case where Pair opens a worktree on a ticket it filed.
+- CREW-2860 Documentation: a Periscope page, the periscope settings in the command reference, and amendments to the Host Passengers and Passenger chat pages.
+
 ## [0.87.0] — 2026-11-01
 
 - CREW-2857 `crew status --json` gains a `periscopes` array and `crew doctor` checks periscope readiness; `crew periscope down` removes the periscope from status.
