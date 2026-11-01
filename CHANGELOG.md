@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.104.0] — 2026-11-01
+
+- CREW-2793 Sandbox runner (ship.runner: sandbox): run each agent inside an OpenShell sandbox behind the spawn boundary.
+
 ## [0.103.0] — 2026-11-01
 
 - CREW-2890 A ship's MCP endpoint registration now carries its control API URL, and periscope endpoints register as not discoverable.
