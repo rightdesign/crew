@@ -81,6 +81,7 @@ import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
+import { refreshUnknownRepos, reportUnservable, repoLabelFor } from './repo-refresh.ts';
 import { applySweep } from './blocked.ts';
 import { runStalledSweep } from './stalled.ts';
 import { AgentSpawnError, WorkspaceAuthRefused, WorkspaceAllowanceExhausted, streamShowsAllowanceRefusal, planAgentRun, spawnAgent } from './agent.ts';
@@ -935,6 +936,8 @@ async function runRoleAgentLocked(
     if (seat) {
       const candidates = rankedCandidates(role, decision.selectionInput);
       const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
+      // A Repos row made after `crew connect` is not in the resolved map yet (CREW-2885).
+      await refreshUnknownRepos({ route, stateDir: ship.stateDir, fetchRows: () => tracker.repoRowsForMap(), tickets: candidates });
       const result = await resolveTopCandidate(
         tracker, candidates, seat, claimStatuses(role, contract).approved, claimStatuses(role, contract).building,
         (t) => dirForRepo(route, t.repo_id) !== null,
@@ -955,6 +958,8 @@ async function runRoleAgentLocked(
           step: 'select', role,
         });
       }
+      await reportUnservable({ state: ctx.state, emit, route, ship }, result.unservable,
+        (id) => repoLabelFor(route, candidates.find((c) => c.issue_id === id)));
       if (result.held.length) {
         emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: role });
       }

@@ -494,6 +494,13 @@ export class Tracker {
     return this.client.records.list<{ id: string; name?: string }>(model, { limit: 200 });
   }
 
+  /** Every `Repos` row with the columns the resolved file mirrors (CREW-2885). */
+  async repoRowsForMap(): Promise<Array<{ id: string; name?: string | null; remote?: string | null; forge_host?: string | null }>> {
+    const model = this.route.resolved?.reposModelId;
+    if (!model) return [];
+    return this.client.records.list<{ id: string; name?: string | null; remote?: string | null; forge_host?: string | null }>(model, { limit: 200 });
+  }
+
   /** Delete a `Repos` row (`crew sample-ticket --remove`). */
   async deleteRepoRow(id: string): Promise<void> {
     const model = this.route.resolved?.reposModelId;

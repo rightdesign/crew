@@ -38,6 +38,7 @@ import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
+import { refreshUnknownRepos, persistRepoRows } from './repo-refresh.ts';
 import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
@@ -2301,6 +2302,7 @@ switch (command) {
         if (seat) {
           const candidates = rankedCandidates(w.role, w.decision.selectionInput);
           const contract = w.decision.selectionInput.contract ?? DEFAULT_CONTRACT;
+          await refreshUnknownRepos({ route: w.route, stateDir: cfg.ship.stateDir, fetchRows: () => fleetTracker.repoRowsForMap(), tickets: candidates });
           const result = await resolveTopCandidate(
             fleetTracker, candidates, seat,
             claimStatuses(w.role, contract).approved,
@@ -2529,6 +2531,7 @@ switch (command) {
         if (seat) {
           const candidates = rankedCandidates(current, decision.selectionInput);
           const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
+          await refreshUnknownRepos({ route, stateDir: cfg.ship.stateDir, fetchRows: () => tracker2.repoRowsForMap(), tickets: candidates });
           const result = await resolveTopCandidate(
             tracker2, candidates, seat,
             claimStatuses(current, contract).approved,
@@ -3243,6 +3246,17 @@ switch (command) {
       }
     }
     const resolvedFile = resolvedPathFor(cfg.ship.stateDir, routeName!);
+    // The resolved map is a `crew connect` snapshot; a Repos row made by hand since
+    // is invisible to the match below (and `add` would duplicate it) — CREW-2885.
+    if (sub === 'list' || sub === 'add') {
+      const liveRoute = cfg.routes.find((r) => r.route === routeName);
+      if (liveRoute?.resolved?.reposModelId && existsSync(resolvedFile) && !dryRun) {
+        try {
+          await hydrateApiKeys([liveRoute]);
+          persistRepoRows(cfg.ship.stateDir, liveRoute.route, await new Tracker(liveRoute, cfg.ship).repoRowsForMap());
+        } catch { /* offline or unauthorized: fall back to the snapshot */ }
+      }
+    }
     let resolvedRemotes: RepoRemotes | undefined;
     if (existsSync(resolvedFile)) {
       try { resolvedRemotes = JSON.parse(readFileSync(resolvedFile, 'utf8')) as RepoRemotes; } catch { /* unreadable: treated as not connected */ }
