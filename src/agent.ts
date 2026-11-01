@@ -138,6 +138,10 @@ export interface AgentPlan {
    * dead after a daemon restart can say which ticket it was holding.
    */
   ticketRecordId?: string | null;
+  /** The repo name of the ticket this run was selected for (CREW-2822), for `crew status`. */
+  repo?: string | null;
+  /** The route's own name (`ws/proj`); `route` above is its filename-safe slug and cannot be turned back. */
+  routeName?: string;
   /**
    * Where to report this run's Agent Log / Agent Log Cycles rows
    * (ISSUE-416/ISSUE-457), when the route has a resolved workspace to
@@ -398,6 +402,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     eventsPath: join(streamsDir, `${base}.events.jsonl`),
     ticket: o.ticket,
     ticketRecordId: o.ticketRecordId ?? null,
+    repo: o.repo ?? null,
+    routeName: o.route.route,
     agentLog,
     promptVersion: o.route.resolved?.agentPersonas?.[o.role]?.historyId,
     promptSha,
@@ -452,6 +458,10 @@ export interface RunSidecar {
   ticket: string | null;
   /** The tracker record id of the ticket the runner claimed for this run, if any. */
   ticketRecordId: string | null;
+  /** The repo name of the ticket the run was selected for (CREW-2822), when known. */
+  repo?: string | null;
+  /** The route's own name (`ws/proj`), where `route` is the slug; absent on sidecars written before CREW-2822. */
+  routeName?: string;
   model: string;
   toolchain: string;
   harness: string;
@@ -942,7 +952,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     if (child.pid !== undefined) {
       const sidecar: RunSidecar = {
         pid: child.pid, ownerPid: process.pid, spawnedAt: new Date().toISOString(), role: plan.role, route: plan.route,
-        ticket: plan.ticket ?? null, ticketRecordId: plan.ticketRecordId ?? null, model: plan.model,
+        ticket: plan.ticket ?? null, ticketRecordId: plan.ticketRecordId ?? null, repo: plan.repo ?? null, routeName: plan.routeName, model: plan.model,
         toolchain: id.toolchain, harness: id.harness, provider: id.provider, eventsPath: plan.eventsPath,
         agentLog: id.agentLog, promptVersion: plan.promptVersion, promptSha: plan.promptSha,
       };

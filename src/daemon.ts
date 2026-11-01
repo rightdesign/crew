@@ -90,6 +90,7 @@ import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.t
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
+import { settleRunEnd } from './live-runs.ts';
 import { Tracker } from './tracker.ts';
 import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
@@ -795,13 +796,9 @@ async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): P
           await guardRunHandoff(route, ship, tracker, sc.role, sc.ticketRecordId, emit, sc.spawnedAt);
         }
       } finally {
-        if (memberId) {
-          await tracker.setCrewStatus(memberId, 'idle').catch((e: Error) => {
-            emit.warn(`could not clear crew status: ${e.message}`, { step: 'agent' });
-          });
-        }
-        await tracker.beatIdle(ship.name).catch((e: Error) => {
-          emit.warn(`could not beat ship idle: ${e.message}`, { step: 'agent' });
+        await settleRunEnd({
+          tracker, shipName: ship.name, route, role: sc.role, memberId, ownTicketRecordId: sc.ticketRecordId,
+          stateDir: ship.stateDir, emit,
         });
       }
     },
@@ -954,18 +951,10 @@ async function runRoleAgentLocked(
     await spawnAgent(plan, emit, hintMoved);
     await guardRunHandoff(route, ship, tracker, role, workingId, emit, runStart);
   } finally {
-    if (memberId) {
-      try {
-        await tracker.setCrewStatus(memberId, 'idle');
-      } catch (e) {
-        emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
-      }
-    }
-    try {
-      await tracker.beatIdle(ship.name);
-    } catch (e) {
-      emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
-    }
+    await settleRunEnd({
+      tracker, shipName: ship.name, route, role, memberId, ownTicketRecordId: workingId,
+      stateDir: ship.stateDir, emit,
+    });
   }
 }
 

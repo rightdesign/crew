@@ -20,7 +20,7 @@ import { parse as parseYaml } from 'yaml';
 import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
 import {
   loadConfig, findConfigFile, findRoute, routeForDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
-  ticketsByRepo, configuredMembers, crewVersion,
+  ticketsByRepo, configuredMembers, crewVersion, routeSlug,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, releaseSeat, shipPair,
@@ -64,6 +64,7 @@ import { verifiedShaFor } from './verified-tip.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
+import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
@@ -2162,18 +2163,10 @@ switch (command) {
         await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit, runStart);
       } finally {
         dropLock();
-        if (fleetMemberId) {
-          try {
-            await fleetTracker.setCrewStatus(fleetMemberId, 'idle');
-          } catch (e) {
-            wemit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
-          }
-        }
-        try {
-          await fleetTracker.beatIdle(cfg.ship.name);
-        } catch (e) {
-          wemit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
-        }
+        await settleRunEnd({
+          tracker: fleetTracker, shipName: cfg.ship.name, route: w.route, role: w.role, memberId: fleetMemberId, ownTicketRecordId: fleetWorkingId,
+          stateDir: cfg.ship.stateDir, emit: wemit,
+        });
       }
       if (!skipInlineRelease) await releaseFleet();
       break;
@@ -2418,18 +2411,10 @@ switch (command) {
         await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit, runStart);
       } finally {
         dropLock();
-        if (memberId) {
-          try {
-            await tracker2.setCrewStatus(memberId, 'idle');
-          } catch (e) {
-            emit.warn(`could not clear crew status: ${(e as Error).message}`, { step: 'agent' });
-          }
-        }
-        try {
-          await tracker2.beatIdle(cfg.ship.name);
-        } catch (e) {
-          emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
-        }
+        await settleRunEnd({
+          tracker: tracker2, shipName: cfg.ship.name, route, role: current, memberId, ownTicketRecordId: workingId,
+          stateDir: cfg.ship.stateDir, emit,
+        });
       }
       ran.push(current);
 
@@ -4941,6 +4926,9 @@ switch (command) {
 
     const projects = projectModeLabels(await statusTracker.projectRowsWithModes().catch(() => []));
     const crewMinVersion = (await readCrewFloor(route, cfg.ship)) ?? null;
+    // Every live run on this ship, read from the run sidecars (CREW-2822), so
+    // it is right across daemon restarts and for one-shot `crew run` processes.
+    const runs = liveRuns(cfg.ship.stateDir);
     if (flag('json')) {
       const nameSync = await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true });
       const repos = await resolvedRepos(route);
@@ -4971,6 +4959,8 @@ switch (command) {
           crewId: seatId ?? null,
           name: crewRow?.name ?? null,
           personaName,
+          // Additive (CREW-2822): how many runs this seat has live right now.
+          running: runs.filter((x) => x.role === r && x.route === routeSlug(route.route)).length,
         };
       });
       process.stdout.write(`${JSON.stringify({
@@ -5009,6 +4999,8 @@ switch (command) {
           roles: ROLE_NAMES.map((r) => ({ name: r, label: ROLE_LABEL[r], paused: state.isRolePaused(r) })),
           seats,
         },
+        // Additive (CREW-2822): every live run on this ship. `version` stays 1.
+        runs: runs.map((x) => describeRun(x, route, seatIds)),
         watermark: state.watermark(),
         route: {
           name: route.route,
@@ -5113,6 +5105,10 @@ switch (command) {
         `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +
           ` (passed over ${fairness.streak()} cycle${fairness.streak() === 1 ? '' : 's'} running)\n`,
       );
+    }
+
+    for (const x of runs) {
+      process.stdout.write(`running:    ${x.role} — ${x.ticket ?? '(no ticket)'}${x.repo ? ` in ${x.repo}` : ''} (pid ${x.pid}, since ${x.spawnedAt})\n`);
     }
 
     if (shipRows.length) {

@@ -593,7 +593,7 @@ export class Tracker {
    * `beatIdle` in a `finally` — the same shape as `setCrewStatus`'s
    * working/idle pair, one level up (ship, not seat).
    */
-  async beatEngaged(shipName: string, connectionName: string, ticketRecordId: string | null): Promise<void> {
+  async beatEngaged(shipName: string, connectionName: string, ticketRecordId: string | null, since?: string): Promise<void> {
     const row = await this.myShipRow(shipName);
     if (!row) return;
     await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, {
@@ -601,7 +601,7 @@ export class Tracker {
       host: hostname(),
       pid: process.pid,
       engaged: true,
-      engaged_since: new Date().toISOString(),
+      engaged_since: since ?? new Date().toISOString(),
       engaged_connection: connectionName,
       engaged_ticket_id: ticketRecordId,
       ...this.attentionPatch(row),

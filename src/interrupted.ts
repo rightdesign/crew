@@ -73,7 +73,7 @@ const pidAlive = (pid: number): boolean => {
  * A meta sidecar written at spawn or on a claim carries `running: true`
  * (CREW-1776); only the finish path writes one without it.
  */
-function runFinished(streamPath: string): boolean {
+export function runFinished(streamPath: string): boolean {
   const path = `${streamPath}.meta.json`;
   if (!existsSync(path)) return false;
   try { return (JSON.parse(readFileSync(path, 'utf8')) as { running?: boolean }).running !== true; } catch { return true; }
