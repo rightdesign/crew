@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.81.0] — 2026-11-01
+
+- CREW-2821 A ship can run several agents of one role at once (`ship.roleConcurrency`), each on its own ticket; the ship-wide cap defaults to the sum of the role caps when `maxConcurrentAgents` is not set.
+- A ship can run several agents of one role at once: `ship.roleConcurrency` caps each role under `maxConcurrentAgents`, a per-ticket lock keeps two runs off the same ticket, and streams and digests are per run (CREW-2821)
+
 ## [0.80.1] — 2026-11-01
 
 - CREW-2820 In ci_auto and ci_manual repos a merged ticket now records its commit_sha and merged_at as soon as the merge reaches the base branch, so tickets it blocks are released without waiting for the deploy to be confirmed.
