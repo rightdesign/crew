@@ -412,6 +412,11 @@ export interface Route {
    * `repoOverrides`.
    */
   toolchain?: string;
+  /**
+   * Wall-clock limit in minutes for this route's agent runs, overriding the
+   * toolchain's `maxRunMinutes` (CREW-2786). 0 disables the limit.
+   */
+  maxRunMinutes?: number;
 }
 
 export interface Ship {
@@ -610,7 +615,7 @@ const SHIP_KEYS = new Set([
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
-  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'hostPeriscopes', 'toolchain',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'hostPeriscopes', 'toolchain', 'maxRunMinutes',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 /** A route repo's `worktreeName`, validated like `worktrees.name` in a repo's own `.crew.yaml`. */
@@ -1183,7 +1188,28 @@ function expandCommand(cmd: string, base: string): string {
   return cmd.includes('/') || cmd.startsWith('~') ? expand(cmd, base) : cmd;
 }
 
-const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'launcherBin', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens', 'auth']);
+const TOOLCHAIN_KEYS = new Set(['harness', 'bin', 'launcher', 'launcherBin', 'model', 'tiers', 'args', 'env', 'maxThinkingTokens', 'auth', 'maxRunMinutes']);
+
+/**
+ * The largest `maxRunMinutes` the daemon's timer can honour: Node clamps a
+ * `setTimeout` delay above 2^31-1 ms to 1 ms, which would kill every run at once.
+ */
+export const MAX_RUN_MINUTES_CEILING = Math.floor((2 ** 31 - 1) / 60_000);
+
+/** A `maxRunMinutes` value (CREW-2786): a non-negative integer, 0 meaning no limit; undefined when absent. */
+function parseMaxRunMinutes(raw: unknown, where: string, missing: Missing): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    missing.add(`${where} must be a non-negative integer number of minutes, 0 for no limit (got "${String(raw)}")`);
+    return undefined;
+  }
+  if (n > MAX_RUN_MINUTES_CEILING) {
+    missing.add(`${where} is too large (${n}); the most it can be is ${MAX_RUN_MINUTES_CEILING} minutes — use 0 for no limit`);
+    return undefined;
+  }
+  return n;
+}
 
 /** `ship.pair`: a list of harness names (CREW-1517). Undefined when absent. */
 function parsePair(raw: unknown, missing: Missing): string[] | undefined {
@@ -1250,6 +1276,7 @@ function parseToolchains(raw: unknown, base: string, missing: Missing, file: str
     if (!Number.isInteger(maxThinkingTokens) || maxThinkingTokens < 0) {
       missing.add(`${where}.maxThinkingTokens must be a non-negative integer (got "${entryRaw.maxThinkingTokens}")`);
     }
+    const maxRunMinutes = parseMaxRunMinutes(entryRaw.maxRunMinutes, `${where}.maxRunMinutes`, missing);
     let auth: 'subscription' | 'inherit' | undefined;
     if (entryRaw.auth !== undefined) {
       if (entryRaw.auth !== 'subscription' && entryRaw.auth !== 'inherit') {
@@ -1271,6 +1298,7 @@ function parseToolchains(raw: unknown, base: string, missing: Missing, file: str
       args: Array.isArray(args) ? args.map(String) : [],
       env: Object.fromEntries(Object.entries(env as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
       maxThinkingTokens,
+      ...(maxRunMinutes !== undefined ? { maxRunMinutes } : {}),
     });
   }
   return out;
@@ -1282,6 +1310,7 @@ function parseOneRoute(
 ): Route {
   rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
   const toolchain = c?.toolchain === undefined ? undefined : String(c.toolchain);
+  const maxRunMinutes = parseMaxRunMinutes(c?.maxRunMinutes, `${where}.maxRunMinutes`, missing);
   if (toolchain !== undefined && !toolchainNames.has(toolchain)) {
     missing.add(`${where}.toolchain "${toolchain}" is not defined in ship.toolchains (have: ${[...toolchainNames].join(', ')})`);
   }
@@ -1360,6 +1389,7 @@ function parseOneRoute(
     repoOverrides,
     worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
     ...(toolchain !== undefined ? { toolchain } : {}),
+    ...(maxRunMinutes !== undefined ? { maxRunMinutes } : {}),
     promptsDir: resolvePromptsDir(c?.promptSet ? String(c.promptSet) : undefined, crewHome, base),
     weight,
     baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),

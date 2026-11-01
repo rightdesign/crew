@@ -58,6 +58,11 @@ export interface ToolchainSpec {
    * resolution alone. Other harnesses reject it at load time.
    */
   auth?: 'subscription' | 'inherit';
+  /**
+   * Wall-clock limit for one agent run, in minutes; 0 disables it. Absent means the ship default
+   * (`DEFAULT_MAX_RUN_MINUTES`). A route's own `maxRunMinutes` outranks it (CREW-2786).
+   */
+  maxRunMinutes?: number;
   /** Codex: the reasoning effort the tier asked for (`model_reasoning_effort`). Other harnesses ignore it. */
   reasoningEffort?: string;
 }

@@ -5593,7 +5593,7 @@ switch (command) {
     }
 
     for (const x of runs) {
-      process.stdout.write(`running:    ${x.role} — ${x.ticket ?? '(no ticket)'}${x.repo ? ` in ${x.repo}` : ''} (pid ${x.pid}, since ${x.spawnedAt})\n`);
+      process.stdout.write(`running:    ${x.role} — ${x.ticket ?? '(no ticket)'}${x.repo ? ` in ${x.repo}` : ''} (pid ${x.pid}, since ${x.spawnedAt}${x.deadline ? `, deadline ${x.deadline}` : ''})\n`);
     }
 
     if (shipRows.length) {

@@ -28,6 +28,7 @@ import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
+import { deadlineFor, killRunGroup, msUntilDeadline, resolveMaxRunMinutes, WALL_CLOCK_REASON } from './run-limit.ts';
 import { appendAdditions } from './prompt-additions.ts';
 import { TicketAttributionTracker, isClaimWrite } from './ticket-attribution.ts';
 
@@ -108,6 +109,8 @@ export interface AgentPlan {
   resolution?: { toolchain: string; model: string };
   /** Seat-resolution fallbacks, emitted as `warn` events when the run starts. */
   warnings?: string[];
+  /** Wall-clock limit in minutes (CREW-2786); absent or 0 means none. `planAgentRun` always sets it. */
+  maxRunMinutes?: number;
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -380,6 +383,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     toolchain: toolchain.name,
     harness: toolchain.harness,
     provider: toolchainProvider(toolchain),
+    maxRunMinutes: resolveMaxRunMinutes(o.route.maxRunMinutes, toolchain.maxRunMinutes),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
     warnings: [...(seat.warnings ?? []), ...expanded.warnings],
     prompt,
@@ -441,6 +445,8 @@ export interface RunResult {
   ms: number;
   /** The run's hand-off write failed against an unreachable tracker; a pending record was left for replay (CREW-2363). */
   handoffPending?: boolean;
+  /** The daemon ended the run at its wall-clock limit (CREW-2786); the worktree is left for the hand-back. */
+  killed?: { limitMinutes: number; elapsedMs: number };
 }
 
 /**
@@ -459,6 +465,13 @@ export interface RunSidecar {
   ownerPid: number;
   /** ISO time of the spawn; with `pid` it tells a live run from a recycled pid. */
   spawnedAt: string;
+  /**
+   * ISO time the run's wall-clock limit expires (CREW-2786); absent when it has none. Kept here so a
+   * daemon that restarts mid-run still enforces the original deadline.
+   */
+  deadline?: string;
+  /** The limit `deadline` came from, in minutes. */
+  maxRunMinutes?: number;
   role: RoleName;
   route: string;
   ticket: string | null;
@@ -525,6 +538,25 @@ function identityOf(plan: AgentPlan, adapterHarness: string): RunIdentity {
     agentLog: plan.agentLog ? withoutKey(plan.agentLog) : undefined,
     promptVersion: plan.promptVersion, promptSha: plan.promptSha,
   };
+}
+
+/**
+ * Ends a run that has outlived its wall-clock limit and records `run_killed`
+ * on the event stream with the reason and the elapsed time (CREW-2786). Shared
+ * by the process that spawned the run and by one that adopted it.
+ */
+async function killForDeadline(
+  pid: number, emit: Emitter, role: RoleName, ticket: string | null,
+  spawnedAt: string, limitMinutes: number | undefined,
+): Promise<{ limitMinutes: number; elapsedMs: number }> {
+  const elapsedMs = Date.now() - Date.parse(spawnedAt);
+  const limit = limitMinutes ?? Math.round(elapsedMs / 60_000);
+  emit.emit(`run_killed: ${role} run exceeded its wall-clock limit of ${limit} min (ran ${Math.round(elapsedMs / 60_000)} min)`, {
+    role, ...(ticket ? { ticket } : {}),
+    data: { event: 'run_killed', reason: WALL_CLOCK_REASON, limitMinutes: limit, elapsedMs, pid },
+  });
+  await killRunGroup(pid);
+  return { limitMinutes: limit, elapsedMs };
 }
 
 const withoutKey = ({ apiKey: _apiKey, ...rest }: AgentLogTarget): Omit<AgentLogTarget, 'apiKey'> => rest;
@@ -965,9 +997,12 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     });
     closeSync(streamFd);   // the child holds its own copy
 
+    const spawnedAt = new Date().toISOString();
+    const deadline = deadlineFor(spawnedAt, plan.maxRunMinutes);
     if (child.pid !== undefined) {
       const sidecar: RunSidecar = {
-        pid: child.pid, ownerPid: process.pid, spawnedAt: new Date().toISOString(), role: plan.role, route: plan.route,
+        pid: child.pid, ownerPid: process.pid, spawnedAt, role: plan.role, route: plan.route,
+        ...(deadline ? { deadline, maxRunMinutes: plan.maxRunMinutes } : {}),
         ticket: plan.ticket ?? null, ticketRecordId: plan.ticketRecordId ?? null, repo: plan.repo ?? null, routeName: plan.routeName, model: plan.model,
         toolchain: id.toolchain, harness: id.harness, provider: id.provider, eventsPath: plan.eventsPath,
         agentLog: id.agentLog, promptVersion: plan.promptVersion, promptSha: plan.promptSha,
@@ -978,11 +1013,22 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
     // Written at spawn and rewritten on claim and on close, so an interrupted
     // run (no `close`) still leaves a sidecar naming the ticket it was on (CREW-1776).
-    const meta = { pid: child.pid ?? null };
+    const meta = { pid: child.pid ?? null, ...(deadline ? { deadline } : {}) };
     obs.onClaim = () => writeRunMeta(id, startedAt, obs.liveTicket, meta);
     if (child.pid !== undefined) writeRunMeta(id, startedAt, obs.liveTicket, meta);
     const tail = new FileTail(plan.streamPath);
     const timer = setInterval(() => obs.feed(tail.poll()), TAIL_POLL_MS);
+
+    // The wall-clock limit (CREW-2786): kill the run's process group at its deadline. The
+    // `close` handler below then finishes it as interrupted, exactly as for any killed run.
+    let killed: RunResult['killed'];
+    const limitTimer = child.pid !== undefined && deadline
+      ? setTimeout(() => {
+          const pid = child.pid!;
+          void killForDeadline(pid, emit, plan.role, obs.liveTicket ?? plan.ticket ?? null, spawnedAt, plan.maxRunMinutes)
+            .then((k) => { killed = k; });
+        }, Math.max(0, msUntilDeadline(deadline) ?? 0))
+      : undefined;
 
     // Set when `spawn` itself failed. Node still emits `close` after `error`
     // in that case, and the close handler below must not then report a run
@@ -991,16 +1037,25 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     child.on('error', (err) => {
       spawnFailed = true;
       clearInterval(timer);
+      clearTimeout(limitTimer);
       reject(new AgentSpawnError(`cannot run ${plan.bin}: ${err.message}`));
     });
     child.on('close', async (code) => {
       clearInterval(timer);
+      clearTimeout(limitTimer);
       obs.feed(tail.poll());
       obs.end();
       await endSink(eventsSink);
       if (spawnFailed) return;
-      const { ms, handoffPending } = await finishRun(id, obs, emit, startedAt, { code: code ?? 1 }, plan.agentLog?.apiKey, hintMoved);
-      resolve({ code: code ?? 1, ms, ...(handoffPending ? { handoffPending } : {}) });
+      // `killed` is set once the kill returns, which can trail `close` by a tick.
+      if (limitTimer && !killed && !obs.sawResult && msUntilDeadline(deadline)! <= 0) {
+        killed = { limitMinutes: plan.maxRunMinutes ?? 0, elapsedMs: Date.now() - Date.parse(spawnedAt) };
+      }
+      const { ms, handoffPending } = await finishRun(
+        id, obs, emit, startedAt, { code: code ?? 1, ...(killed ? { interrupted: WALL_CLOCK_REASON } : {}) },
+        plan.agentLog?.apiKey, hintMoved,
+      );
+      resolve({ code: code ?? 1, ms, ...(handoffPending ? { handoffPending } : {}), ...(killed ? { killed } : {}) });
     });
     // An agent that exits (or closes stdin) before the prompt is fully written
     // breaks the pipe under this write. Without a listener that EPIPE is an
@@ -1029,6 +1084,8 @@ export interface ReattachResult {
   /** Which way it went: still running when found, or already dead. */
   adopted: boolean;
   interrupted?: string;
+  /** Set when this process ended the run at its wall-clock limit (CREW-2786). */
+  killed?: { limitMinutes: number; elapsedMs: number };
   ms: number;
   /** The ticket the transcript most credited, falling back to the run's hint. */
   ticket: string | undefined;
@@ -1059,11 +1116,18 @@ export async function reattachRun(
   obs.muted = false;
 
   const adopted = isAlive(sc);
+  let killed: ReattachResult['killed'];
   if (adopted) {
     o.onAdopted?.();
     const pollMs = o.pollMs ?? TAIL_POLL_MS;
     while (isAlive(sc)) {
       obs.feed(tail.poll());
+      // The deadline in the sidecar is the ORIGINAL one, so a restarted daemon
+      // does not hand a run a fresh clock (CREW-2786).
+      if (!killed && (msUntilDeadline(sc.deadline) ?? 1) <= 0) {
+        killed = await killForDeadline(sc.pid, emit, sc.role, obs.liveTicket ?? sc.ticket, sc.spawnedAt, sc.maxRunMinutes);
+        continue;
+      }
       await new Promise((r) => setTimeout(r, pollMs));
     }
   }
@@ -1071,9 +1135,9 @@ export async function reattachRun(
   obs.end();
   await endSink(eventsSink);
 
-  const interrupted = obs.sawResult ? undefined : adopted ? 'no-result' : 'daemon-exit';
+  const interrupted = killed ? WALL_CLOCK_REASON : obs.sawResult ? undefined : adopted ? 'no-result' : 'daemon-exit';
   const { ms, ticket } = await finishRun(
     id, obs, emit, sc.spawnedAt, { code: null, ...(interrupted ? { interrupted } : {}) }, o.agentLogKey,
   );
-  return { adopted, ...(interrupted ? { interrupted } : {}), ms, ticket };
+  return { adopted, ...(interrupted ? { interrupted } : {}), ...(killed ? { killed } : {}), ms, ticket };
 }

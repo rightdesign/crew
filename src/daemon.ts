@@ -96,6 +96,7 @@ import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
 import { interruptedComment, reconcileRuns } from './interrupted.ts';
+import { runKilledComment } from './run-limit.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
@@ -822,9 +823,11 @@ async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): P
           const wt = target && num ? worktreeForNumber(target.dir, num) : null;
           let dirty: boolean | null = null;
           try { if (wt) dirty = gitStatus(wt.path).length > 0; } catch { /* unreadable: say so */ }
-          await tracker.postEvent(sc.ticketRecordId, interruptedComment({
-            branch: wt?.branch ?? null, dirty, reason: result.interrupted === 'daemon-exit' ? 'the crew daemon exited' : 'it exited without a result',
-          }), memberId, 'interrupted');
+          await tracker.postEvent(sc.ticketRecordId, result.killed
+            ? runKilledComment({ limitMinutes: result.killed.limitMinutes, branch: wt?.branch ?? null, dirty })
+            : interruptedComment({
+              branch: wt?.branch ?? null, dirty, reason: result.interrupted === 'daemon-exit' ? 'the crew daemon exited' : 'it exited without a result',
+            }), memberId, 'interrupted');
         } else {
           await guardRunHandoff(route, ship, tracker, sc.role, sc.ticketRecordId, emit, sc.spawnedAt);
         }
@@ -836,6 +839,25 @@ async function reconcileForRoute(ctx: RoleAgentContext, o: RunOnePassOptions): P
       }
     },
   });
+}
+
+/** Tells the ticket its run was stopped at the wall-clock limit; the worktree is left as it was. */
+async function postRunKilled(
+  route: Route, tracker: Tracker, ticketId: string | undefined | null, memberId: string | undefined,
+  limitMinutes: number, emit: Emitter,
+): Promise<void> {
+  if (!ticketId || !memberId) return;
+  try {
+    const t = await tracker.ticket(ticketId);
+    const target = repoTargetFor(route, t.repo_id as string | null | undefined);
+    const num = String(t[tracker.contract.columns.key] ?? '').replace(/^\D+/, '');
+    const wt = target && num ? worktreeForNumber(target.dir, num) : null;
+    let dirty: boolean | null = null;
+    try { if (wt) dirty = gitStatus(wt.path).length > 0; } catch { /* unreadable: say so */ }
+    await tracker.postEvent(ticketId, runKilledComment({ limitMinutes, branch: wt?.branch ?? null, dirty }), memberId, 'interrupted');
+  } catch (e) {
+    emit.warn(`could not post the wall-clock limit comment: ${(e as Error).message}`, { step: 'agent' });
+  }
 }
 
 async function runRoleAgent(
@@ -993,8 +1015,13 @@ async function runRoleAgentLocked(
         };
       } catch { /* no snapshot, no read-back */ }
     }
-    await spawnAgent(plan, emit, hintMoved);
-    await guardRunHandoff(route, ship, tracker, role, workingId, emit, runStart);
+    const result = await spawnAgent(plan, emit, hintMoved);
+    if (result.killed) {
+      // CREW-2786: stopped at its wall-clock limit — hand back the way an orphaned run is.
+      await postRunKilled(route, tracker, workingId, memberId, result.killed.limitMinutes, emit);
+    } else {
+      await guardRunHandoff(route, ship, tracker, role, workingId, emit, runStart);
+    }
   } finally {
     await settleRunEnd({
       tracker, shipName: ship.name, route, role, memberId, ownTicketRecordId: workingId,

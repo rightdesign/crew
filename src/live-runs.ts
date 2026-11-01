@@ -107,5 +107,6 @@ export function describeRun(
     stream: run.streamPath,
     pid: run.pid,
     startedAt: run.spawnedAt,
+    deadline: run.deadline ?? null,
   };
 }

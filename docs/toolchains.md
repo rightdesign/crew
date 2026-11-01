@@ -95,6 +95,12 @@ carry `bin` over. `model` and `tiers` may need the model ids your Vertex project
 exposes. Credentials must be findable without your shell; see
 [What the scheduler sees](#what-the-scheduler-sees).
 
+### Wall-clock limit (`maxRunMinutes`)
+
+Every agent run the daemon spawns has a wall-clock limit: `maxRunMinutes` on the toolchain (default 240; `0` disables it; at most 35791, so write `0` rather than a huge number for no limit), overridable per route with a route-level `maxRunMinutes`. At the deadline the daemon ends the run's whole process group (SIGTERM, then SIGKILL after a few seconds), writes a `run_killed` event (reason `wall-clock`, elapsed time, limit) to the event stream and posts a comment on the ticket naming the limit. The worktree is left untouched and the ticket stays with its seat, so the next run resumes from it, as after any interrupted run.
+
+The deadline is recorded in the run's `.pid` sidecar and `.meta.json`, so a daemon that restarts mid-run and adopts the run still enforces the original deadline. `crew status` shows it on each running seat (`crew status --json` as `deadline`).
+
 ### What the scheduler sees
 
 The launchd job (and the systemd unit) carries only `PATH`. Nothing exported in
