@@ -2799,6 +2799,7 @@ switch (command) {
       baseUrl: route.baseUrl || DEFAULT_BASE_URL,
       workspaceIds: [...new Set(controlRoutes.map((r) => r.resolved!.workspaceId))],
       shipKeys: () => cfg.routes.flatMap((r) => { try { return [resolveApiKey(r)]; } catch { return []; } }),
+      workspaceSecrets: (ws) => { const sec = readPersistedTunnel(cfg.ship.stateDir, ws)?.mcpSecret; return sec ? [sec] : []; },
       userAgent: cfg.ship.userAgent,
     });
     const controlServer = await startControlServer({
@@ -2812,6 +2813,11 @@ switch (command) {
         maxPeriscopes: cfg.ship.maxPeriscopes,
         run: runCrew,
         verifyIn: (token, ws) => controlAuth.verifyIn(token, ws),
+        previewRepos: (routeName) => {
+          const r = controlRoutes.find((x) => x.route === routeName);
+          if (!r) return [];
+          return reposOf(r).filter((t) => { try { return !!loadRepoConfig(t.dir)?.hooks.preview; } catch { return false; } }).map((t) => t.name);
+        },
         mcp: {
           onUp: async (r, done) => {
             const id = typeof done.ticketRecordId === 'string' ? done.ticketRecordId : '';

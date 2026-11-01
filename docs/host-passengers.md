@@ -169,3 +169,21 @@ and again after each reconnect, and clears it on `crew disconnect`. A workspace
 whose Ships table lacks the `relay_url` column is skipped quietly. Callers
 authenticate with the ship key as for the local socket. `crew status` shows the
 URL and `crew doctor` probes it end to end.
+
+### Periscope operations on the control API
+
+`POST /periscopes`, `POST /periscopes/<ticket>/down` and `GET /periscopes` do
+not go through the control API's general key check; each route's own
+membership check is the only gate. The credential may be the ship key, a key of
+a member of the route's workspace, or that workspace's tunnel secret (the
+Passenger MCP secret the tunnel was started with). The secret opens the
+periscope operations of its own workspace and nothing else: it is refused (403)
+for a route in another workspace the ship serves, and 401 on every other
+control path such as `/status`. A request with no credential is 401.
+
+`GET /periscopes` answers `{ periscopes, hosting }`. `hosting` has one entry
+per route with `hostPeriscopes` that the caller may see: `route`,
+`workspaceId`, `previewHostSet` (whether `ship.previewHost` is set),
+`maxPeriscopes`, `live` (periscopes open now) and `repos` (the route's
+connected repositories whose `.crew.yaml` declares a `preview` hook). A ship
+with no hosting route answers 404 on these paths.

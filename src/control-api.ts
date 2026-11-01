@@ -83,6 +83,13 @@ export interface ControlAuthOptions {
   workspaceIds: string[];
   /** The ship's own tracker key(s); matched locally, no round trip. */
   shipKeys: () => string[];
+  /**
+   * The Passenger MCP secret of the tunnel a workspace has up (CREW-2889).
+   * It is the one credential the in-app chat holds for this ship, so it opens
+   * the periscope operations of its own workspace through `verifyIn` and
+   * nothing else: `verify` never consults it.
+   */
+  workspaceSecrets?: (workspaceId: string) => string[];
   userAgent?: string;
   fetch?: typeof fetch;
   now?: () => number;
@@ -127,6 +134,7 @@ export class ControlAuth {
   async verifyIn(token: string, workspaceId: string): Promise<AuthVerdict> {
     if (!token) return 'unauthorized';
     for (const k of this.o.shipKeys()) if (k && secretsMatch(token, k)) return 'ok';
+    for (const k of this.o.workspaceSecrets?.(workspaceId) ?? []) if (k && secretsMatch(token, k)) return 'ok';
     const now = (this.o.now ?? Date.now)();
     const id = `${workspaceId}:${createHash('sha256').update(token).digest('hex')}`;
     const hit = this.cache.get(id);
@@ -484,6 +492,11 @@ export async function startControlServer(deps: ControlDeps): Promise<RunningCont
         if (mcp) {
           if (!deps.periscopeMcp) return send(res, err(404, 'not found'));
           return await deps.periscopeMcp(req, res, decodeURIComponent(mcp[1]!));
+        }
+        // Periscope operations are gated by `handlePeriscopes` and its per-route
+        // membership check (CREW-2889), which also accepts a workspace's tunnel secret.
+        if (isPeriscopePath(new URL(req.url ?? '/', 'http://ship').pathname.replace(/\/+$/, '') || '/')) {
+          return await send(res, await route(deps, req.method ?? 'GET', new URL(req.url ?? '/', 'http://ship'), req, abort.signal));
         }
         const m = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
         const verdict = await deps.auth.verify(m?.[1]?.trim() ?? '');

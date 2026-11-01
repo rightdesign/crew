@@ -114,9 +114,9 @@ test('down: keep and discard map to the flag; a bad outcome or ticket is 400; no
 test('list: the live rows, tagged with their route; a caller outside the workspace sees none, or a 403 when naming it', async () => {
   const f = fake({ live: 1, routes: ROUTES.map((r) => ({ ...r, hostPeriscopes: true })), members: { member: ['ws1', 'ws2'], one: ['ws1'] } });
   const all = await handlePeriscopes(f.h, req({ method: 'GET' }));
-  assert.deepEqual(all.body, { periscopes: [{ route: 'ws/issues', ticket: 'CREW-0' }, { route: 'other/issues', ticket: 'CREW-0' }] });
+  assert.deepEqual((all.body as { periscopes: unknown }).periscopes, [{ route: 'ws/issues', ticket: 'CREW-0' }, { route: 'other/issues', ticket: 'CREW-0' }]);
   const one = await handlePeriscopes(f.h, req({ method: 'GET', token: 'one' }));
-  assert.deepEqual(one.body, { periscopes: [{ route: 'ws/issues', ticket: 'CREW-0' }] });
+  assert.deepEqual((one.body as { periscopes: unknown }).periscopes, [{ route: 'ws/issues', ticket: 'CREW-0' }]);
   const named = await handlePeriscopes(f.h, req({ method: 'GET', token: 'one', query: new URLSearchParams('route=other/issues') }));
   assert.equal(named.status, 403);
 });
@@ -212,7 +212,7 @@ test('mcp: the control server hands /periscopes/<ticket>/mcp to the handler befo
   try {
     assert.equal(await call('/periscopes/CREW-12/mcp'), 204, 'no bearer needed: the periscope secret is the credential');
     assert.deepEqual(seen, ['CREW-12']);
-    assert.equal(await call('/periscopes/CREW-12/down'), 401, 'every other path still needs a key');
+    assert.equal(await call('/status'), 401, 'every other path still needs a key');
   } finally { await srv.close(); }
   // Not configured: a plain 404, no tracker check involved.
   const dir2 = mkdtempSync(join(tmpdir(), 'ctl-'));
@@ -227,4 +227,42 @@ test('mcp: the control server hands /periscopes/<ticket>/mcp to the handler befo
     });
     assert.equal(status, 404);
   } finally { await srv2.close(); }
+});
+
+test('tunnel secret: opens periscopes of its own workspace only, 401 on /status, and GET lists hosting', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-'));
+  const state = new State(dir);
+  const routes = [
+    { route: 'ws/issues', workspaceId: 'ws1', hostPeriscopes: true },
+    { route: 'two/issues', workspaceId: 'ws2', hostPeriscopes: true },
+    { route: 'off/issues', workspaceId: 'ws3', hostPeriscopes: false },
+  ];
+  const f = fake({ routes, live: 1 });
+  const auth = new ControlAuth({
+    baseUrl: 'https://t.example', workspaceIds: ['ws1', 'ws2', 'ws3'], shipKeys: () => ['sk_ship'],
+    workspaceSecrets: (ws) => (ws === 'ws1' ? ['tunnel-secret'] : []),
+    fetch: (async () => new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })) as typeof fetch,
+  });
+  const srv = (await startControlServer({
+    stateDir: dir, state, auth, status: async () => ({}), doctor: async () => ({}),
+    scheduler: () => ({ accepted: false, detail: '' }),
+    periscopes: { ...f.h, verifyIn: (t, ws) => auth.verifyIn(t, ws), previewRepos: (r) => (r === 'ws/issues' ? ['app'] : []) },
+  }))!;
+  const call = (method: string, path: string, key: string | null, body?: unknown) => new Promise<{ status: number; text: string }>((resolve, reject) => {
+    const r = request({ socketPath: srv.path, method, path, headers: key ? { Authorization: `Bearer ${key}` } : {} }, (res) => {
+      let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode!, text: b }));
+    });
+    r.on('error', reject); r.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+  try {
+    assert.equal((await call('POST', '/periscopes', 'tunnel-secret', upBody)).status, 200);
+    assert.equal((await call('POST', '/periscopes', 'tunnel-secret', { ...upBody, route: 'two/issues' })).status, 403);
+    assert.equal((await call('GET', '/status', 'tunnel-secret')).status, 401);
+    assert.equal((await call('GET', '/periscopes', null)).status, 401);
+    const list = JSON.parse((await call('GET', '/periscopes', 'tunnel-secret')).text);
+    assert.deepEqual(list.hosting, [{ route: 'ws/issues', workspaceId: 'ws1', previewHostSet: true, maxPeriscopes: 2, live: 1, repos: ['app'] }]);
+    assert.equal(list.periscopes.length, 1);
+    const ship = JSON.parse((await call('GET', '/periscopes', 'sk_ship')).text);
+    assert.deepEqual(ship.hosting.map((h: { route: string }) => h.route), ['ws/issues', 'two/issues']);
+  } finally { await srv.close(); }
 });

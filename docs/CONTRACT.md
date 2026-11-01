@@ -180,6 +180,13 @@ On Ships, an optional yes/no `host_periscopes` column mirrors the route's
 `hostPeriscopes` setting, synced by `crew connect` alongside `host_passengers`.
 A Ships table without the column is written as before, with no error.
 
+The ship's control API serves a periscope's lifecycle over `/periscopes`. It
+accepts the ship key, a member key, or the workspace's tunnel secret (for its
+own workspace only), and `GET /periscopes` also reports `hosting`: per hosting
+route, `route`, `workspaceId`, `previewHostSet`, `maxPeriscopes`, `live` and
+`repos` (repositories whose `.crew.yaml` declares a `preview` hook). See
+[Host Passengers](/host-passengers).
+
 ## Overriding it
 
 An org that renames its statuses, adds one, or orders priority differently

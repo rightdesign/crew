@@ -9,6 +9,12 @@
  * ship.previewHost` (what `CREW_PREVIEW_HOST` is for a Passenger) and
  * `--requested-by`, which becomes the draft ticket's reporter.
  *
+ * Credential: the control API does not run its general bearer check on these
+ * paths; the per-route `member()` below is the gate, and `verifyIn` accepts a
+ * ship key, a member key, or the workspace's own tunnel secret (CREW-2889).
+ * `GET /periscopes` also answers `hosting`, the capability of each route the
+ * caller may see.
+ *
  * Gate: `routes[].hostPeriscopes` is the authorization. A ship with no route
  * that sets it answers 404 on these paths as if they did not exist; a route
  * that does not set it likewise. Past that the operation is not restricted,
@@ -39,6 +45,8 @@ export interface PeriscopeHosting {
   run: (args: string[], onLine: (line: string) => void) => Promise<CliResult>;
   /** Is `token` a member of `workspaceId`? */
   verifyIn: (token: string, workspaceId: string) => Promise<AuthVerdict>;
+  /** Names of `route`'s connected repositories whose `.crew.yaml` declares a `preview` hook (CREW-2889). */
+  previewRepos?: (route: string) => string[];
   /**
    * Per-periscope MCP endpoints (CREW-2862). When set, `up` is run with `--serve-mcp`
    * (the secret is minted by the command, never passed on its command line) and
@@ -173,6 +181,8 @@ export const isPeriscopePath = (p: string): boolean => p === '/periscopes' || p.
 export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: PeriscopeRequest): Promise<PeriscopeReply> {
   // Off for the whole ship: indistinguishable from a path that was never there.
   if (!h || !h.routes.some((r) => r.hostPeriscopes)) return err(404, 'not found');
+  // The control API no longer checks the bearer for these paths, so a missing one stops here.
+  if (!q.token) return err(401, 'a bearer token is required');
   const down = /^\/periscopes\/([^/]+)\/down$/.exec(q.path);
   const isUp = q.path === '/periscopes' && q.method === 'POST';
   const isList = q.path === '/periscopes' && q.method === 'GET';
@@ -191,6 +201,7 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
     const named = q.query.get('route') ?? undefined;
     const candidates = named === undefined ? h.routes.filter((r) => r.hostPeriscopes) : [pickRoute(h, named)];
     const rows: unknown[] = [];
+    const hosting: unknown[] = [];
     for (const c of candidates) {
       if ('status' in c) return c;
       const denied = await member(c.workspaceId);
@@ -200,10 +211,15 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
       if (r.code !== 0) return err(failureStatus(r), cliMessage(r));
       try {
         const list = JSON.parse(r.stdout) as unknown;
-        if (Array.isArray(list)) for (const e of list) rows.push({ route: c.route, ...(e as object) });
+        const mine = Array.isArray(list) ? list : [];
+        for (const e of mine) rows.push({ route: c.route, ...(e as object) });
+        hosting.push({
+          route: c.route, workspaceId: c.workspaceId, previewHostSet: !!h.previewHost,
+          maxPeriscopes: h.maxPeriscopes, live: mine.length, repos: h.previewRepos?.(c.route) ?? [],
+        });
       } catch { return err(502, 'the list command did not answer JSON'); }
     }
-    return reply(200, { periscopes: rows });
+    return reply(200, { periscopes: rows, hosting });
   }
 
   const b = q.body;
