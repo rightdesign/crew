@@ -61,6 +61,10 @@ export interface StatusBody {
   relayUrl: string | null;
   reason: string | null;
   crewVersion: string;
+  /** Agent runs in progress on the ship, across all routes (CREW-2906). Sent with `running` only; an older crew omits it. */
+  activeRuns?: number;
+  /** ISO time the most recent run finished; null when none has. Sent with `activeRuns`. */
+  lastRunEndedAt?: string | null;
 }
 
 /** An HTTP answer reduced to what the loop decides on. A transport failure is a thrown error instead. */
@@ -95,6 +99,13 @@ export interface PoolMemberDeps {
   /** This ship's hashed machine id and the tunnel URL, once known. */
   machineId(): string | null;
   relayUrl(): string | null;
+  /** Run activity read from the daemon's own bookkeeping (CREW-2906); absent means the fields are not reported. */
+  activity?(): { activeRuns: number; lastRunEndedAt: string | null };
+  /**
+   * Calls `onTick` on a short cadence until the returned stop function runs. The loop uses it to notice
+   * activity flipping between zero and non-zero while a long poll is in flight.
+   */
+  watch?(onTick: () => void): () => void;
   /** Called while `unprovisioned` only, before each poll: CREW-2797's self-upgrade call site. */
   maybeSelfUpgrade?(): Promise<void>;
   sleep(ms: number): Promise<void>;
@@ -128,6 +139,8 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
   };
 
   let reported: StatusBody | undefined;
+  /** Whether the last `running` report said a run was in progress. */
+  let busy = false;
   /** A status report. A 409 is an illegal transition: logged, not retried. 401 ends the command. */
   const report = async (state: MemberState, o: { leaseId?: string | null; reason?: string } = {}): Promise<'ok' | 'credential' | 'stopped'> => {
     const body: StatusBody = {
@@ -136,6 +149,9 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
       relayUrl: state === 'running' ? deps.relayUrl() : null,
       reason: o.reason ?? null, crewVersion: deps.host.crewVersion,
     };
+    const act = state === 'running' ? deps.activity?.() : undefined;
+    if (act) { body.activeRuns = act.activeRuns; body.lastRunEndedAt = act.lastRunEndedAt; }
+    if (act) busy = act.activeRuns > 0;
     const r = await settle('status', () => deps.api.status(body));
     if (!r) return 'stopped';
     if (r.status === 401) return 'credential';
@@ -221,17 +237,31 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
     while (!reregister) {
       if (deps.stopping()) return POOL_EXIT.ok;
       if (!current) await deps.maybeSelfUpgrade?.().catch((e: Error) => { deps.log(`self-upgrade: ${e.message}`); });
-      const ans = await settle('lease', () => deps.api.lease(platform.pollWaitSeconds || DEFAULT_POLL_WAIT_SECONDS, current ?? undefined));
+      // While a lease is held, a run starting or ending is reported at once rather than at the poll's end.
+      let stopWatch: (() => void) | undefined;
+      let flipping = false;
+      if (current && deps.watch && deps.activity) {
+        const held = current;
+        stopWatch = deps.watch(() => {
+          const now = deps.activity!().activeRuns > 0;
+          if (flipping || now === busy) return;
+          flipping = true;
+          void report('running', { leaseId: held }).catch(() => undefined).finally(() => { flipping = false; });
+        });
+      }
+      let ans: PoolReply<LeaseAnswer | { code?: string; currentLeaseId?: string }> | null;
+      try { ans = await settle('lease', () => deps.api.lease(platform.pollWaitSeconds || DEFAULT_POLL_WAIT_SECONDS, current ?? undefined)); }
+      finally { stopWatch?.(); }
       if (!ans) return POOL_EXIT.ok;
       if (ans.status === 401) { deps.log('the pool credential is unknown or revoked (401)'); return POOL_EXIT.credential; }
       if (ans.status === 409) { deps.log('the platform says this is not the member\'s current lease (409); re-registering'); reregister = true; continue; }
       if (ans.status === 204) {
         // The tunnel comes up after provision returns; fill the URL in once it exists.
         const url = current ? deps.relayUrl() : null;
-        if (current && url && url !== relayReported) {
+        if (current && (url !== relayReported && url || deps.activity)) {
           const r = await report('running', { leaseId: current });
           if (r === 'credential') return POOL_EXIT.credential;
-          relayReported = url;
+          relayReported = url ?? relayReported;
         }
         continue;
       }

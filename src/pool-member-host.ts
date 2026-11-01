@@ -13,6 +13,7 @@ import { crewVersion, findConfigFile, loadConfig } from './config.ts';
 import { crewInvocation } from './install.ts';
 import { ensureMachineId } from './machine-id.ts';
 import { hostArchitecture, type LeasePayload, type PoolApi, type PoolMemberDeps, type MemberStore } from './pool-member.ts';
+import { runActivity } from './live-runs.ts';
 import { PROVISION_EXIT, realProvisionDeps, runProvision } from './provision.ts';
 import { readPersistedTunnel, relayBaseUrlFor } from './tunnel.ts';
 
@@ -105,6 +106,15 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
         if (slug) return relayBaseUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain);
       }
       return null;
+    },
+
+    activity() {
+      const cfg = loadShip(o.crewHome);
+      return cfg ? runActivity(cfg.ship.stateDir) : { activeRuns: 0, lastRunEndedAt: null };
+    },
+    watch(onTick) {
+      const t = setInterval(onTick, 2_000);
+      return () => { clearInterval(t); };
     },
 
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

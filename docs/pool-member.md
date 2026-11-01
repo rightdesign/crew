@@ -73,6 +73,16 @@ Body `{ state, leaseId, machineId, relayUrl, reason, crewVersion }` with
 `state` one of `unprovisioned`, `provisioning`, `running`, `wiping`, `failed`.
 Response 200 `{ memberState, leaseState }`.
 
+A `running` report also carries `activeRuns` (agent runs in progress on the
+ship, across all routes) and `lastRunEndedAt` (ISO time the most recent run
+finished, null when none has). Both are read from the ship's own run
+sidecars, with no tracker call. The member reports `running` on every poll
+cycle while it holds a lease, and immediately whenever `activeRuns` flips
+between zero and non-zero (checked every 2 s), so the platform sees a busy
+ship within seconds of its first run. A report without the fields comes from
+an older crew and must never trigger an idle release. A `release` still wins
+over activity.
+
 | `state` | Effect on the platform |
 | --- | --- |
 | `provisioning` | A heartbeat. |

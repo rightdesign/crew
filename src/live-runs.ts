@@ -12,7 +12,7 @@
  * sidecar yet, so it is not counted for that short window.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRunSidecar, runIsAlive, type RunSidecar } from './agent.ts';
 import { reposOf, routeSlug, type RoleName, type Route } from './config.ts';
@@ -39,6 +39,31 @@ export function liveRuns(stateDir: string, isAlive: (sc: RunSidecar) => boolean 
     out.push({ ...sidecar, streamPath });
   }
   return out.sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
+}
+
+/**
+ * What the pool member reports about this ship's run activity (CREW-2906):
+ * how many runs are live, and when the latest one finished. Both come from
+ * the stream sidecars alone, never a tracker call. A finished run's meta
+ * sidecar is written once, on close, so its mtime is the end time; null when
+ * no run has finished since the streams directory was last empty (a wipe
+ * removes it, so a freshly leased member reads null).
+ */
+export function runActivity(
+  stateDir: string, isAlive: (sc: RunSidecar) => boolean = runIsAlive,
+): { activeRuns: number; lastRunEndedAt: string | null } {
+  const activeRuns = liveRuns(stateDir, isAlive).length;
+  const dir = join(stateDir, 'streams');
+  let newest = 0;
+  if (existsSync(dir)) {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.jsonl') || name.endsWith('.events.jsonl')) continue;
+      const streamPath = join(dir, name);
+      if (!runFinished(streamPath)) continue;
+      try { newest = Math.max(newest, statSync(`${streamPath}.meta.json`).mtimeMs); } catch { /* no meta: not a finished run */ }
+    }
+  }
+  return { activeRuns, lastRunEndedAt: newest ? new Date(newest).toISOString() : null };
 }
 
 /** Live runs other than the one on `ownTicketRecordId`, oldest first. */

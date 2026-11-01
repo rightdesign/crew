@@ -103,3 +103,20 @@ test('a live run of the same role on another route does not keep this route\'s s
   assert.deepEqual(calls[0], ['seat', 'seat-dev', 'idle']);
   assert.deepEqual(calls[1], ['engaged', 'S', 'ws/proj', 'rec-7', '2026-11-01T01:00:00.000Z']);
 });
+
+test('runActivity counts live runs and takes the newest finished meta mtime as lastRunEndedAt (CREW-2906)', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, utimesSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { runActivity } = await import('../src/live-runs.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'crew-activity-'));
+  assert.deepEqual(runActivity(dir), { activeRuns: 0, lastRunEndedAt: null });
+  const streams = join(dir, 'streams');
+  mkdirSync(streams);
+  for (const [n, when] of [['a', 1_700_000_000], ['b', 1_700_000_500]] as const) {
+    writeFileSync(join(streams, `${n}.jsonl`), '');
+    writeFileSync(join(streams, `${n}.jsonl.meta.json`), JSON.stringify({ running: false, exitCode: 0 }));
+    utimesSync(join(streams, `${n}.jsonl.meta.json`), when, when);
+  }
+  assert.deepEqual(runActivity(dir), { activeRuns: 0, lastRunEndedAt: new Date(1_700_000_500_000).toISOString() });
+});

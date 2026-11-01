@@ -304,3 +304,46 @@ test('a register response naming managed_instance sets the ship kind passed to p
   await runPoolMember(w.deps);
   assert.ok(w.calls.includes('provision:L1:c7.large:managed_instance'));
 });
+
+// --- run activity (CREW-2906) -----------------------------------------------
+
+test('a leased member reports activeRuns and lastRunEndedAt on each running report; none before the lease', async () => {
+  const w = world({ leases: [{ status: 200, body: { action: 'provision', lease: lease() } }, { status: 204 }, { status: 204 }] });
+  const acts = [
+    { activeRuns: 0, lastRunEndedAt: null },
+    { activeRuns: 1, lastRunEndedAt: null },
+    { activeRuns: 0, lastRunEndedAt: '2026-11-01T22:00:00.000Z' },
+  ];
+  w.deps.activity = () => acts.shift() ?? { activeRuns: 0, lastRunEndedAt: '2026-11-01T22:00:00.000Z' };
+  await runPoolMember(w.deps);
+  const running = w.statuses.filter((s) => s.state === 'running');
+  assert.deepEqual(running.map((s) => s.activeRuns), [0, 1, 0]);
+  assert.deepEqual(running.map((s) => s.lastRunEndedAt), [null, null, '2026-11-01T22:00:00.000Z']);
+  for (const s of w.statuses.filter((x) => x.state !== 'running')) assert.equal('activeRuns' in s, false);
+});
+
+test('a host with no activity source sends no activity fields', async () => {
+  const w = world({ leases: [{ status: 200, body: { action: 'provision', lease: lease() } }] });
+  await runPoolMember(w.deps);
+  assert.equal(w.statuses.some((s) => 'activeRuns' in s || 'lastRunEndedAt' in s), false);
+});
+
+test('a run starting while the long poll is in flight is reported at once', async () => {
+  const w = world({ leases: [{ status: 200, body: { action: 'provision', lease: lease() } }] });
+  let active = 0;
+  w.deps.activity = () => ({ activeRuns: active, lastRunEndedAt: null });
+  let tick: (() => void) | undefined;
+  w.deps.watch = (onTick) => { tick = onTick; return () => { tick = undefined; }; };
+  const real = w.deps.api.lease;
+  let polls = 0;
+  w.deps.api.lease = async (wait, id) => {
+    if (++polls === 2) { // the poll after provisioning: a run starts while it is pending
+      active = 1; tick?.();
+      await new Promise((r) => setImmediate(r));
+    }
+    return real(wait, id);
+  };
+  await runPoolMember(w.deps);
+  const running = w.statuses.filter((s) => s.state === 'running');
+  assert.deepEqual(running.map((s) => s.activeRuns), [0, 1]);
+});
