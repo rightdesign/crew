@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, bindAddrFor, publicUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS,
+  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS,
   type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
@@ -403,4 +403,64 @@ test('a torn-down tunnel\'s onStatus carries the removed state, so its endpointI
     isPidAlive: () => false, onStatus: (_w, _s, i) => { info = i; },
   });
   assert.equal((info as { endpointId?: string }).endpointId, 'ep-1');
+});
+
+// ---- CREW-2803: the control API as a second forward --------------------------
+
+const SOCK = '/state/control.sock';
+
+test('bindAddrFor() adds -path-control before -key- and never carries the passenger secret (CREW-2803)', () => {
+  const o = { workspaceId: 'ws-1', slug: SLUG, apiKey: KEY, mcpSecret: 'abc' };
+  assert.equal(bindAddrFor(o, 'control'), `workspace-ws-1-slug-${SLUG}-path-control-key-${KEY}`);
+  assert.equal(bindAddrFor(o), `workspace-ws-1-slug-${SLUG}-key-${KEY}-secret-abc`);
+});
+
+test('sshArgsFor() adds a second -R to the control socket, alongside passengers (CREW-2803)', () => {
+  const args = sshArgsFor({
+    relayHost: 'h', relayPort: 2222, workspaceId: 'ws-1', slug: SLUG, apiKey: KEY, localPort: 28800,
+    controlSocket: SOCK, privateKeyPath: '/k',
+  });
+  const forwards = args.flatMap((a, i) => (a === '-R' ? [args[i + 1]!] : []));
+  assert.deepEqual(forwards, [
+    `workspace-ws-1-slug-${SLUG}-key-${KEY}:0:127.0.0.1:28800`,
+    `workspace-ws-1-slug-${SLUG}-path-control-key-${KEY}:0:${SOCK}`,
+  ]);
+  assert.equal(args.at(-1), 'h');
+});
+
+test('sshArgsFor() with no localPort forwards control alone (CREW-2803)', () => {
+  const args = sshArgsFor({ relayHost: 'h', relayPort: 2222, workspaceId: 'ws-1', slug: SLUG, apiKey: KEY, controlSocket: SOCK, privateKeyPath: '/k' });
+  assert.equal(args.filter((a) => a === '-R').length, 1);
+  assert.ok(args.includes(`workspace-ws-1-slug-${SLUG}-path-control-key-${KEY}:0:${SOCK}`));
+});
+
+test('syncPassengerTunnels() opens a control-only tunnel for a plan with no container, and keeps it across cycles (CREW-2803)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const child = new FakeChild();
+  const { spawnFn, calls } = fakeSpawn(child);
+  const deps = { apiKeys: KEYS, spawnFn, controlSocket: SOCK };
+
+  syncPassengerTunnels([{ workspaceId: 'ws-1' }], 'h', 2222, '/k', stateDir, new Map(), deps);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.args.filter((a) => a === '-R').length, 1);
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.controlSocket, SOCK);
+
+  syncPassengerTunnels([{ workspaceId: 'ws-1' }], 'h', 2222, '/k', stateDir, new Map(), { ...deps, isPidAlive: () => true });
+  assert.equal(calls.length, 1);
+});
+
+test('syncPassengerTunnels() respawns when the control socket forwarded by the live tunnel changes (CREW-2803)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const { spawnFn, calls } = fakeSpawn(new FakeChild());
+
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, new Map(), { apiKeys: KEYS, spawnFn });
+  assert.equal(calls[0]!.args.filter((a) => a === '-R').length, 1);
+  syncPassengerTunnels([makePlan('ws-1')], 'h', 2222, '/k', stateDir, new Map(), { apiKeys: KEYS, spawnFn, controlSocket: SOCK, isPidAlive: () => true });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]!.args.filter((a) => a === '-R').length, 2);
+});
+
+test('relayBaseUrlFor() is the tunnel URL without /mcp (CREW-2803)', () => {
+  assert.equal(relayBaseUrlFor(SLUG, 'crewd@ships.example.com', 443), `https://${SLUG}.ships.example.com`);
+  assert.equal(relayBaseUrlFor(SLUG, 'crewd@x.com', 8443, 'pub.example.com'), `https://${SLUG}.pub.example.com:8443`);
 });

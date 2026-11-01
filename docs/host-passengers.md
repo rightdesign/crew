@@ -156,3 +156,16 @@ workspace's MCP endpoints list.
 - [Periscope](/periscope)
 - [Getting started](/getting-started)
 - [Command reference](/commands)
+
+## Control API over the relay
+
+With `ship.relayHost` set, the tunnel also forwards the ship's control API (a
+second `-R`, to the control socket) under the same URL, whether or not any route
+hosts Passengers: a ship with Passengers off opens a tunnel for control alone,
+one per workspace. The relay serves it at `<url>/control/...` (so
+`<url>/control/status` reaches the API's `/status`). The ship records the URL
+without the `/mcp` suffix in its Ships row's `relay_url` when the tunnel settles
+and again after each reconnect, and clears it on `crew disconnect`. A workspace
+whose Ships table lacks the `relay_url` column is skipped quietly. Callers
+authenticate with the ship key as for the local socket. `crew status` shows the
+URL and `crew doctor` probes it end to end.

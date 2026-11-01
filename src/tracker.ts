@@ -190,6 +190,8 @@ export interface ShipRow {
   /** Hashed stable machine id (ISSUE-2249); the key's absence means the template has not taken the column. */
   machine_id?: string | null;
   tunnel_status?: string | null;
+  /** The tunnel's public base URL (CREW-2803); the key's absence means the template has not taken the column. */
+  relay_url?: string | null;
   /**
    * This ship's open attention items (CREW-1373). The column is optional on
    * the board: a workspace that has not taken the template update returns
@@ -636,6 +638,19 @@ export class Tracker {
     const row = await this.myShipRow(shipName);
     if (!row) return;
     await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, patch);
+  }
+
+  /**
+   * Writes (or, with `null`, clears) this ship's `relay_url` (CREW-2803). A
+   * no-op when there is no row for this ship or the Ships table has not taken
+   * the column (probed by the key's absence from the row), so the tunnel
+   * still runs on an install that predates it.
+   */
+  async updateRelayUrl(shipName: string, url: string | null): Promise<void> {
+    const row = await this.myShipRow(shipName);
+    if (!row || !('relay_url' in row)) return;
+    if ((row.relay_url ?? null) === url) return;
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, { relay_url: url });
   }
 
   /** The other half of `beatEngaged` — clears engagement back to idle. */

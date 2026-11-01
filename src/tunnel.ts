@@ -73,8 +73,14 @@ export interface TunnelOptions {
   slug: string;
   /** The route's own API key — the relay's entitlement check. Never logged. */
   apiKey: string;
-  /** The Host Passengers container's published port on this host. */
-  localPort: number;
+  /** The Host Passengers container's published port on this host. Absent on a control-only tunnel (CREW-2803). */
+  localPort?: number;
+  /**
+   * The ship control API's unix socket (CREW-2803), forwarded as a second
+   * `-R` under the same slug with `-path-control` so the relay serves it at
+   * `<url>/control/...`. Absent when this tunnel carries passengers only.
+   */
+  controlSocket?: string;
   privateKeyPath: string;
   /**
    * This container's own identity secret (ISSUE-685) — the same value
@@ -114,9 +120,26 @@ export function generateTunnelSlug(): string {
  * (crew-relay `parseBindAddr`) parses positionally: uuid is 36 chars, slug is
  * 12, the key runs to the LAST `-secret-`.
  */
-export function bindAddrFor(o: Pick<TunnelOptions, 'workspaceId' | 'slug' | 'apiKey' | 'mcpSecret'>): string {
-  const base = `workspace-${o.workspaceId}-slug-${o.slug}-key-${o.apiKey}`;
-  return o.mcpSecret ? `${base}-secret-${o.mcpSecret}` : base;
+export function bindAddrFor(
+  o: Pick<TunnelOptions, 'workspaceId' | 'slug' | 'apiKey' | 'mcpSecret'>,
+  path?: 'control',
+): string {
+  // `-path-control` (CREW-2795) names the relay's second target; no segment is the MCP target.
+  const base = `workspace-${o.workspaceId}-slug-${o.slug}${path ? `-path-${path}` : ''}-key-${o.apiKey}`;
+  // The secret is the passenger container's identity; the control API has no use for it.
+  return o.mcpSecret && !path ? `${base}-secret-${o.mcpSecret}` : base;
+}
+
+/**
+ * The tunnel's public base URL, `https://<slug>.<domain>[:<httpPort>]`: the
+ * MCP endpoint is `<base>/mcp` and the control API `<base>/control/...`
+ * (CREW-2803). This is what a ship records as `Ships.relay_url`.
+ */
+export function relayBaseUrlFor(
+  slug: string, relayHost: string, relayHttpPort: number, relayPublicDomain?: string,
+): string {
+  const domain = relayPublicDomain ?? relayHost.replace(/^.*@/, '');
+  return `https://${slug}.${domain}${relayHttpPort === 443 ? '' : `:${relayHttpPort}`}`;
 }
 
 /**
@@ -127,13 +150,18 @@ export function bindAddrFor(o: Pick<TunnelOptions, 'workspaceId' | 'slug' | 'api
 export function publicUrlFor(
   slug: string, relayHost: string, relayHttpPort: number, relayPublicDomain?: string,
 ): string {
-  const domain = relayPublicDomain ?? relayHost.replace(/^.*@/, '');
-  return `https://${slug}.${domain}${relayHttpPort === 443 ? '' : `:${relayHttpPort}`}/mcp`;
+  return `${relayBaseUrlFor(slug, relayHost, relayHttpPort, relayPublicDomain)}/mcp`;
 }
 
 export function sshArgsFor(
-  o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'slug' | 'apiKey' | 'localPort' | 'privateKeyPath' | 'mcpSecret'>,
+  o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'slug' | 'apiKey' | 'localPort' | 'controlSocket' | 'privateKeyPath' | 'mcpSecret'>,
 ): string[] {
+  // One ssh process, up to two forwards: `-R <bind>:0:127.0.0.1:<port>` for
+  // passengers, `-R <bind>:0:<socket path>` for the control API (OpenSSH's
+  // `-R [bind_address:]port:local_socket` form).
+  const forwards: string[] = [];
+  if (o.localPort !== undefined) forwards.push('-R', `${bindAddrFor(o)}:0:127.0.0.1:${o.localPort}`);
+  if (o.controlSocket) forwards.push('-R', `${bindAddrFor(o, 'control')}:0:${o.controlSocket}`);
   return [
     '-N',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -142,7 +170,7 @@ export function sshArgsFor(
     '-o', 'ExitOnForwardFailure=yes',
     '-i', o.privateKeyPath,
     '-p', String(o.relayPort),
-    '-R', `${bindAddrFor(o)}:0:127.0.0.1:${o.localPort}`,
+    ...forwards,
     o.relayHost,
   ];
 }
@@ -211,6 +239,10 @@ export interface PersistedTunnel {
   slug?: string;
   /** The slug the live `ssh` was actually started with — differs from `slug` after a rotation, which is what forces the respawn. */
   liveSlug?: string;
+  /** The control socket the live `ssh` forwards (CREW-2803); a change respawns it. */
+  controlSocket?: string;
+  /** The relay URL last written to the Ships row, so an unchanged cycle makes no call. */
+  relayUrl?: string;
   /** The workspace MCP endpoint row registered for this tunnel, if any. */
   endpointId?: string;
   /** Hash of the URL + header the endpoint was last registered with, so an unchanged cycle makes no call. */
@@ -258,7 +290,19 @@ export function isPidAlive(pid: number): boolean {
   try { return process.kill(pid, 0); } catch { return false; }
 }
 
+/**
+ * What a workspace's tunnel carries: the passenger container's port, the
+ * control socket (`SyncTunnelsDeps.controlSocket`), or both. A control-only
+ * plan (CREW-2803) has no container, so `containerName`/`port` are absent.
+ */
+export type TunnelPlan = Pick<ContainerPlan, 'workspaceId'> & Partial<Pick<ContainerPlan, 'containerName' | 'port' | 'mountsHash'>>;
+
+/** A control-only tunnel has no container mounts to hash; a constant stands in so passengers turning on (a real hash) still forces a respawn. */
+const CONTROL_ONLY_HASH = 'control-only';
+
 export interface SyncTunnelsDeps {
+  /** The control API socket to forward on every planned tunnel (CREW-2803). Omit to carry passengers only. */
+  controlSocket?: string;
   spawnFn?: SpawnFn;
   isPidAlive?: (pid: number) => boolean;
   /**
@@ -302,7 +346,7 @@ export interface SyncTunnelsDeps {
  * that, it just needs a host to dial when called.
  */
 export function syncPassengerTunnels(
-  plans: ContainerPlan[],
+  plans: TunnelPlan[],
   relayHost: string,
   relayPort: number,
   privateKeyPath: string,
@@ -316,11 +360,13 @@ export function syncPassengerTunnels(
 
   for (const plan of plans) {
     const existing = readPersistedTunnel(stateDir, plan.workspaceId);
+    const mountsHash = plan.mountsHash ?? CONTROL_ONLY_HASH;
+    const controlUnchanged = existing?.controlSocket === deps.controlSocket;
     const currentSecret = mcpSecrets.get(plan.workspaceId);
     const secretUnchanged = (existing?.mcpSecret ?? undefined) === (currentSecret ?? undefined);
     const slug = existing?.slug ?? generateTunnelSlug();
     const slugUnchanged = existing?.liveSlug === slug;
-    if (existing && alive(existing.pid) && existing.mountsHash === plan.mountsHash && secretUnchanged && slugUnchanged) {
+    if (existing && alive(existing.pid) && existing.mountsHash === mountsHash && secretUnchanged && slugUnchanged && controlUnchanged) {
       if (existing.status === 'connecting') {
         const settled: PersistedTunnel = { ...existing, status: 'connected' };
         writePersistedTunnel(stateDir, settled);
@@ -343,15 +389,17 @@ export function syncPassengerTunnels(
     }
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
-      relayHost, relayPort, workspaceId: plan.workspaceId, slug, apiKey, localPort: plan.port, privateKeyPath,
+      relayHost, relayPort, workspaceId: plan.workspaceId, slug, apiKey, localPort: plan.port,
+      controlSocket: deps.controlSocket, privateKeyPath,
       mcpSecret: currentSecret,
       spawnFn: deps.spawnFn, onStatus: (s) => { settledStatus = s; },
     });
     const started: PersistedTunnel = {
       pid: tunnel.pid ?? -1,
-      containerName: plan.containerName,
+      containerName: plan.containerName ?? '',
       workspaceId: plan.workspaceId,
-      mountsHash: plan.mountsHash,
+      mountsHash,
+      controlSocket: deps.controlSocket,
       startedAt: new Date().toISOString(),
       status: settledStatus,
       mcpSecret: currentSecret,

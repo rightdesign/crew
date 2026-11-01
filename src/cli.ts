@@ -130,13 +130,15 @@ import {
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
+import { describeRelayProbe, probeRelayControl } from './relay-probe.ts';
 import { ensureMachineId, matchShipRows } from './machine-id.ts';
 import { ShipNameError, reconcileRouteShipName, validateShipName, setShipNameInYaml, pickShipRow, readSyncedName, writeSyncedName } from './ship-name.ts';
 import {
   dockerAvailable, ensureImage, imagePresent, passengerImageRef, planContainers, syncAllPassengerCheckouts, syncPassengerContainers,
+  type ContainerPlan,
 } from './passenger-containers.ts';
 import {
-  syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, rotatePersistedSlug,
+  syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
 } from './tunnel.ts';
 import {
   reconcileEndpoint, unregisterEndpoint, probeEndpointAccess, REGISTER_MCP_ENDPOINTS_HINT,
@@ -149,7 +151,7 @@ import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
 } from './daemon.ts';
-import { ControlAuth, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
+import { ControlAuth, controlSocketFor, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
 import { runCrew } from './periscope-control.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
@@ -858,7 +860,11 @@ function parseTicketNumber(input: string): string | null {
 async function syncHostPassengers(): Promise<void> {
   if (dryRun) return;
   const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
-  if (passengerRoutes.length === 0) return;
+  if (passengerRoutes.length === 0) {
+    // CREW-2803: no passengers, but a ship with a relay still opens the tunnel for control alone.
+    await syncShipTunnels([], new Map(), []);
+    return;
+  }
   if (!dockerAvailable()) {
     // Under the timer there is no interactive PATH, so look in Docker's usual
     // directories to tell "docker is not on our PATH" from "the daemon is down".
@@ -921,40 +927,92 @@ async function syncHostPassengers(): Promise<void> {
     // legitimately be unset for (containers still run locally with
     // no tunnel; `crew doctor` says so). Neither missing piece
     // should stop the container sync above, which already ran.
-    if (cfg.ship.relayHost) {
-      try {
-        const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
-        const plans = planContainers(cfg);
-        // ISSUE-685: same secret already threaded into the container itself
-        // (above, via `syncEndpoints` -> `startContainer`'s PASSENGER_MCP_SECRET).
-        const mcpSecrets = new Map([...syncEndpoints].map(([workspaceId, e]) => [workspaceId, e.secret]));
-        const relayHost = cfg.ship.relayHost;
-        const reconcile = endpointReconcileDeps(passengerRoutes, relayHost);
-        const pending: Array<Promise<void>> = [];
-        syncPassengerTunnels(plans, relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, mcpSecrets, {
-          apiKeys: passengerApiKeys(passengerRoutes),
-          onStatus: (workspaceId, status, info) => {
-            const owningRoute = passengerRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
-            if (!owningRoute) return;
-            pending.push(
-              new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
-                .catch((e) => { emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }); }),
-            );
-            if (status === 'disconnected') pending.push(unregisterEndpoint(workspaceId, info, reconcile));
-          },
-        });
-        // Every cycle, not just on the connected transition: a 403 or a
-        // network error registering the endpoint is retried next cycle
-        // without ever touching the tunnel.
-        for (const plan of plans) pending.push(reconcileEndpoint(plan.workspaceId, reconcile));
-        await Promise.all(pending);
-      } catch (e) {
-        emit.warn(`passenger tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
-      }
-    }
+    await syncShipTunnels(planContainers(cfg), new Map([...syncEndpoints].map(([workspaceId, e]) => [workspaceId, e.secret])), passengerRoutes);
   } catch (e) {
     emit.warn(`passenger container sync failed: ${(e as Error).message}`, { step: 'passengers' });
   }
+}
+
+/**
+ * The ship's relay tunnels (ISSUE-553 passengers, CREW-2803 control): one per
+ * workspace, one `ssh` process, up to two forwards. A workspace with a
+ * passenger container carries `mcp` and `control`; any other enabled route's
+ * workspace carries `control` alone, so a ship with passengers off is still
+ * reachable at its Ships row's `relay_url`. Needs `ship.relayHost`; without
+ * one nothing is dialed (`crew doctor` says so). The tunnel needs this ship's
+ * own keypair, minted by `crew connect`; a missing piece must not stop the
+ * container sync that already ran.
+ */
+async function syncShipTunnels(
+  containerPlans: ContainerPlan[], mcpSecrets: Map<string, string>, passengerRoutes: Route[],
+): Promise<void> {
+  if (!cfg.ship.relayHost) return;
+  const relayHost = cfg.ship.relayHost;
+  try {
+    const { privateKeyPath } = ensureShipSshKeypair(cfg.ship.stateDir);
+    const controlRoutes = cfg.routes.filter((r) => r.enabled && r.resolved?.workspaceId);
+    const planned = new Set(containerPlans.map((p) => p.workspaceId));
+    const plans: TunnelPlan[] = [...containerPlans];
+    for (const r of controlRoutes) {
+      const ws = r.resolved!.workspaceId;
+      if (planned.has(ws)) continue;
+      planned.add(ws);
+      plans.push({ workspaceId: ws });
+    }
+    const apiRoutes = controlRoutes;
+    const reconcile = endpointReconcileDeps(passengerRoutes, relayHost);
+    const pending: Array<Promise<void>> = [];
+    syncPassengerTunnels(plans, relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, mcpSecrets, {
+      apiKeys: passengerApiKeys(apiRoutes),
+      controlSocket: controlSocketFor(cfg.ship.stateDir),
+      onStatus: (workspaceId, status, info) => {
+        const owningRoute = apiRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
+        if (!owningRoute) return;
+        pending.push(
+          new Tracker(owningRoute, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
+            .catch((e) => { emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }); }),
+        );
+        if (status === 'disconnected') pending.push(unregisterEndpoint(workspaceId, info, reconcile));
+      },
+    });
+    // Every cycle, not just on the connected transition: a 403 or a
+    // network error registering the endpoint is retried next cycle
+    // without ever touching the tunnel.
+    for (const plan of containerPlans) pending.push(reconcileEndpoint(plan.workspaceId, reconcile));
+    for (const plan of plans) pending.push(reconcileRelayUrl(plan.workspaceId, apiRoutes));
+    await Promise.all(pending);
+  } catch (e) {
+    emit.warn(`ship tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
+  }
+}
+
+/**
+ * Writes a settled tunnel's relay URL to the owning route's Ships row
+ * (CREW-2803). A respawn drops the persisted `relayUrl`, so every
+ * re-registration rewrites it; a failed write is retried next cycle.
+ */
+async function reconcileRelayUrl(workspaceId: string, routes: Route[]): Promise<void> {
+  if (!cfg.ship.relayHost) return;
+  const persisted = readPersistedTunnel(cfg.ship.stateDir, workspaceId);
+  if (!persisted?.slug || persisted.status !== 'connected') return;
+  const url = relayBaseUrlFor(persisted.slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain);
+  if (persisted.relayUrl === url) return;
+  const route = routes.find((r) => r.resolved?.workspaceId === workspaceId);
+  if (!route) return;
+  try {
+    await new Tracker(route, cfg.ship).updateRelayUrl(cfg.ship.name, url);
+    updatePersistedTunnel(cfg.ship.stateDir, workspaceId, { relayUrl: url });
+  } catch (e) {
+    emit.warn(`could not write relay_url: ${(e as Error).message}`, { step: 'passengers' });
+  }
+}
+
+/** The relay base URL a route's workspace tunnel is reachable at, from its persisted slug (CREW-2803); null with no relay or no tunnel yet. */
+function routeRelayUrl(route: Route): string | null {
+  const ws = route.resolved?.workspaceId;
+  const slug = ws ? readPersistedTunnel(cfg.ship.stateDir, ws)?.slug : undefined;
+  if (!cfg.ship.relayHost || !slug) return null;
+  return relayBaseUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain);
 }
 
 /** workspaceId -> the owning route's own API key, for the relay's `/auth/me` entitlement check (CREW-1320). */
@@ -4439,6 +4497,7 @@ switch (command) {
     const rotatePending: Array<Promise<void>> = [];
     syncPassengerTunnels(plans, cfg.ship.relayHost, cfg.ship.relayPort, privateKeyPath, cfg.ship.stateDir, new Map(), {
       apiKeys: passengerApiKeys([route]),
+      controlSocket: controlSocketFor(cfg.ship.stateDir),
       onStatus: (wsId, status, info) => {
         rotatePending.push(
           new Tracker(route, cfg.ship).updateTunnelState(cfg.ship.name, { tunnel_status: status })
@@ -5020,6 +5079,14 @@ switch (command) {
     const disconnectHarnesses = new Set([...shipPair(cfg.ship), ...shipToolchains(cfg.ship).map((t) => t.harness).filter(isPairHarness)]);
     const removePairEntries = (mcpUrl: string, dry: boolean): string[] =>
       [...disconnectHarnesses].map((h) => pairInstallerFor(h).removePair({ url: mcpUrl, bin: cfg.ship.agent.bin, dryRun: dry }));
+    // CREW-2803: this ship stops advertising a relay URL. Best effort per route: a
+    // workspace that is unreachable or has no Ships row just keeps what it had.
+    if (!dryRun) {
+      for (const r of cfg.routes.filter((x) => x.resolved?.shipsModelId)) {
+        await new Tracker(r, cfg.ship).updateRelayUrl(cfg.ship.name, null)
+          .catch((e: Error) => { process.stderr.write(`could not clear relay_url for ${r.route}: ${e.message}\n`); });
+      }
+    }
     if (!flag('reset')) {
       for (const line of removePairEntries(url, dryRun)) process.stderr.write(`${line}\n`);
       break;
@@ -5483,6 +5550,8 @@ switch (command) {
           // Additive (CREW-2495): this ship's Ships-row name and whether it has drifted from `name`.
           rowName: nameSync.rowName ?? null,
           nameDrift: nameSync.drift,
+          // Additive (CREW-2803): the relay URL this route's tunnel is reachable at, or null.
+          relayUrl: routeRelayUrl(route),
         },
         // Additive (CREW-1402): what the operator owes. `version` stays 1.
         todo: todo.map((i) => ({ ticket: displayKey(i.ticket), title: i.ticket.title ?? null, reasons: i.reasons })),
@@ -5572,6 +5641,7 @@ switch (command) {
         `route:      ${route.route} -> ${route.dir}\n` +
         `enabled:    ${route.enabled}\n` +
         `periscopes: ${periscopeSummary(cfg)}\n` +
+        (routeRelayUrl(route) ? `relay:      ${routeRelayUrl(route)}\n` : '') +
         periscopes.map((p) => `periscope:  ${p.ticket} ${p.repo} ${p.url} ${p.state}${p.serving ? '' : ' (not serving)'} expires ${p.expiresAt}\n`).join('') +
         `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
         `release:    ${state.releaseSkipReason() ? 'paused' : 'active'}\n` +
@@ -6221,6 +6291,19 @@ switch (command) {
         process.stdout.write(
           `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
+      }
+    }
+    // CREW-2803: the control API over the relay, end to end, for this route's workspace.
+    if (cfg.ship.relayHost && !flag('offline')) {
+      const relayUrl = routeRelayUrl(route);
+      if (!relayUrl) {
+        process.stdout.write('relay control:     no tunnel URL yet (the first `crew passengers` cycle opens it)\n');
+      } else {
+        let key: string | undefined;
+        try { key = resolveApiKey(route); } catch { key = undefined; }
+        process.stdout.write(`${key
+          ? describeRelayProbe(relayUrl, await probeRelayControl(relayUrl, key, cfg.ship.userAgent))
+          : 'relay control:     could not check (no API key for this route)'}\n`);
       }
     }
     // CREW-2236: the last stored `crew selftest` result per toolchain; doctor
