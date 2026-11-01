@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.102.0] — 2026-11-01
+
+- CREW-2882 `crew pool-member` takes the ship kind from the register response, so a reserved managed instance is the same member with a standing lease.
+
 ## [0.101.0] — 2026-11-01
 
 - CREW-2889 The ship control API accepts a workspace's tunnel secret for periscope operations of that workspace and GET /periscopes reports hosting capability.
