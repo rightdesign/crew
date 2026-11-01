@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.114.0] — 2026-11-01
+
+- CREW-2910 A provisioned managed ship now defaults to the sandbox runner and `auth: workspace`, `crew doctor` warns when a managed ship says otherwise, and the ship config loader accepts `ship.runner` and `ship.sandbox`.
+
 ## [0.113.0] — 2026-11-01
 
 - CREW-2909 The sandbox image's crew layer installs Claude Code at a pinned, checksum-verified version, so a sandboxed run finds the harness on its PATH.
