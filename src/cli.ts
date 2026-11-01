@@ -110,11 +110,13 @@ import {
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, originUrlOf, setCloneRecorder, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
-import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
+import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, draftWorktrees, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
 import { realpathSync, readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { runScript, resolveShell } from './shell.ts';
+import { runPeriscopeResume } from './periscope-resume.ts';
+import { periscopeIdleKey } from './periscope-idle.ts';
 import {
   PeriscopeError, parsePeriscopeUpArgs, parsePeriscopeDownArgs, periscopeCaps, periscopePreflight, runPeriscopeUp, runPeriscopeDown,
   periscopeListEntries, formatPeriscopeList, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeLimits, type PeriscopeRowInfo,
@@ -359,6 +361,7 @@ function usage(problem?: string, requested = false): never {
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
   crew periscope up [route] REPO --topic TEXT [--isolate] [--host H] [--assignee ID] [--dry-run] [--json]
+  crew periscope up --resume NNN restart the preview an idle periscope's server was stopped for
                                  file a draft ticket, cut and prepare its worktree, start the repo's preview hook and record a Periscopes row (alias: start)
   crew periscope down [route] NNN --keep|--discard [--allow-empty] [--json]
                                  end a periscope: commit and push its branch (ticket back to new), or throw it away (alias: end)
@@ -4145,6 +4148,10 @@ switch (command) {
         route, await tracker.ticketsByNumbers(remoteBranchTicketNumbers(r.dir, r.config.branch.remote, r.config.branch.base), truncated),
       ).byRepo.get(r.name) ?? [];
       const actions = planWorktreeSweep(r, wtTickets, tracker.contract);
+      for (const k of draftWorktrees(r, wtTickets, tracker.contract)) {
+        anything = true;
+        emit.emit(`keeping ${k.path}: ${k.ticket.issue_tag ?? k.ticket.issue_id} is a draft (a periscope) — end it with \`crew periscope down\``, { step: 'worktree' });
+      }
       const orphanDirs = orphanedWorktreeDirs(r, wtTickets, tracker.contract);
       warnOrphanedWorktreeDirs(orphanDirs, emit, dryRun ? undefined : { state, repo: r.name });
       const stale = planRemoteBranchCleanup(r.dir, r.config.branch.remote, r.config.branch.base, brTickets, tracker.contract);
@@ -4224,6 +4231,17 @@ switch (command) {
     }
     const { repo: target, found } = candidates[0]!;
     const wt = found.path;
+    // EPIC-077: a draft ticket's worktree is a periscope's, which holds a viewer's
+    // edits. Checked against the tracker, but an unreachable one does not stop
+    // `drop` (it stays usable offline, see above).
+    try {
+      const trD = new Tracker(route, cfg.ship);
+      const tD = (await trD.ticketsByNumbers([n])).find((t) => t.issue_id.replace(/^\D+/, '') === String(num));
+      if (tD && tD[trD.contract.columns.status] === trD.contract.statuses.draft) {
+        process.stderr.write(`drop: ${tD.issue_tag ?? tD.issue_id} is a draft ticket — its worktree belongs to a periscope; end it with \`crew periscope down ${num} --keep\` or \`--discard\`\n`);
+        process.exit(2);
+      }
+    } catch { /* tracker unreachable: fall through to the plain drop */ }
     // The branch actually checked out in the worktree we just found — not
     // re-derived from today's template, which may not be what created it
     // (ISSUE-969: the default template itself changed under some tickets).
@@ -4523,6 +4541,41 @@ switch (command) {
       break;
     }
     try {
+      // CREW-2856: `up --resume NNN` restarts the preview of an idle periscope.
+      const resumeRaw = value('resume');
+      if (resumeRaw !== undefined) {
+        const nR = parseTicketNumber(resumeRaw);
+        if (!nR) throw new PeriscopeError('--resume needs a ticket number (326, ISSUE-326, or CREW-326)');
+        let hit: { route: typeof route; tracker: Tracker; row: Awaited<ReturnType<Tracker['liveShipPeriscopes']>>[number]; tag: string; repo: Awaited<ReturnType<typeof resolvedRepos>>[number] } | undefined;
+        for (const cand of cfg.routes.filter((r) => r.enabled && r.resolved?.periscopesModelId)) {
+          const tr = new Tracker(cand, cfg.ship);
+          for (const row of await tr.liveShipPeriscopes()) {
+            const t = await tr.ticket(row.issue_id);
+            if (t.issue_id.replace(/^\D+/, '') !== String(Number(nR))) continue;
+            const repo = (await resolvedRepos(cand)).find((r) => r.id === t.repo_id);
+            if (!repo) throw new PeriscopeError(`route ${cand.route} has no checkout for the repository of ${t.issue_tag ?? t.issue_id}`);
+            hit = { route: cand, tracker: tr, row, tag: t.issue_tag ?? t.issue_id, repo };
+          }
+        }
+        if (dryRun) { say('dry-run', hit ? `would rerun ports${hit.row.isolated ? ', isolate' : ''} and preview in ${hit.row.worktree} and refresh the row` : `no live periscope for ISSUE-${nR} on this ship`); break; }
+        const shellR = hit && resolveShell(hit.repo.config.shell ?? cfg.ship.shell);
+        const resumed = await runPeriscopeResume({
+          find: async () => hit && { row: hit.row, tag: hit.tag },
+          worktreeExists: (p) => existsSync(p),
+          caps: periscopeCaps(cfg.ship as typeof cfg.ship & PeriscopeLimits),
+          runHook: async (name, cwd, env) => {
+            const script = hit?.repo.config.hooks[name];
+            return script ? runScript(script, { cwd, env, shell: shellR!, timeoutMs: name === 'preview' ? 180_000 : undefined }) : null;
+          },
+          update: (id, fields) => hit!.tracker.updatePeriscope(id, fields),
+          clearItem: (tag) => clearShipAttention(state, periscopeIdleKey(tag)),
+          now: () => new Date(),
+          say,
+        }, String(Number(nR)));
+        if (jsonP) process.stdout.write(`${JSON.stringify({ event: 'done', ...resumed })}\n`);
+        else process.stdout.write(`${resumed.ticket}\n${resumed.worktree}\n${resumed.url}\n`);
+        break;
+      }
       const a = parsePeriscopeUpArgs(positional, { topic: value('topic'), host: value('host'), assignee: value('assignee'), isolate: flag('isolate'), json: jsonP });
       // The route is the one named, else the one whose checkout serves REPO.
       const candidatesP = a.route ? [findRoute(cfg, a.route)] : cfg.routes.filter((r) => r.enabled);

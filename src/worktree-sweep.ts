@@ -80,6 +80,10 @@ export function planWorktreeSweep(
   for (const w of worktrees(target.dir).slice(1)) {
     const ticket = ticketForWorktree(w, byNumber, contract);
     if (!ticket) continue;
+    // EPIC-077: a periscope's ticket is a draft whose worktree holds a viewer's
+    // uncommitted edits. Never removed, clean or not, and its branch is never
+    // deleted; stated here so a future rule widening `terminal` cannot catch it.
+    if (ticket.status === contract.statuses.draft) continue;
     const isVerified = ticket.status === verified;
     if (!isVerified && !terminal.has(ticket.status)) continue;
     actions.push({
@@ -89,6 +93,22 @@ export function planWorktreeSweep(
     });
   }
   return actions;
+}
+
+/**
+ * Worktrees the sweep leaves in place because their ticket is a draft, i.e. a
+ * periscope (EPIC-077). For `crew reap` to say why they stay.
+ */
+export function draftWorktrees(
+  target: RepoTarget, tickets: Ticket[], contract: Contract,
+): { ticket: Ticket; path: string }[] {
+  const byNumber = new Map(tickets.map((t) => [t.issue_id.replace(/^\D+/, ''), t]));
+  const out: { ticket: Ticket; path: string }[] = [];
+  for (const w of worktrees(target.dir).slice(1)) {
+    const ticket = ticketForWorktree(w, byNumber, contract);
+    if (ticket && ticket.status === contract.statuses.draft) out.push({ ticket, path: w.path });
+  }
+  return out;
 }
 
 /** `(?:^|-)<n>` at the end of a directory name: the scheme every worktree name has used. */

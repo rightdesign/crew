@@ -252,6 +252,19 @@ export interface Authorship {
   shipId: string | null;
 }
 
+/** A Periscopes row as the idle pass reads it (EPIC-077). */
+export interface PeriscopeRow {
+  id: string;
+  issue_id: string;
+  worktree: string;
+  branch?: string | null;
+  url?: string | null;
+  host?: string | null;
+  isolated?: boolean | null;
+  last_activity_at?: string | null;
+  expires_at?: string | null;
+}
+
 export class Tracker {
   // NB: explicit fields, not TypeScript parameter properties — node's
   // --experimental-strip-types cannot transform those, and the test runner
@@ -967,6 +980,27 @@ export class Tracker {
     return rows.length;
   }
 
+  /** This ship's `live` Periscopes rows (EPIC-077); empty without the table or a Ships row. */
+  async liveShipPeriscopes(): Promise<PeriscopeRow[]> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    const { shipId } = await this.authorshipProbe();
+    if (!modelId || !shipId) return [];
+    return this.client.records.list<PeriscopeRow>(modelId, {
+      filters: encodeFilters([
+        { columnName: 'ship_id', operator: 'EQ', value: shipId },
+        { columnName: 'state', operator: 'EQ', value: 'live' },
+      ]),
+      limit: 200,
+    });
+  }
+
+  /** Patches one Periscopes row (EPIC-077). */
+  async updatePeriscope(rowId: string, fields: Record<string, unknown>): Promise<void> {
+    const modelId = this.route.resolved?.periscopesModelId;
+    if (!modelId) throw new Error('this workspace has no Periscopes table');
+    await this.client.records.update(modelId, rowId, fields);
+  }
+
   /** Records a Periscopes row for this ship (EPIC-077); `ship_id` is stamped here, never by the caller. */
   async createPeriscope(fields: Record<string, unknown>): Promise<{ id: string }> {
     const modelId = this.route.resolved?.periscopesModelId;
@@ -996,13 +1030,6 @@ export class Tracker {
       if (t) out.push({ row, ticket: t });
     }
     return out.sort((a, b) => String(b.row.started_at ?? '').localeCompare(String(a.row.started_at ?? '')));
-  }
-
-  /** Updates one Periscopes row (EPIC-077). */
-  async updatePeriscope(id: string, patch: Record<string, unknown>): Promise<void> {
-    const modelId = this.route.resolved?.periscopesModelId;
-    if (!modelId) throw new Error('this workspace has no Periscopes table');
-    await this.client.records.update(modelId, id, patch);
   }
 
   /**

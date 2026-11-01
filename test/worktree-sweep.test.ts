@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
@@ -417,4 +417,17 @@ test('a failing remove and an orphaned directory warn once, not every cycle', as
   for (let i = 0; i < 3; i++) warnOrphanedWorktreeDirs([orphan], olog, { state, repo: 'proj' });
   assert.equal(owarns.length, 1);
   assert.equal(openShipAttention(state).filter((i) => i.kind === 'worktree_held').length, 2);
+});
+
+test('a draft ticket (a periscope): the clean worktree and its branch are left alone, and reported', async () => {
+  const { draftWorktrees } = await import('../src/worktree-sweep.ts');
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 12);
+  const t = ticket({ issue_id: 'ISSUE-12', status: 'draft' });
+
+  assert.deepEqual(planWorktreeSweep(target, [t], DEFAULT_CONTRACT), []);
+  assert.deepEqual(draftWorktrees(target, [t], DEFAULT_CONTRACT).map((k) => realpathSync(k.path)), [realpathSync(wt)]);
+  assert.deepEqual(draftWorktrees(target, [ticket({ issue_id: 'ISSUE-12', status: 'closed_deployed' })], DEFAULT_CONTRACT), []);
+  assert.ok(existsSync(wt));
+  assert.ok(branchesOf(dir).includes('issue-12'));
 });

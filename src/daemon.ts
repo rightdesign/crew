@@ -100,6 +100,9 @@ import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgen
 import { fetchSkillOverrides } from './skills.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
+import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
+import { periscopeCaps, type PeriscopeLimits } from './periscope-cmd.ts';
+import { killGently, pidsInWorktree } from './ports.ts';
 import { isTransientError, transientBackoffMs, OUTAGE_ESCALATE_AFTER } from './outage.ts';
 
 /** The idle backoff floor: short, so a just-missed cycle doesn't wait long. */
@@ -624,6 +627,36 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
       }, decision.stalled ?? []);
     } catch (e) {
       emit.warn(`could not sweep stalled tickets: ${(e as Error).message}`, { step: 'sweep' });
+    }
+  }
+
+  // EPIC-077 (CREW-2856): idle periscopes lose their server and raise an
+  // attention item; the worktree and its edits are never touched.
+  if (o.route.resolved?.periscopesModelId) {
+    const tracker = new Tracker(o.route, o.ship);
+    try {
+      await runPeriscopeIdlePass({
+        idleMinutes: periscopeCaps(o.ship as Ship & PeriscopeLimits).idleMinutes,
+        now: () => new Date(),
+        listLive: () => tracker.liveShipPeriscopes(),
+        mtimeOf: newestWorktreeMtime,
+        update: (id, fields) => tracker.updatePeriscope(id, fields),
+        ticketOf: async (row) => {
+          const t = await tracker.ticket(row.issue_id);
+          return {
+            tag: t.issue_tag ?? t.issue_id,
+            number: t.issue_id.replace(/^\D+/, ''),
+            repo: (t.repo_id && o.route.resolved?.repoNames?.[t.repo_id]) || 'unknown repository',
+          };
+        },
+        stopServer: (worktree, number) => killGently(pidsInWorktree(worktree, Number(number))),
+        raise: async (item) => { await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, item); },
+        clear: (key) => clearShipAttention(o.state, key),
+        openKeys: () => openShipAttention(o.state).filter((i) => i.kind === 'periscope_idle').map((i) => i.key),
+        warn: (message) => emit.warn(message, { step: 'sweep' }),
+      });
+    } catch (e) {
+      emit.warn(`could not check idle periscopes: ${(e as Error).message}`, { step: 'sweep' });
     }
   }
 
