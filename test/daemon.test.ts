@@ -377,7 +377,8 @@ test('runOnePass fills every open slot with a DIFFERENT role, bounded by capacit
     ...opts,
     maxConcurrentAgents: 2,
     decide: async () => decision,
-    spawnRoleAgent: async (role) => { spawned.push(role); },
+    // A real run holds its slot while the agent works; settling at once would free it for the next role.
+    spawnRoleAgent: async (role, _d, _c, hooks) => { spawned.push(role); hooks?.ready(true); await new Promise((r) => setTimeout(r, 30)); },
   });
   assert.equal(result.started.length, 2);
   assert.equal(result.skipped.length, 1);
@@ -413,7 +414,8 @@ test('runOnePass releases the slot once the spawned agent settles, success or fa
     ...opts,
     inFlight,
     decide: async () => decision,
-    spawnRoleAgent: async () => {
+    spawnRoleAgent: async (_r, _d, _c, hooks) => {
+      hooks?.ready(true);
       resolveSpawn?.();
       // Never resolves until the test lets it — the lock must still be
       // held while the agent is genuinely still running.
@@ -438,7 +440,8 @@ test('runOnePass never awaits the agents it starts — returns as soon as every 
   const result = await runOnePass({
     ...opts,
     decide: async () => decision,
-    spawnRoleAgent: async () => {
+    spawnRoleAgent: async (_r, _d, _c, hooks) => {
+      hooks?.ready(true);
       await new Promise((r) => setTimeout(r, 50));
       spawnResolved = true;
     },
@@ -815,6 +818,47 @@ test('a role stops being refilled once a run reports no ticket (CREW-2821)', asy
     spawnRoleAgent: async (_r, _d, _c, hooks) => { spawns++; hooks?.ready(false); },
   });
   assert.equal(spawns, 1);
+  assert.deepEqual(result.started, [], 'a run that claimed nothing is not a started role (CREW-2886)');
+});
+
+test('a ticket role whose run claims nothing is left out of started, so the loop can idle (CREW-2886)', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev']);
+  const result = await runOnePass({
+    ...opts,
+    decide: async () => decision,
+    spawnRoleAgent: async (_r, _d, _c, hooks) => { hooks?.ready(false); },
+  });
+  assert.deepEqual(result.started, []);
+});
+
+test('runDaemonLoop sleeps and runs the stale check when every pass is a run that claimed nothing (CREW-2886)', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev']);
+  const sleeps: number[] = [];
+  let stale = 0;
+  const reason = await runDaemonLoop({
+    runPass: () => runOnePass({
+      ...opts,
+      decide: async () => decision,
+      spawnRoleAgent: async (_r, _d, _c, hooks) => { hooks?.ready(false); },
+    }),
+    floorMs: 5, ceilingMs: 20,
+    sleep: async (ms) => { sleeps.push(ms); },
+    checkStale: () => ++stale >= 4,
+  });
+  assert.equal(reason, 'stale');
+  assert.deepEqual(sleeps, [5, 10, 20]);
+});
+
+test('a ticket role whose run launched an agent still chains (CREW-2886)', async () => {
+  const { opts } = rig();
+  const decision = fakeDecision(['dev']);
+  const result = await runOnePass({
+    ...opts,
+    decide: async () => decision,
+    spawnRoleAgent: async (_r, _d, _c, hooks) => { hooks?.ready(true); },
+  });
   assert.deepEqual(result.started, ['dev']);
 });
 

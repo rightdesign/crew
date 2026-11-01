@@ -128,7 +128,7 @@ export const ALLOWANCE_PAUSE_MS = 5 * 60 * 1000;
 export interface PassResult {
   /** Every role `decideCycle` found pending this pass, most-urgent-first. */
   pending: RoleName[];
-  /** Roles this pass actually acquired a run slot for and launched. */
+  /** Roles this pass launched an agent for; a ticket role whose run claimed nothing is not included. */
   started: RoleName[];
   /** Roles that had work this pass but could not run, and why. */
   skipped: Array<{ role: RoleName; reason: string }>;
@@ -438,6 +438,9 @@ export type SpawnRoleAgent = (
  * the pass may start another run of the same role; `ready(false)` says it has
  * no ticket (nothing claimable, or a failed start), so asking again is
  * pointless. A run that settles without calling it counts as `false`.
+ *
+ * For dev, design and qa the pass also counts the role as started only when the
+ * run reports `true` (CREW-2886), so a run that claimed nothing lets the loop sleep.
  */
 export interface RunHooks {
   ready: (tookTicket: boolean) => void;
@@ -752,9 +755,10 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
         live.delete(role);
         continue;
       }
-      started.push(role);
-      let ready: (tookTicket: boolean) => void = () => {};
-      const settled = new Promise<boolean>((resolve) => { ready = resolve; });
+      // `undefined`: the run settled without ever reporting, which counts as a launch.
+      let settle: (tookTicket: boolean | undefined) => void = () => {};
+      const settled = new Promise<boolean | undefined>((resolve) => { settle = resolve; });
+      const ready = (tookTicket: boolean): void => settle(tookTicket);
       const run = spawn(role, decision, ctx, { ready })
         .then(() => {
           breaker.recordSuccess(role);
@@ -803,20 +807,26 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
             });
           }
         })
-        .finally(() => { lock.release(); ready(false); });
+        .finally(() => { lock.release(); settle(undefined); });
       if (o.inFlight) {
         const set = o.inFlight;
         set.add(run);
         void run.finally(() => set.delete(run));
       }
+      // Wait for a ticket role's run to settle on its ticket (or give up on
+      // finding one) before counting it. A run that walked past every
+      // candidate (unservable, contended, held) launched nothing, and counting
+      // it as started made the loop chain with no sleep and never reach its
+      // stale check (CREW-2886). Its claim and ticket lock are also what the
+      // next run of the role walks past. Other roles launch an agent whenever
+      // they run.
+      const reported = TICKET_ROLES.has(role) ? await settled : true;
+      const tookTicket = reported !== false;
+      if (tookTicket) started.push(role);
       if (roleCap(role) <= 1) {
         live.delete(role);
         continue;
       }
-      // Wait for this run to settle on its ticket before another run of the
-      // role looks for one: its claim and ticket lock are what the next run
-      // walks past.
-      const tookTicket = await settled;
       if (tookTicket && count + 1 < roleCap(role)) live.set(role, count + 1);
       else live.delete(role);
     }
@@ -1047,6 +1057,9 @@ async function runRoleAgentLocked(
         );
         return;
       }
+    } else {
+      // No seat to claim as: the run goes on to launch an agent with no ticket.
+      hooks?.ready(true);
     }
   }
 
