@@ -4536,33 +4536,129 @@ switch (command) {
   }
 
   case 'sandbox': {
-    // CREW-2801: the policy a sandboxed run would get, derived exactly as
-    // `planAgentRun` derives it. Prints; writes nothing.
-    if (positional[1] !== 'policy') {
-      process.stderr.write('crew sandbox policy --route ROUTE --role ROLE [--repo NAME] [--json]\n');
-      process.exit(2);
-    }
-    const only = value('route');
-    const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
-    if (wanted.length !== 1) {
-      process.stderr.write(`crew sandbox policy: ${only ? `no route "${only}"` : 'name the route with --route'} (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
-      process.exit(2);
-    }
-    const role = (value('role') ?? 'dev') as RoleName;
-    if (!ROLE_NAMES.includes(role)) {
-      process.stderr.write(`crew sandbox policy: --role must be one of ${ROLE_NAMES.join(', ')}\n`);
-      process.exit(2);
-    }
-    const r = wanted[0]!;
-    const repoName = value('repo');
-    const seat = resolveSeat(cfg.ship, r, role, {}, repoName);
-    const input = sandboxPolicyInputFor(r, seat.toolchain, { harnessBin: seat.toolchain.bin, repo: repoName, sandbox: cfg.ship.sandbox });
-    try {
-      const policy = generateSandboxPolicy({ mirrorDir: cfg.ship.sandbox?.mirrorDir, workDir: cfg.ship.sandbox?.workDir, ...input });
-      process.stdout.write(flag('json') ? `${JSON.stringify({ route: r.route, role, input, groups: policy.groups, yaml: policy.yaml }, null, 2)}\n` : policy.yaml);
-    } catch (e) {
-      process.stderr.write(`crew sandbox policy: ${(e as Error).message}\n`);
-      process.exit(1);
+    // One clause: the `case 'sandbox'` of CREW-2801 (policy), CREW-2794
+    // (build, images) and CREW-2799 (cache) used to be three clauses in this
+    // switch, so only the first was reachable (CREW-2908).
+    switch (positional[1]) {
+      case 'policy': {
+        // CREW-2801: the policy a sandboxed run would get, derived exactly as
+        // `planAgentRun` derives it. Prints; writes nothing.
+        const only = value('route');
+        const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
+        if (wanted.length !== 1) {
+          process.stderr.write(`crew sandbox policy: ${only ? `no route "${only}"` : 'name the route with --route'} (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
+          process.exit(2);
+        }
+        const role = (value('role') ?? 'dev') as RoleName;
+        if (!ROLE_NAMES.includes(role)) {
+          process.stderr.write(`crew sandbox policy: --role must be one of ${ROLE_NAMES.join(', ')}\n`);
+          process.exit(2);
+        }
+        const r = wanted[0]!;
+        const repoName = value('repo');
+        const seat = resolveSeat(cfg.ship, r, role, {}, repoName);
+        const input = sandboxPolicyInputFor(r, seat.toolchain, { harnessBin: seat.toolchain.bin, repo: repoName, sandbox: cfg.ship.sandbox });
+        try {
+          const policy = generateSandboxPolicy({ mirrorDir: cfg.ship.sandbox?.mirrorDir, workDir: cfg.ship.sandbox?.workDir, ...input });
+          process.stdout.write(flag('json') ? `${JSON.stringify({ route: r.route, role, input, groups: policy.groups, yaml: policy.yaml }, null, 2)}\n` : policy.yaml);
+        } catch (e) {
+          process.stderr.write(`crew sandbox policy: ${(e as Error).message}\n`);
+          process.exit(1);
+        }
+        break;
+      }
+
+      case 'build':
+      case 'images': {
+        // CREW-2794: `crew sandbox build [--route R] [REPO]` forces a rebuild of
+        // the image a repo's `.crew.yaml` `sandbox:` section declares;
+        // `crew sandbox images` lists tags and ages. Planning, tags and the
+        // keep-the-previous-tag rule live in sandbox-image.ts.
+        const subS = positional[1];
+        const jsonS = flag('json');
+        let routesS: Array<typeof route>;
+        try {
+          routesS = value('route') ? [findRoute(cfg, value('route'))] : cfg.routes.filter((r) => r.enabled);
+        } catch (e) {
+          if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+          throw e;
+        }
+        const declared = await sandboxReposOf(routesS);
+        if (subS === 'images') {
+          const stateS = readSandboxState(cfg.ship.stateDir);
+          const rows = declared.map((r) => {
+            const plan = planSandbox(r.name, r.decl, r.warm);
+            return { repo: r.name, wants: plan.tag, tags: stateS[r.name]?.tags ?? [], ...sandboxImageStatus(stateS, plan) };
+          });
+          if (jsonS) { process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`); break; }
+          if (rows.length === 0) process.stdout.write('no repository declares a sandbox: section in its .crew.yaml\n');
+          for (const r of rows) {
+            process.stdout.write(`${r.repo}: ${r.status} — ${r.detail}\n`);
+            for (const t of r.tags) {
+              const ageH = Math.max(0, Math.round((Date.now() - Date.parse(t.builtAt)) / 3_600_000));
+              process.stdout.write(`  ${t.tag}  built ${t.builtAt} (${ageH}h ago)\n`);
+            }
+          }
+          break;
+        }
+        const only = positional[2];
+        const targets = only ? declared.filter((r) => r.name === only) : declared;
+        if (targets.length === 0) {
+          process.stderr.write(only ? `crew: no repository "${only}" declares a sandbox: section\n` : 'crew: no repository declares a sandbox: section in its .crew.yaml\n');
+          process.exit(2);
+        }
+        const emitS = new Emitter({ route: routesS[0]!.route, eventFile: eventFileFor(cfg.ship.stateDir), rotateBytes: cfg.ship.eventsRotateBytes, logFile: cfg.ship.logFile, console: (l) => process.stderr.write(`${l}\n`) });
+        const depsS = sandboxTickDeps(emitS, routesS[0]!);
+        let failed = false;
+        for (const t of targets) {
+          // Forced: ignore the retry window, and rebuild even a built tag only if the declaration moved.
+          await sandboxBuildTick([t], depsS, true);
+          const after = readSandboxState(cfg.ship.stateDir);
+          const st = sandboxImageStatus(after, planSandbox(t.name, t.decl, t.warm));
+          if (st.status === 'failed') failed = true;
+          process.stdout.write(`${t.name}: ${st.status} — ${st.detail}\n`);
+        }
+        if (failed) process.exit(1);
+        break;
+      }
+
+      case 'cache': {
+        // CREW-2799: the sandbox cache volume of bare mirrors.
+        const settings = cacheSettingsOf(cfg.ship.sandbox);
+        if (!settings) { process.stderr.write('crew sandbox cache: ship.sandbox.cacheVolume is not set, so there is no cache volume\n'); process.exit(2); }
+        const cache = new SandboxCache(settings);
+        const served = cfg.routes.flatMap((r) => sandboxCacheRepos(r, cfg.ship));
+        try {
+          if (flag('reset')) {
+            await cache.reset();
+            process.stdout.write(`recreated volume ${settings.volume}; the next daemon pass refreshes every mirror\n`);
+            break;
+          }
+          const dropped = flag('prune') ? await cache.prune(served) : [];
+          const mirrors = await cache.list();
+          if (flag('json')) {
+            process.stdout.write(`${JSON.stringify({ volume: settings.volume, mirrors, dropped }, null, 2)}\n`);
+          } else {
+            for (const d of dropped) process.stdout.write(`dropped ${d.host}/${d.path}\n`);
+            if (mirrors.length === 0) process.stdout.write(`volume ${settings.volume}: no mirrors yet\n`);
+            for (const m of mirrors) process.stdout.write(`${m.repo.host}/${m.repo.path}  last refresh ${m.lastRefresh ?? 'never'}\n`);
+          }
+        } catch (e) {
+          process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);
+          process.exitCode = 1;
+        }
+        break;
+      }
+
+      default:
+        process.stderr.write([
+          'crew sandbox policy --route ROUTE --role ROLE [--repo NAME] [--json]',
+          'crew sandbox build [REPO] [--route ROUTE] [--json]',
+          'crew sandbox images [--route ROUTE] [--json]',
+          'crew sandbox cache [--prune|--reset] [--json]',
+          '',
+        ].join('\n'));
+        process.exit(2);
     }
     break;
   }
@@ -4862,63 +4958,6 @@ switch (command) {
     emit.emit(describeRunWorktreePlan(planWt));
     if (pathWt) process.stdout.write(`${pathWt}\n`);
     if (!planIsUsable(planWt)) process.exitCode = 1;
-    break;
-  }
-
-  case 'sandbox': {
-    // CREW-2794: `crew sandbox build [--route R] [REPO]` forces a rebuild of
-    // the image a repo's `.crew.yaml` `sandbox:` section declares;
-    // `crew sandbox images` lists tags and ages. Planning, tags and the
-    // keep-the-previous-tag rule live in sandbox-image.ts.
-    const subS = positional[1];
-    if (subS !== 'build' && subS !== 'images') {
-      process.stderr.write('crew sandbox build [REPO] [--route ROUTE] [--json]\ncrew sandbox images [--route ROUTE] [--json]\n');
-      process.exit(2);
-    }
-    const jsonS = flag('json');
-    let routesS: Array<typeof route>;
-    try {
-      routesS = value('route') ? [findRoute(cfg, value('route'))] : cfg.routes.filter((r) => r.enabled);
-    } catch (e) {
-      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
-      throw e;
-    }
-    const declared = await sandboxReposOf(routesS);
-    if (subS === 'images') {
-      const stateS = readSandboxState(cfg.ship.stateDir);
-      const rows = declared.map((r) => {
-        const plan = planSandbox(r.name, r.decl, r.warm);
-        return { repo: r.name, wants: plan.tag, tags: stateS[r.name]?.tags ?? [], ...sandboxImageStatus(stateS, plan) };
-      });
-      if (jsonS) { process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`); break; }
-      if (rows.length === 0) process.stdout.write('no repository declares a sandbox: section in its .crew.yaml\n');
-      for (const r of rows) {
-        process.stdout.write(`${r.repo}: ${r.status} — ${r.detail}\n`);
-        for (const t of r.tags) {
-          const ageH = Math.max(0, Math.round((Date.now() - Date.parse(t.builtAt)) / 3_600_000));
-          process.stdout.write(`  ${t.tag}  built ${t.builtAt} (${ageH}h ago)\n`);
-        }
-      }
-      break;
-    }
-    const only = positional[2];
-    const targets = only ? declared.filter((r) => r.name === only) : declared;
-    if (targets.length === 0) {
-      process.stderr.write(only ? `crew: no repository "${only}" declares a sandbox: section\n` : 'crew: no repository declares a sandbox: section in its .crew.yaml\n');
-      process.exit(2);
-    }
-    const emitS = new Emitter({ route: routesS[0]!.route, eventFile: eventFileFor(cfg.ship.stateDir), rotateBytes: cfg.ship.eventsRotateBytes, logFile: cfg.ship.logFile, console: (l) => process.stderr.write(`${l}\n`) });
-    const depsS = sandboxTickDeps(emitS, routesS[0]!);
-    let failed = false;
-    for (const t of targets) {
-      // Forced: ignore the retry window, and rebuild even a built tag only if the declaration moved.
-      await sandboxBuildTick([t], depsS, true);
-      const after = readSandboxState(cfg.ship.stateDir);
-      const st = sandboxImageStatus(after, planSandbox(t.name, t.decl, t.warm));
-      if (st.status === 'failed') failed = true;
-      process.stdout.write(`${t.name}: ${st.status} — ${st.detail}\n`);
-    }
-    if (failed) process.exit(1);
     break;
   }
 
@@ -5793,35 +5832,6 @@ switch (command) {
     recordSelftest(cfg.ship.stateDir, results);
     process.stdout.write(flag('json') ? `${JSON.stringify(results, null, 2)}\n` : `${results.map(formatResult).join('\n')}\n`);
     if (results.some((r) => !r.ok)) process.exitCode = 1;
-    break;
-  }
-
-  case 'sandbox': {
-    // CREW-2799: the sandbox cache volume of bare mirrors.
-    const settings = cacheSettingsOf(cfg.ship.sandbox);
-    if (positional[1] !== 'cache') { process.stderr.write('crew sandbox cache [--prune|--reset] [--json]\n'); process.exit(2); }
-    if (!settings) { process.stderr.write('crew sandbox cache: ship.sandbox.cacheVolume is not set, so there is no cache volume\n'); process.exit(2); }
-    const cache = new SandboxCache(settings);
-    const served = cfg.routes.flatMap((r) => sandboxCacheRepos(r, cfg.ship));
-    try {
-      if (flag('reset')) {
-        await cache.reset();
-        process.stdout.write(`recreated volume ${settings.volume}; the next daemon pass refreshes every mirror\n`);
-        break;
-      }
-      const dropped = flag('prune') ? await cache.prune(served) : [];
-      const mirrors = await cache.list();
-      if (flag('json')) {
-        process.stdout.write(`${JSON.stringify({ volume: settings.volume, mirrors, dropped }, null, 2)}\n`);
-      } else {
-        for (const d of dropped) process.stdout.write(`dropped ${d.host}/${d.path}\n`);
-        if (mirrors.length === 0) process.stdout.write(`volume ${settings.volume}: no mirrors yet\n`);
-        for (const m of mirrors) process.stdout.write(`${m.repo.host}/${m.repo.path}  last refresh ${m.lastRefresh ?? 'never'}\n`);
-      }
-    } catch (e) {
-      process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);
-      process.exitCode = 1;
-    }
     break;
   }
 
