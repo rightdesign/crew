@@ -12,12 +12,13 @@ const base = (over: Partial<ProvisionOptions> = {}): ProvisionOptions => ({
   key: 'sk_test', routes: ['acme'], forgeHosts: [], tokens: {}, json: true, dryRun: false, choices: [], ...over,
 });
 
-interface Fake { deps: ProvisionDeps; calls: Array<{ args: string[]; env?: Record<string, string>; input?: string }>; state: InstallState; enabled: Set<string> }
+interface Fake { deps: ProvisionDeps; calls: Array<{ args: string[]; env?: Record<string, string>; input?: string }>; state: InstallState; enabled: Set<string>; settings: Record<string, string | number> }
 function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: Record<string, string>; enabled?: string[]; crew?: (args: string[]) => RunResult | undefined } = {}): Fake {
   const state: InstallState = { mechanism: 'systemd', unitsStale: false, running: true, lingering: true, ...o.state };
   const calls: Fake['calls'] = [];
   const enabled = new Set(o.enabled ?? ['acme/issues']);
   const stored = { ...(o.stored ?? {}) };
+  const settings: Record<string, string | number> = {};
   const deps: ProvisionDeps = {
     crew(args, opts) {
       calls.push({ args, env: opts?.env, input: opts?.input });
@@ -31,10 +32,11 @@ function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: 
     configFile: () => '/home/x/.config/crew/crew.yaml',
     enableRoute: (r) => { if (enabled.has(r)) return false; enabled.add(r); return true; },
     installState: () => ({ ...state }),
+    setShipSetting: (k, v) => { settings[k] = v; return true; },
     storedToken: (h) => stored[h] ?? null,
     defaultShipName: () => 'host-1',
   };
-  return { deps, calls, state, enabled };
+  return { deps, calls, state, enabled, settings };
 }
 
 const run = (o: ProvisionOptions, f: Fake) => {
@@ -154,4 +156,14 @@ test('per-host token variables beat the shared one (CREW-2792)', () => {
     tokensFromEnv(['github.com', 'git.corp'], { CREW_FORGE_TOKEN: 'shared', CREW_FORGE_TOKEN_GIT_CORP: 'corp' }),
     { 'github.com': 'shared', 'git.corp': 'corp' },
   );
+});
+
+test('--ship-kind and --instance-class reach connect, and relay host and agent cap land in crew.yaml (CREW-2882)', async () => {
+  const f = fake();
+  const r = await run(base({ shipKind: 'pooled_instance', instanceClass: 'c7.large', relayHost: 'crewd@relay.example', maxConcurrentAgents: 3 }), f);
+  const c = f.calls[0]!;
+  assert.deepEqual(c.args.slice(c.args.indexOf('--ship-kind'), c.args.indexOf('--ship-kind') + 2), ['--ship-kind', 'pooled_instance']);
+  assert.deepEqual(c.args.slice(c.args.indexOf('--instance-class'), c.args.indexOf('--instance-class') + 2), ['--instance-class', 'c7.large']);
+  assert.deepEqual(f.settings, { relayHost: 'crewd@relay.example', maxConcurrentAgents: 3 });
+  assert.equal(r.summary.state, 'provisioned');
 });

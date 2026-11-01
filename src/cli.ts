@@ -31,7 +31,11 @@ import {
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
 import { adoptSessionAddress, rememberedAddressFor, resumableSessions, rememberSession, rememberedSessions, signOutSessions } from './connect-resume.ts';
-import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects } from './reset.ts';
+import { runReset, recordClonedCheckout, describeResetStep, resetIncomplete, type ResetEffects, type ResetStep } from './reset.ts';
+import { runDeprovision } from './deprovision.ts';
+import { realDeprovisionDeps } from './deprovision-host.ts';
+import { runPoolMember, poolConfigFrom, httpPoolApi, fileMemberStore, defaultMemberDir } from './pool-member.ts';
+import { realPoolMemberDeps } from './pool-member-host.ts';
 import { Emitter, eventFileFor, rotateEventsFile } from './events.ts';
 import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
@@ -387,6 +391,10 @@ function usage(problem?: string, requested = false): never {
   crew provision --key K --route WS[/PROJECT] [--forge-host H] [--ship-name N] [--json]   one non-interactive run: connect, forge tokens,
                                  enable routes, install units with lingering, start the daemon; safe to re-run (CREW_CONNECT_KEY,
                                  CREW_PROVISION_ROUTES, CREW_SHIP_NAME, CREW_FORGE_TOKEN[_<HOST>] also read)
+  crew pool-member [--url U] [--token-stdin]   a host with no tenant: register with the platform, wait for a lease, provision from it, wipe at release
+                                 (CREW_POOL_URL, CREW_POOL_TOKEN also read; docs/pool-member.md)
+  crew deprovision [--dry-run] [--json]   wipe everything a lease left on this host: runs, sandboxes, Ships-row state, seat keys, forge tokens,
+                                 checkouts, labeled cache volumes and image layers, state directory, crew.yaml; exits non-zero listing what remains
   crew forge [set|rotate <host>] [--token T | --token-stdin] [--source file|keychain|env]   this ship's git-forge tokens (ship.forges)
   crew credential get|store|erase   git credential helper answering from ship.forges (git runs it; not for hand use)
   crew whoami [route] [--json]   the signed-in identity, key role, operator Crew row and credential source per route
@@ -432,7 +440,7 @@ function usage(problem?: string, requested = false): never {
   crew install                  write and load this platform's scheduler unit
   crew uninstall                unload and remove it
      --workspace-id ID --key K [--project NAME] [--area NAME] [--dir PATH] [--name N]
-     --json  --machine-id ID  --ship-name N --agent-bin PATH --extra-path DIRS --host-passengers --no-wizard --choose KEY=VALUE   (non-interactive: docs/commands.md)
+     --json  --machine-id ID  --ship-name N --ship-kind KIND --instance-class KEY --agent-bin PATH --extra-path DIRS --host-passengers --no-wizard --choose KEY=VALUE   (non-interactive: docs/commands.md)
 
 Options:
   --dry-run      decide everything, perform nothing
@@ -492,7 +500,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
  * test/help-cli.test.ts checks this set against the `case` labels.
  */
 const KNOWN_COMMANDS = new Set([
-  'passenger-sync-daemon', 'agents', 'connect', 'credential', 'provision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
+  'passenger-sync-daemon', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
@@ -583,7 +591,7 @@ function daemonConfigPaths(c: { configFile: string; ship: { stateDir: string }; 
  * break the one legitimate `crew` call a session is actually supposed to
  * make.
  */
-const STATE_WRITING_COMMANDS = new Set(['connect', 'provision', 'disconnect', 'install', 'uninstall', 'reload', 'release', 'merge', 'deploy']);
+const STATE_WRITING_COMMANDS = new Set(['connect', 'provision', 'pool-member', 'deprovision', 'disconnect', 'install', 'uninstall', 'reload', 'release', 'merge', 'deploy']);
 const STATE_WRITING_SUBCOMMANDS: Partial<Record<string, Set<string>>> = {
   agents: new Set(['sync']),
   skills: new Set(['sync']),
@@ -612,6 +620,24 @@ if (command === 'provision') {
     (l) => { process.stdout.write(l); }, (l) => { process.stderr.write(l); },
   );
   process.exit(outcome.code);
+}
+
+// `pool-member` (CREW-2882): a long-running command for a host with no tenant yet.
+// It provisions itself from a lease and wipes itself at release, so like
+// `provision` it needs no crew.yaml at start.
+if (command === 'pool-member') {
+  const pool = poolConfigFrom(argv, process.env, () => readFileSync(0, 'utf8'));
+  if (typeof pool === 'string') { process.stderr.write(`crew pool-member: ${pool}\n`); process.exit(2); }
+  let stop = false;
+  for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stop = true; });
+  const memberDir = process.env.CREW_POOL_DIR ?? defaultMemberDir();
+  const code = await runPoolMember(realPoolMemberDeps({
+    crewHome: CREW_HOME, platformUrl: pool.url, env: process.env,
+    api: httpPoolApi(pool), store: fileMemberStore(memberDir),
+    stopping: () => stop,
+    log: (l) => { process.stderr.write(`${new Date().toISOString()} pool-member: ${l}\n`); },
+  }));
+  process.exit(code);
 }
 
 // `passenger-sync-daemon` (ISSUE-554) is not an operator-facing command —
@@ -689,12 +715,12 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    const toleratesNoRoutes = command === 'credential' || command === 'forge' || command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out'));
+    const toleratesNoRoutes = command === 'credential' || command === 'forge' || command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || command === 'deprovision' || (command === 'connect' && flag('sign-out'));
     // CREW-2443: sign-out and reset exist for a machine whose only trace is a
     // dry-run connect's keychain session, so they must load with NO crew.yaml.
     // Load an empty ship block at the path a config-less connect would have
     // used, which puts stateDir where that connect's `rememberSession` wrote.
-    const configless = (command === 'connect' && flag('sign-out')) || (command === 'disconnect' && flag('reset'));
+    const configless = (command === 'connect' && flag('sign-out')) || (command === 'disconnect' && flag('reset')) || command === 'deprovision';
     if (configless && !existsSync(findConfigFile(CREW_HOME))) {
       cfg = loadConfig(CREW_HOME, firstRunConfigPath(), { text: 'ship: {}\n', allowNoRoutes: true });
     } else {
@@ -777,7 +803,7 @@ const named = worktreeArgs
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'whoami' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'whoami' || releaseFleetWide ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
   (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
@@ -3750,6 +3776,7 @@ switch (command) {
       name: cfg.ship.name, platform: cfg.ship.platform, machineId,
       hostPassengers: firstRun?.answers.hostPassengers ?? existingRoute?.hostPassengers === true,
       hostPeriscopes: existingRoute?.hostPeriscopes === true,
+      kind: value('ship-kind'), instanceClass: value('instance-class'),
       sshPublicKey,
       lastSyncedName: (r: string) => readSyncedName(resolvedPathFor(cfg.ship.stateDir, r)),
     };
@@ -5210,7 +5237,10 @@ switch (command) {
     break;
   }
 
+  case 'deprovision':
   case 'disconnect': {
+    // CREW-2882: `deprovision` is `disconnect --reset --remove-checkouts` plus the pooled-host wipe (deprovision.ts).
+    const deprovisioning = command === 'deprovision';
     // CREW-1517: the inverse of `connect`'s harness installs — removes the Tablation
     // MCP server from Claude Code and Pair's block and MCP entry from every other
     // harness `ship.pair` lists. crew.yaml and the tracker are left alone.
@@ -5228,7 +5258,7 @@ switch (command) {
           .catch((e: Error) => { process.stderr.write(`could not clear relay_url for ${r.route}: ${e.message}\n`); });
       }
     }
-    if (!flag('reset')) {
+    if (!flag('reset') && !deprovisioning) {
       for (const line of removePairEntries(url, dryRun)) process.stderr.write(`${line}\n`);
       break;
     }
@@ -5284,13 +5314,23 @@ switch (command) {
         droppedRoutes.push({ route: r.route, baseUrl: typeof r.baseUrl === 'string' ? r.baseUrl : rawCfg?.ship?.baseUrl ?? DEFAULT_BASE_URL });
       }
     } catch { /* an unreadable crew.yaml has no routes to find */ }
-    const steps = await runReset(
-      { routes: cfg.routes, droppedRoutes, stateDir: cfg.ship.stateDir, configFile: cfg.configFile, dryRun, removeCheckouts: flag('remove-checkouts') },
-      effects,
-    );
-    if (flag('json')) process.stdout.write(`${JSON.stringify({ dryRun, ok: !resetIncomplete(steps), steps })}\n`);
-    else for (const s of steps) process.stdout.write(`${describeResetStep(s)}\n`);
-    if (resetIncomplete(steps)) process.exitCode = 1;
+    const resetOptions = { routes: cfg.routes, droppedRoutes, stateDir: cfg.ship.stateDir, configFile: cfg.configFile, dryRun };
+    let steps: ResetStep[];
+    let remaining: string[] = [];
+    if (deprovisioning) {
+      const outcome = await runDeprovision(resetOptions, effects, realDeprovisionDeps(cfg, emit, CREW_HOME, getSessionStore));
+      steps = outcome.steps;
+      remaining = outcome.remaining;
+    } else {
+      steps = await runReset({ ...resetOptions, removeCheckouts: flag('remove-checkouts') }, effects);
+    }
+    const incomplete = resetIncomplete(steps) || remaining.length > 0;
+    if (flag('json')) process.stdout.write(`${JSON.stringify({ dryRun, ok: !incomplete, steps, ...(deprovisioning ? { remaining } : {}) })}\n`);
+    else {
+      for (const s of steps) process.stdout.write(`${describeResetStep(s)}\n`);
+      for (const r of remaining) process.stdout.write(`REMAINS: ${r}\n`);
+    }
+    if (incomplete) process.exitCode = 1;
     break;
   }
 

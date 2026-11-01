@@ -24,7 +24,7 @@ export type ResetAction = 'removed' | 'would-remove' | 'absent' | 'kept' | 'fail
 
 export interface ResetStep {
   /** Which part of the order this belongs to. */
-  step: 'scheduler' | 'pair' | 'seat-keys' | 'credential' | 'checkout' | 'state' | 'config';
+  step: 'scheduler' | 'run' | 'sandbox' | 'ship-row' | 'pair' | 'seat-keys' | 'credential' | 'forge' | 'checkout' | 'cache' | 'state' | 'config';
   target: string;
   action: ResetAction;
   detail?: string;
@@ -84,6 +84,16 @@ export interface ResetOptions {
   configFile: string;
   dryRun: boolean;
   removeCheckouts: boolean;
+  /**
+   * CREW-2882 (`crew deprovision`): steps that must run once the scheduler units are
+   * gone but before any seat key is revoked (in-flight runs are stopped and told while
+   * their keys still work, and the Ships rows are written with the workspace credential).
+   */
+  afterScheduler?: () => Promise<ResetStep[]>;
+  /** Steps that run after the checkouts and before the state directory goes (forge tokens, cache volumes). */
+  beforeState?: () => Promise<ResetStep[]>;
+  /** Remove everything in the state directory (events, streams, machine id), not only configuration. */
+  wipeState?: boolean;
 }
 
 const mark = (dryRun: boolean): ResetAction => (dryRun ? 'would-remove' : 'removed');
@@ -92,6 +102,8 @@ export async function runReset(o: ResetOptions, fx: ResetEffects): Promise<Reset
   const steps: ResetStep[] = [];
 
   for (const line of await fx.uninstallUnits(o.dryRun)) steps.push({ step: 'scheduler', target: line, action: mark(o.dryRun) });
+
+  if (o.afterScheduler) steps.push(...await o.afterScheduler());
 
   const urls = [...new Set(o.routes.map((r) => r.baseUrl))];
   for (const url of urls) {
@@ -139,7 +151,9 @@ export async function runReset(o: ResetOptions, fx: ResetEffects): Promise<Reset
     for (const dir of readClonedCheckouts(o.stateDir)) steps.push(removeCheckout(dir, o.dryRun, fx));
   }
 
-  steps.push(...removeState(o.stateDir, o.dryRun));
+  if (o.beforeState) steps.push(...await o.beforeState());
+
+  steps.push(...(o.wipeState ? wipeStateDir(o.stateDir, o.dryRun) : removeState(o.stateDir, o.dryRun)));
 
   if (existsSync(o.configFile)) {
     if (!o.dryRun) rmSync(o.configFile, { force: true });
@@ -183,6 +197,15 @@ function removeState(stateDir: string, dryRun: boolean): ResetStep[] {
   }
   if (!out.length) out.push({ step: 'state', target: stateDir, action: 'absent', detail: 'nothing to remove' });
   return out;
+}
+
+/** Everything under the state directory, `deprovision`'s "no state from the lease". The directory itself stays. */
+function wipeStateDir(stateDir: string, dryRun: boolean): ResetStep[] {
+  let names: string[];
+  try { names = readdirSync(stateDir); } catch { return [{ step: 'state', target: stateDir, action: 'absent', detail: 'no state directory' }]; }
+  if (!names.length) return [{ step: 'state', target: stateDir, action: 'absent', detail: 'already empty' }];
+  if (!dryRun) for (const n of names) rmSync(join(stateDir, n), { recursive: true, force: true });
+  return [{ step: 'state', target: stateDir, action: mark(dryRun), detail: `${names.length} entr${names.length === 1 ? 'y' : 'ies'}` }];
 }
 
 export function describeResetStep(s: ResetStep): string {

@@ -666,6 +666,22 @@ export class Tracker {
     await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, { relay_url: url });
   }
 
+  /**
+   * `crew deprovision` (CREW-2882): this ship stops advertising anything. Clears
+   * `engaged*`, `tunnel_status` and `relay_url` on its row; a column the Ships
+   * table has not taken is skipped. Returns false when there is no row.
+   */
+  async clearForRelease(shipName: string): Promise<boolean> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return false;
+    const patch: Record<string, unknown> = {
+      engaged: false, engaged_since: null, engaged_connection: null, engaged_ticket_id: null, tunnel_status: 'disconnected',
+    };
+    if ('relay_url' in row) patch.relay_url = null;
+    await this.client.records.update(this.route.resolved!.shipsModelId!, row.id, patch);
+    return true;
+  }
+
   /** The other half of `beatEngaged` — clears engagement back to idle. */
   async beatIdle(shipName: string): Promise<void> {
     const row = await this.myShipRow(shipName);

@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export class ForgeError extends Error {}
@@ -87,6 +87,8 @@ export interface TokenSourceImpl<S extends ForgeTokenSource = ForgeTokenSource> 
   read(s: S, ctx: SourceContext): string | null;
   /** Stores a token. Not every source can (an environment variable cannot be persisted). */
   write?(s: S, token: string, ctx: SourceContext): void;
+  /** Removes the stored token (CREW-2882, `crew deprovision`). Absent for a source crew does not own. */
+  erase?(s: S, ctx: SourceContext): void;
   /** One line for `crew doctor` / `crew forge`: where the token comes from, never the token. */
   describe(s: S, ctx: SourceContext): string;
 }
@@ -127,6 +129,9 @@ const fileSource: TokenSourceImpl<Extract<ForgeTokenSource, { source: 'file' }>>
     writeFileSync(path, `${token}\n`, { mode: 0o600 });
     chmodSync(path, 0o600);
   },
+  erase(s, c) {
+    rmSync(s.path ?? defaultTokenFilePath(c.stateDir, c.host), { force: true });
+  },
   describe: (s, c) => `key file ${s.path ?? defaultTokenFilePath(c.stateDir, c.host)}`,
 };
 
@@ -160,6 +165,17 @@ const keychainSource: TokenSourceImpl<Extract<ForgeTokenSource, { source: 'keych
       }
     } catch (e) {
       throw new ForgeError(`could not write to the OS secret store: ${(e as Error).message.split('\n')[0]}`);
+    }
+  },
+  erase(s, c) {
+    try {
+      if (process.platform === 'darwin') {
+        execFileSync('security', ['delete-generic-password', '-s', keychainService(s), '-a', c.host], { stdio: 'ignore' });
+      } else {
+        execFileSync('secret-tool', ['clear', 'service', keychainService(s), 'account', c.host], { stdio: 'ignore' });
+      }
+    } catch {
+      // Nothing stored under that name, or no secret store on this host: either way there is nothing to remove.
     }
   },
   describe: (s) => `OS secret store (service ${keychainService(s)})`,
@@ -225,6 +241,22 @@ export function storeForgeToken(
   if (!i.write) throw new ForgeError(`forges.${host} reads its token from ${i.describe(f.entry.token, { host: f.host, stateDir, env })}, which crew cannot write`);
   if (!token.trim()) throw new ForgeError('empty token');
   i.write(f.entry.token, token.trim(), { host: f.host, stateDir, env });
+}
+
+/**
+ * Removes the token for `host` from where crew keeps it. `'env'` when the
+ * entry reads an environment variable (nothing crew can remove), `'absent'`
+ * when there is no entry; the caller reports the first as KEPT.
+ */
+export function eraseForgeToken(
+  forges: ForgesConfig | undefined, host: string, stateDir: string, env: NodeJS.ProcessEnv = process.env,
+): 'erased' | 'env' | 'absent' {
+  const f = forgeFor(forges, host);
+  if (!f) return 'absent';
+  const i = impl(f.entry.token);
+  if (!i.erase) return 'env';
+  i.erase(f.entry.token, { host: f.host, stateDir, env });
+  return 'erased';
 }
 
 // --- git credential-helper protocol ---------------------------------------

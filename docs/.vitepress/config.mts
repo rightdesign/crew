@@ -28,6 +28,7 @@ export default defineConfig({
       { text: 'Host Passengers', link: '/host-passengers' },
       { text: 'Using the agent chat as a Passenger', link: '/passenger-chat' },
       { text: 'Periscope', link: '/periscope' },
+      { text: 'Pooled instances', link: '/pool-member' },
       { text: 'The repo spec (.crew.yaml)', link: '/repo-spec' },
       { text: 'The contract', link: '/contract' },
     ],

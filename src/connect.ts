@@ -54,6 +54,15 @@ export interface DiscoverOptions extends AuthOptions {
      */
     hostPeriscopes?: boolean;
     /**
+     * CREW-2882: what kind of host this is, written to `Ships.kind` (default
+     * `developer_machine`). A pooled instance passes `pooled_instance`, a
+     * reserved managed one `managed_instance`. Only written onto a Ships table
+     * that has the column.
+     */
+    kind?: string;
+    /** CREW-2882: the instance class key, written to `Ships.instance_class` when the column exists. */
+    instanceClass?: string;
+    /**
      * This machine's hashed id (`machine-id.ts`, ISSUE-2249). Matched against
      * the Ships row's `machine_id` before the name, so a drifted hostname does
      * not provision a second ship. Absent: name matching only, as before.
@@ -649,7 +658,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   let shipRowId: string | undefined;
   if (out.shipsModelId && o.ship && !o.dryRun) {
     const shipRows = await get<Array<{
-      id: string; name?: string | null; host_passengers?: boolean | null; host_periscopes?: boolean | null; ssh_public_key?: string | null;
+      id: string; name?: string | null; host_passengers?: boolean | null; host_periscopes?: boolean | null; ssh_public_key?: string | null; kind?: string | null; instance_class?: string | null;
       owner_id?: string | null; machine_id?: string | null;
     }>>(
       o, `/data-models/${out.shipsModelId}/records?limit=200`,
@@ -738,6 +747,9 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       if (writeMachineId) patchBody.machine_id = machineId;
       if ((mine[0]!.host_passengers ?? false) !== hostPassengers) patchBody.host_passengers = hostPassengers;
       if (hostPeriscopes !== undefined && (mine[0]!.host_periscopes ?? false) !== hostPeriscopes) patchBody.host_periscopes = hostPeriscopes;
+      // CREW-2882: a kind or class named on the command line is reconciled onto the row; unnamed leaves it alone.
+      if (o.ship.kind && shipColumns.has('kind') && (mine[0]!.kind ?? '') !== o.ship.kind) patchBody.kind = o.ship.kind;
+      if (o.ship.instanceClass && shipColumns.has('instance_class') && (mine[0]!.instance_class ?? '') !== o.ship.instanceClass) patchBody.instance_class = o.ship.instanceClass;
       if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
         patchBody.ssh_public_key = sshPublicKey;
       }
@@ -760,7 +772,8 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         ...(writeMachineId ? { machine_id: machineId } : {}),
         // ISSUE-2791: a ship connecting by hand is a developer machine; the
         // column arrives with a template update, so only written when present.
-        ...(shipColumns.has('kind') ? { kind: 'developer_machine' } : {}),
+        ...(shipColumns.has('kind') ? { kind: o.ship.kind ?? 'developer_machine' } : {}),
+        ...(o.ship.instanceClass && shipColumns.has('instance_class') ? { instance_class: o.ship.instanceClass } : {}),
       });
       shipRowId = created.id;
       out.shipRow = { id: shipRowId, name: o.ship.name, action: 'created', matchedBy };

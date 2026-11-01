@@ -1,0 +1,113 @@
+/**
+ * The real machine behind `crew pool-member` (CREW-2882): provisioning through
+ * `runProvision`, the wipe through a `crew deprovision` child, and the ship's
+ * machine id and relay URL read from the config the provision just wrote.
+ * `pool-member.ts` holds the loop and is tested with fakes; this is the part
+ * that spawns processes and touches disk.
+ */
+
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { crewVersion, findConfigFile, loadConfig } from './config.ts';
+import { crewInvocation } from './install.ts';
+import { ensureMachineId } from './machine-id.ts';
+import { hostArchitecture, type LeasePayload, type PoolApi, type PoolMemberDeps, type MemberStore } from './pool-member.ts';
+import { PROVISION_EXIT, realProvisionDeps, runProvision } from './provision.ts';
+import { readPersistedTunnel, relayBaseUrlFor } from './tunnel.ts';
+
+export interface RealPoolMemberOptions {
+  crewHome: string;
+  api: PoolApi;
+  store: MemberStore;
+  /** The platform base URL; a lease's routes are connected against it (`crew provision --base-url`). */
+  platformUrl: string;
+  env?: NodeJS.ProcessEnv;
+  /** Raised by SIGTERM/SIGINT. */
+  stopping(): boolean;
+  log(line: string): void;
+}
+
+function loadShip(crewHome: string) {
+  try { return loadConfig(crewHome, undefined, { allowNoRoutes: true }); } catch { return null; }
+}
+
+export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
+  const env = o.env ?? process.env;
+  const provisionDeps = realProvisionDeps(o.crewHome);
+  return {
+    api: o.api,
+    store: o.store,
+    host: {
+      // The first-boot hook writes the cloud's instance id; a host without one is identified by its hostname.
+      cloudInstanceId: env.CREW_POOL_INSTANCE_ID?.trim() || hostname(),
+      architecture: hostArchitecture(),
+      crewVersion: crewVersion(o.crewHome),
+      hostname: hostname(),
+    },
+    hasShipConfig: () => existsSync(findConfigFile(o.crewHome)),
+
+    async provision(lease: LeasePayload, instanceClass: string, shipKind: string) {
+      const hosts = lease.forges.map((f) => f.host.toLowerCase());
+      const lines: string[] = [];
+      // The payload goes straight into the in-process options: never argv, never a file, never a log line.
+      const outcome = await runProvision({
+        key: lease.connectKey,
+        routes: lease.routes.map((r) => `${r.workspace}/${r.project}`),
+        shipName: lease.shipName,
+        shipKind,
+        instanceClass,
+        relayHost: lease.relayHost,
+        maxConcurrentAgents: lease.maxConcurrentAgents,
+        baseUrl: o.platformUrl,
+        forgeHosts: hosts,
+        tokens: Object.fromEntries(lease.forges.map((f) => [f.host.toLowerCase(), f.token])),
+        json: false, dryRun: false, choices: [],
+      }, provisionDeps, () => {}, (l) => { lines.push(l.trim()); });
+      for (const l of lines) o.log(`provision: ${l}`);
+      if (outcome.code === PROVISION_EXIT.ok) return { ok: true };
+      return { ok: false, reason: `crew provision exited ${outcome.code}: ${lines.at(-1) ?? 'no detail'}` };
+    },
+
+    async reconcile() {
+      const before = provisionDeps.installState();
+      if (before.unitsStale || !before.running || !before.lingering) {
+        const res = provisionDeps.crew(['install']);
+        if (res.status !== 0) return { ok: false, reason: `crew install exited ${res.status}` };
+      }
+      const after = provisionDeps.installState();
+      return after.running ? { ok: true } : { ok: false, reason: `the ${after.mechanism} daemon unit is not running after install` };
+    },
+
+    async deprovision() {
+      const res = provisionDeps.crew(['deprovision', '--json']);
+      if (res.status === 0) return { ok: true };
+      const last = res.stdout.trim().split('\n').filter(Boolean).at(-1) ?? res.stderr.trim().split('\n').at(-1) ?? '';
+      let reason = `crew deprovision exited ${res.status}`;
+      try {
+        const parsed = JSON.parse(last) as { remaining?: string[] };
+        if (parsed.remaining?.length) reason += `; remaining: ${parsed.remaining.slice(0, 5).join(', ')}`;
+      } catch { /* not the summary line */ }
+      return { ok: false, reason };
+    },
+
+    machineId() {
+      const cfg = loadShip(o.crewHome);
+      return cfg ? ensureMachineId(cfg.ship.stateDir) ?? null : null;
+    },
+    relayUrl() {
+      const cfg = loadShip(o.crewHome);
+      if (!cfg?.ship.relayHost) return null;
+      for (const r of cfg.routes) {
+        const ws = r.resolved?.workspaceId;
+        const slug = ws ? readPersistedTunnel(cfg.ship.stateDir, ws)?.slug : undefined;
+        if (slug) return relayBaseUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain);
+      }
+      return null;
+    },
+
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log: o.log,
+    stopping: o.stopping,
+  };
+}

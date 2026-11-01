@@ -42,6 +42,12 @@ export interface ProvisionOptions {
   /** Routes to connect and serve, each a `workspace[/project]` argument of `crew connect`. */
   routes: string[];
   shipName?: string;
+  /** CREW-2882: `--ship-kind` / `--instance-class`, passed through to `crew connect`. */
+  shipKind?: string;
+  instanceClass?: string;
+  /** CREW-2882: `ship.relayHost` / `ship.maxConcurrentAgents` to write into crew.yaml before the daemon starts (a lease payload carries them). */
+  relayHost?: string;
+  maxConcurrentAgents?: number;
   agentBin?: string;
   extraPath?: string;
   baseUrl?: string;
@@ -76,6 +82,8 @@ export interface ProvisionDeps {
   /** Sets `enabled: true` on a route; true when it changed. */
   enableRoute(route: string): boolean;
   installState(): InstallState;
+  /** Sets `ship.<key>` in crew.yaml; true when the value changed. */
+  setShipSetting(key: string, value: string | number): boolean;
   /** The token the credential helper currently answers for a host, or null. */
   storedToken(host: string): string | null;
   defaultShipName(): string;
@@ -138,6 +146,8 @@ export async function runProvision(
   for (const route of o.routes) {
     const args = [
       'connect', route, '--json', '--no-wizard', '--ship-name', shipName,
+      ...(o.shipKind ? ['--ship-kind', o.shipKind] : []),
+      ...(o.instanceClass ? ['--instance-class', o.instanceClass] : []),
       ...(o.agentBin ? ['--agent-bin', o.agentBin] : []),
       ...(o.extraPath ? ['--extra-path', o.extraPath] : []),
       ...(o.baseUrl ? ['--base-url', o.baseUrl] : []),
@@ -174,6 +184,15 @@ export async function runProvision(
   const configPath = deps.configFile();
   if (!configPath) return fail(PROVISION_EXIT.failed, 'connect finished but no crew.yaml exists', { stage: 'connect' });
   summary.configPath = configPath;
+
+  // 1b. ship settings the caller supplied (a pooled lease's relay host and agent cap).
+  for (const [key, value] of [['relayHost', o.relayHost], ['maxConcurrentAgents', o.maxConcurrentAgents]] as const) {
+    if (value === undefined || value === '') continue;
+    if (deps.setShipSetting(key, value)) {
+      summary.changed = true;
+      emit('connect', `set ship.${key}`, { setting: key });
+    }
+  }
 
   // 2. forge tokens, compared through the credential helper so a re-run with the same token changes nothing.
   for (const host of o.forgeHosts) {
@@ -266,6 +285,10 @@ export function provisionOptionsFrom(argv: readonly string[], env: NodeJS.Proces
     key: one('key') ?? env.CREW_CONNECT_KEY,
     routes: routes.length ? routes : splitList(env.CREW_PROVISION_ROUTES),
     shipName: one('ship-name') ?? env.CREW_SHIP_NAME,
+    shipKind: one('ship-kind'),
+    instanceClass: one('instance-class'),
+    relayHost: one('relay-host'),
+    maxConcurrentAgents: Number.isInteger(Number(one('max-concurrent-agents'))) && Number(one('max-concurrent-agents')) > 0 ? Number(one('max-concurrent-agents')) : undefined,
     agentBin: one('agent-bin'),
     extraPath: one('extra-path'),
     baseUrl: one('base-url'),
@@ -338,6 +361,15 @@ export function realProvisionDeps(crewHome: string): ProvisionDeps {
         running = spawnSync('launchctl', ['list', label]).status === 0;
       }
       return { mechanism, unitsStale, running, lingering };
+    },
+    setShipSetting(key, value) {
+      const file = configFile();
+      if (!file) return false;
+      const doc = parseDocument(readFileSync(file, 'utf8'));
+      if (doc.getIn(['ship', key]) === value) return false;
+      doc.setIn(['ship', key], value);
+      writeFileSync(file, doc.toString());
+      return true;
     },
     storedToken(host) {
       const res = spawnCrew(['credential', 'get'], { input: `protocol=https\nhost=${host}\n\n` });
