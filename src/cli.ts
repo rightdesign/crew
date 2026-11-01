@@ -8,7 +8,8 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
-import { periscopeSummary, previewHostProblem } from './periscopes.ts';
+import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems } from './periscopes.ts';
+import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth } from './adapters/claude.ts';
@@ -4502,6 +4503,7 @@ switch (command) {
             if (deleteBranch) gitOk(repoD.dir, ['branch', '-D', branch]);
           },
           setRowState: (id, state) => trD.updatePeriscope(id, { state }),
+          forgetLocal: (id) => removePeriscopeSidecar(cfg.ship.stateDir, id),
           say,
         };
         if (dryRun) {
@@ -4593,6 +4595,7 @@ switch (command) {
           return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : undefined }) : null;
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
+        recordLocal: (sc) => writePeriscopeSidecar(cfg.ship.stateDir, sc),
         comment: (ticketId, body) => trackerP.postComment(ticketId, body, memberId),
         teardown: async (path, branch) => {
           const n = Number(path.match(/(\d+)\/?$/)?.[1]);
@@ -5178,6 +5181,7 @@ switch (command) {
     // Every live run on this ship, read from the run sidecars (CREW-2822), so
     // it is right across daemon restarts and for one-shot `crew run` processes.
     const runs = liveRuns(cfg.ship.stateDir);
+    const periscopes = await periscopesForStatus(cfg.ship.stateDir);
     if (flag('json')) {
       const nameSync = await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true });
       const repos = await resolvedRepos(route);
@@ -5250,6 +5254,8 @@ switch (command) {
         },
         // Additive (CREW-2822): every live run on this ship. `version` stays 1.
         runs: runs.map((x) => describeRun(x, route, seatIds)),
+        // Additive (CREW-2857): every live periscope on this ship, from its local record. `version` stays 1.
+        periscopes,
         watermark: state.watermark(),
         route: {
           name: route.route,
@@ -5324,6 +5330,7 @@ switch (command) {
         `route:      ${route.route} -> ${route.dir}\n` +
         `enabled:    ${route.enabled}\n` +
         `periscopes: ${periscopeSummary(cfg)}\n` +
+        periscopes.map((p) => `periscope:  ${p.ticket} ${p.repo} ${p.url} ${p.state}${p.serving ? '' : ' (not serving)'} expires ${p.expiresAt}\n`).join('') +
         `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
         `release:    ${state.releaseSkipReason() ? 'paused' : 'active'}\n` +
         `watermark:  ${state.watermark()}\n`,
@@ -5441,7 +5448,12 @@ switch (command) {
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
       const previewProblem = await previewHostProblem(cfg);
-      if (previewProblem) problems.push({ severity: 'blocker', kind: 'preview_host', message: previewProblem });
+      if (previewProblem) problems.push(previewHostFinding(previewProblem));
+      if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
+        const { settled } = await settleRepos(reposOf(route), (t) => t.name, (t) => resolveOneRepo(route, t));
+        const tablePresent = flag('offline') ? undefined : (await new Tracker(route, cfg.ship).periscopesStatus().catch(() => ({ present: true }))).present;
+        problems.push(...routePeriscopeProblems({ route: route.route, hosts: true, repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })), tablePresent }));
+      }
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
       process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, problems, passed }, null, 2)}\n`);
@@ -5458,8 +5470,9 @@ switch (command) {
     process.stdout.write(`periscopes:        ${periscopeSummary(cfg)}\n`);
     const previewProblem = await previewHostProblem(cfg);
     if (previewProblem) {
-      process.stdout.write(`                   BLOCKER ${previewProblem}\n`);
-      process.exitCode = 1;
+      const blocks = previewHostFinding(previewProblem).severity === 'blocker';
+      process.stdout.write(`                   ${blocks ? 'BLOCKER' : 'ATTENTION'} ${previewProblem}\n`);
+      if (blocks) process.exitCode = 1;
     }
 
     // CREW-1509: rotation runs on append, so a live file far past the
@@ -5598,6 +5611,17 @@ switch (command) {
     // EPIC-077: the optional Periscopes table. Absent is a legitimate shape;
     // a present table missing a column the crew writes is named by column.
     const periscopes = await tracker.periscopesStatus();
+    // CREW-2857: what hosting needs on a route that opted in. A missing table is a
+    // blocker for hosting only; the rest of the crew carries on, so no exit code.
+    if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
+      const { settled } = await settleRepos(reposOf(route), (t) => t.name, (t) => resolveOneRepo(route, t));
+      for (const f of routePeriscopeProblems({
+        route: route.route, hosts: true, tablePresent: periscopes.present,
+        repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })),
+      })) {
+        process.stdout.write(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
+      }
+    }
     process.stdout.write(
       !periscopes.present
         ? 'periscopes:      Periscopes table absent — this workspace cannot host periscopes\n'

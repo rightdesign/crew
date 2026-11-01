@@ -144,6 +144,21 @@ test('runPeriscopeUp: a failed progress comment does not undo the periscope', as
   assert.ok(!h.calls.includes('teardown'));
 });
 
+test('runPeriscopeUp: leaves the local record status reads, and a failure to write it does not undo the periscope', async () => {
+  const saved: unknown[] = [];
+  const ok = await runPeriscopeUp(harness({ recordLocal: (sc) => { saved.push(sc); } }).deps, ARGS);
+  assert.deepEqual(saved, [{
+    ticket: 'TABL-900', ticketRecordId: 'rec1', periscopeRecordId: 'per1', repo: 'synthesis',
+    worktree: '/w/tablation-tabl-900', branch: 'tabl-900', url: 'http://localhost:40900', host: 'localhost',
+    state: 'live', isolated: false, startedAt: '2026-11-01T12:00:00.000Z', lastActivityAt: '2026-11-01T12:00:00.000Z',
+    expiresAt: '2026-11-01T14:00:00.000Z',
+  }]);
+  assert.equal(ok.periscopeRecordId, 'per1');
+  const h = harness({ recordLocal: () => { throw new Error('disk full'); } });
+  assert.equal((await runPeriscopeUp(h.deps, ARGS)).periscopeRecordId, 'per1');
+  assert.ok(!h.calls.includes('teardown'));
+});
+
 import {
   parsePeriscopeDownArgs, runPeriscopeDown, prototypeSection, periscopeListEntries, formatPeriscopeList,
   type PeriscopeDownDeps, type PeriscopeRowInfo,
@@ -232,6 +247,17 @@ test('runPeriscopeDown: an already kept or discarded row is reported and nothing
   assert.equal(res.outcome, 'unchanged');
   assert.deepEqual(h.calls, []);
   await assert.rejects(runPeriscopeDown(downHarness({}, []).deps, { number: '900', mode: 'keep', allowEmpty: false, json: false }), /no periscope for ticket 900/);
+});
+
+test('runPeriscopeDown removes the local record on keep and on discard, and a failure there does not undo the end', async () => {
+  for (const mode of ['keep', 'discard'] as const) {
+    const gone: string[] = [];
+    const h = downHarness({ forgetLocal: (id) => { gone.push(id); } });
+    await runPeriscopeDown(h.deps, { number: '900', mode, allowEmpty: false, json: false });
+    assert.deepEqual(gone, ['rec1']);
+  }
+  const h = downHarness({ forgetLocal: () => { throw new Error('EPERM'); } });
+  assert.equal((await runPeriscopeDown(h.deps, { number: '900', mode: 'discard', allowEmpty: false, json: false })).state, 'discarded');
 });
 
 test('prototypeSection counts files and lines', () => {

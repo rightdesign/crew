@@ -13,6 +13,8 @@
  * `cli.ts` supplies the real ones.
  */
 
+import type { PeriscopeSidecar } from './periscope-state.ts';
+
 export class PeriscopeError extends Error {}
 
 export interface PeriscopeUpArgs {
@@ -110,6 +112,8 @@ export interface PeriscopeDeps {
   /** Runs a hook in the worktree; null when the repository declares none. */
   runHook(name: 'ports' | 'isolate' | 'handoff' | 'preview', cwd: string, env: Record<string, string>): Promise<HookResult | null>;
   createRow(fields: Record<string, unknown>): Promise<{ id: string }>;
+  /** Keeps the local record `crew status` reads (CREW-2857); a failure is a warning, not an abandon. */
+  recordLocal?(sc: PeriscopeSidecar): void;
   comment(ticketId: string, body: string): Promise<void>;
   /** Stops anything listening for the worktree, removes it and its branch. */
   teardown(path: string, branch: string): Promise<void>;
@@ -215,6 +219,17 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   }
   d.say('recorded', 'recorded the Periscopes row', { periscopeRecordId: row.id });
 
+  try {
+    d.recordLocal?.({
+      ticket: draft.tag, ticketRecordId: draft.id, periscopeRecordId: row.id, repo: args.repo,
+      worktree: wt.path, branch: wt.branch, url, host: d.host, state: 'live', isolated: args.isolate,
+      startedAt: now.toISOString(), lastActivityAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + d.caps.idleMinutes * 60_000).toISOString(),
+    });
+  } catch (e) {
+    d.say('warning', `local periscope record not written: ${(e as Error).message}`);
+  }
+
   // The row and the server are real by now; a comment that fails to post
   // should not undo them, so say so and carry on.
   await d.comment(draft.id, progressComment(url, handoff?.output)).catch((e: Error) => {
@@ -297,6 +312,8 @@ export interface PeriscopeDownDeps {
   /** Removes the worktree; with `deleteBranch` also the local branch. */
   removeWorktree(worktree: string, branch: string, deleteBranch: boolean): void;
   setRowState(rowId: string, state: 'kept' | 'discarded'): Promise<void>;
+  /** Drops the local record `crew status` reads (CREW-2857); a failure is a warning, not an abort. */
+  forgetLocal?(ticketRecordId: string): void;
   say(event: string, message: string, data?: Record<string, unknown>): void;
 }
 
@@ -326,6 +343,10 @@ export interface PeriscopeDownResult {
   sha?: string;
 }
 
+function forgetLocal(d: PeriscopeDownDeps, ticketRecordId: string): void {
+  try { d.forgetLocal?.(ticketRecordId); } catch (e) { d.say('warn', `could not remove the local periscope record: ${(e as Error).message}`); }
+}
+
 export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDownArgs): Promise<PeriscopeDownResult> {
   const rows = await d.rowsForTicket(args.number);
   if (rows.length === 0) throw new PeriscopeError(`no periscope for ticket ${args.number} on this ship`);
@@ -347,6 +368,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
     d.say('ticket', `${row.ticket} closed as obsolete`);
     await d.setRowState(row.id, 'discarded');
     d.say('row', 'row is discarded');
+    forgetLocal(d, row.ticketRecordId);
     return { ticket: row.ticket, mode: 'discard', outcome: 'done', state: 'discarded' };
   }
 
@@ -377,6 +399,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   d.say('worktree', `removed ${row.worktree}; ${row.branch} stays, pushed`);
   await d.setRowState(row.id, 'kept');
   d.say('row', 'row is kept');
+  forgetLocal(d, row.ticketRecordId);
   return { ticket: row.ticket, mode: 'keep', outcome: 'done', state: 'kept', sha: pushed.sha };
 }
 
