@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.80.1] — 2026-11-01
+
+- CREW-2820 In ci_auto and ci_manual repos a merged ticket now records its commit_sha and merged_at as soon as the merge reaches the base branch, so tickets it blocks are released without waiting for the deploy to be confirmed.
+
 ## [0.80.0] — 2026-10-31
 
 - CREW-2777 A failed release gate now isolates the culprit branch (alone, by pair, then by bisecting), hands it back with the sibling named and releases the rest; the fallback alert says what isolation tried.
