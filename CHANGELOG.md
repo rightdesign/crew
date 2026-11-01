@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.112.0] — 2026-11-01
+
+- CREW-2800 Sandboxed runs get their own environment section and a Sandbox Setup skill instead of the worktree one, and a setup hook that reaches for a container engine fails at once with a message naming the in-sandbox services pattern.
+- CREW-2902 A running pool member or managed ship now applies a forge token set delivered on the lease long poll, replacing its stored tokens in place and acknowledging on its next status report.
+
 ## [0.111.1] — 2026-11-01
 
 - CREW-2908 `crew sandbox build`, `images` and `cache` work again; a duplicate `case` clause now fails the build.
