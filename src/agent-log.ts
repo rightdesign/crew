@@ -120,8 +120,10 @@ export interface AgentRunReport {
  */
 export class AgentLogUnreachableError extends Error {}
 
-class AgentLogHttpError extends Error {
+export class AgentLogHttpError extends Error {
   status: number;
+  /** True when the refusal was of the Agent Log row itself (not a later cycle post): the tracker is not taking this seat's reports (CREW-2832). */
+  row = false;
   constructor(message: string, status: number) {
     super(message);
     this.status = status;
@@ -265,8 +267,13 @@ export async function reportAgentRun(
     if (e.status >= 500) throw new AgentLogUnreachableError(e.message);
     // A server that predates the identity or work-item fields validates them
     // away as unknown properties with a 400; the run still deserves its row.
-    if (e.status !== 400 || (!run.harness && !run.provider && !ticketRecordId)) throw e;
-    entry = await post<{ id: string }>(target, '/agents/log', body);
+    if (e.status !== 400 || (!run.harness && !run.provider && !ticketRecordId)) { e.row = true; throw e; }
+    try {
+      entry = await post<{ id: string }>(target, '/agents/log', body);
+    } catch (e2) {
+      if (e2 instanceof AgentLogHttpError && e2.status < 500) e2.row = true;
+      throw e2;
+    }
   }
   for (const cycle of run.cycles) {
     await post(target, `/agents/log/${entry.id}/cycles`, {

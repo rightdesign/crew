@@ -24,7 +24,7 @@ import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -124,6 +124,22 @@ export function baseAttention(
   }
   if (outcome.action === 'level' || outcome.action === 'fast-forwarded') return { clear: baseUnsafeKey(repo) };
   return null;
+}
+
+/** The key of a route's `agent_log_refused` item; one per route, so a second refused run does not add another. */
+export const agentLogRefusedKey = (route: string): string => `agent_log_refused:${route}`;
+
+/**
+ * The item raised when the tracker refuses (4xx) a run's Agent Log report
+ * (CREW-2832). A refusal is not retried, so without this the only trace is a
+ * per-run warn line and every run's record and ticket spend is silently lost.
+ * Cleared the next time a report for the route is accepted.
+ */
+export function agentLogRefusedItem(route: string, role: string, status: number, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'agent_log_refused', key: agentLogRefusedKey(route), since: nowIso,
+    message: `${route}: the tracker refused the ${role} seat's run report (${status}) — runs and ticket spend are not being recorded; check the seat key's role`,
+  };
 }
 
 /** The key of a repo's `disk_low` item. */

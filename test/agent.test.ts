@@ -9,6 +9,7 @@ import {
   planAgentRun, describePlan, spawnAgent, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
+import { State } from '../src/state.ts';
 import { PROMPT_ADDITIONS_SEPARATOR } from '../src/prompt-additions.ts';
 import { API_KEY_VAR } from '../src/environment.ts';
 
@@ -718,4 +719,65 @@ test('spawnAgent relabels stream events with the ticket the run claims, marks th
   assert.equal(meta.ticket, 'TABL-1763');
   assert.equal(meta.exitCode, 0);
   assert.equal(meta.sessionId, 'sess-claim');
+});
+
+/** A fetch whose Agent Log row post answers `status` (or each queued status in turn) and otherwise succeeds. */
+function agentLogStatus(statuses: number[]) {
+  const originalFetch = globalThis.fetch;
+  let i = 0;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (`${init?.method ?? 'GET'} ${url.pathname}` === 'POST /api/workspaces/ws-1/agents/log') {
+      const status = statuses[Math.min(i++, statuses.length - 1)]!;
+      return new Response(JSON.stringify(status === 200 ? { id: 'log-1' } : { message: 'no' }), { status });
+    }
+    return new Response(JSON.stringify({ id: 'x' }), { status: 200 });
+  }) as typeof fetch;
+  return () => { globalThis.fetch = originalFetch; };
+}
+
+async function runWithAgentLog(stateDir: string, home: string, cycle: string) {
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1' },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir, roster: 'R', environment: 'ENV', apiKey: 'k', cycle,
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];
+  plan.cwd = stateDir;
+  const emit = new Emitter({ route: 'proj', cycleId: cycle, console: () => {} });
+  emit.enter('agent', 'dev');
+  await spawnAgent(plan, emit);
+  return new State(stateDir).shipAttention().previous();
+}
+
+test('a 4xx Agent Log refusal raises one agent_log_refused item per route, updates its status, and clears on the next accepted report (CREW-2832)', async (t) => {
+  const { home, state } = rig();
+  const restore = agentLogStatus([403, 403, 401, 200]);
+  t.after(restore);
+
+  const first = await runWithAgentLog(state, home, 'c1');
+  assert.equal(first.length, 1);
+  assert.equal(first[0]!.kind, 'agent_log_refused');
+  assert.equal(first[0]!.key, 'agent_log_refused:test-proj');
+  assert.match(first[0]!.message, /test-proj: the tracker refused the dev seat's run report \(403\)/);
+
+  const second = await runWithAgentLog(state, home, 'c2');
+  assert.equal(second.length, 1, 'a second refused run does not add another');
+  assert.equal(second[0]!.since, first[0]!.since);
+
+  const third = await runWithAgentLog(state, home, 'c3');
+  assert.equal(third.length, 1);
+  assert.match(third[0]!.message, /\(401\)/, 'a changed status updates the message');
+
+  assert.deepEqual(await runWithAgentLog(state, home, 'c4'), [], 'an accepted report clears it');
+});
+
+test('a 502 on the Agent Log post is queued and raises no attention item (CREW-2832)', async (t) => {
+  const { home, state } = rig();
+  t.after(agentLogStatus([502]));
+  assert.deepEqual(await runWithAgentLog(state, home, 'c1'), []);
 });

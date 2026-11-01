@@ -14,13 +14,15 @@ import { finished } from 'node:stream/promises';
 import type { StreamKindEvent } from './stream.ts';
 import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
+import { State } from './state.ts';
+import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRefusedKey } from './ship-attention.ts';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice } from './toolchain.ts';
 import { resolveContract } from './contract.ts';
-import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
@@ -867,6 +869,8 @@ async function finishRun(
     };
     try {
       const sent = await reportAgentRun({ ...id.agentLog, apiKey: agentLogKey }, report);
+      // The tracker took this seat's report, so a standing refusal for the route is over (CREW-2832).
+      try { clearShipAttention(new State(stateDirOfStream(id.streamPath)), agentLogRefusedKey(id.route)); } catch { /* attention is a convenience */ }
       if (sent.counterWarning) emit.warn(sent.counterWarning, { step: 'agent' });
       // The row exists but the tracker would not take the increment: queue just
       // that write, so the spend is not lost and the row is not posted twice.
@@ -890,6 +894,14 @@ async function finishRun(
           emit.warn(`could not report agent log (${e.message}); queued to retry`, { step: 'agent' });
           return { ms, ticket: attributedTicket, handoffPending: !!pending };
         } catch { /* fall through to the plain warning */ }
+      }
+      // A refusal is not retried, so surface it on the ship instead of leaving
+      // only the warn line below: once per route, updated if the status moves (CREW-2832).
+      if (e instanceof AgentLogHttpError && e.row && e.status >= 400 && e.status < 500) {
+        try {
+          await raiseShipAttention({ state: new State(stateDirOfStream(id.streamPath)), emit },
+            agentLogRefusedItem(id.route, id.role, e.status));
+        } catch { /* the warn line below still says it */ }
       }
       // A workspace that has never been provisioned/backfilled (ISSUE-465),
       // or a plain network hiccup, must not fail the run it is reporting
