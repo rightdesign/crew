@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -46,7 +46,9 @@ function rig() {
       return { stdout: '', stderr: '' };
     }
     const i = args.indexOf('-c');
-    const script = args[i + 1]!.replaceAll('/cache', volume);
+    const outMount = args.find((x, j) => args[j - 1] === '-v' && x.endsWith(':/out'));
+    let script = args[i + 1]!.replaceAll('/cache', volume);
+    if (outMount) script = script.replaceAll('/out', outMount.slice(0, -':/out'.length));
     const rest = args.slice(i + 2);
     if (rest.some((a) => failRun.has(a))) throw Object.assign(new Error('boom'), { stderr: 'fatal: could not read from remote' });
     const home = join(root, 'home');
@@ -205,4 +207,47 @@ test('a dependency tree is built once per lockfile hash and copied into the run 
   const clone = join(r.root, 'run');
   execFileSync('sh', ['-c', cloneScript({ mirrorDir: r.volume, repo: REPO, workDir: clone, origin: 'o', branch: 'b', lockfile: 'pnpm-lock.yaml' })]);
   assert.equal(readFileSync(join(clone, 'apps/a/node_modules/x/f'), 'utf8').trim(), 'hi');
+});
+
+test('materialize writes the base tip in place, skips an unchanged tip and removes files the tip dropped', async () => {
+  const r = rig();
+  const addFile = (name: string, body: string) => {
+    mkdirSync(join(r.root, 'work', name.includes('/') ? name.split('/')[0]! : '.'), { recursive: true });
+    writeFileSync(join(r.root, 'work', name), body);
+    execFileSync('git', ['-C', r.root + '/work', 'add', '-A']);
+  };
+  addFile('a.txt', 'one');
+  addFile('dir/b.txt', 'bee');
+  execFileSync('git', ['-C', r.root + '/work', '-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-q', '-m', 'files']);
+  execFileSync('git', ['-C', r.root + '/work', 'push', '-q', 'origin', 'HEAD:main'], { stdio: 'ignore' });
+  await r.cache.refresh([REPO]);
+
+  const parent = join(r.root, 'area', 'ws');
+  mkdirSync(parent, { recursive: true });
+  const first = await r.cache.materialize(REPO, 'main', parent, 'widgets');
+  assert.equal(first.changed, true);
+  assert.equal(first.tip, sh(r.mirror, 'rev-parse', 'main'));
+  assert.equal(readFileSync(join(parent, 'widgets', 'dir', 'b.txt'), 'utf8'), 'bee');
+  assert.ok(!existsSync(join(parent, 'widgets', '.git')), 'a read-only tree, not a clone');
+  const inode = statSync(join(parent, 'widgets')).ino;
+
+  assert.equal((await r.cache.materialize(REPO, 'main', parent, 'widgets')).changed, false);
+
+  writeFileSync(join(r.root, 'work', 'a.txt'), 'uno');
+  execFileSync('git', ['-C', r.root + '/work', 'rm', '-q', 'dir/b.txt']);
+  execFileSync('git', ['-C', r.root + '/work', 'add', '-A']);
+  execFileSync('git', ['-C', r.root + '/work', '-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-q', '-m', 'edit']);
+  execFileSync('git', ['-C', r.root + '/work', 'push', '-q', 'origin', 'HEAD:main'], { stdio: 'ignore' });
+  await r.cache.refresh([REPO]);
+  const second = await r.cache.materialize(REPO, 'main', parent, 'widgets');
+  assert.equal(second.changed, true);
+  assert.equal(readFileSync(join(parent, 'widgets', 'a.txt'), 'utf8'), 'uno');
+  assert.ok(!existsSync(join(parent, 'widgets', 'dir', 'b.txt')), 'the dropped file is gone');
+  assert.equal(statSync(join(parent, 'widgets')).ino, inode, 'the directory a container mounts is never swapped');
+});
+
+test('materialize fails clearly when the mirror lacks the base branch', async () => {
+  const r = rig();
+  await r.cache.refresh([REPO]);
+  await assert.rejects(r.cache.materialize(REPO, 'nope', join(r.root, 'area'), 'widgets'), /no branch nope/);
 });

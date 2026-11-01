@@ -103,7 +103,7 @@ A row's "Additional instructions" (`prompt_additions`) are appended, after a fix
 
 | Command | What it does |
 | --- | --- |
-| `crew passengers [route]` | Sync Host Passengers containers and tunnels once. |
+| `crew passengers [route]` | Sync Host Passengers containers and tunnels once. `crew passengers status [--json]` lists each served repository's checkout source (dedicated clone, or sandbox cache mirror on a sandbox-runner ship) and directory, and syncs nothing. |
 | `crew rotate-passenger-url [route]` | Force the tunnel to reconnect with a fresh public URL. |
 
 See [Host Passengers](/host-passengers).

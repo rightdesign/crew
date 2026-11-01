@@ -1854,6 +1854,18 @@ export function passengerCheckoutDir(basePath: string, workspace: string, repoNa
 }
 
 /**
+ * Where a sandbox-runner ship keeps the read-only checkouts Host Passengers
+ * mount (CREW-2807): `<stateDir>/passenger-sources/<workspace>/<repo>`. Such a
+ * ship has no primary checkouts, only the cache volume's bare mirrors, so the
+ * passenger sync materializes each served repository's base-branch tip here
+ * from its mirror. Undefined on a host-runner ship, which keeps using the
+ * `.passenger-checkouts` clones.
+ */
+export function passengerMirrorArea(ship: Pick<Ship, 'runner' | 'stateDir'>): string | undefined {
+  return ship.runner === 'sandbox' ? join(ship.stateDir, 'passenger-sources') : undefined;
+}
+
+/**
  * `passengerRepoTargets`, but pointed at each repo's dedicated passenger
  * checkout rather than its ordinary working directory, and carrying the
  * `owner/repo` remote a first clone needs even for a repo named explicitly
@@ -1862,7 +1874,7 @@ export function passengerCheckoutDir(basePath: string, workspace: string, repoNa
  * recovers it the same way `crew connect` populated it, regardless of
  * whether this route named the repo explicitly or let it default.
  */
-export function passengerCheckoutTargets(r: Route): RepoTarget[] {
+export function passengerCheckoutTargets(r: Route, mirrorArea?: string): RepoTarget[] {
   if (!r.hostPassengers) return [];
   const [workspace] = splitRoute(r.route);
   const remotes = r.resolved?.repoRemotes ?? {};
@@ -1871,7 +1883,7 @@ export function passengerCheckoutTargets(r: Route): RepoTarget[] {
     const forgeHost = t.forgeHost ?? (id ? r.resolved?.repoForgeHosts?.[id] : undefined);
     return {
       name: t.name,
-      dir: passengerCheckoutDir(r.reposBasePath, workspace, t.name),
+      dir: mirrorArea ? join(mirrorArea, workspace, t.name) : passengerCheckoutDir(r.reposBasePath, workspace, t.name),
       remote: t.remote ?? (id ? remotes[id] : undefined),
       ...(forgeHost ? { forgeHost } : {}),
     };

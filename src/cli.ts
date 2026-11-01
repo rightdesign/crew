@@ -146,7 +146,7 @@ import { shipIdentityJson } from './ship-status.ts';
 import { ensureMachineId, matchShipRows } from './machine-id.ts';
 import { ShipNameError, reconcileRouteShipName, validateShipName, setShipNameInYaml, pickShipRow, readSyncedName, writeSyncedName } from './ship-name.ts';
 import {
-  dockerAvailable, ensureImage, imagePresent, passengerImageRef, planContainers, syncAllPassengerCheckouts, syncPassengerContainers,
+  dockerAvailable, ensureImage, imagePresent, passengerImageRef, passengerCheckoutSyncSpecs, planContainers, syncAllPassengerCheckouts, syncPassengerContainers,
   type ContainerPlan,
 } from './passenger-containers.ts';
 import {
@@ -157,6 +157,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
+import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import {
@@ -916,6 +917,21 @@ function parseTicketNumber(input: string): string | null {
  * `--dry-run`'s whole point is "perform nothing", so this is a no-op under
  * it — same guard `beatShip`'s call site further down uses.
  */
+/**
+ * CREW-2807: on a sandbox-runner ship the passenger checkouts are written from
+ * the cache volume's mirrors, not cloned from the forge. Failures are reported
+ * once per pass; the previous contents stay in place.
+ */
+async function materializePassengerMirrors(emit: Emitter): Promise<void> {
+  const specs = passengerCheckoutSyncSpecs(cfg).filter((s) => s.mirror);
+  if (specs.length === 0) return;
+  for (const r of await materializeMirrorCheckouts(specs)) {
+    if (r.action === 'failed') {
+      emit.warn(`passenger checkout for ${r.name} could not be written from its mirror: ${r.detail}`, { step: 'passengers', data: { workspaceId: r.workspaceId, repo: r.name } });
+    }
+  }
+}
+
 async function syncHostPassengers(): Promise<void> {
   if (dryRun) return;
   const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
@@ -959,6 +975,7 @@ async function syncHostPassengers(): Promise<void> {
         );
       }
     }
+    await materializePassengerMirrors(emit);
     const tablationApiBaseUrl = passengerRoutes[0]!.baseUrl || DEFAULT_BASE_URL;
     // Sync-daemon listeners (ISSUE-554, decision 8's `initialize`-
     // triggered half) MUST be resolved before `syncPassengerContainers`
@@ -1517,13 +1534,19 @@ function sandboxCacheRepos(c: typeof route, ship: Ship): PassRepo[] {
 function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: Emitter): (() => Promise<unknown>) | undefined {
   const settings = cacheSettingsOf(ship.sandbox);
   if (!settings) return undefined;
-  return makeCachePass({
+  const pass = makeCachePass({
     cache: new SandboxCache(settings), volume: settings.volume,
     repos: () => sandboxCacheRepos(c, ship),
     lock: (dir) => acquireCheckoutLock(dir),
     fail: (key, message) => raiseShipAttention({ state, emit, route: c, ship }, { kind: 'sandbox_cache', key, message, since: new Date().toISOString() }).then(() => undefined),
     ok: (key) => clearShipAttention(state, key),
   });
+  // CREW-2807: right after a mirror refresh, passengers get the same tip.
+  return async () => {
+    const outcomes = await pass();
+    if (outcomes.length > 0) await materializePassengerMirrors(emit).catch((e) => emit.warn(`passenger mirror sync failed: ${(e as Error).message}`, { step: 'passengers' }));
+    return outcomes;
+  };
 }
 
 async function resolvedRepos(c: typeof route) {
@@ -5539,6 +5562,16 @@ switch (command) {
     // The standalone entry point the `passengers` scheduler unit invokes
     // (ISSUE-677) — see `syncHostPassengers`'s own doc comment for why this
     // is no longer inline in `case 'run'`.
+    if (positional[1] === 'status') {
+      const specs = passengerCheckoutSyncSpecs(cfg);
+      const rows = specs.map((s) => ({ workspaceId: s.workspaceId, repo: s.name, source: s.mirror ? 'mirror' : 'checkout', dir: s.dir }));
+      if (flag('json')) process.stdout.write(`${JSON.stringify({ runner: cfg.ship.runner ?? 'host', checkouts: rows }, null, 2)}\n`);
+      else if (rows.length === 0) process.stdout.write('no Host Passengers checkouts: no enabled route has hostPassengers on\n');
+      else for (const r of rows) {
+        process.stdout.write(`${r.repo} (${r.workspaceId}): ${r.source === 'mirror' ? 'sandbox cache mirror' : 'dedicated clone'} at ${r.dir}\n`);
+      }
+      break;
+    }
     await syncHostPassengers();
     break;
   }

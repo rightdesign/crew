@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   planContainers, portFor, containerNameFor, listPassengerContainers, startContainer, stopContainer,
-  syncPassengerContainers, syncAllPassengerCheckouts, dockerAvailable, passengerImageRef, ensureImage, type Exec, type ContainerPlan,
+  syncPassengerContainers, syncAllPassengerCheckouts, passengerCheckoutSyncSpecs, dockerAvailable, passengerImageRef, ensureImage, type Exec, type ContainerPlan,
 } from '../src/passenger-containers.ts';
 import type { CrewConfig, Route } from '../src/config.ts';
 import { passengerCheckoutDir } from '../src/config.ts';
@@ -467,4 +467,25 @@ test('syncAllPassengerCheckouts() fast-forwards a repo\'s dedicated checkout to 
 test('syncAllPassengerCheckouts() ignores every route with hostPassengers off, same as planContainers()', () => {
   const cfg = makeConfig([makeRoute({ route: 'w/a', hostPassengers: false, workspaceId: 'ws-1' })]);
   assert.deepEqual(syncAllPassengerCheckouts(cfg), []);
+});
+
+test('a sandbox-runner ship mounts mirror-fed checkouts from its state dir; switching the runner swaps the mount and the hash (CREW-2807)', () => {
+  const routes = [makeRoute({ route: 'w/a', hostPassengers: true, workspaceId: 'ws-1', repos: { alpha: '/tmp/alpha' } })];
+  const host = makeConfig(routes);
+  const sandbox = {
+    ...host, ship: { stateDir: '/tmp/state', runner: 'sandbox', sandbox: { cacheVolume: 'crew-cache' } },
+  } as unknown as CrewConfig;
+
+  const [hostPlan] = planContainers(host);
+  const [sbPlan] = planContainers(sandbox);
+  assert.equal(hostPlan!.mounts[0]!.hostPath, checkoutFor('w/a', 'alpha'));
+  assert.equal(sbPlan!.mounts[0]!.hostPath, '/tmp/state/passenger-sources/w/alpha');
+  assert.equal(sbPlan!.mounts[0]!.containerPath, hostPlan!.mounts[0]!.containerPath);
+  assert.notEqual(sbPlan!.mountsHash, hostPlan!.mountsHash, 'a different source recreates the container on the next sync');
+
+  assert.equal(passengerCheckoutSyncSpecs(host)[0]!.mirror, undefined);
+  const [spec] = passengerCheckoutSyncSpecs(sandbox);
+  assert.equal(spec!.mirror?.cache.volume, 'crew-cache');
+  assert.equal(spec!.dir, '/tmp/state/passenger-sources/w/alpha');
+  assert.deepEqual(syncAllPassengerCheckouts(sandbox), [], 'a mirror-fed checkout is never cloned from the forge');
 });

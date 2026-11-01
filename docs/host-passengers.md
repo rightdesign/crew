@@ -125,6 +125,25 @@ is not retried each cycle; it is retried once the clone URL changes (the
 To sync containers and tunnels once by hand, run `crew passengers`; the
 scheduler's passengers unit invokes the same command.
 
+### On a sandbox-runner ship
+
+A ship whose `ship.runner` is `sandbox` has no primary checkouts, only the
+[sandbox cache volume](/sandbox-runner)'s bare mirrors, so it does not clone
+from the forge. Instead the passenger sync writes each served repository's
+base-branch tip from its mirror into a read-only tree under
+`<stateDir>/passenger-sources/<workspace>/<repo>`, and the container mounts
+that. The tree is rewritten right after each mirror refresh, on every
+passengers pass and when a Passenger session starts, so a Passenger sees the
+same tip the next sandbox run will clone. It holds files only, not a git
+repository. A repository whose mirror is missing or has no base branch is
+reported and keeps its previous contents.
+
+Changing `ship.runner` between `host` and `sandbox` changes which directory is
+mounted, so the container is recreated on the next sync; nothing else has to
+be done. A host-runner ship is unchanged. `crew passengers status [--json]`
+names the source in use for each repository (`dedicated clone` or `sandbox
+cache mirror`).
+
 ## The public URL, and rotating it
 
 Each reconnect gets a fresh, random public URL. If one leaks, force a

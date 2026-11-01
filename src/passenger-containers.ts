@@ -23,7 +23,8 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { CrewConfig } from './config.ts';
-import { crewVersion, passengerCheckoutTargets, reposOf } from './config.ts';
+import { crewVersion, passengerCheckoutTargets, passengerMirrorArea, reposOf } from './config.ts';
+import { cacheSettingsOf, type CacheSettings } from './sandbox-cache.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { syncPassengerCheckout, originUrlOf, type CloneScheme, type PassengerCheckoutOutcome } from './git.ts';
 
@@ -160,7 +161,7 @@ export function planContainers(cfg: CrewConfig): ContainerPlan[] {
     if (!route.enabled || !route.hostPassengers || !route.resolved?.workspaceId) continue;
     const workspaceId = route.resolved.workspaceId;
     const mounts = byWorkspace.get(workspaceId) ?? new Map<string, Mount>();
-    for (const target of passengerCheckoutTargets(route)) {
+    for (const target of passengerCheckoutTargets(route, passengerMirrorArea(cfg.ship))) {
       mounts.set(target.name, { hostPath: target.dir, containerPath: `/workspace/${target.name}` });
     }
     byWorkspace.set(workspaceId, mounts);
@@ -397,6 +398,13 @@ export interface PassengerCheckoutSyncSpec {
   cloneScheme?: CloneScheme;
   /** The Repos row's `forge_host` (CREW-2798); absent means `github.com`. */
   forgeHost?: string;
+  /**
+   * Set on a sandbox-runner ship (CREW-2807): `dir` is not a clone of the forge
+   * but a read-only checkout materialized from the sandbox cache volume's
+   * mirror, by `passenger-mirror.ts`. Carries the volume settings because the
+   * sync daemon child never loads `crew.yaml`.
+   */
+  mirror?: { cache: CacheSettings };
 }
 
 /**
@@ -422,8 +430,10 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
     if (!route.enabled || !route.hostPassengers || !route.resolved?.workspaceId) continue;
     if (workspaceId && route.resolved.workspaceId !== workspaceId) continue;
     const routeWorkspaceId = route.resolved.workspaceId;
+    const mirrorArea = passengerMirrorArea(cfg.ship);
+    const cache = mirrorArea ? cacheSettingsOf(cfg.ship.sandbox) : null;
     const ordinaryByName = new Map(reposOf(route).map((t) => [t.name, t]));
-    for (const target of passengerCheckoutTargets(route)) {
+    for (const target of passengerCheckoutTargets(route, mirrorArea)) {
       const ordinary = ordinaryByName.get(target.name);
       const override = route.repoOverrides[target.name];
       const effective = resolveRepoConfig(
@@ -441,6 +451,7 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
         originUrl: ordinary ? originUrlOf(ordinary.dir, effective.branch.remote) : null,
         cloneScheme: cfg.ship.cloneScheme,
         ...(target.forgeHost ? { forgeHost: target.forgeHost } : {}),
+        ...(cache ? { mirror: { cache } } : {}),
       });
     }
   }
@@ -463,7 +474,9 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
  * a container can mount it.
  */
 export function syncAllPassengerCheckouts(cfg: CrewConfig): PassengerCheckoutSyncResult[] {
-  return passengerCheckoutSyncSpecs(cfg).map((spec) => ({
+  // Mirror-fed checkouts (CREW-2807) are not clones of the forge: they are
+  // refreshed by `materializeMirrorCheckouts` (passenger-mirror.ts).
+  return passengerCheckoutSyncSpecs(cfg).filter((spec) => !spec.mirror).map((spec) => ({
     name: spec.name,
     workspaceId: spec.workspaceId,
     outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base, { originUrl: spec.originUrl, scheme: spec.cloneScheme, host: spec.forgeHost }),

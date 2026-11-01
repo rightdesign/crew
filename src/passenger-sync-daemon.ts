@@ -62,6 +62,7 @@ import {
   portFor, passengerCheckoutSyncSpecs, type ContainerPlan, type SyncDaemonEndpoint, type PassengerCheckoutSyncSpec,
 } from './passenger-containers.ts';
 import { syncPassengerCheckout, type PassengerCheckoutOutcome } from './git.ts';
+import { materializeMirrorCheckouts, mirrorOutcome } from './passenger-mirror.ts';
 import { isPidAlive } from './tunnel.ts';
 import { secretsMatch } from './secret-compare.ts';
 
@@ -145,17 +146,24 @@ export function createSyncDaemonServer(targets: PassengerCheckoutSyncSpec[], sec
       return;
     }
 
-    try {
-      const synced: SyncOutcome[] = targets.map((t) => ({
-        name: t.name,
-        outcome: syncPassengerCheckout(t.dir, t.remote, t.gitRemoteName, t.base, { originUrl: t.originUrl, scheme: t.cloneScheme, host: t.forgeHost }),
-      }));
+    void (async () => {
+      // A mirror-fed checkout (CREW-2807) is levelled from the sandbox cache
+      // volume's mirror, which crewd's cache pass keeps fresh; there is no
+      // forge clone to fast-forward.
+      const mirrored = await materializeMirrorCheckouts(targets);
+      const synced: SyncOutcome[] = [
+        ...mirrored.map((m) => ({ name: m.name, outcome: mirrorOutcome(m) })),
+        ...targets.filter((t) => !t.mirror).map((t) => ({
+          name: t.name,
+          outcome: syncPassengerCheckout(t.dir, t.remote, t.gitRemoteName, t.base, { originUrl: t.originUrl, scheme: t.cloneScheme, host: t.forgeHost }),
+        })),
+      ];
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ synced }));
-    } catch (error) {
+    })().catch((error: unknown) => {
       res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({
         error: error instanceof Error ? error.message : String(error),
       }));
-    }
+    });
   });
 }
 

@@ -155,6 +155,34 @@ done
 rm -rf "$droot/$h"; mv "$droot/$h.tmp" "$droot/$h"
 `;
 
+/**
+ * Writes a mirror's base-branch tip into a host directory (CREW-2807). The
+ * helper reads the volume and mounts the checkout's parent at /out. Files
+ * are extracted over the existing tree and the ones the tip no longer has are
+ * removed, so a container bind-mounting the directory keeps seeing one
+ * directory (a swap would leave it holding the old, deleted one). `<name>.tip`
+ * and `<name>.files` sit beside the checkout, never inside it.
+ */
+const MATERIALIZE_SCRIPT = `
+set -e
+export GIT_TERMINAL_PROMPT=0
+m=${VOLUME_ROOT}/"$1"; name="$2"; base="$3"; out=/out; d="$out/$name"
+git config --global --add safe.directory '*'
+tip=$(git -C "$m" rev-parse --verify --quiet "refs/heads/$base^{commit}") || { echo "the mirror has no branch $base" >&2; exit 3; }
+if [ -d "$d" ] && [ -f "$out/$name.tip" ] && [ "$(cat "$out/$name.tip")" = "$tip" ]; then echo "unchanged $tip"; exit 0; fi
+mkdir -p "$d"
+git -C "$m" ls-tree -r --name-only "$tip" | LC_ALL=C sort > "$out/$name.files.new"
+git -C "$m" archive "$tip" | tar -x -C "$d"
+if [ -f "$out/$name.files" ]; then
+  LC_ALL=C comm -23 "$out/$name.files" "$out/$name.files.new" | while IFS= read -r f; do rm -f "$d/$f"; done
+fi
+mv "$out/$name.files.new" "$out/$name.files"
+printf '%s\n' "$tip" > "$out/$name.tip"
+echo "updated $tip"
+`;
+
+export interface MaterializeOutcome { tip: string; changed: boolean }
+
 export interface MirrorInfo { repo: CacheRepo; lastRefresh: string | null }
 export interface RefreshOutcome { repo: CacheRepo; ok: boolean; detail?: string }
 
@@ -179,10 +207,12 @@ export class SandboxCache {
     return true;
   }
 
-  private helper(image: string, script: string, args: string[], env: Record<string, string> = {}): Promise<{ stdout: string; stderr: string }> {
+  private helper(
+    image: string, script: string, args: string[], env: Record<string, string> = {}, extra: string[] = [],
+  ): Promise<{ stdout: string; stderr: string }> {
     // `-e NAME` takes the value from the child's environment, so a token never reaches argv.
     const flags = Object.keys(env).flatMap((k) => ['-e', k]);
-    return this.engine(['run', '--rm', '--label', DOCKER_LABEL_OWNER, '-v', `${this.s.volume}:${VOLUME_ROOT}`, ...flags, '--entrypoint', 'sh', image, '-c', script, 'sh', ...args], { ...process.env, ...env });
+    return this.engine(['run', '--rm', '--label', DOCKER_LABEL_OWNER, '-v', `${this.s.volume}:${VOLUME_ROOT}`, ...extra, ...flags, '--entrypoint', 'sh', image, '-c', script, 'sh', ...args], { ...process.env, ...env });
   }
 
   /**
@@ -213,6 +243,21 @@ export class SandboxCache {
       out.push({ repo: r, ok: true });
     }
     return out;
+  }
+
+  /**
+   * Makes `<parentDir>/<name>` hold the tree at the tip of `base` in the
+   * repository's mirror, owned by the host user so crew can remove it. Reads
+   * the mirror only; the refresh that moves the tip is `refresh`.
+   */
+  async materialize(repo: CacheRepo, base: string, parentDir: string, name: string): Promise<MaterializeOutcome> {
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+    const extra = ['-v', `${parentDir}:/out`, ...(uid === undefined || gid === undefined ? [] : ['--user', `${uid}:${gid}`, '-e', 'HOME=/tmp'])];
+    const { stdout } = await this.helper(this.s.helperImage, MATERIALIZE_SCRIPT, [mirrorRelPath(repo), name, base], {}, extra);
+    const m = /^(updated|unchanged) (\S+)/m.exec(stdout);
+    if (!m) throw new Error(`unexpected output materializing ${repo.host}/${repo.path}: ${stdout.trim().slice(0, 200)}`);
+    return { tip: m[2]!, changed: m[1] === 'updated' };
   }
 
   /** Mirrors in the volume with their last refresh; empty when the volume does not exist. */
