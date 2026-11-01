@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.108.0] — 2026-11-01
+
+- CREW-2807 Host Passengers work on a ship with no primary checkout: a sandbox-runner ship mounts a read-only tree written from the cache volume's mirror, refreshed after every mirror refresh, and `crew passengers status` names the source in use.
+
 ## [0.107.0] — 2026-11-01
 
 - CREW-2900 A repository's sandbox image can warm its pnpm store from its lockfile via `sandbox.warm` in `.crew.yaml`.
