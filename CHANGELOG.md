@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.97.0] — 2026-11-01
+
+- CREW-2803 The ship tunnel carries the control API to the relay (`<url>/control/...`) even with Host Passengers off, writes the relay URL to the Ships row, shows it in `crew status`, and `crew doctor` probes it end to end.
+
 ## [0.96.0] — 2026-11-01
 
 - CREW-2792 Headless Linux hosts: `crew install` enables lingering (or installs system units under root), `ship.env` reaches the unit environment, the lazy clone honors `ship.cloneScheme`, and `crew provision` plus `scripts/provision.sh` set a host up in one re-runnable command.
