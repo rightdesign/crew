@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.95.0] — 2026-11-01
+
+- CREW-2786 Agent runs on the host runner now have a wall-clock limit (`maxRunMinutes`, default 240, 0 for none) that kills the run's process group at the deadline, survives a daemon restart and shows in `crew status`.
+- CREW-2791 connect records a new ship's kind, and doctor names the forge host, ship kind, instance class and relay URL columns a workspace has not taken yet.
+
 ## [0.94.0] — 2026-11-01
 
 - CREW-2859 The ship control API can open, end and list Passenger periscopes (POST /periscopes, POST /periscopes/TICKET/down, GET /periscopes) on routes that set hostPeriscopes.
