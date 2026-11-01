@@ -132,6 +132,7 @@ import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { describeRelayProbe, probeRelayControl } from './relay-probe.ts';
+import { shipIdentityJson } from './ship-status.ts';
 import { ensureMachineId, matchShipRows } from './machine-id.ts';
 import { ShipNameError, reconcileRouteShipName, validateShipName, setShipNameInYaml, pickShipRow, readSyncedName, writeSyncedName } from './ship-name.ts';
 import {
@@ -5743,6 +5744,7 @@ switch (command) {
           waiting: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : null,
         },
         ships: shipRows.map((s) => ({
+          ...shipIdentityJson(s),
           name: s.name ?? null,
           lastSeen: s.last_seen ?? null,
           engaged: !!s.engaged,

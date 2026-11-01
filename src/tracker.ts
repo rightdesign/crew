@@ -192,6 +192,10 @@ export interface ShipRow {
   tunnel_status?: string | null;
   /** The tunnel's public base URL (CREW-2803); the key's absence means the template has not taken the column. */
   relay_url?: string | null;
+  /** Where this ship runs (EPIC-075); absent when the template has not taken the column. */
+  kind?: string | null;
+  /** The managed ship's instance class; absent when the template has not taken the column. */
+  instance_class?: string | null;
   /**
    * This ship's open attention items (CREW-1373). The column is optional on
    * the board: a workspace that has not taken the template update returns
