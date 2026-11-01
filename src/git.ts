@@ -929,6 +929,17 @@ export function worktrees(cwd: string): WorktreeInfo[] {
 export type CloneScheme = 'ssh' | 'https';
 
 /**
+ * Hosts this ship holds a readable forge token for (CREW-2783). For these the
+ * clone URL is always HTTPS, since the token only answers HTTPS; the origin /
+ * `cloneScheme` logic below applies only to a host with no token. Set once at
+ * startup by the CLI, like `setCloneRecorder`.
+ */
+let tokenHosts: ReadonlySet<string> = new Set();
+export function setForgeTokenHosts(hosts: Iterable<string>): void {
+  tokenHosts = new Set([...hosts].map((h) => h.toLowerCase()));
+}
+
+/**
  * `owner/repo` (the tracker's `Repos.remote` shape) -> a real clone URL.
  *
  * The scheme follows how this ship already talks to GitHub: `originUrl` (the
@@ -939,7 +950,7 @@ export type CloneScheme = 'ssh' | 'https';
  */
 export function cloneUrlFor(remote: string, opts: { originUrl?: string | null; scheme?: CloneScheme } = {}): string {
   const origin = opts.originUrl?.trim() ?? '';
-  const scheme: CloneScheme = /^https?:\/\//i.test(origin) ? 'https'
+  const scheme: CloneScheme = tokenHosts.has('github.com') ? 'https' : /^https?:\/\//i.test(origin) ? 'https'
     : /^(git@|ssh:\/\/)/i.test(origin) ? 'ssh'
     : opts.scheme ?? 'ssh';
   return scheme === 'https' ? `https://github.com/${remote}.git` : `git@github.com:${remote}.git`;

@@ -15,6 +15,7 @@ import type { StreamKindEvent } from './stream.ts';
 import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { State } from './state.ts';
+import { forgeRunEnv, crewCommandLine } from './forges.ts';
 import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRefusedKey } from './ship-attention.ts';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES } from './config.ts';
@@ -396,6 +397,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
       // in_progress (ISSUE-490, ISSUE-591). Setting this is what lets that
       // hook tell the two apart; it has nothing to do with the run itself.
       [CREW_LANE_ROLE_VAR]: o.role,
+      // CREW-2783: the ship's forge credential — git helper config plus the
+      // token as an env var for `gh` and friends. Empty without `forges:`.
+      ...forgeRunEnv(o.ship.forges, { crewCommand: crewCommandLine(), configFile: process.env.CREW_CONFIG, stateDir: o.stateDir }),
     },
     digestAttached: digest !== undefined,
     digestAgeSeconds: ageSeconds,

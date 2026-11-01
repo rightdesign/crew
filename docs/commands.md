@@ -159,3 +159,25 @@ A project can set a minimum crew version. A crew below it claims no ticket, keep
 ## Options on every command
 
 - `--dry-run` decides everything and performs nothing.
+
+## Forge credentials
+
+A ship can hold its own git token instead of relying on whatever auth the host's git has. Declare it per host under `ship.forges` in `crew.yaml`:
+
+```yaml
+ship:
+  forges:
+    github.com:
+      # username: x-access-token   # the default; GitHub accepts any non-empty name for a PAT
+      token:
+        source: file              # file | keychain | env
+        # path: ~/secrets/gh.token   (file; default <stateDir>/forges/<host>.token)
+        # service: crew-forge        (keychain)
+        # var: GH_PAT                (env)
+```
+
+- A **file** source is created with mode 0600 and refused when group- or world-readable. **keychain** uses the macOS Keychain or `secret-tool` on Linux. **env** reads a variable and cannot be written by crew.
+- `crew forge set <host>` configures the entry (first time: `--source file|keychain|env`, plus `--var` for `env`) and stores the token from `--token T`, `--token-stdin` or `CREW_FORGE_TOKEN`. `crew forge rotate <host>` replaces it. `crew forge` lists hosts and whether a token is present.
+- Crew's own git commands and every agent run get `crew credential` as git's credential helper through `GIT_CONFIG_COUNT` environment. No `.gitconfig`, `.git-credentials`, remote URL or argv carries the token. Agent runs also get it as `GH_TOKEN`, `GITHUB_TOKEN` and `CREW_FORGE_TOKEN`.
+- With a token for `github.com`, clones use HTTPS regardless of `ship.cloneScheme` or the checkout's `origin`.
+- `crew doctor` runs its push probe through the helper. A missing token, a token that can fetch but not push (read-only), and a refused token are each reported naming the host.

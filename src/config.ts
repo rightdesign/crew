@@ -28,6 +28,7 @@ import { parse } from 'yaml';
 import { DEFAULT_EVENTS_ROTATE_BYTES } from './events.ts';
 import { PAIR_HARNESS_NAMES, DEFAULT_PAIR, isPairHarness } from './pair-install.ts';
 import { TIERS, HARNESS_NAMES, LEGACY_TOOLCHAIN, adapterFor, isHarness, type ToolchainSpec, type ToolchainTier, type Tier } from './toolchain.ts';
+import { ForgeError, parseForges, type ForgesConfig } from './forges.ts';
 import { getSessionStore, hostFromUrl, type SessionStore } from '@tablation/client';
 import {
   hostPlatform, isShipPlatform,
@@ -539,6 +540,11 @@ export interface Ship {
    */
   cloneScheme?: 'ssh' | 'https';
   /**
+   * This ship's own git-forge credentials, keyed by host (CREW-2783). See
+   * forges.ts. Unset means crew leaves git authentication to the host.
+   */
+  forges?: ForgesConfig;
+  /**
    * The host a Passenger reaches this ship by (a LAN name or a
    * private-network hostname). Handed to the `preview` hook as
    * `CREW_PREVIEW_HOST` for Passenger-opened periscopes; `localhost`
@@ -580,10 +586,19 @@ function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
   throw new ConfigError(`ship.cloneScheme must be "ssh" or "https", got ${JSON.stringify(v)}`);
 }
 
+function parseShipForges(v: unknown): ForgesConfig | undefined {
+  try {
+    return parseForges(v);
+  } catch (e) {
+    if (e instanceof ForgeError) throw new ConfigError(e.message);
+    throw e;
+  }
+}
+
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
-  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme',
+  'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
   'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes',
 ]);
 const ROUTE_KEYS = new Set([
@@ -1136,6 +1151,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       relayPublicDomain: shipRaw.relayPublicDomain ? String(shipRaw.relayPublicDomain) : undefined,
       passengerImage: shipRaw.passengerImage ? String(shipRaw.passengerImage) : undefined,
       cloneScheme: parseCloneScheme(shipRaw.cloneScheme),
+      forges: parseShipForges(shipRaw.forges),
       previewHost: shipRaw.previewHost ? String(shipRaw.previewHost).trim() || undefined : undefined,
       maxPeriscopes,
       periscopeIdleMinutes,

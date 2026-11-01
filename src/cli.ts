@@ -70,6 +70,8 @@ import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
+import { runCredential, runForge } from './forge-cmd.ts';
+import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote } from './forges.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
@@ -109,7 +111,7 @@ import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } 
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
-  ensureRepoCheckout, originUrlOf, setCloneRecorder, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
+  ensureRepoCheckout, originUrlOf, setCloneRecorder, setForgeTokenHosts, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, draftWorktrees, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
 import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
@@ -352,6 +354,8 @@ function usage(problem?: string, requested = false): never {
   crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
   crew status [route] [--json]   paused/running state; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
+  crew forge [set|rotate <host>] [--token T | --token-stdin] [--source file|keychain|env]   this ship's git-forge tokens (ship.forges)
+  crew credential get|store|erase   git credential helper answering from ship.forges (git runs it; not for hand use)
   crew whoami [route] [--json]   the signed-in identity, key role, operator Crew row and credential source per route
   crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
   crew doctor [route] [--fix] [--offline] [--json]   preflight; --fix enables clean routes and offers crew install;
@@ -455,7 +459,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
  * test/help-cli.test.ts checks this set against the `case` labels.
  */
 const KNOWN_COMMANDS = new Set([
-  'passenger-sync-daemon', 'agents', 'connect', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
+  'passenger-sync-daemon', 'agents', 'connect', 'credential', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
@@ -640,7 +644,7 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    const toleratesNoRoutes = command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out'));
+    const toleratesNoRoutes = command === 'credential' || command === 'forge' || command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || (command === 'connect' && flag('sign-out'));
     // CREW-2443: sign-out and reset exist for a machine whose only trace is a
     // dry-run connect's keychain session, so they must load with NO crew.yaml.
     // Load an empty ship block at the path a config-less connect would have
@@ -658,6 +662,34 @@ try {
     process.exit(2);
   }
   throw e;
+}
+// CREW-2783: `credential` is git calling us, so it answers before anything
+// else loads (nothing but stdout may be written), and `forge` needs no route.
+if (command === 'credential') {
+  const r = runCredential(positional[1], readFileSync(0, 'utf8'), cfg.ship.forges, cfg.ship.stateDir);
+  process.stdout.write(r.out);
+  process.stderr.write(r.err);
+  process.exit(r.code);
+}
+if (command === 'forge') {
+  const r = runForge(
+    { sub: positional[1], host: positional[2], token: value('token'), tokenStdin: flag('token-stdin'), source: value('source'), var: value('var'), path: value('path'), service: value('service') },
+    {
+      forges: cfg.ship.forges, stateDir: cfg.ship.stateDir, configFile: cfg.configFile,
+      readFile: (p) => readFileSync(p, 'utf8'), writeFile: (p, t) => writeFileSync(p, t),
+      stdin: () => readFileSync(0, 'utf8'), env: process.env,
+    },
+  );
+  process.stdout.write(r.out);
+  process.stderr.write(r.err);
+  process.exit(r.code);
+}
+// CREW-2783: with forges configured, every git command crew runs itself goes
+// through the ship's credential helper, and clones of a host with a token use
+// HTTPS. Nothing is written to disk: this is process environment only.
+if (cfg.ship.forges) {
+  Object.assign(process.env, gitCredentialEnv({ crewCommand: crewCommandLine(), configFile: cfg.configFile }));
+  setForgeTokenHosts(Object.keys(cfg.ship.forges).filter((h) => hasForgeToken(cfg.ship.forges, h, cfg.ship.stateDir)));
 }
 // One-time async hydrate (ISSUE-966): fills in `route.apiKey` in memory for
 // any route with no explicit `apiKey`/working `apiKeyFile`, from whatever
@@ -5559,7 +5591,10 @@ switch (command) {
           if (existsSync(r.dir)) {
             pushAuth.push({
               route: c.route, repo: r.name,
-              result: probePushAuth({ dir: r.dir, remote, remoteUrl: originUrlOf(r.dir, remote), offline: flag('offline') }),
+              result: probePushAuth({
+                dir: r.dir, remote, remoteUrl: originUrlOf(r.dir, remote), offline: flag('offline'),
+                forge: forgeOfRemote(cfg.ship.forges, originUrlOf(r.dir, remote), (h) => hasForgeToken(cfg.ship.forges, h, cfg.ship.stateDir)),
+              }),
             });
           }
           if (isPrBased(r.config.hooks)) prBased.add(r.name);

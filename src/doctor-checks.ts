@@ -37,7 +37,7 @@ export function pushAuthHint(remoteUrl: string): string {
  * `offline` skips the network call and says so.
  */
 export function probePushAuth(
-  o: { dir: string; remote: string; remoteUrl: string | null; offline?: boolean },
+  o: { dir: string; remote: string; remoteUrl: string | null; offline?: boolean; forge?: { host: string; hasToken: boolean } },
   run: GitRunner = realGit,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): PushAuthResult {
@@ -50,7 +50,28 @@ export function probePushAuth(
   } catch (e) {
     const err = e as { stderr?: Buffer | string; message: string };
     const raw = (err.stderr ? String(err.stderr) : err.message).trim().split('\n').filter(Boolean).slice(-2).join(' / ');
-    return { state: 'failed', detail: raw || 'push dry-run failed', hint: pushAuthHint(o.remoteUrl) };
+    const detail = raw || 'push dry-run failed';
+    const f = o.forge;
+    if (!f) return { state: 'failed', detail, hint: pushAuthHint(o.remoteUrl) };
+    if (!f.hasToken) {
+      return {
+        state: 'failed', detail: `no token for forge ${f.host}: ${detail}`,
+        hint: `set one with \`crew forge set ${f.host}\` (forges.${f.host} in crew.yaml)`,
+      };
+    }
+    // A token is configured. If a read still works, the token is read-only (CREW-2783).
+    try {
+      run(o.dir, ['ls-remote', '--exit-code', o.remote, 'HEAD'], env);
+      return {
+        state: 'failed', detail: `the token for forge ${f.host} is read-only (fetch works, push refused): ${detail}`,
+        hint: `replace it with one that can write contents: \`crew forge rotate ${f.host}\``,
+      };
+    } catch {
+      return {
+        state: 'failed', detail: `the token for forge ${f.host} was refused: ${detail}`,
+        hint: `check that it is current and has access to this repository: \`crew forge rotate ${f.host}\``,
+      };
+    }
   }
 }
 
