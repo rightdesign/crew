@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.84.0] — 2026-11-01
+
+- CREW-2853 crew.yaml can set hostPeriscopes, ship.previewHost, maxPeriscopes and periscopeIdleMinutes for a route.
+
 ## [0.83.0] — 2026-11-01
 
 - CREW-2850 Repositories can declare an optional `preview` hook that starts the worktree's dev server for a viewer, bound to CREW_PREVIEW_HOST, and prints its URL as the last line; it appears in the agent brief's hooks table and is syntax-checked by `crew repos check`.
