@@ -34,7 +34,7 @@
  */
 
 import { dirname, join, extname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -47,7 +47,7 @@ import { isCompiledBinary } from './runtime-info.ts';
  * binary itself when this is a `bun build --compile` executable — there is
  * no separate script for a compiled binary's own `process.execPath` to run.
  */
-function crewInvocation(crewHome: string): string[] {
+export function crewInvocation(crewHome: string): string[] {
   if (isCompiledBinary(import.meta.url)) return [process.execPath];
   return [process.execPath, join(crewHome, 'bin', 'crew')];
 }
@@ -159,6 +159,14 @@ export interface InstallPlan {
    * replace the other's on every reinstall.
    */
   cronMarker: string | null;
+  /**
+   * `loginctl enable-linger <user>` for a systemd USER unit (CREW-2792): without
+   * lingering the user manager, and the daemon with it, stops at logout. Run
+   * after the load commands; a failure is reported but does not fail the install.
+   */
+  lingerCommand?: string[];
+  /** Why lingering was not planned, or what to do by hand; printed when the command fails. */
+  lingerHint?: string;
 }
 
 export interface UninstallPlan {
@@ -246,6 +254,54 @@ export function dockerPathProblem(ship: Ship, shellPath: string = process.env.PA
         'then add its directory to ship.extraPath in crew.yaml and run `crew install`';
 }
 
+/**
+ * Who a systemd unit is for (CREW-2792). Run as root, `crew install` writes
+ * SYSTEM units (`/etc/systemd/system`, `User=<user>`) because a root account
+ * usually has no user manager to host a `--user` unit; run as anyone else it
+ * writes user units and enables lingering so they outlive the login session.
+ * `user` is the account the daemon runs as: `SUDO_USER` when root got here
+ * through sudo, else the current account.
+ */
+export interface InstallContext {
+  root: boolean;
+  user: string;
+}
+
+/** The default for pure planning and tests: a non-root user unit. */
+export const USER_INSTALL: InstallContext = { root: false, user: '' };
+
+export function installContext(env: NodeJS.ProcessEnv = process.env): InstallContext {
+  const root = typeof process.getuid === 'function' && process.getuid() === 0;
+  const user = (root && env.SUDO_USER) || userInfo().username;
+  return { root, user };
+}
+
+export const SYSTEM_UNIT_DIR = '/etc/systemd/system';
+
+/** Where a label's system-scope unit would live; its presence means the unit was installed by root. */
+export function systemUnitPathFor(label: string, suffix: 'service' | 'timer' = 'service'): string {
+  return join(SYSTEM_UNIT_DIR, `${label}.${suffix}`);
+}
+
+/** The variables a unit carries: `PATH` first, then `ship.env` in file order. */
+export function unitEnvironment(ship: Ship): Array<[string, string]> {
+  return [['PATH', pathFor(ship)], ...Object.entries(ship.env ?? {})];
+}
+
+/** `Environment=` lines for a systemd unit. `PATH` keeps the bare form; others are quoted so spaces survive. */
+function systemdEnvLines(ship: Ship): string {
+  return unitEnvironment(ship).map(([k, v]) => {
+    if (k === 'PATH') return `Environment=PATH=${v}`;
+    const escaped = `${k}=${v}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%');
+    return `Environment="${escaped}"`;
+  }).join('\n');
+}
+
+function shQuote(v: string): string {
+  if (/^[A-Za-z0-9_/.:,@%+=-]+$/.test(v)) return v;
+  return `'${v.replace(/'/g, `'\\''`)}'`;
+}
+
 function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -292,8 +348,7 @@ function planLaunchd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    <string>${xmlEscape(pathFor(ship))}</string>
+${unitEnvironment(ship).map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(v)}</string>`).join('\n')}
   </dict>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(crewHome)}</string>
@@ -318,9 +373,17 @@ ${scheduleKeys}
   };
 }
 
-function planSystemd(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
+function planSystemd(ship: Ship, crewHome: string, job: InstallJob, ctx: InstallContext): InstallPlan {
   const label = labelFor(crewHome, job);
-  const unitDir = join(homedir(), '.config', 'systemd', 'user');
+  // Root installs SYSTEM units (CREW-2792); anyone else a user unit plus lingering.
+  const unitDir = ctx.root ? SYSTEM_UNIT_DIR : join(homedir(), '.config', 'systemd', 'user');
+  const ctl = ctx.root ? ['systemctl'] : ['systemctl', '--user'];
+  const userLine = ctx.root && ctx.user && ctx.user !== 'root' ? `User=${ctx.user}\n` : '';
+  const wantedBy = ctx.root ? 'multi-user.target' : 'default.target';
+  const linger: Pick<InstallPlan, 'lingerCommand' | 'lingerHint'> = ctx.root || !ctx.user ? {} : {
+    lingerCommand: ['loginctl', 'enable-linger', ctx.user],
+    lingerHint: `the daemon will stop when ${ctx.user} logs out; run \`sudo loginctl enable-linger ${ctx.user}\` once, or run \`crew install\` as root for a system unit`,
+  };
   const servicePath = join(unitDir, `${label}.service`);
   const crewLog = ship.logFile;
   const schedulerLog = schedulerLogFor(crewLog, job);
@@ -343,9 +406,9 @@ Description=${description}
 
 [Service]
 Type=simple
-ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'systemd')].join(' ')}
+${userLine}ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'systemd')].join(' ')}
 WorkingDirectory=${crewHome}
-Environment=PATH=${pathFor(ship)}
+${systemdEnvLines(ship)}
 StandardOutput=append:${schedulerLog}
 StandardError=append:${schedulerLog}
 Restart=on-failure
@@ -355,7 +418,7 @@ RestartSec=5
 KillMode=process
 
 [Install]
-WantedBy=default.target
+WantedBy=${wantedBy}
 `;
     return {
       mechanism: 'systemd',
@@ -365,11 +428,12 @@ WantedBy=default.target
       cronMarker: null,
       preLoadCommands: [],
       loadCommands: [
-        ['systemctl', '--user', 'daemon-reload'],
-        ['systemctl', '--user', 'enable', '--now', `${label}.service`],
+        [...ctl, 'daemon-reload'],
+        [...ctl, 'enable', '--now', `${label}.service`],
       ],
       crewLog,
       schedulerLog,
+      ...linger,
     };
   }
 
@@ -380,9 +444,9 @@ Description=${description}
 
 [Service]
 Type=oneshot
-ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'systemd')].join(' ')}
+${userLine}ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'systemd')].join(' ')}
 WorkingDirectory=${crewHome}
-Environment=PATH=${pathFor(ship)}
+${systemdEnvLines(ship)}
 StandardOutput=append:${schedulerLog}
 StandardError=append:${schedulerLog}
 `;
@@ -411,11 +475,12 @@ WantedBy=timers.target
     cronMarker: null,
     preLoadCommands: [],
     loadCommands: [
-      ['systemctl', '--user', 'daemon-reload'],
-      ['systemctl', '--user', 'enable', '--now', `${label}.timer`],
+      [...ctl, 'daemon-reload'],
+      [...ctl, 'enable', '--now', `${label}.timer`],
     ],
     crewLog,
     schedulerLog,
+    ...linger,
   };
 }
 
@@ -426,7 +491,7 @@ function planCron(ship: Ship, crewHome: string, job: InstallJob): InstallPlan {
   const minutes = Math.max(1, Math.round(INTERVAL_SECONDS / 60));
   const line =
     `*/${minutes} * * * * ` +
-    `cd ${crewHome} && PATH=${pathFor(ship)} ${[...crewInvocation(crewHome), ...subcommandFor(job, 'cron')].join(' ')} >> ${schedulerLog} 2>&1`;
+    `cd ${crewHome} && ${unitEnvironment(ship).map(([k, v]) => `${k}=${shQuote(v)}`).join(' ')} ${[...crewInvocation(crewHome), ...subcommandFor(job, 'cron')].join(' ')} >> ${schedulerLog} 2>&1`;
   return {
     mechanism: 'cron',
     unitPaths: [],
@@ -465,9 +530,10 @@ export function unitAbandonsAgents(plan: InstallPlan, read: (path: string) => st
 
 export function planInstall(
   ship: Ship, crewHome: string, hostShip: ShipPlatform, hasSystemd: boolean, job: InstallJob = 'run',
+  ctx: InstallContext = USER_INSTALL,
 ): InstallPlan {
   if (hostShip === 'macos') return planLaunchd(ship, crewHome, job);
-  if (hostShip === 'linux' && hasSystemd) return planSystemd(ship, crewHome, job);
+  if (hostShip === 'linux' && hasSystemd) return planSystemd(ship, crewHome, job, ctx);
   if (hostShip === 'linux') return planCron(ship, crewHome, job);
   throw new Error(`crew install: no scheduler support yet for ${hostShip} (Windows is planned, not built)`);
 }
@@ -487,7 +553,10 @@ export function planUninstall(
     };
   }
   if (hostShip === 'linux' && hasSystemd) {
-    const unitDir = join(homedir(), '.config', 'systemd', 'user');
+    // A unit `crew install` wrote as root lives in the system directory (CREW-2792).
+    const system = existsSync(systemUnitPathFor(label));
+    const unitDir = system ? SYSTEM_UNIT_DIR : join(homedir(), '.config', 'systemd', 'user');
+    const ctl = system ? ['systemctl'] : ['systemctl', '--user'];
     // `run` (ISSUE-763) is a lone persistent `.service`, disabled/stopped
     // directly — no `.timer` unit exists for it any more. `release` and
     // `passengers` keep the original service+timer pair.
@@ -496,14 +565,14 @@ export function planUninstall(
         mechanism: 'systemd',
         unitPaths: [join(unitDir, `${label}.service`)],
         crontabLine: null,
-        unloadCommands: [['systemctl', '--user', 'disable', '--now', `${label}.service`]],
+        unloadCommands: [[...ctl, 'disable', '--now', `${label}.service`]],
       };
     }
     return {
       mechanism: 'systemd',
       unitPaths: [join(unitDir, `${label}.service`), join(unitDir, `${label}.timer`)],
       crontabLine: null,
-      unloadCommands: [['systemctl', '--user', 'disable', '--now', `${label}.timer`]],
+      unloadCommands: [[...ctl, 'disable', '--now', `${label}.timer`]],
     };
   }
   if (hostShip === 'linux') {
@@ -558,11 +627,12 @@ export function planDaemonControl(crewHome: string, hostShip: ShipPlatform, hasS
   }
   if (hostShip === 'linux' && hasSystemd) {
     const unit = `${label}.service`;
+    const ctl = existsSync(systemUnitPathFor(label)) ? ['systemctl'] : ['systemctl', '--user'];
     return {
       mechanism: 'systemd',
-      startCommand: ['systemctl', '--user', 'start', unit],
-      stopCommand: ['systemctl', '--user', 'stop', unit],
-      statusCommand: ['systemctl', '--user', 'status', unit],
+      startCommand: [...ctl, 'start', unit],
+      stopCommand: [...ctl, 'stop', unit],
+      statusCommand: [...ctl, 'status', unit],
     };
   }
   if (hostShip === 'linux') {
@@ -590,9 +660,18 @@ function runAll(commands: string[][], cwd: string, log: InstallLog): boolean {
   return true;
 }
 
-export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<void> {
+/**
+ * Writes and loads a plan. Returns whether a unit file differed from what was
+ * on disk (CREW-2792): `crew provision` reports `already provisioned` when a
+ * re-run changes nothing. A cron plan counts as changed only on a dry run's
+ * absence of the line, which is not worth a crontab diff; it reports changed.
+ */
+export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<{ changed: boolean }> {
+  let changed = plan.crontabLine !== null;
   for (const path of plan.unitPaths) {
     if (dryRun) { log.emit(`would write ${path}`); continue; }
+    const before = existsSync(path) ? readFileSync(path, 'utf8') : null;
+    if (before !== plan.unitContent[path]) changed = true;
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, plan.unitContent[path]!);
     log.emit(`wrote ${path}`);
@@ -630,8 +709,20 @@ export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: 
     }
   }
 
+  if (plan.lingerCommand) {
+    if (dryRun) {
+      log.emit(`would run: ${plan.lingerCommand.join(' ')}`);
+    } else if (runAll([plan.lingerCommand], crewHome, { emit: log.emit.bind(log), warn: () => undefined })) {
+      log.emit(`lingering enabled for ${plan.lingerCommand[2]}: the unit survives logout`);
+    } else {
+      // Not fatal: the unit is installed and running; it just will not outlive the login session.
+      log.warn(`could not enable lingering — ${plan.lingerHint ?? 'run loginctl enable-linger by hand'}`);
+    }
+  }
+
   log.emit(`crew's own log: ${plan.crewLog}`);
   log.emit(`scheduler log (only what escapes the crew, e.g. a crash before it starts): ${plan.schedulerLog}`);
+  return { changed };
 }
 
 export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<void> {

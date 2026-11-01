@@ -56,7 +56,8 @@ import {
 import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
-import { unitAbandonsAgents, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
+import { runProvision, provisionOptionsFrom, realProvisionDeps } from './provision.ts';
+import { unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
@@ -357,6 +358,9 @@ function usage(problem?: string, requested = false): never {
   crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
   crew status [route] [--json]   paused/running state; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
+  crew provision --key K --route WS[/PROJECT] [--forge-host H] [--ship-name N] [--json]   one non-interactive run: connect, forge tokens,
+                                 enable routes, install units with lingering, start the daemon; safe to re-run (CREW_CONNECT_KEY,
+                                 CREW_PROVISION_ROUTES, CREW_SHIP_NAME, CREW_FORGE_TOKEN[_<HOST>] also read)
   crew forge [set|rotate <host>] [--token T | --token-stdin] [--source file|keychain|env]   this ship's git-forge tokens (ship.forges)
   crew credential get|store|erase   git credential helper answering from ship.forges (git runs it; not for hand use)
   crew whoami [route] [--json]   the signed-in identity, key role, operator Crew row and credential source per route
@@ -462,7 +466,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
  * test/help-cli.test.ts checks this set against the `case` labels.
  */
 const KNOWN_COMMANDS = new Set([
-  'passenger-sync-daemon', 'agents', 'connect', 'credential', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
+  'passenger-sync-daemon', 'agents', 'connect', 'credential', 'provision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
@@ -551,7 +555,7 @@ function daemonConfigPaths(c: { configFile: string; routes: Array<{ apiKeyFile?:
  * break the one legitimate `crew` call a session is actually supposed to
  * make.
  */
-const STATE_WRITING_COMMANDS = new Set(['connect', 'disconnect', 'install', 'uninstall', 'reload', 'release', 'merge', 'deploy']);
+const STATE_WRITING_COMMANDS = new Set(['connect', 'provision', 'disconnect', 'install', 'uninstall', 'reload', 'release', 'merge', 'deploy']);
 const STATE_WRITING_SUBCOMMANDS: Partial<Record<string, Set<string>>> = {
   agents: new Set(['sync']),
   skills: new Set(['sync']),
@@ -570,6 +574,16 @@ if (sessionRole && (
       `it at a throwaway config first: CREW_CONFIG=/tmp/... crew ${full} ...\n`,
   );
   process.exit(2);
+}
+
+// `provision` (CREW-2792) orchestrates `connect`, `forge`, `install` as child
+// processes and needs no crew.yaml at start, so it answers before config loads.
+if (command === 'provision') {
+  const outcome = await runProvision(
+    provisionOptionsFrom(argv, process.env), realProvisionDeps(CREW_HOME),
+    (l) => { process.stdout.write(l); }, (l) => { process.stderr.write(l); },
+  );
+  process.exit(outcome.code);
 }
 
 // `passenger-sync-daemon` (ISSUE-554) is not an operator-facing command —
@@ -1168,7 +1182,7 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
   }
   const hasSystemd = detectSystemd();
   for (const job of ['run', 'release', 'passengers'] as const) {
-    const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job);
+    const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job, installContext());
     process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
     await applyInstall(plan, CREW_HOME, dryRun, {
       emit: (m) => process.stdout.write(`${m}\n`),
@@ -1252,7 +1266,7 @@ async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatf
   const unitExists = (p: string) => existsSync(p);
   const crontab = o.host === 'linux' ? (spawnSync('crontab', ['-l'], { encoding: 'utf8' }).stdout ?? '') : '';
   const schedulerAbsent = o.host !== 'windows'
-    ? !schedulerInstalled(planInstall(cfg.ship, CREW_HOME, o.host, detectSystemd(), 'run'), unitExists, crontab)
+    ? !schedulerInstalled(planInstall(cfg.ship, CREW_HOME, o.host, detectSystemd(), 'run', installContext()), unitExists, crontab)
     : true;
   const plan = planFix({ routes, schedulerAbsent, host: o.host });
   for (const n of plan.notes) process.stdout.write(`fix: ${n}\n`);
@@ -2196,7 +2210,7 @@ switch (command) {
           const target = repoTargetFor(w.route, result.ticket.repo_id);
           fleetTicketRepo = target?.name;
           try {
-            if (target && ensureRepoCheckout(target.dir, target.remote)) {
+            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme })) {
               wemit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
             }
           } catch (e) {
@@ -2427,7 +2441,7 @@ switch (command) {
           const target = repoTargetFor(route, result.ticket.repo_id);
           ticketRepo = target?.name;
           try {
-            if (target && ensureRepoCheckout(target.dir, target.remote)) {
+            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme })) {
               emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
             }
           } catch (e) {
@@ -5722,7 +5736,7 @@ switch (command) {
     // CREW-1775: a unit installed before agents got their own process group
     // kills the in-flight run whenever the daemon restarts.
     if (host !== 'windows') {
-      const unitPlan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), 'run');
+      const unitPlan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), 'run', installContext());
       const abandons = unitAbandonsAgents(unitPlan, (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } });
       if (abandons === false) {
         process.stdout.write(

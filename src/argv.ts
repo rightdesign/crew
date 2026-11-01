@@ -5,7 +5,7 @@
  * Keep in step with the `value('<name>')` reads in cli.ts.
  */
 export const VALUE_FLAGS: ReadonlySet<string> = new Set([
-  'agent-bin', 'area', 'base-url', 'choose', 'clear', 'dir', 'extra-path', 'harness', 'hook', 'host', 'key', 'level', 'limit', 'machine-id', 'max-roles', 'mcp',
+  'agent-bin', 'area', 'base-url', 'choose', 'clear', 'dir', 'extra-path', 'forge-host', 'harness', 'hook', 'host', 'key', 'level', 'limit', 'machine-id', 'max-roles', 'mcp',
   'member', 'name', 'project', 'repo', 'role', 'route', 'recipes', 'ship-name', 'tail', 'ticket', 'toolchain', 'workspace',
   'workspace-id', 'write', 'token', 'source', 'var', 'path', 'service', 'topic', 'assignee', 'requested-by', 'issue', 'shell', 'resume',
 ]);

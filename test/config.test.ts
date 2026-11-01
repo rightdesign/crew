@@ -1024,3 +1024,14 @@ test('locateDir finds the route and repository from a checkout, a subdirectory o
   assert.equal(routeForDir(cfg, '/co/one/x')?.route, 'a/one');
   assert.equal(locateDir(cfg, '/elsewhere', () => '/elsewhere/.git'), undefined);
 });
+
+test('ship.env parses to strings, and refuses PATH, bad names and multi-line values (CREW-2792)', () => {
+  const ok = withConfig(`ship:\n  agent: { bin: /bin/true }\n  env:\n    HTTPS_PROXY: http://p:3128\n    RETRIES: 3\n    DEBUG: true\nroutes: []\n`);
+  assert.deepEqual(loadConfig(ok.dir, ok.file, { allowNoRoutes: true }).ship.env, { HTTPS_PROXY: 'http://p:3128', RETRIES: '3', DEBUG: 'true' });
+  const none = withConfig(`ship:\n  agent: { bin: /bin/true }\nroutes: []\n`);
+  assert.equal(loadConfig(none.dir, none.file, { allowNoRoutes: true }).ship.env, undefined);
+  for (const bad of ['PATH: /x', '"1BAD": x', 'A: [1]', '"A": "x\\ny"']) {
+    const c = withConfig(`ship:\n  agent: { bin: /bin/true }\n  env:\n    ${bad}\nroutes: []\n`);
+    assert.throws(() => loadConfig(c.dir, c.file, { allowNoRoutes: true }), ConfigError, bad);
+  }
+});

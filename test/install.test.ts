@@ -362,3 +362,50 @@ test('unitAbandonsAgents tells a current unit from one installed before CREW-177
   assert.equal(unitAbandonsAgents(linux, () => svc.replace('KillMode=process\n', '')), false);
   assert.equal(unitAbandonsAgents(planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false, 'run'), () => 'x'), null);
 });
+
+// --- CREW-2792: headless Linux ------------------------------------------------
+
+test('a non-root systemd user unit enables lingering for its user and says what to do when it cannot (CREW-2792)', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run', { root: false, user: 'ops' });
+  assert.deepEqual(plan.lingerCommand, ['loginctl', 'enable-linger', 'ops']);
+  assert.match(plan.lingerHint!, /enable-linger ops/);
+  assert.deepEqual(plan.loadCommands[0], ['systemctl', '--user', 'daemon-reload']);
+});
+
+test('root gets a system unit with User= and no lingering (CREW-2792)', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run', { root: true, user: 'ops' });
+  assert.match(plan.unitPaths[0]!, /^\/etc\/systemd\/system\/com\.tablation\.crew\.[0-9a-f]{8}\.service$/);
+  const text = plan.unitContent[plan.unitPaths[0]!]!;
+  assert.match(text, /^User=ops$/m);
+  assert.match(text, /^WantedBy=multi-user\.target$/m);
+  assert.equal(plan.lingerCommand, undefined);
+  assert.deepEqual(plan.loadCommands[0], ['systemctl', 'daemon-reload']);
+  assert.ok(plan.loadCommands.every((c) => !c.includes('--user')));
+});
+
+test('a root install with no sudo user writes no User= line (CREW-2792)', () => {
+  const plan = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'run', { root: true, user: 'root' });
+  assert.doesNotMatch(plan.unitContent[plan.unitPaths[0]!]!, /^User=/m);
+});
+
+test('ship.env reaches every unit kind next to PATH, quoted where it needs to be (CREW-2792)', () => {
+  const s = ship({ platform: 'linux', env: { HTTPS_PROXY: 'http://p:3128', GREETING: 'a "b" 50%' } });
+  const sd = planInstall(s, '/opt/crew', 'linux', true, 'run');
+  const sdText = sd.unitContent[sd.unitPaths[0]!]!;
+  assert.match(sdText, /^Environment=PATH=/m);
+  assert.match(sdText, /^Environment="HTTPS_PROXY=http:\/\/p:3128"$/m);
+  assert.match(sdText, /^Environment="GREETING=a \\"b\\" 50%%"$/m);
+  const timer = planInstall(s, '/opt/crew', 'linux', true, 'release');
+  assert.match(timer.unitContent[timer.unitPaths[0]!]!, /HTTPS_PROXY=http:\/\/p:3128/);
+  const cron = planInstall(s, '/opt/crew', 'linux', false, 'run');
+  assert.match(cron.crontabLine!, /HTTPS_PROXY=http:\/\/p:3128 /);
+  assert.match(cron.crontabLine!, /GREETING='a "b" 50%'/);
+  const mac = planInstall(ship({ env: { A: '1&2' } }), '/opt/crew', 'macos', true);
+  assert.match(mac.unitContent[mac.unitPaths[0]!]!, /<key>A<\/key>\s*<string>1&amp;2<\/string>/);
+});
+
+test('uninstall and daemon control follow the scope of the unit that was installed (CREW-2792)', () => {
+  const user = planUninstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true);
+  assert.deepEqual(user.unloadCommands[0]!.slice(0, 2), ['systemctl', '--user']);
+  assert.deepEqual(planDaemonControl('/opt/crew', 'linux', true).startCommand!.slice(0, 2), ['systemctl', '--user']);
+});

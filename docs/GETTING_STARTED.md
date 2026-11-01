@@ -536,7 +536,7 @@ crew install --dry-run   # see what it would do first
 ```
 
 This picks the right mechanism itself — a launchd user agent on macOS, a
-systemd user timer on Linux (crontab as a fallback) — and never fires
+systemd user unit on Linux (crontab as a fallback) — and never fires
 immediately; the first poll happens one interval after `install` runs.
 
 **API key from the environment.** A route with no `apiKey` and no
@@ -559,6 +559,31 @@ ship, with a warning line on the run log naming why. `crew doctor` prints the
 identity each seat will write as. Minting needs an unlocked login keychain (run from the console session, or `security unlock-keychain` first over SSH): the keychain is probed before any key is minted, and a key that cannot be stored is revoked rather than left live. Seat keys are minted by whoever runs `crew agents sync` on that ship, with either a workspace admin key or a project role that grants the "Mint agent keys" capability; the server decides, and a refused mint is reported once ("your role does not grant Mint agent keys") with the seats staying on the ship key. Each ship holds its own keys, and `crew agents sync --revoke-seat-keys` revokes them server-side and clears the keychain so the next sync mints fresh ones. `crew doctor` prints `can mint agent keys: yes/no`. The agent's workspace membership needs a role
 on the project, assigned once by a workspace admin the same way as for a
 human member.
+
+### 3.12 A headless Linux host in one run
+
+On a cloud host with no desktop session, `crew provision` does 3.3 to 3.11 in
+one command, and `scripts/provision.sh` installs the `crew` binary for the
+host's architecture first, so it fits a first-boot hook:
+
+```sh
+CREW_CONNECT_KEY=sk_... CREW_FORGE_TOKEN=github_pat_... \
+  bash provision.sh --route my-workspace --ship-name build-1 --json
+```
+
+It connects each `--route`, stores the forge token (so private repositories
+clone over HTTPS on the first pass), enables the routes, installs the units and
+starts the daemon. With no desktop secret service, keys live in files under
+the state directory. Run as a normal user, the units are systemd user units
+with lingering enabled, so the daemon survives logout and reboot; run as root,
+crew installs system units instead. Running it again changes nothing and
+prints `already provisioned`. If connect needs a decision (several projects
+qualify, say) the run stops with exit 3 and a `choice` event; answer it with
+`--choose KEY=VALUE`. To give the daemon more environment, such as a proxy,
+declare it under `ship.env` in `crew.yaml`. `provision.sh` reads `CREW_VERSION`
+(default: the latest release), `CREW_RELEASE_BASE`, `CREW_INSTALL_DIR` and
+`CREW_BIN_DIR`; see the top of the script. All flags and exit codes are in
+[Commands](/commands).
 
 Useful day-to-day commands once it's running:
 

@@ -568,6 +568,13 @@ export interface Ship {
    * reachable, else files under `<stateDir>/keys`), `os`, or `file`.
    */
   secretStore?: SecretStoreMode;
+  /**
+   * Environment variables the installed units carry alongside `PATH`
+   * (CREW-2792), so a declared environment (a proxy, a cloud region) reaches
+   * the daemon without hand-editing unit files. `PATH` is owned by
+   * `ship.extraPath` and may not be set here.
+   */
+  env?: Record<string, string>;
 }
 
 export interface CrewConfig {
@@ -597,6 +604,24 @@ function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
   throw new ConfigError(`ship.cloneScheme must be "ssh" or "https", got ${JSON.stringify(v)}`);
 }
 
+/** `ship.env`: a map of variable name to string (numbers and booleans are stringified). */
+export function parseShipEnv(v: unknown): Record<string, string> | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'object' || Array.isArray(v)) throw new ConfigError('ship.env must be a map of variable name to value');
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new ConfigError(`ship.env: "${k}" is not a valid variable name`);
+    if (k === 'PATH') throw new ConfigError('ship.env: PATH is set from ship.extraPath, not here');
+    if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
+      throw new ConfigError(`ship.env.${k} must be a string, number or boolean`);
+    }
+    const text = String(val);
+    if (/[\r\n\0]/.test(text)) throw new ConfigError(`ship.env.${k} must be a single line`);
+    out[k] = text;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function parseShipForges(v: unknown): ForgesConfig | undefined {
   try {
     return parseForges(v);
@@ -610,7 +635,7 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
-  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'secretStore',
+  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'secretStore', 'env',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -1175,6 +1200,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       maxPeriscopes,
       periscopeIdleMinutes,
       secretStore,
+      env: parseShipEnv(shipRaw.env),
     },
     routes,
     crewHome,
