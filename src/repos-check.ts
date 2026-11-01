@@ -18,6 +18,7 @@ import {
   parseRepoConfig, renderBranchName, renderWorktreeName, resolveRepoConfig, validateEffective,
   type BranchContext, type EffectiveRepoConfig, type RepoConfig, type RepoHooks, type ShipRepoSettings,
 } from './repo-config.ts';
+import { containerEngineUse } from './sandbox-brief.ts';
 import { resolveShell } from './shell.ts';
 
 export type SyntaxResult = { status: 'ok' | 'error' | 'unchecked'; message?: string };
@@ -111,6 +112,11 @@ export function checkRepoSpec(dir: string, opts: RepoCheckOptions = {}): RepoChe
   }
   const effective = resolveRepoConfig(parsed, opts.ship, dir);
   const readiness = validateEffective(effective);
+  // CREW-2800: a repo that declares a sandbox cannot start a container in it.
+  if (effective.sandbox) {
+    const engine = effective.hooks.setup ? containerEngineUse(effective.hooks.setup) : null;
+    if (engine) readiness.push(`hooks.setup runs \`${engine}\`, and a sandbox has no container engine — start the service as a process instead (REPO_SPEC.md, "Services inside the sandbox")`);
+  }
   const hooks = (Object.keys(effective.hooks) as Array<keyof RepoHooks>).map((name) => ({
     name,
     label: hookLabel(effective, name),

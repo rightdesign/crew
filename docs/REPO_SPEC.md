@@ -296,6 +296,44 @@ Three facts a declaration has to respect, all measured in the CREW-2787 spike:
 `crew sandbox build [REPO] [--route R]` forces a rebuild, `crew sandbox images`
 lists tags and ages, and `crew doctor` reports a stale, missing or failed image.
 
+### Services inside the sandbox
+
+A sandbox has no container engine. A repository whose tests need a database (or
+any other service) runs it as a process inside the sandbox: put the binaries in
+`sandbox.packages` (or the published `sandbox.image`), and let `hooks.setup`
+start it. `hooks.ports` reserves the ports and `hooks.isolate` prints the
+overrides, exactly as for a host worktree; only where the binaries come from
+differs. Nothing is downloaded at run time.
+
+```yaml
+sandbox:
+  packages: [postgresql-16]
+hooks:
+  ports: scripts/dev-ports.sh        # prints PGPORT=… among others
+  isolate: |
+    eval "$(scripts/dev-ports.sh)"
+    echo "DATABASE_URL=postgresql://localhost:${PGPORT}/app"
+  setup: |
+    eval "$(scripts/dev-ports.sh)"
+    export PGDATA="$PWD/.pgdata"
+    /usr/lib/postgresql/16/bin/initdb -D "$PGDATA" -A trust >/dev/null
+    /usr/lib/postgresql/16/bin/pg_ctl -D "$PGDATA" -o "-p ${PGPORT} -k /tmp" -w start
+    createdb -h /tmp -p "${PGPORT}" app
+    pnpm install --frozen-lockfile
+```
+
+`docker`, `podman`, `nerdctl` and `docker-compose` inside a sandbox are stubs
+that exit 125 at once with a message pointing at this section, so a `hooks.setup`
+written for a host container fails in a second instead of timing out. `crew repos
+check` reports a `hooks.setup` of a repository with a `sandbox:` section that
+calls one of them.
+
+The sandboxed prompt differs from the host prompt in two places and nowhere else:
+the Environment section names the clone the agent is already in instead of a
+worktree to cut, and the lane policy's `Worktree Setup` skill is read as
+`Sandbox Setup`, which covers only setup, ports and the hand-off push. The
+runner picks them by runner kind; the briefs stay generic.
+
 ### A branch that moved after QA verified it
 
 Before squashing, the release compares each `verified` ticket's branch with the

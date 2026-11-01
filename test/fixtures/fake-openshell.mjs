@@ -3,7 +3,7 @@
 // $FAKE_OS_DIR: `calls.jsonl` (one line per invocation: argv plus which of the
 // named secrets were visible in the environment), `sandboxes/<name>` for each
 // live sandbox, and `exec-<name>.pid` for the running exec client. An `exec`
-// whose command is not a `sh -c` prep step runs the command locally, so the
+// whose command is not the `git clone` prep step runs the command locally, so the
 // harness fixture behaves as it would inside the sandbox.
 import { appendFileSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -40,7 +40,7 @@ if (group === 'sandbox' && verb === 'exec') {
   const cmd = argv.slice(dash + 1);
   // The uploaded prompt file only exists inside a real sandbox.
   if (cmd[0] === 'sh' && cmd[2]) cmd[2] = cmd[2].replace('/sandbox/prompt.txt', '/dev/null');
-  if (cmd[0] === 'sh' && !cmd[2]?.startsWith('exec ')) process.exit(0);   // the clone/checkout prep step
+  if (cmd[0] === 'sh' && cmd[2]?.startsWith('git clone')) process.exit(0);   // the clone/checkout prep step
   // FAKE_OS_STDIN_LOG: swallow the client's stdin and record how many bytes arrived.
   const log = process.env.FAKE_OS_STDIN_LOG;
   const child = spawn(cmd[0], cmd.slice(1), { stdio: [log ? 'ignore' : 'inherit', 'inherit', 'inherit'], env: process.env });

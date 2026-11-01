@@ -76,6 +76,7 @@ import { locateBranchForTicket } from './ticket-branch.ts';
 import { planStamp, applyStamp, applyMergeStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
+import { sandboxEnv } from './sandbox-brief.ts';
 import { renderEnvironment } from './environment.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
@@ -1662,6 +1663,7 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
     authorship: await tracker.authorshipProbe().catch(() => null),
     attachments: await tracker.attachmentsProbe().catch(() => null),
     shipName: cfg.ship.name,
+    ...sandboxEnv(cfg.ship),
   });
 }
 

@@ -65,6 +65,15 @@ test('a sandbox run creates, clones from the mirror, execs, streams into the str
   assert.equal(typeof r.logged().find((e) => e.data?.event === 'sandbox_created')!.data!.ms, 'number');
 });
 
+test('the clone step installs container-engine stubs and the harness runs with them first on PATH (CREW-2800)', async () => {
+  const r = rig();
+  await spawnAgent(r.plan(STREAM), r.emitter());
+  const execs = r.calls().filter((c) => c.argv[1] === 'exec');
+  assert.match(execs[0]!.argv.join(' '), /\.crew-bin\/docker/);
+  assert.match(execs[0]!.argv.join(' '), /\.crew-bin\/podman/);
+  assert.match(execs[1]!.argv.join(' '), /PATH='\/sandbox\/\.crew-bin':"\$PATH"/);
+});
+
 test('secrets reach the sandbox through --env-from, never argv', async () => {
   const r = rig();
   await spawnAgent(r.plan(STREAM), r.emitter());
@@ -143,7 +152,7 @@ test('a prompt over the stdin limit goes through sandbox upload', async () => {
   await new Promise((res) => started.child.on('close', res));
   const exec = r.calls().filter((c) => c.argv[1] === 'exec').pop()!;
   assert.ok(r.calls().some((c) => c.argv[1] === 'upload'));
-  assert.match(exec.argv.join(' '), /sh -c exec .* < \/sandbox\/prompt\.txt/);
+  assert.match(exec.argv.join(' '), /sh -c .*exec .* < \/sandbox\/prompt\.txt/);
   await withOrigin(plan.sandboxConfig).release(started.handle, r.emitter());
 });
 

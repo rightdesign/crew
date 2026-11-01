@@ -89,6 +89,7 @@ import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
 import { listPendingHandoffs } from './pending-handoff.ts';
 import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
+import { sandboxEnv } from './sandbox-brief.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { settleRunEnd } from './live-runs.ts';
@@ -1163,5 +1164,5 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
   // leaves the filing block without authorship lines, never a failed cycle.
   const authorship = await tracker.authorshipProbe().catch(() => null);
   const attachments = await tracker.attachmentsProbe().catch(() => null);
-  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship, attachments, shipName: ship.name });
+  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship, attachments, shipName: ship.name, ...sandboxEnv(ship) });
 }

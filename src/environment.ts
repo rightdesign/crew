@@ -17,6 +17,7 @@ import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
 import type { Authorship, AttachmentsProbe } from './tracker.ts';
+import { sandboxCheckoutSection } from './sandbox-brief.ts';
 import { renderBranchName, renderWorktreeName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
 
 /** The environment variable the crew hands the session its tracker key in. */
@@ -76,6 +77,12 @@ export interface EnvironmentInput {
    * name) applies.
    */
   attachments?: AttachmentsProbe | null;
+  /**
+   * CREW-2800: the run executes under the sandbox runner. The agent is already in a fresh
+   * clone with no primary checkout, so the worktree section is replaced by a checkout
+   * section naming `workDir`. Absent means a host run, rendered exactly as before.
+   */
+  sandbox?: { workDir: string };
 }
 
 /**
@@ -438,7 +445,9 @@ export function renderEnvironment(i: EnvironmentInput): string {
     );
   }
 
-  if (only) {
+  if (only && i.sandbox) {
+    lines.push(...sandboxCheckoutSection(i.sandbox.workDir, '## Your checkout'));
+  } else if (only) {
     lines.push(...repoSection(only, key, '## Your worktree'));
   } else {
     lines.push(
@@ -451,8 +460,9 @@ export function renderEnvironment(i: EnvironmentInput): string {
       'ignore the others. A ticket whose repo is not listed here has no checkout on',
       'this machine and is not yours to work.',
     );
+    if (i.sandbox) lines.push(...sandboxCheckoutSection(i.sandbox.workDir, '### Your checkout'));
     for (const r of repos) {
-      lines.push(...repoSection(r, key, `### ${r.name} — \`${r.dir}\``));
+      lines.push(...(i.sandbox ? ['', `### ${r.name}`] : repoSection(r, key, `### ${r.name} — \`${r.dir}\``)));
       lines.push('', `Hooks for ${r.name} — the only commands you should run here:`, '', hookTable(r.config));
     }
   }

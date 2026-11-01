@@ -18,6 +18,7 @@
  * a restarted daemon can delete it when it finishes the run.
  */
 
+import { containerEngineStubScript, SANDBOX_STUB_DIR, DEFAULT_SANDBOX_WORKDIR } from './sandbox-brief.ts';
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -101,7 +102,7 @@ export interface SandboxConfig {
 }
 
 export const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
-  bin: 'openshell', mirrorDir: '/cache', workDir: '/sandbox/work',
+  bin: 'openshell', mirrorDir: '/cache', workDir: DEFAULT_SANDBOX_WORKDIR,
 };
 
 /** `sandbox exec` carries 4 MiB of piped stdin; a prompt near that goes through `sandbox upload`. */
@@ -221,9 +222,9 @@ export class SandboxRunner implements Runner {
     try {
       // The run's checkout: a shared clone of the read-only mirror on a fresh branch.
       const branch = `crew-run-${name.slice(-8)}`;
-      const clone = cloneScript({
+      const clone = `${cloneScript({
         mirrorDir: cfg.mirrorDir, repo, workDir: cfg.workDir, origin, branch, lockfile: cfg.depsLockfile ?? DEFAULT_CACHE_SETTINGS.depsLockfile,
-      });
+      })} && ${containerEngineStubScript()}`;
       await this.os(['sandbox', 'exec', '-n', name, '--no-login-shell', '--', 'sh', '-c', clone]);
 
       const harness = cfg.agentBin ?? basename(plan.bin);
@@ -236,9 +237,12 @@ export class SandboxRunner implements Runner {
           await this.os(['sandbox', 'upload', name, file, SANDBOX_PROMPT_PATH]);
         } finally { rmSync(tmp, { recursive: true, force: true }); }
       }
+      // CREW-2800: the stub container-engine CLIs come first on PATH, so a hook that reaches for
+      // docker fails with the message naming the in-sandbox services pattern.
+      const withStubs = `PATH=${shQuote(SANDBOX_STUB_DIR)}:"$PATH"; export PATH; `;
       const command = viaUpload
-        ? ['sh', '-c', `exec ${[harness, ...plan.args].map(shQuote).join(' ')} < ${SANDBOX_PROMPT_PATH}`]
-        : [harness, ...plan.args];
+        ? ['sh', '-c', `${withStubs}exec ${[harness, ...plan.args].map(shQuote).join(' ')} < ${SANDBOX_PROMPT_PATH}`]
+        : ['sh', '-c', `${withStubs}exec "$@"`, 'sh', harness, ...plan.args];
       const child = spawn(cfg.bin, ['sandbox', 'exec', '-n', name, '--no-login-shell', '--workdir', cfg.workDir, '--', ...command], {
         env: process.env, stdio: ['pipe', o.streamFd, 'inherit'], detached: true,
       });

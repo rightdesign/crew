@@ -29,6 +29,7 @@ import { resolveContract } from './contract.ts';
 import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
+import { swapSandboxSkills } from './sandbox-brief.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
 import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKind } from './runner.ts';
@@ -397,6 +398,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     if (e instanceof SkillIncludeError) throw new AgentError(`${e.message} — refusing to run an unscoped session`);
     throw e;
   }
+  // CREW-2800: a sandboxed run reads the sandbox setup skill where the policy names the worktree one.
+  if (o.ship.runner === 'sandbox') expanded = { ...expanded, text: swapSandboxSkills(expanded.text) };
   const prompt = assemblePrompt({
     roster: o.roster,
     environment: o.environment,
