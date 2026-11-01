@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.100.2] — 2026-11-01
+
+- CREW-2884 `crew status --json` ships entries now include id, kind, instanceClass and relayUrl.
+- CREW-2887 A pending `crew reload` (or a rewritten resolved file) is now honored even when the daemon keeps chaining passes, and `crew status` and `crew doctor` show a reload request that has not been honored yet.
+
 ## [0.100.1] — 2026-11-01
 
 - CREW-2885 The dev lane no longer skips tickets whose Repos row was created after crew connect; the map refreshes itself and a truly unservable ticket raises an attention item.
