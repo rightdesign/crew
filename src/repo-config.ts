@@ -313,6 +313,13 @@ export interface RepoSandbox {
   packages: string[];
   /** Commands baked at build time, in order. Distinct from the per-checkout `hooks.setup`. */
   setup: string[];
+  /**
+   * Repo-relative file globs (`*` matches within one path segment) copied into
+   * the build context at the ref the build is for, so a `setup` step can warm a
+   * cache from them (`pnpm fetch` from the lockfile). Their content is part of
+   * the image tag. Steps then run in `/tmp/crew-warm`, which is removed after.
+   */
+  warm?: string[];
 }
 
 export interface RepoConfig {
@@ -474,6 +481,12 @@ function parseSandbox(raw: unknown, file: string): RepoSandbox | undefined {
   const r = raw as Record<string, unknown>;
   const packages = stringList(r.packages, 'sandbox.packages', file);
   const setup = stringList(r.setup, 'sandbox.setup', file);
+  const warm = stringList(r.warm, 'sandbox.warm', file);
+  for (const w of warm) {
+    if (w.startsWith('/') || w.split('/').some((seg) => seg === '..' || seg === '' || seg === '.') || /[\\\s]/.test(w)) {
+      throw new RepoConfigError(`${file}: sandbox.warm entry "${w}" must be a repo-relative path or glob with no "..", empty segments, backslashes or whitespace`);
+    }
+  }
   for (const p of packages) {
     if (!PACKAGE_NAME.test(p)) throw new RepoConfigError(`${file}: sandbox.packages entry "${p}" is not a package name (lowercase letters, digits, + . - and an optional =version)`);
   }
@@ -487,7 +500,7 @@ function parseSandbox(raw: unknown, file: string): RepoSandbox | undefined {
       throw new RepoConfigError(`${file}: sandbox.image and sandbox.packages are alternatives — a published image already carries its packages; put the rest in sandbox.setup`);
     }
   }
-  return { ...(image ? { image } : {}), packages, setup };
+  return { ...(image ? { image } : {}), packages, setup, warm };
 }
 
 export function parseRepoConfig(text: string, file: string): RepoConfig {
@@ -509,7 +522,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
   rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
-  rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup']), 'sandbox', file);
+  rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup', 'warm']), 'sandbox', file);
 
   if (raw.version === undefined) throw new RepoConfigError(`${file}: version is required`);
   if (raw.version !== SPEC_VERSION) {

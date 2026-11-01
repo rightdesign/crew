@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
-  planSandbox, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
+  planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
   sandboxFailedKey, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
@@ -14,7 +15,7 @@ const cfg = (extra: string) => parseRepoConfig(`version: 1\nrelease:\n  mode: in
 
 test('sandbox section parses packages and setup', () => {
   const c = cfg('sandbox:\n  packages: [postgresql-16, git]\n  setup:\n    - npm install -g pnpm\n');
-  assert.deepEqual(c.sandbox, { packages: ['postgresql-16', 'git'], setup: ['npm install -g pnpm'] });
+  assert.deepEqual(c.sandbox, { packages: ['postgresql-16', 'git'], setup: ['npm install -g pnpm'], warm: [] });
   assert.equal(cfg('').sandbox, undefined);
 });
 
@@ -113,4 +114,47 @@ test('status is missing, then ok, then stale when the declaration moves', async 
   await buildSandboxImage(p1, h.deps);
   assert.equal(sandboxImageStatus(readSandboxState(h.stateDir), p1).status, 'ok');
   assert.equal(sandboxImageStatus(readSandboxState(h.stateDir), planSandbox('r', { packages: [], setup: ['b'] })).status, 'stale');
+});
+
+test('sandbox.warm parses and rejects paths that escape the repo', () => {
+  assert.deepEqual(cfg('sandbox:\n  warm: [pnpm-lock.yaml, apps/*/package.json]\n').sandbox?.warm, ['pnpm-lock.yaml', 'apps/*/package.json']);
+  assert.throws(() => cfg('sandbox:\n  warm: ["../x"]\n'), /sandbox\.warm/);
+  assert.throws(() => cfg('sandbox:\n  warm: ["/etc/passwd"]\n'), /sandbox\.warm/);
+});
+
+test('readWarmFiles reads matching files from the committed ref, not the working tree', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warm-'));
+  const git = (...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { stdio: 'pipe' });
+  git('init', '-q', '-b', 'main');
+  mkdirSync(join(dir, 'apps/a'), { recursive: true });
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), 'lock1');
+  writeFileSync(join(dir, 'apps/a/package.json'), '{}');
+  writeFileSync(join(dir, 'apps/a/other.txt'), 'no');
+  git('add', '.'); git('commit', '-q', '-m', 'x');
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), 'dirty');
+  const got = readWarmFiles(dir, 'main', ['pnpm-lock.yaml', 'apps/*/package.json', 'missing.yaml']);
+  assert.deepEqual(got, { 'pnpm-lock.yaml': 'lock1', 'apps/a/package.json': '{}' });
+});
+
+test('warm files are copied into the repo layer, change its tag, and are written nested into the context', async () => {
+  const decl = { packages: [], setup: ['pnpm fetch'], warm: ['pnpm-lock.yaml'] };
+  const a = planSandbox('r', decl, { 'pnpm-lock.yaml': 'one', 'apps/a/package.json': '{}' });
+  const b = planSandbox('r', decl, { 'pnpm-lock.yaml': 'two', 'apps/a/package.json': '{}' });
+  assert.notEqual(a.tag, b.tag);
+  assert.equal(a.layers[1]!.tag, b.layers[1]!.tag);
+  const df = a.layers[2]!.dockerfile;
+  assert.match(df, /COPY --chown=1000:1000 warm\/ \/tmp\/crew-warm\//);
+  assert.ok(df.indexOf('WORKDIR /tmp/crew-warm') < df.indexOf('pnpm fetch'));
+  assert.match(df, /rm -rf \/tmp\/crew-warm/);
+  assert.equal(planSandbox('r', decl).layers[2]!.dockerfile.includes('crew-warm'), false);
+  const h = harness();
+  let seen = '';
+  h.deps.run = async (args) => {
+    const ctx = args[args.indexOf('--file') + 1]!.replace(/Dockerfile$/, '');
+    if (args.includes(a.tag)) seen = readFileSync(join(ctx, 'warm/apps/a/package.json'), 'utf8');
+    h.present.add(args[args.indexOf('--tag') + 1]!);
+    return 0;
+  };
+  await buildSandboxImage(a, h.deps);
+  assert.equal(seen, '{}');
 });

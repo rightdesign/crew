@@ -36,8 +36,9 @@
 
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { RepoSandbox } from './repo-config.ts';
 import { realExec, type Exec } from './passenger-containers.ts';
@@ -122,7 +123,39 @@ function crewLayer(base: SandboxLayer): SandboxLayer {
   return { name: 'crew', tag: `crew-sandbox-crew:${hash({ base: base.tag, dockerfile, files })}`, dockerfile, files };
 }
 
-function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer): SandboxLayer {
+/** Where warm files are copied during the repo layer's setup steps; removed afterwards. */
+export const WARM_DIR = '/tmp/crew-warm';
+/** A repo's warm files, relative path to content. */
+export type WarmFiles = Record<string, string>;
+const WARM_MAX_BYTES = 64 * 1024 * 1024;
+
+const globToRegExp = (glob: string): RegExp =>
+  new RegExp(`^${glob.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
+
+/**
+ * Reads the files `patterns` match from git `ref` of the checkout at `dir` (the
+ * committed tree, never the working directory, which may be mid-edit). A
+ * pattern that matches nothing is skipped: a repo without `pnpm-workspace.yaml`
+ * can still share a declaration. Throws if the ref is unreadable or the files
+ * exceed a sane size.
+ */
+export function readWarmFiles(dir: string, ref: string, patterns: string[]): WarmFiles {
+  if (patterns.length === 0) return {};
+  const git = (args: string[]): string => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', maxBuffer: WARM_MAX_BYTES, stdio: ['ignore', 'pipe', 'pipe'] });
+  const all = git(['ls-tree', '-r', '--name-only', ref]).split('\n').filter(Boolean);
+  const res = patterns.map(globToRegExp);
+  const out: WarmFiles = {};
+  let total = 0;
+  for (const path of all.filter((f) => res.some((re) => re.test(f))).sort()) {
+    const content = git(['show', `${ref}:${path}`]);
+    total += content.length;
+    if (total > WARM_MAX_BYTES) throw new Error(`sandbox.warm files exceed ${WARM_MAX_BYTES} bytes`);
+    out[path] = content;
+  }
+  return out;
+}
+
+function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer, warm: WarmFiles): SandboxLayer {
   const env = Object.entries(CREW_ENV).map(([k, v]) => `${k}=${v}`).join(' ');
   const lines: string[] = [];
   if (decl.image) {
@@ -139,18 +172,25 @@ function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer): Sandbox
   }
   lines.push(run(`mkdir -p /sandbox && chown -R ${SANDBOX_UID}:${SANDBOX_UID} /sandbox ${CREW_PREFIX}`),
     `USER ${SANDBOX_UID}`, 'WORKDIR /sandbox');
+  const files: Record<string, string> = {};
+  const warming = Object.keys(warm).length > 0;
+  if (warming) {
+    for (const [path, content] of Object.entries(warm)) files[`warm/${path}`] = content;
+    lines.push(`COPY --chown=${SANDBOX_UID}:${SANDBOX_UID} warm/ ${WARM_DIR}/`, `WORKDIR ${WARM_DIR}`);
+  }
   // One RUN per step so a changed trailing step reuses every cached layer before it.
   for (const step of decl.setup) lines.push(run(step));
+  if (warming) lines.push('WORKDIR /sandbox', run(`rm -rf ${WARM_DIR}`));
   lines.push(`LABEL io.crew.sandbox.layer="repo" io.crew.sandbox.repo=${JSON.stringify(repo)}`, '');
   const dockerfile = lines.join('\n');
-  return { name: 'repo', tag: `crew-sandbox/${slug(repo)}:${hash({ crew: crew.tag, dockerfile })}`, dockerfile, files: {} };
+  return { name: 'repo', tag: `crew-sandbox/${slug(repo)}:${hash({ crew: crew.tag, dockerfile, files })}`, dockerfile, files };
 }
 
 /** The three layers and the tag a repo's declaration builds to. */
-export function planSandbox(repo: string, decl: RepoSandbox): SandboxPlan {
+export function planSandbox(repo: string, decl: RepoSandbox, warm: WarmFiles = {}): SandboxPlan {
   const base = baseLayer();
   const crew = crewLayer(base);
-  const layer = repoLayer(repo, decl, crew);
+  const layer = repoLayer(repo, decl, crew, warm);
   return { repo, tag: layer.tag, layers: [base, crew, layer] };
 }
 
@@ -274,7 +314,10 @@ export async function buildSandboxImage(plan: SandboxPlan, deps: BuildDeps): Pro
     mkdirSync(ctx, { recursive: true });
     try {
       writeFileSync(join(ctx, 'Dockerfile'), layer.dockerfile);
-      for (const [name, content] of Object.entries(layer.files)) writeFileSync(join(ctx, name), content);
+      for (const [name, content] of Object.entries(layer.files)) {
+        mkdirSync(dirname(join(ctx, name)), { recursive: true });
+        writeFileSync(join(ctx, name), content);
+      }
       const code = await deps.run(['build', '--tag', layer.tag, '--file', join(ctx, 'Dockerfile'), ctx], logPath);
       if (code !== 0) {
         state[plan.repo] = { ...entry, failure: { tag: plan.tag, at: now().toISOString(), logPath } };
@@ -306,7 +349,7 @@ export function sandboxFailedItem(repo: string, tag: string, layer: string, logP
   };
 }
 
-export interface SandboxRepoRef { name: string; decl: RepoSandbox }
+export interface SandboxRepoRef { name: string; decl: RepoSandbox; /** Files read for `decl.warm`, at the base ref. */ warm?: WarmFiles }
 
 export interface TickDeps extends BuildDeps {
   raise: (item: ShipAttentionItem) => void;
@@ -324,7 +367,7 @@ export interface TickDeps extends BuildDeps {
 export async function sandboxBuildTick(repos: SandboxRepoRef[], deps: TickDeps, force = false): Promise<string | null> {
   const nowMs = (deps.now ?? (() => new Date()))().getTime();
   for (const r of repos) {
-    const plan = planSandbox(r.name, r.decl);
+    const plan = planSandbox(r.name, r.decl, r.warm);
     const state = readSandboxState(deps.stateDir)[r.name];
     const upToDate = state?.tags[0]?.tag === plan.tag && deps.hasImage(plan.tag);
     if (upToDate) { deps.clear(sandboxFailedKey(r.name)); continue; }

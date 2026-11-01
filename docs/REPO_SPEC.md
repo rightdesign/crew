@@ -217,6 +217,7 @@ release:
 | `worktrees.prefix` | no | unset — see below | Overrides the default worktree naming outright: when set, a ticket's worktree is cut beside the checkout at `../<prefix><number>`, e.g. `../tabl-326`, no matter what its branch is called. **Left unset (the default, and now the common case since ISSUE-969's "Updating worktree naming" commits removed it from every repo but paradium's), a ticket's worktree is instead `<checkout directory name>-<branch name>`** — e.g. checkout `synthesis`, branch `tabl-123` → `../synthesis-tabl-123`; checkout `crew`, branch `crew-971` → `../crew-crew-971` (Brad, Pair session, 2026-09-20). This needs no per-repo or per-ticket configuration: the checkout's own directory name and the ticket's own branch name (`branch.name`'s per-ticket default, above) are the only inputs. No path separator on an explicit `prefix`: a worktree sits beside the checkout, not inside a directory of its own. A route's `worktreePrefix` supplies an explicit prefix for a repo that declares none; declaring it here shadows that, and `crew doctor` says so. |
 | `sandbox.image` | no | — | A reference the repository already publishes (`ghcr.io/owner/repo-dev:1`). Used as the repo layer's base in place of crew's own layer, with crew's contract directory (`/opt/crew`) copied in. Mutually exclusive with `sandbox.packages`: a published image already carries its packages, so the rest goes in `sandbox.setup`. |
 | `sandbox.packages` | no | `[]` | Distribution (apt) packages baked into the sandbox image, `name` or `name=version`. Anything else in a package string is a config error. |
+| `sandbox.warm` | no | `[]` | Repo-relative paths or globs (`*` within one segment) copied from the base branch's committed tree into the repo layer's build context, so a `setup` step can warm a cache from them. See [Sandbox images](#sandbox-images). |
 | `sandbox.setup` | no | `[]` | Commands baked at **build** time, in order, one image layer each, as uid 1000 in `/sandbox`. Not `hooks.setup`, which runs per checkout. See [Sandbox images](#sandbox-images). |
 | `docs.triagePolicy` | no | — | The triage seat's contract for this project — what its statuses mean, when a ticket may be accepted. Where it and a brief disagree, it wins. |
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
@@ -262,6 +263,22 @@ build succeeds; a failed build raises a `sandbox_build_failed` attention item
 with the build log path and sandboxes keep running the previous image. Builds
 run in the background between daemon passes, never on the cycle path. Bumping
 the pinned harness version rebuilds every repository's image.
+
+A `setup` step cannot see the repository, so a cache that comes from its own
+files (a pnpm store from its lockfile) is declared with `warm`:
+
+```yaml
+sandbox:
+  warm: [pnpm-lock.yaml, pnpm-workspace.yaml, package.json, apps/*/package.json]
+  setup:
+    - pnpm fetch    # fills /opt/crew/pnpm-store; a sandbox then installs offline
+```
+
+The matching files are read from the committed `<remote>/<base>` tree (never a
+working directory), copied to `/tmp/crew-warm`, and every `setup` step runs
+with that as its working directory; it is removed afterwards. Their content is
+part of the image tag, so a lockfile change rebuilds the repo layer. A pattern
+that matches nothing is skipped.
 
 Three facts a declaration has to respect, all measured in the CREW-2787 spike:
 
