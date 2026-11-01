@@ -107,6 +107,7 @@ function reconcileDeps(stateDir: string, api: EndpointApi | undefined, warnings:
   return {
     stateDir, shipName: 'Mac', apiFor: () => api,
     urlFor: (slug) => `https://${slug}.ships.test/mcp`,
+    controlUrlFor: (slug) => `https://${slug}.ships.test/control`,
     warn: (m) => warnings.push(m),
   };
 }
@@ -198,4 +199,43 @@ test('no warning or error text ever contains the API key or the mcp secret (CREW
   for (const w of warnings) {
     assert.ok(!w.includes(API_KEY) && !w.includes('beefbeef'), w);
   }
+});
+
+test('registerEndpoint() sends controlUrl and discoverable only when given (CREW-2890)', async () => {
+  const { api, calls } = fakeApi([201, 200]);
+  await registerEndpoint(api, 'ws-1', undefined, { ...D, controlUrl: 'https://abc.ships.test/control', discoverable: false });
+  assert.equal(calls[0]!.body!.controlUrl, 'https://abc.ships.test/control');
+  assert.equal(calls[0]!.body!.discoverable, false);
+  await registerEndpoint(api, 'ws-1', 'ep-1', { ...D, controlUrl: null });
+  assert.equal(calls[1]!.body!.controlUrl, null);
+  assert.ok(!('discoverable' in calls[1]!.body!));
+  const plain = fakeApi([201]);
+  await registerEndpoint(plain.api, 'ws-1', undefined, D);
+  assert.ok(!('controlUrl' in plain.calls[0]!.body!));
+});
+
+test('reconcileEndpoint() publishes the control URL while the tunnel carries the control socket, and clears it after (CREW-2890)', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-ep-'));
+  connectedTunnel(stateDir);
+  const { api, calls } = fakeApi([201, 200, 200]);
+  const deps = reconcileDeps(stateDir, api, []);
+
+  // Passengers only: explicit null.
+  await reconcileEndpoint('ws-1', deps);
+  assert.equal(calls[0]!.body!.controlUrl, null);
+
+  // The control path arrives: written on the next sync.
+  updatePersistedTunnel(stateDir, 'ws-1', { controlSocket: '/tmp/ctl.sock' });
+  await reconcileEndpoint('ws-1', deps);
+  const slug = readPersistedTunnel(stateDir, 'ws-1')!.slug;
+  assert.equal(calls[1]!.method, 'PATCH');
+  assert.equal(calls[1]!.body!.controlUrl, `https://${slug}.ships.test/control`);
+
+  await reconcileEndpoint('ws-1', deps);
+  assert.equal(calls.length, 2, 'unchanged, so no call');
+
+  // And back.
+  updatePersistedTunnel(stateDir, 'ws-1', { controlSocket: undefined });
+  await reconcileEndpoint('ws-1', deps);
+  assert.equal(calls[2]!.body!.controlUrl, null);
 });

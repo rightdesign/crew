@@ -157,8 +157,10 @@ registered under the label `Periscope: <ship> <ticket>` with the ship's relay UR
 (`<relay url>/control/periscopes/<ticket>/mcp`), which needs the route's key to
 hold `REGISTER_MCP_ENDPOINTS`; the control API's `up` answer carries
 `mcpEndpointId`, or `mcpWarning` when registering failed (the periscope still
-opens, and the daemon retries each cycle). `crew doctor` lists the live
-endpoints as `periscope mcp:`. Opening a periscope from a terminal does not
+opens, and the daemon retries each cycle). The registration is sent with
+`discoverable: false`, so a workspace chat's general endpoint discovery never
+connects to it; only the chat that opened the periscope attaches. `crew doctor`
+lists the live endpoints as `periscope mcp:` and marks them `attached only`. Opening a periscope from a terminal does not
 create one unless `crew periscope up --serve-mcp` is passed.
 
 ## Limits and settings

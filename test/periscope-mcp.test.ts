@@ -316,6 +316,7 @@ test('registration: the endpoint carries the relay URL, path and secret; down re
   assert.equal(row.url, periscopeEndpointUrl('https://abc.ships.example/', 'CREW-12'));
   assert.equal(row.label, 'Periscope: Studio CREW-12');
   assert.equal(row.authorizationHeader, `Bearer ${secret}`);
+  assert.equal(row.discoverable, false, 'hidden from general discovery (CREW-2890)');
   assert.equal(listPeriscopeEndpoints(stateDir).length, 1);
 
   // Registered again (reconcile, or a resumed up): patched, not duplicated.

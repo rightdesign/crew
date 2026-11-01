@@ -124,7 +124,7 @@ export async function registerPeriscopeEndpoint(
   const url = periscopeEndpointUrl(p.relayUrl, p.ticket);
   const stored = readPeriscopeEndpoint(d.stateDir, p.ticketRecordId);
   const out = await registerEndpoint(api, p.workspaceId, stored?.endpointId, {
-    label: `Periscope: ${d.shipName} ${p.ticket}`, url, mcpSecret: secret,
+    label: `Periscope: ${d.shipName} ${p.ticket}`, url, mcpSecret: secret, discoverable: false,
   });
   if (out.kind !== 'ok') {
     return { ok: false, message: out.kind === 'forbidden' ? 'registering the endpoint was refused (403): the route key lacks REGISTER_MCP_ENDPOINTS' : out.message };

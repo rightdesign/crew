@@ -1162,6 +1162,7 @@ function endpointReconcileDeps(routes: Route[], relayHost: string): ReconcileDep
     shipName: cfg.ship.name,
     apiFor: endpointApiFor(routes),
     urlFor: (slug) => publicUrlFor(slug, relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain),
+    controlUrlFor: (slug) => `${relayBaseUrlFor(slug, relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain)}/control`,
     warn: (m) => emit.warn(m, { step: 'passengers' }),
   };
 }
@@ -6480,6 +6481,10 @@ switch (command) {
           process.stdout.write(
             `                   ${r.route} url: ${slug ? publicUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain) : 'not minted yet (first tunnel cycle creates it)'}\n`,
           );
+          const controlUrl = slug && readPersistedTunnel(cfg.ship.stateDir, ws)?.controlSocket
+            ? `${relayBaseUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain)}/control`
+            : undefined;
+          process.stdout.write(`                   ${r.route} control url: ${controlUrl ?? 'none (the tunnel carries passengers only)'}\n`);
           const api = endpointApiFor([r])(ws);
           if (!api) continue;
           const probe = await probeEndpointAccess(api, ws);
@@ -6501,7 +6506,7 @@ switch (command) {
     // CREW-2862: the MCP endpoints live periscopes have registered in their workspaces.
     for (const e of listPeriscopeEndpoints(cfg.ship.stateDir)) {
       const secret = readPeriscopeSecret(cfg.ship.stateDir, e.ticketRecordId) ? 'live' : 'ended, awaiting removal';
-      process.stdout.write(`periscope mcp:     ${e.ticket} ${e.route} ${e.url} (${secret})\n`);
+      process.stdout.write(`periscope mcp:     ${e.ticket} ${e.route} ${e.url} (${secret}, attached only)\n`);
     }
     // CREW-2803: the control API over the relay, end to end, for this route's workspace.
     if (cfg.ship.relayHost && !flag('offline')) {

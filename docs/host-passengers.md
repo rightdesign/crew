@@ -170,6 +170,14 @@ whose Ships table lacks the `relay_url` column is skipped quietly. Callers
 authenticate with the ship key as for the local socket. `crew status` shows the
 URL and `crew doctor` probes it end to end.
 
+The ship's workspace MCP endpoint registration (`Ship: <name>`) carries the
+control API's base URL too, as `controlUrl` (`<relay base>/control`), so a
+workspace chat can find a ship's control API from the registration alone. It is
+sent whenever the tunnel forwards the control socket and cleared (`null`) when
+the tunnel carries Passengers only; a change in either direction is written on
+the next sync, like a changed URL. `crew doctor` prints it as `control url:`
+under the route's `url:` line.
+
 ### Periscope operations on the control API
 
 `POST /periscopes`, `POST /periscopes/<ticket>/down` and `GET /periscopes` do

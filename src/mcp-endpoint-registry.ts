@@ -33,6 +33,13 @@ export interface DesiredEndpoint {
   url: string;
   /** The container's `mcpSecret`; the header is omitted when there is none. */
   mcpSecret?: string;
+  /**
+   * The ship control API's base URL (EPIC-077). `null` clears a stored one;
+   * omitted leaves the field out of the body entirely.
+   */
+  controlUrl?: string | null;
+  /** `false` hides the endpoint from a workspace chat's general discovery (periscope endpoints); omitted leaves it to the platform default. */
+  discoverable?: boolean;
 }
 
 export type RegisterOutcome =
@@ -62,6 +69,8 @@ async function call(
 
 function bodyFor(d: DesiredEndpoint, forPatch: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = { label: d.label, url: d.url };
+  if (d.controlUrl !== undefined) body.controlUrl = d.controlUrl;
+  if (d.discoverable !== undefined) body.discoverable = d.discoverable;
   if (d.mcpSecret) body.authorizationHeader = `Bearer ${d.mcpSecret}`;
   // PATCH keeps a stored header when the field is omitted, so a secret that
   // went away has to be cleared explicitly.
@@ -139,11 +148,13 @@ export interface ReconcileDeps {
   apiFor: (workspaceId: string) => EndpointApi | undefined;
   /** The public URL for a slug in this workspace. */
   urlFor: (slug: string) => string;
+  /** The control API's base URL for a slug (`<relay base>/control`); omit when the ship has no control path to publish. */
+  controlUrlFor?: (slug: string) => string;
   warn: (message: string) => void;
 }
 
-function registrationKey(url: string, mcpSecret: string | undefined): string {
-  return createHash('sha256').update(`${url}\n${mcpSecret ?? ''}`).digest('hex').slice(0, 16);
+function registrationKey(url: string, mcpSecret: string | undefined, controlUrl: string | null): string {
+  return createHash('sha256').update(`${url}\n${mcpSecret ?? ''}\n${controlUrl ?? ''}`).digest('hex').slice(0, 16);
 }
 
 /**
@@ -157,12 +168,15 @@ export async function reconcileEndpoint(workspaceId: string, d: ReconcileDeps): 
   const st = readPersistedTunnel(d.stateDir, workspaceId);
   if (!st || st.status !== 'connected' || !st.slug) return;
   const url = d.urlFor(st.slug);
-  const key = registrationKey(url, st.mcpSecret);
+  // Published only while the tunnel actually forwards the control socket; a
+  // passengers-only tunnel clears it, and a change either way changes the key.
+  const controlUrl = st.controlSocket && d.controlUrlFor ? d.controlUrlFor(st.slug) : null;
+  const key = registrationKey(url, st.mcpSecret, controlUrl);
   if (st.endpointId && st.registeredKey === key) return;
   const api = d.apiFor(workspaceId);
   if (!api) { d.warn(`no API key known for workspace ${workspaceId} — cannot register its MCP endpoint`); return; }
   const out = await registerEndpoint(api, workspaceId, st.endpointId, {
-    label: `Ship: ${d.shipName}`, url, mcpSecret: st.mcpSecret,
+    label: `Ship: ${d.shipName}`, url, mcpSecret: st.mcpSecret, controlUrl,
   });
   if (out.kind === 'ok') {
     updatePersistedTunnel(d.stateDir, workspaceId, { endpointId: out.endpointId, registeredKey: key });
