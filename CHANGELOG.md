@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.85.0] — 2026-11-01
+
+- CREW-2854 `crew worktree NNN` recognizes the worktree of a draft (periscope) ticket.
+
 ## [0.84.0] — 2026-11-01
 
 - CREW-2853 crew.yaml can set hostPeriscopes, ship.previewHost, maxPeriscopes and periscopeIdleMinutes for a route.
