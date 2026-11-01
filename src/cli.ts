@@ -50,6 +50,7 @@ import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures } f
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
+import { checkSandboxRunner } from './runner.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR } from './agent.ts';
 import { guardRunHandoff, describeHandoffPush, repoConfigFor, pushedEventBody } from './handoff-guard.ts';
 import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
@@ -6425,6 +6426,14 @@ switch (command) {
       if (foreign.length > 0) {
         process.stdout.write(`foreign launchd units (not this checkout's — \`crew install\` or \`crew uninstall --all\` clears them):\n${foreign.join('\n')}\n`);
       }
+    }
+
+    // CREW-2793: the sandbox runner needs the OpenShell CLI and a live gateway.
+    if (cfg.ship.runner === 'sandbox') {
+      const sb = checkSandboxRunner(cfg.ship.sandbox);
+      process.stdout.write(`sandbox runner:    ${sb.ok ? `OK (${sb.detail})` : `NOT READY — ${sb.detail}`}\n`);
+    } else {
+      process.stdout.write('sandbox runner:    off (ship.runner is host)\n');
     }
 
     // Host Passengers preflight (ISSUE-553): a route can declare

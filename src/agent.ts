@@ -29,7 +29,8 @@ import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
-import { deadlineFor, killRunGroup, msUntilDeadline, resolveMaxRunMinutes, WALL_CLOCK_REASON } from './run-limit.ts';
+import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKind } from './runner.ts';
+import { deadlineFor, msUntilDeadline, resolveMaxRunMinutes, WALL_CLOCK_REASON } from './run-limit.ts';
 import { appendAdditions } from './prompt-additions.ts';
 import { TicketAttributionTracker, isClaimWrite } from './ticket-attribution.ts';
 
@@ -114,6 +115,12 @@ export interface AgentPlan {
   warnings?: string[];
   /** Wall-clock limit in minutes (CREW-2786); absent or 0 means none. `planAgentRun` always sets it. */
   maxRunMinutes?: number;
+  /**
+   * Where the run executes (CREW-2793). Absent means the host runner, as before.
+   * Set by `planAgentRun` from `ship.runner`; `sandboxConfig` is `ship.sandbox`.
+   */
+  runner?: RunnerKind;
+  sandboxConfig?: Partial<import('./runner.ts').SandboxConfig>;
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -441,6 +448,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     workspaceAuth: toolchain.auth === 'workspace',
     provider: toolchainProvider(toolchain),
     maxRunMinutes: resolveMaxRunMinutes(o.route.maxRunMinutes, toolchain.maxRunMinutes),
+    ...(o.ship.runner === 'sandbox' ? { runner: 'sandbox' as const, ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}) } : {}),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
     warnings: [...(seat.warnings ?? []), ...expanded.warnings],
     prompt,
@@ -534,6 +542,11 @@ export interface RunSidecar {
   ticket: string | null;
   /** The tracker record id of the ticket the runner claimed for this run, if any. */
   ticketRecordId: string | null;
+  /** Which runner started it (CREW-2793); absent on sidecars written before, which are host runs. */
+  runner?: RunnerKind;
+  /** The OpenShell sandbox the run executes in; `pid` is then the `sandbox exec` client on the host. */
+  sandbox?: string;
+  sandboxBin?: string;
   /** The repo name of the ticket the run was selected for (CREW-2822), when known. */
   repo?: string | null;
   /** The route's own name (`ws/proj`), where `route` is the slug; absent on sidecars written before CREW-2822. */
@@ -603,7 +616,7 @@ function identityOf(plan: AgentPlan, adapterHarness: string): RunIdentity {
  * by the process that spawned the run and by one that adopted it.
  */
 async function killForDeadline(
-  pid: number, emit: Emitter, role: RoleName, ticket: string | null,
+  kill: () => Promise<void>, pid: number | undefined, emit: Emitter, role: RoleName, ticket: string | null,
   spawnedAt: string, limitMinutes: number | undefined,
 ): Promise<{ limitMinutes: number; elapsedMs: number }> {
   const elapsedMs = Date.now() - Date.parse(spawnedAt);
@@ -612,7 +625,7 @@ async function killForDeadline(
     role, ...(ticket ? { ticket } : {}),
     data: { event: 'run_killed', reason: WALL_CLOCK_REASON, limitMinutes: limit, elapsedMs, pid },
   });
-  await killRunGroup(pid);
+  await kill();
   return { limitMinutes: limit, elapsedMs };
 }
 
@@ -1030,36 +1043,51 @@ async function finishRun(
  */
 export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Promise<RunResult> {
   const adapter = adapterFor(plan.harness ?? LEGACY_TOOLCHAIN_HARNESS);
+  const runner: Runner = runnerFor(plan.runner, plan.sandboxConfig);
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   for (const w of plan.warnings ?? []) emit.warn(w, { step: 'agent', role: plan.role });
   const eventsSink = openSink(plan.eventsPath);
   const id = identityOf(plan, adapter.harness);
 
-  return new Promise((resolve, reject) => {
-    let streamFd: number;
-    try {
-      mkdirSync(dirname(plan.streamPath), { recursive: true });
-      streamFd = openSync(plan.streamPath, 'a');
-    } catch (e) {
-      void endSink(eventsSink);
-      reject(new AgentSpawnError(`cannot open the stream file ${plan.streamPath}: ${(e as Error).message}`));
-      return;
-    }
-    const child = spawn(plan.bin, plan.args, {
-      cwd: plan.cwd,
-      env: { ...scrubbedEnv(process.env, adapter.harness), ...plan.setEnv },
-      stdio: ['pipe', streamFd, 'inherit'],
-      detached: true,
-    });
-    closeSync(streamFd);   // the child holds its own copy
+  let streamFd: number;
+  try {
+    mkdirSync(dirname(plan.streamPath), { recursive: true });
+    streamFd = openSync(plan.streamPath, 'a');
+  } catch (e) {
+    void endSink(eventsSink);
+    return Promise.reject(new AgentSpawnError(`cannot open the stream file ${plan.streamPath}: ${(e as Error).message}`));
+  }
+  const failed = (e: unknown): Promise<never> => {
+    void endSink(eventsSink);
+    return Promise.reject(new AgentSpawnError(`cannot run ${plan.bin}: ${(e as Error).message}`));
+  };
+  // The host runner spawns synchronously, so the child (and its sidecar) exist when this returns.
+  let begun: StartedRun | Promise<StartedRun>;
+  try {
+    begun = runner.start(plan, { env: { ...scrubbedEnv(process.env, adapter.harness), ...plan.setEnv }, streamFd, emit });
+  } catch (e) {
+    closeSync(streamFd);
+    return failed(e);
+  }
+  if (begun instanceof Promise) {
+    return begun.then(
+      (run) => { closeSync(streamFd); return supervise(run); },
+      (e) => { closeSync(streamFd); return failed(e); },
+    );
+  }
+  closeSync(streamFd);   // the child holds its own copy
+  return supervise(begun);
 
+  function supervise({ child, handle, promptDelivered }: StartedRun): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
     const spawnedAt = new Date().toISOString();
     const deadline = deadlineFor(spawnedAt, plan.maxRunMinutes);
     if (child.pid !== undefined) {
       const sidecar: RunSidecar = {
         pid: child.pid, ownerPid: process.pid, spawnedAt, role: plan.role, route: plan.route,
         ...(deadline ? { deadline, maxRunMinutes: plan.maxRunMinutes } : {}),
+        ...(handle.runner === 'sandbox' ? { runner: 'sandbox' as const, sandbox: handle.sandbox, sandboxBin: handle.sandboxBin } : {}),
         ticket: plan.ticket ?? null, ticketRecordId: plan.ticketRecordId ?? null, repo: plan.repo ?? null, routeName: plan.routeName, model: plan.model,
         toolchain: id.toolchain, harness: id.harness, provider: id.provider, eventsPath: plan.eventsPath,
         agentLog: id.agentLog, promptVersion: plan.promptVersion, promptSha: plan.promptSha,
@@ -1076,13 +1104,12 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     const tail = new FileTail(plan.streamPath);
     const timer = setInterval(() => obs.feed(tail.poll()), TAIL_POLL_MS);
 
-    // The wall-clock limit (CREW-2786): kill the run's process group at its deadline. The
+    // The wall-clock limit (CREW-2786): end the run at its deadline. The
     // `close` handler below then finishes it as interrupted, exactly as for any killed run.
     let killed: RunResult['killed'];
     const limitTimer = child.pid !== undefined && deadline
       ? setTimeout(() => {
-          const pid = child.pid!;
-          void killForDeadline(pid, emit, plan.role, obs.liveTicket ?? plan.ticket ?? null, spawnedAt, plan.maxRunMinutes)
+          void killForDeadline(() => runner.kill(handle, WALL_CLOCK_REASON), child.pid, emit, plan.role, obs.liveTicket ?? plan.ticket ?? null, spawnedAt, plan.maxRunMinutes)
             .then((k) => { killed = k; });
         }, Math.max(0, msUntilDeadline(deadline) ?? 0))
       : undefined;
@@ -1095,6 +1122,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
       spawnFailed = true;
       clearInterval(timer);
       clearTimeout(limitTimer);
+      void runner.release(handle, emit);
       reject(new AgentSpawnError(`cannot run ${plan.bin}: ${err.message}`));
     });
     child.on('close', async (code) => {
@@ -1104,6 +1132,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
       obs.end();
       await endSink(eventsSink);
       if (spawnFailed) return;
+      await runner.release(handle, emit);
       // `killed` is set once the kill returns, which can trail `close` by a tick.
       if (limitTimer && !killed && !obs.sawResult && msUntilDeadline(deadline)! <= 0) {
         killed = { limitMinutes: plan.maxRunMinutes ?? 0, elapsedMs: Date.now() - Date.parse(spawnedAt) };
@@ -1123,8 +1152,11 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     child.stdin?.on('error', (err) => {
       emit.warn(`agent closed stdin before the prompt was delivered: ${err.message}`, { step: 'agent' });
     });
-    child.stdin?.end(plan.prompt);
+    // An uploaded prompt (over the sandbox stdin limit) is already in place; writing it again would push
+    // the same multi-MiB payload through the exec client's stdin, which is what the upload avoids.
+    if (promptDelivered) child.stdin?.end(); else child.stdin?.end(plan.prompt);
   });
+  }
 }
 
 export interface ReattachOptions {
@@ -1172,6 +1204,7 @@ export async function reattachRun(
   obs.feed(tail.poll());
   obs.muted = false;
 
+  const runner = runnerOfSidecar(sc);
   const adopted = isAlive(sc);
   let killed: ReattachResult['killed'];
   if (adopted) {
@@ -1182,7 +1215,7 @@ export async function reattachRun(
       // The deadline in the sidecar is the ORIGINAL one, so a restarted daemon
       // does not hand a run a fresh clock (CREW-2786).
       if (!killed && (msUntilDeadline(sc.deadline) ?? 1) <= 0) {
-        killed = await killForDeadline(sc.pid, emit, sc.role, obs.liveTicket ?? sc.ticket, sc.spawnedAt, sc.maxRunMinutes);
+        killed = await killForDeadline(() => runner.kill(runner.reattach(sc), WALL_CLOCK_REASON), sc.pid, emit, sc.role, obs.liveTicket ?? sc.ticket, sc.spawnedAt, sc.maxRunMinutes);
         continue;
       }
       await new Promise((r) => setTimeout(r, pollMs));
@@ -1191,6 +1224,8 @@ export async function reattachRun(
   obs.feed(tail.poll());
   obs.end();
   await endSink(eventsSink);
+  // A sandbox outlives a dead client: delete it whichever way the run ended.
+  await runner.release(runner.reattach(sc), emit);
 
   const interrupted = killed ? WALL_CLOCK_REASON : obs.sawResult ? undefined : adopted ? 'no-result' : 'daemon-exit';
   const { ms, ticket } = await finishRun(

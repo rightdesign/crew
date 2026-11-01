@@ -21,6 +21,7 @@
  * behaviour, on its face.
  */
 
+import type { RunnerKind, SandboxConfig } from './runner.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, isAbsolute, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -447,6 +448,13 @@ export interface Ship {
   /** Name of the default toolchain; absent means `claude`. */
   toolchain?: string;
   /**
+   * Where agent runs execute (CREW-2793): `host` (default) spawns the harness
+   * on this machine; `sandbox` runs each one inside an OpenShell sandbox
+   * created for that run. `sandbox` carries its settings.
+   */
+  runner?: RunnerKind;
+  sandbox?: Partial<SandboxConfig>;
+  /**
    * Harnesses `crew connect` installs Pair for (CREW-1517, EPIC-035 §8):
    * the Claude session-start hook's counterpart for CLIs without one. Absent
    * means `[claude]`, which is what a ship always had.
@@ -607,6 +615,27 @@ function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
   if (v === undefined || v === null || v === '') return undefined;
   if (v === 'ssh' || v === 'https') return v;
   throw new ConfigError(`ship.cloneScheme must be "ssh" or "https", got ${JSON.stringify(v)}`);
+}
+
+function parseShipRunner(v: unknown): RunnerKind | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (v === 'host' || v === 'sandbox') return v;
+  throw new ConfigError(`ship.runner must be "host" or "sandbox", got ${JSON.stringify(v)}`);
+}
+
+const SANDBOX_KEYS = ['bin', 'image', 'policy', 'cacheVolume', 'mirrorDir', 'workDir', 'agentBin', 'forgeTokenVar'] as const;
+
+/** `ship.sandbox`: string settings for the sandbox runner; every one is optional. */
+export function parseShipSandbox(v: unknown): Partial<SandboxConfig> | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'object' || Array.isArray(v)) throw new ConfigError('ship.sandbox must be a map of settings');
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (!(SANDBOX_KEYS as readonly string[]).includes(k)) throw new ConfigError(`ship.sandbox: unknown setting "${k}" (known: ${SANDBOX_KEYS.join(', ')})`);
+    if (typeof val !== 'string' || !val) throw new ConfigError(`ship.sandbox.${k} must be a non-empty string`);
+    out[k] = val;
+  }
+  return out as Partial<SandboxConfig>;
 }
 
 /** `ship.env`: a map of variable name to string (numbers and booleans are stringified). */
@@ -1170,6 +1199,9 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   // Every default session store (seat keys, hydrateApiKeys, connect) follows this ship's setting.
   configureSecretStore({ mode: secretStore, stateDir });
 
+  const shipRunner = parseShipRunner(shipRaw.runner);
+  const shipSandbox = parseShipSandbox(shipRaw.sandbox);
+
   return {
     ship: {
       name: shipRaw.name ?? 'this ship',
@@ -1179,6 +1211,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
         model: shipRaw.agent?.model ?? 'claude-sonnet-5',
         maxThinkingTokens,
       },
+      ...(shipRunner ? { runner: shipRunner, ...(shipSandbox ? { sandbox: shipSandbox } : {}) } : {}),
       ...(toolchains.length > 0 ? { toolchains } : {}),
       ...(shipToolchain !== undefined ? { toolchain: shipToolchain } : {}),
       ...(pair ? { pair } : {}),
