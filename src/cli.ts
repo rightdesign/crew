@@ -151,7 +151,7 @@ import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
-  reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
+  reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
 } from './daemon.ts';
 import { ControlAuth, controlSocketFor, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
 import { runCrew } from './periscope-control.ts';
@@ -547,9 +547,11 @@ function findSyncRoute(c: Parameters<typeof findRoute>[0], name: string | undefi
 }
 
 /** crew.yaml plus every route's apiKeyFile: the files a daemon reads once, at startup (CREW-1532). */
-function daemonConfigPaths(c: { configFile: string; routes: Array<{ apiKeyFile?: string }> }): string[] {
+function daemonConfigPaths(c: { configFile: string; ship: { stateDir: string }; routes: Array<{ route: string; apiKeyFile?: string }> }): string[] {
   const files = [c.configFile];
   for (const r of c.routes) if (r.apiKeyFile && !files.includes(r.apiKeyFile)) files.push(r.apiKeyFile);
+  // CREW-2887: `crew connect` rewrites a route's resolved file, which the daemon reads only at startup.
+  for (const r of c.routes) files.push(resolvedPathFor(c.ship.stateDir, r.route));
   return files;
 }
 
@@ -2831,8 +2833,14 @@ switch (command) {
       log: (m) => emit.warn(m),
     });
     if (controlServer) emit.emit(`control API listening on ${controlServer.path}`);
+    const inFlight = new Set<Promise<void>>();
     const stopReason = await runDaemonLoop({
+      inFlight,
+      onStaleDeferred: ({ runs, waitedMs }) => emit.warn(
+        `reload or update pending for ${Math.round(waitedMs / 1000)}s — waiting for ${runs} agent run(s) to end before relaunching (\`crew reload --now\` forces it)`,
+      ),
       runPass: () => runOnePass({
+        inFlight,
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
         roleConcurrency: cfg.ship.roleConcurrency,
@@ -5304,7 +5312,10 @@ switch (command) {
     }
     mkdirSync(cfg.ship.stateDir, { recursive: true });
     writeFileSync(sentinel, `${new Date().toISOString()}\n`);
-    process.stdout.write('crew reload: requested — the daemon finishes its in-flight pass, then relaunches with the new config\n');
+    process.stdout.write(
+      'crew reload: requested — the daemon relaunches with the new config once its running agents end (it starts no new work meanwhile); ' +
+        'if it is busy, `crew reload --now` forces the relaunch and interrupts them\n',
+    );
     if (flag('now') && control?.stopCommand && control.startCommand) {
       for (const cmd of [control.stopCommand, control.startCommand]) {
         const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
@@ -5679,6 +5690,8 @@ switch (command) {
           nameDrift: nameSync.drift,
           // Additive (CREW-2803): the relay URL this route's tunnel is reachable at, or null.
           relayUrl: routeRelayUrl(route),
+          // Additive (CREW-2887): when a `crew reload` request was written and not yet honored, else null.
+          reloadRequestedAt: ((at) => (at === null ? null : new Date(at).toISOString()))(readReloadRequestedAt(cfg.ship.stateDir)),
         },
         // Additive (CREW-1402): what the operator owes. `version` stays 1.
         todo: todo.map((i) => ({ ticket: displayKey(i.ticket), title: i.ticket.title ?? null, reasons: i.reasons })),
@@ -5777,6 +5790,10 @@ switch (command) {
     );
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
       if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);
+    }
+    const reloadWaitingAt = readReloadRequestedAt(cfg.ship.stateDir);
+    if (reloadWaitingAt !== null) {
+      process.stdout.write(`reload:     requested ${Math.max(0, Math.round((Date.now() - reloadWaitingAt) / 1000))}s ago, not yet honored — \`crew reload --now\` forces it\n`);
     }
     if (projects.length) process.stdout.write(`projects:   ${projects.map((p) => p.label).join(', ')}\n`);
     for (const i of openShipAttention(state)) {
@@ -5943,6 +5960,14 @@ switch (command) {
             '(no AbandonProcessGroup / KillMode=process) — a daemon crash or relaunch kills the run in flight; run `crew install`\n',
         );
       }
+    }
+
+    // CREW-2887: a reload request the running daemon has not yet honored.
+    const reloadAt = readReloadRequestedAt(cfg.ship.stateDir);
+    if (reloadAt !== null) {
+      process.stdout.write(
+        `reload request:    WARN pending for ${Math.max(0, Math.round((Date.now() - reloadAt) / 1000))}s — the daemon is waiting for its running agents to end; \`crew reload --now\` forces it\n`,
+      );
     }
 
     // CREW-1532: a daemon started before the last crew.yaml / apiKeyFile

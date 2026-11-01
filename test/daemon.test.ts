@@ -153,24 +153,50 @@ test('onPass reports the backoff the loop is about to sleep for, 0 when chaining
   });
 });
 
-test('checkStale is consulted only on an idle pass, and stops the loop with reason "stale"', async () => {
-  const sleeps: number[] = [];
+test('checkStale is honored on a chaining pass when no run is in flight (CREW-2887)', async () => {
   let call = 0;
+  const reason = await runDaemonLoop({
+    runPass: async () => { call++; return emptyResult(['dev']); },
+    checkStale: () => call >= 2,
+    sleep: async () => { throw new Error('must not sleep'); },
+  });
+  assert.equal(reason, 'stale');
+  assert.equal(call, 2);
+});
+
+test('an idle pass still checks stale and sleeps otherwise', async () => {
+  const sleeps: number[] = [];
   let staleChecks = 0;
   const reason = await runDaemonLoop({
-    runPass: async () => {
-      call++;
-      // Busy for the first two passes (checkStale must not even be called
-      // then), idle from the third pass on.
-      return emptyResult(call <= 2 ? ['dev'] : []);
-    },
+    runPass: async () => emptyResult(),
     checkStale: () => { staleChecks++; return staleChecks >= 2; },
     sleep: async (ms) => { sleeps.push(ms); },
   });
   assert.equal(reason, 'stale');
-  assert.equal(call, 4); // 2 busy + 2 idle (first idle checks stale=false and sleeps, second returns)
-  assert.equal(staleChecks, 2);
-  assert.deepEqual(sleeps, [5000]); // only the first idle pass actually slept
+  assert.deepEqual(sleeps, [5000]);
+});
+
+test('a pending reload waits for the in-flight run, starts no new pass, then stops (CREW-2887)', async () => {
+  const inFlight = new Set<Promise<void>>();
+  let release!: () => void;
+  const run = new Promise<void>((r) => { release = r; });
+  inFlight.add(run);
+  void run.finally(() => inFlight.delete(run));
+  let call = 0;
+  const deferred: number[] = [];
+  const done = runDaemonLoop({
+    runPass: async () => { call++; return emptyResult(['dev']); },
+    checkStale: () => true,
+    inFlight,
+    onStaleDeferred: ({ runs }) => deferred.push(runs),
+    sleep: () => new Promise<void>(() => {}),
+  });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(call, 1);
+  assert.deepEqual(deferred, [1]);
+  release();
+  assert.equal(await done, 'stale');
+  assert.equal(call, 1);
 });
 
 test('an aborted signal wins over a pending stale check', async () => {
@@ -686,7 +712,7 @@ test('a changed crew.yaml makes the stale checker report stale; an untouched one
   assert.equal(stale(), true);
 });
 
-test('a config touch during a busy pass does not interrupt it; the next idle pass stops as stale', async () => {
+test('a config touch during a busy pass is honored right after that pass when no run is in flight (CREW-2887)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-reload-'));
   const cfgFile = join(dir, 'crew.yaml');
   writeFileSync(cfgFile, 'a: 1\n');
@@ -703,7 +729,7 @@ test('a config touch during a busy pass does not interrupt it; the next idle pas
     sleep: async () => {},
   });
   assert.equal(reason, 'stale');
-  assert.equal(call, 2); // the busy pass ran to completion; only the idle one noticed
+  assert.equal(call, 1); // the busy pass ran to completion, then the chaining branch noticed
 });
 
 test('reload sentinel: stale once written, cleared (and the start stamped) by the next daemon startup', () => {

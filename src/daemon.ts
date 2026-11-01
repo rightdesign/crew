@@ -179,7 +179,20 @@ export interface DaemonLoopOptions {
    * instead of sleeping again. Typically `makeStaleChecker(...)` below.
    */
   checkStale?: () => boolean;
+  /**
+   * CREW-2887: agent runs launched by `runPass` that have not ended (the same
+   * set `runOnePass` fills). While `checkStale` reports an update or a reload
+   * request and this is non-empty, the loop stops starting passes and waits
+   * for the set to drain, then stops with `'stale'`; with it empty the stale
+   * stop happens on any pass, chaining or idle.
+   */
+  inFlight?: Set<Promise<void>>;
+  /** Called when a stale stop is waiting on in-flight runs, and again every `RELOAD_WARN_MS` it keeps waiting. */
+  onStaleDeferred?: (info: { runs: number; waitedMs: number }) => void;
 }
+
+/** CREW-2887: how often a stale stop that is waiting on a running agent says so again. */
+export const RELOAD_WARN_MS = 10 * 60 * 1000;
 
 /** Why `runDaemonLoop` returned. `'maxPasses'` only ever fires in a test. */
 export type DaemonStopReason = 'aborted' | 'stale' | 'maxPasses';
@@ -212,6 +225,27 @@ export async function runDaemonLoop(o: DaemonLoopOptions): Promise<DaemonStopRea
   const now = o.now ?? Date.now;
   let transientRun = 0;
   let downSince = 0;
+
+  /**
+   * An update or reload request is pending. Waits for any in-flight agent run
+   * to end (warning periodically), starting nothing new meanwhile so a stream
+   * of short runs cannot starve the relaunch. True to stop with `'stale'`,
+   * false when the signal aborted first.
+   */
+  const staleStop = async (): Promise<boolean> => {
+    const since = now();
+    let warned = false;
+    while (o.inFlight && o.inFlight.size > 0) {
+      if (o.signal?.aborted) return false;
+      if (!warned || now() - since >= RELOAD_WARN_MS) {
+        o.onStaleDeferred?.({ runs: o.inFlight.size, waitedMs: now() - since });
+        warned = true;
+      }
+      const drained = Promise.all([...o.inFlight].map((p) => p.catch(() => undefined))).then(() => undefined);
+      await Promise.race([drained, sleep(RELOAD_WARN_MS)]);
+    }
+    return true;
+  };
 
   for (;;) {
     if (o.signal?.aborted) return 'aborted';
@@ -252,15 +286,17 @@ export async function runDaemonLoop(o: DaemonLoopOptions): Promise<DaemonStopRea
       backoff = floor;
       o.onPass?.(result, 0);
       if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
+      // CREW-2887: honored here too — a daemon that keeps chaining never
+      // reaches the idle branch. Real work in flight is still never cut off:
+      // `staleStop` waits for it to end first.
+      if (o.checkStale?.() && await staleStop()) return 'stale';
       continue;   // zero-idle chaining: no sleep at all
     }
 
     o.onPass?.(result, backoff);
     if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
     if (o.signal?.aborted) return 'aborted';
-    // Checked only here, on an idle pass — never on the chain-immediately
-    // branch above, so real work in flight is never interrupted for this.
-    if (o.checkStale?.()) return 'stale';
+    if (o.checkStale?.() && await staleStop()) return 'stale';
     await sleep(backoff);
     backoff = Math.min(backoff * 2, ceiling);
   }
@@ -327,6 +363,19 @@ export function makeStaleChecker(paths: string[], opts: { reloadSentinel?: strin
  */
 export function reloadSentinelFor(stateDir: string): string {
   return join(stateDir, 'reload-requested');
+}
+
+/**
+ * CREW-2887: when a pending `crew reload` request was written (ms since
+ * epoch), or null when none is waiting. The sentinel is removed at daemon
+ * startup, so its existence means the running daemon has not yet honored it.
+ */
+export function readReloadRequestedAt(stateDir: string): number | null {
+  try {
+    return statSync(reloadSentinelFor(stateDir)).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 /** Written at daemon startup; `crew doctor` compares it with crew.yaml's mtime. */
