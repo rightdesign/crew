@@ -101,3 +101,13 @@ cache/deps/<forge host>/<remote path>/<lockfile hash>/   node_modules trees, rel
 - **`crew sandbox cache`** lists the mirrors with their last refresh. `--prune` drops mirrors (and their
   dependency trees) for repositories the ship no longer serves; `--reset` recreates the volume, and the next
   pass refreshes every mirror again. `--json` prints the list.
+
+## The harness in the image
+
+The crew layer installs Claude Code's standalone binary at `/opt/crew/bin/claude`
+at build time (`SANDBOX_CLAUDE_VERSION` in `sandbox-image.ts`, never `latest`),
+verifies it against the checksum pinned beside the version, and sets
+`DISABLE_AUTOUPDATER=1`. A run never downloads anything. Bumping the pin
+rebuilds the crew layer and so every route's image; an unchanged pin reuses the
+tags. `crew doctor` and `crew sandbox images` show the Claude Code version baked
+into each image.

@@ -6,7 +6,7 @@
  * Three layers, each its own image so a change rebuilds only what it touches:
  *
  *   base   the OpenShell base image at the harness version crew pins
- *   crew   the credential helper, MCP configuration and the environment
+ *   crew   Claude Code at the version crew pins, the credential helper, MCP configuration and the environment
  *          contract (`/opt/crew`), identical for every repository
  *   repo   the repository's own declaration: packages, then setup commands
  *
@@ -44,9 +44,25 @@ import type { RepoSandbox } from './repo-config.ts';
 import { realExec, type Exec } from './passenger-containers.ts';
 import type { ShipAttentionItem } from './ship-attention.ts';
 
-/** The OpenShell base image, and the harness version crew pins into it. A bump rebuilds every repo's image. */
+/** The OpenShell base image, and the OpenShell version crew pins into it. A bump rebuilds every repo's image. */
 export const SANDBOX_BASE_IMAGE = 'nvcr.io/nvidia/base/ubuntu:24.04';
-export const SANDBOX_HARNESS_VERSION = '0.1.6';
+export const SANDBOX_OPENSHELL_VERSION = '0.1.6';
+/**
+ * The Claude Code version the crew layer bakes into `/opt/crew/bin/claude`
+ * (CREW-2909), never `latest`. A run has no route to the download host under
+ * the generated policy, so the binary is fetched at build time and verified
+ * against the checksums below, copied from the release's published
+ * `manifest.json` (`<dist>/claude-code-releases/<version>/manifest.json`).
+ * A bump rebuilds the crew layer and so every repo's image; changing the
+ * version means replacing both checksums with the new release's.
+ */
+export const SANDBOX_CLAUDE_VERSION = '2.1.309';
+export const SANDBOX_CLAUDE_DIST = 'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases';
+/** sha256 of the glibc Linux binary, by `uname -m`. */
+export const SANDBOX_CLAUDE_SHA256: Record<string, { platform: string; sha256: string }> = {
+  x86_64: { platform: 'linux-x64', sha256: '4d704a8aecbe038affa3000f498ae17c1b4f753add8facb8764120affc99b658' },
+  aarch64: { platform: 'linux-arm64', sha256: '9796dd26899337f687739a0b39a7353b639f062a3436a7b941fcf19a1b757a9b' },
+};
 /** The uid the base image runs as. */
 export const SANDBOX_UID = 1000;
 /** Where the crew layer puts everything it adds; caches live under it at absolute paths. */
@@ -79,6 +95,8 @@ export interface SandboxPlan {
   repo: string;
   /** The repo layer's tag, which is the image a sandbox runs. */
   tag: string;
+  /** The Claude Code version this plan bakes in. */
+  claude: string;
   layers: SandboxLayer[];
 }
 
@@ -94,15 +112,31 @@ export const CREW_ENV: Record<string, string> = {
   npm_config_cache: `${CREW_PREFIX}/cache/npm`,
   npm_config_store_dir: `${CREW_PREFIX}/pnpm-store`,
   PNPM_HOME: `${CREW_PREFIX}/pnpm`,
+  // A run cannot reach the download host, so an in-run update attempt is only noise.
+  DISABLE_AUTOUPDATER: '1',
 };
+
+/** Build-time install of the pinned Claude Code binary, checksum-verified, refusing any unknown architecture. */
+export function claudeInstallCommand(): string {
+  const cases = Object.entries(SANDBOX_CLAUDE_SHA256)
+    .map(([arch, { platform, sha256 }]) => `${arch}) p=${platform}; sum=${sha256};;`).join(' ');
+  return [
+    `case "$(uname -m)" in ${cases} *) echo "no pinned Claude Code binary for $(uname -m)" >&2; exit 1;; esac`,
+    `mkdir -p ${CREW_PREFIX}/bin`,
+    `curl -fsSL --retry 3 -o ${CREW_PREFIX}/bin/claude "${SANDBOX_CLAUDE_DIST}/${SANDBOX_CLAUDE_VERSION}/$p/claude"`,
+    `echo "$sum  ${CREW_PREFIX}/bin/claude" | sha256sum -c -`,
+    `chmod 0755 ${CREW_PREFIX}/bin/claude`,
+    `${CREW_PREFIX}/bin/claude --version | grep -F "${SANDBOX_CLAUDE_VERSION}"`,
+  ].join('; ');
+}
 
 function baseLayer(): SandboxLayer {
   const dockerfile = [
     `FROM ${SANDBOX_BASE_IMAGE}`,
-    `LABEL io.crew.sandbox.layer="base" io.crew.sandbox.harness="${SANDBOX_HARNESS_VERSION}"`,
+    `LABEL io.crew.sandbox.layer="base" io.crew.sandbox.openshell="${SANDBOX_OPENSHELL_VERSION}"`,
     '',
   ].join('\n');
-  return { name: 'base', tag: `crew-sandbox-base:${hash({ SANDBOX_BASE_IMAGE, SANDBOX_HARNESS_VERSION })}`, dockerfile, files: {} };
+  return { name: 'base', tag: `crew-sandbox-base:${hash({ SANDBOX_BASE_IMAGE, SANDBOX_OPENSHELL_VERSION })}`, dockerfile, files: {} };
 }
 
 function crewLayer(base: SandboxLayer): SandboxLayer {
@@ -114,10 +148,11 @@ function crewLayer(base: SandboxLayer): SandboxLayer {
     run('apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git && rm -rf /var/lib/apt/lists/*'),
     `COPY credential-helper ${CREW_PREFIX}/bin/credential-helper`,
     `COPY mcp.json ${CREW_PREFIX}/mcp/mcp.json`,
+    run(claudeInstallCommand()),
     run(`chmod 0755 ${CREW_PREFIX}/bin/credential-helper && git config --system credential.helper ${CREW_PREFIX}/bin/credential-helper`),
     run(`mkdir -p ${CREW_PREFIX}/cache ${CREW_PREFIX}/pnpm-store ${CREW_PREFIX}/pnpm /sandbox && chown -R ${SANDBOX_UID}:${SANDBOX_UID} ${CREW_PREFIX} /sandbox`),
     `ENV ${env} PATH=${CREW_PREFIX}/pnpm:${CREW_PREFIX}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
-    `LABEL io.crew.sandbox.layer="crew"`,
+    `LABEL io.crew.sandbox.layer="crew" io.crew.sandbox.claude="${SANDBOX_CLAUDE_VERSION}"`,
     '',
   ].join('\n');
   return { name: 'crew', tag: `crew-sandbox-crew:${hash({ base: base.tag, dockerfile, files })}`, dockerfile, files };
@@ -191,12 +226,17 @@ export function planSandbox(repo: string, decl: RepoSandbox, warm: WarmFiles = {
   const base = baseLayer();
   const crew = crewLayer(base);
   const layer = repoLayer(repo, decl, crew, warm);
-  return { repo, tag: layer.tag, layers: [base, crew, layer] };
+  return { repo, tag: layer.tag, claude: SANDBOX_CLAUDE_VERSION, layers: [base, crew, layer] };
 }
 
 // --- state -----------------------------------------------------------------
 
-export interface BuiltTag { tag: string; builtAt: string }
+export interface BuiltTag {
+  tag: string;
+  builtAt: string;
+  /** The Claude Code version baked into this image (absent on tags built before CREW-2909). */
+  claude?: string;
+}
 export interface SandboxFailure { tag: string; at: string; logPath: string }
 export interface SandboxRepoState {
   /** Newest first. `tags[0]` is the image a sandbox runs. */
@@ -243,8 +283,8 @@ export function sandboxImageStatus(state: SandboxImageState, plan: SandboxPlan):
     return { status: 'failed', detail: `last build of ${plan.tag} failed at ${s.failure.at}; log ${s.failure.logPath}${current ? `; running ${current.tag}` : ''}` };
   }
   if (!current) return { status: 'missing', detail: `no image built yet (wants ${plan.tag}); run \`crew sandbox build\`` };
-  if (current.tag !== plan.tag) return { status: 'stale', detail: `running ${current.tag}, declaration now builds ${plan.tag}` };
-  return { status: 'ok', detail: `${current.tag} built ${current.builtAt}` };
+  if (current.tag !== plan.tag) return { status: 'stale', detail: `running ${current.tag} (claude ${current.claude ?? 'unknown'}), declaration now builds ${plan.tag} (claude ${plan.claude})` };
+  return { status: 'ok', detail: `${current.tag} built ${current.builtAt}, claude ${current.claude ?? 'unknown'}` };
 }
 
 // --- building --------------------------------------------------------------
@@ -330,7 +370,7 @@ export async function buildSandboxImage(plan: SandboxPlan, deps: BuildDeps): Pro
     }
   }
 
-  const tags = [{ tag: plan.tag, builtAt: now().toISOString() }, ...entry.tags.filter((t) => t.tag !== plan.tag)];
+  const tags = [{ tag: plan.tag, builtAt: now().toISOString(), claude: plan.claude }, ...entry.tags.filter((t) => t.tag !== plan.tag)];
   const dropped = tags.slice(KEEP_TAGS);
   state[plan.repo] = { tags: tags.slice(0, KEEP_TAGS) };
   writeSandboxState(deps.stateDir, state);

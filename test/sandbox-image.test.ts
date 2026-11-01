@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
   planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
-  sandboxFailedKey, type BuildDeps, type TickDeps,
+  sandboxFailedKey, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
 
@@ -157,4 +157,23 @@ test('warm files are copied into the repo layer, change its tag, and are written
   };
   await buildSandboxImage(a, h.deps);
   assert.equal(seen, '{}');
+});
+
+test('the crew layer bakes in the pinned Claude Code, checksum-verified, with the autoupdater off', () => {
+  const crew = planSandbox('synthesis', { packages: [], setup: [] }).layers[1]!.dockerfile;
+  assert.match(crew, new RegExp(`claude-code-releases/${SANDBOX_CLAUDE_VERSION.replace(/\./g, '\\.')}/`));
+  assert.match(crew, /sha256sum -c -/);
+  assert.match(crew, /DISABLE_AUTOUPDATER=1/);
+  assert.match(crew, new RegExp(`io\\.crew\\.sandbox\\.claude=\"${SANDBOX_CLAUDE_VERSION.replace(/\./g, '\\.')}\"`));
+  assert.doesNotMatch(claudeInstallCommand(), /latest/);
+  for (const { sha256 } of Object.values(SANDBOX_CLAUDE_SHA256)) assert.match(sha256, /^[0-9a-f]{64}$/);
+});
+
+test('changing the Claude pin changes every tag; the version is recorded with the built tag', async () => {
+  const plan = planSandbox('synthesis', { packages: [], setup: [] });
+  assert.equal(plan.claude, SANDBOX_CLAUDE_VERSION);
+  const h = harness();
+  await buildSandboxImage(plan, h.deps);
+  assert.equal(readSandboxState(h.stateDir).synthesis!.tags[0]!.claude, SANDBOX_CLAUDE_VERSION);
+  assert.match(sandboxImageStatus(readSandboxState(h.stateDir), plan).detail, new RegExp(`claude ${SANDBOX_CLAUDE_VERSION}`));
 });

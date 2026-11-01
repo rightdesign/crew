@@ -4598,7 +4598,7 @@ switch (command) {
             process.stdout.write(`${r.repo}: ${r.status} — ${r.detail}\n`);
             for (const t of r.tags) {
               const ageH = Math.max(0, Math.round((Date.now() - Date.parse(t.builtAt)) / 3_600_000));
-              process.stdout.write(`  ${t.tag}  built ${t.builtAt} (${ageH}h ago)\n`);
+              process.stdout.write(`  ${t.tag}  built ${t.builtAt} (${ageH}h ago), claude ${t.claude ?? 'unknown'}\n`);
             }
           }
           break;
