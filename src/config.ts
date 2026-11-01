@@ -115,6 +115,11 @@ export interface ResolvedIds {
    */
   repoRemotes?: Record<string, string>;
   /**
+   * The `Repos` table's `forge_host` column (CREW-2798), keyed like
+   * `repoRemotes`. Absent for a row with none, which reads as `github.com`.
+   */
+  repoForgeHosts?: Record<string, string>;
+  /**
    * The `Ships` table, when this workspace has one. The ship is matched by
    * NAME (`ship.name`) rather than by a stored id: a machine's name is what
    * an operator recognises on the board, and it is stable enough in practice.
@@ -993,6 +998,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     reposModelId: raw.reposModelId,
     repoNames: raw.repoNames,
     repoRemotes: raw.repoRemotes,
+    repoForgeHosts: raw.repoForgeHosts,
     models: {
       issues: m.req(raw.models?.issues, `${where}.resolved.models.issues`),
       comments: m.req(raw.models?.comments, `${where}.resolved.models.comments`),
@@ -1719,6 +1725,8 @@ export interface RepoTarget {
    * reads this to clone `dir` into existence the first time it's needed.
    */
   remote?: string;
+  /** The Repos row's `forge_host`, when it has one; `cloneUrlFor` defaults to `github.com`. */
+  forgeHost?: string;
 }
 
 /**
@@ -1762,20 +1770,26 @@ export function reposOf(r: Route): RepoTarget[] {
     // repo named after the workspace.
     const [workspace] = splitRoute(r.route);
     const remotes = r.resolved?.repoRemotes ?? {};
+    const hosts = r.resolved?.repoForgeHosts ?? {};
     return Object.entries(r.resolved?.repoNames ?? {}).map(([id, name]) => ({
       name, dir: defaultRepoDir(r.reposBasePath, workspace, name), remote: remotes[id],
+      ...(hosts[id] ? { forgeHost: hosts[id] } : {}),
     }));
   }
   if (trackerNames.length <= 1) return [{ name: basename(r.dir), dir: r.dir }];
 
   const remotes = r.resolved?.repoRemotes ?? {};
   const remoteByName: Record<string, string> = {};
+  const hostByName: Record<string, string> = {};
   for (const [id, name] of Object.entries(r.resolved!.repoNames!)) {
     if (remotes[id]) remoteByName[name] = remotes[id];
+    const h = r.resolved?.repoForgeHosts?.[id];
+    if (h) hostByName[name] = h;
   }
   const [workspace] = splitRoute(r.route);
   return trackerNames.map((name) => ({
     name, dir: defaultRepoDir(r.reposBasePath, workspace, name), remote: remoteByName[name],
+    ...(hostByName[name] ? { forgeHost: hostByName[name] } : {}),
   }));
 }
 
@@ -1820,10 +1834,12 @@ export function passengerCheckoutTargets(r: Route): RepoTarget[] {
   const remotes = r.resolved?.repoRemotes ?? {};
   return passengerRepoTargets(r).map((t) => {
     const id = repoIdForName(r, t.name);
+    const forgeHost = t.forgeHost ?? (id ? r.resolved?.repoForgeHosts?.[id] : undefined);
     return {
       name: t.name,
       dir: passengerCheckoutDir(r.reposBasePath, workspace, t.name),
       remote: t.remote ?? (id ? remotes[id] : undefined),
+      ...(forgeHost ? { forgeHost } : {}),
     };
   });
 }

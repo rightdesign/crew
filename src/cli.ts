@@ -2268,7 +2268,7 @@ switch (command) {
           const target = repoTargetFor(w.route, result.ticket.repo_id);
           fleetTicketRepo = target?.name;
           try {
-            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme })) {
+            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
               wemit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
             }
           } catch (e) {
@@ -2499,7 +2499,7 @@ switch (command) {
           const target = repoTargetFor(route, result.ticket.repo_id);
           ticketRepo = target?.name;
           try {
-            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme })) {
+            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
               emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
             }
           } catch (e) {
@@ -3194,7 +3194,7 @@ switch (command) {
         }
         say('cloning', { remote: plan.remote, target: plan.target }, `cloning ${plan.remote} into ${plan.target}`);
         try {
-          ensureRepoCheckout(plan.target, plan.remote, { scheme: cfg.ship.cloneScheme ?? 'https' });
+          ensureRepoCheckout(plan.target, plan.remote, { scheme: cfg.ship.cloneScheme ?? 'https', host: plan.forgeHost });
         } catch (e) {
           if (!(e instanceof GitError)) throw e;
           const authHint = /authentication failed|could not read (username|password)|permission denied|terminal prompts disabled|repository not found/i.test(e.message)
@@ -3880,7 +3880,7 @@ switch (command) {
         areaModelId: found.areaModelId, areaId: found.areaId,
         shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, periscopesModelId: found.periscopesModelId, locksModelId: found.locksModelId,
         recordLinkViewId: found.recordLinkViewId,
-        reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes,
+        reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes, repoForgeHosts: found.repoForgeHosts,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(found.releaseSeat ? { releaseSeat: found.releaseSeat } : {}),
         ...((found.role ?? previous?.role) ? { role: found.role ?? previous?.role } : {}),

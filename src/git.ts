@@ -12,6 +12,7 @@ import {
   readdirSync, rmSync,
 } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
+import { forgeDescriptorFor, normalizeForgeHost } from './forges.ts';
 
 export class GitError extends Error {}
 
@@ -929,6 +930,13 @@ export function worktrees(cwd: string): WorktreeInfo[] {
 export type CloneScheme = 'ssh' | 'https';
 
 /**
+ * What `cloneUrlFor` and everything that clones through it takes. `host` is
+ * the Repos row's `forge_host` (CREW-2798); absent means `github.com`, so a
+ * row with no forge host builds exactly the URL it always did.
+ */
+export interface CloneOpts { originUrl?: string | null; scheme?: CloneScheme; host?: string | null }
+
+/**
  * Hosts this ship holds a readable forge token for (CREW-2783). For these the
  * clone URL is always HTTPS, since the token only answers HTTPS; the origin /
  * `cloneScheme` logic below applies only to a host with no token. Set once at
@@ -946,14 +954,17 @@ export function setForgeTokenHosts(hosts: Iterable<string>): void {
  * primary checkout's own `origin`) wins when it is recognisably HTTPS or SSH,
  * since a ship that pushes over HTTPS has HTTPS credentials and may have no
  * SSH key at all (CREW-1414). Without one, `scheme` (`ship.cloneScheme`)
- * applies, defaulting to SSH.
+ * applies, defaulting to SSH. A host with a forge token is always HTTPS.
+ * The URL shape for `opts.host` comes from `forges.ts`'s descriptors.
  */
-export function cloneUrlFor(remote: string, opts: { originUrl?: string | null; scheme?: CloneScheme } = {}): string {
+export function cloneUrlFor(remote: string, opts: CloneOpts = {}): string {
   const origin = opts.originUrl?.trim() ?? '';
-  const scheme: CloneScheme = tokenHosts.has('github.com') ? 'https' : /^https?:\/\//i.test(origin) ? 'https'
+  const host = normalizeForgeHost(opts.host);
+  const scheme: CloneScheme = tokenHosts.has(host) ? 'https' : /^https?:\/\//i.test(origin) ? 'https'
     : /^(git@|ssh:\/\/)/i.test(origin) ? 'ssh'
     : opts.scheme ?? 'ssh';
-  return scheme === 'https' ? `https://github.com/${remote}.git` : `git@github.com:${remote}.git`;
+  const forge = forgeDescriptorFor(host);
+  return scheme === 'https' ? forge.httpsUrl(host, remote) : forge.sshUrl(host, remote);
 }
 
 /** The URL a checkout's remote points at, or null when it has none / is not a checkout. */
@@ -980,7 +991,7 @@ export function originUrlOf(dir: string, remoteName: string): string | null {
  * cloned on an earlier run.
  */
 export function ensureRepoCheckout(
-  dir: string, remote: string | undefined, opts: { originUrl?: string | null; scheme?: CloneScheme } = {},
+  dir: string, remote: string | undefined, opts: CloneOpts = {},
 ): boolean {
   if (existsSync(`${dir}/.git`)) return false;
   if (!remote) {
@@ -1100,7 +1111,7 @@ export function acquireCheckoutLock(dir: string, timeoutMs = 30_000): () => void
  */
 export function syncPassengerCheckout(
   dir: string, githubRemote: string | undefined, gitRemoteName: string, base: string,
-  clone: { originUrl?: string | null; scheme?: CloneScheme } = {},
+  clone: CloneOpts = {},
 ): PassengerCheckoutOutcome {
   const release = acquireCheckoutLock(dir);
   try {

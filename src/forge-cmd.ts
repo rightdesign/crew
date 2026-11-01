@@ -6,7 +6,7 @@
 
 import { parseDocument } from 'yaml';
 import {
-  answerCredential, describeForgeSource, forgeFor, hasForgeToken, parseCredentialInput, storeForgeToken,
+  answerCredential, describeForgeSource, forgeDescriptorFor, forgeFor, hasForgeToken, parseCredentialInput, storeForgeToken,
   ForgeError, TOKEN_SOURCES, type ForgesConfig, type ForgeTokenSource,
 } from './forges.ts';
 
@@ -81,7 +81,7 @@ export function runForge(a: ForgeArgs, io: ForgeIo): CmdResult {
     const doc = parseDocument(io.readFile(io.configFile));
     doc.setIn(['ship', 'forges', host, 'token'], tok);
     io.writeFile(io.configFile, doc.toString());
-    io.forges = { ...(io.forges ?? {}), [host]: { username: 'x-access-token', token: tok } };
+    io.forges = { ...(io.forges ?? {}), [host]: { username: forgeDescriptorFor(host).credentialUsername, token: tok } };
     existing = forgeFor(io.forges, host);
   }
 

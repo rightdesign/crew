@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { hostOfRemote } from './forges.ts';
 
 /**
  * Preflight checks `crew doctor` adds for first-run setup (CREW-2239): can the
@@ -52,7 +53,8 @@ export function probePushAuth(
     const raw = (err.stderr ? String(err.stderr) : err.message).trim().split('\n').filter(Boolean).slice(-2).join(' / ');
     const detail = raw || 'push dry-run failed';
     const f = o.forge;
-    if (!f) return { state: 'failed', detail, hint: pushAuthHint(o.remoteUrl) };
+    // CREW-2798: name the forge host even with no forge block, since a GitLab row is not github.com.
+    if (!f) return { state: 'failed', detail: hostOfRemote(o.remoteUrl) ? `${hostOfRemote(o.remoteUrl)}: ${detail}` : detail, hint: pushAuthHint(o.remoteUrl) };
     if (!f.hasToken) {
       return {
         state: 'failed', detail: `no token for forge ${f.host}: ${detail}`,

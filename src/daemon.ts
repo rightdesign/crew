@@ -983,7 +983,7 @@ async function runRoleAgentLocked(
       const target = repoTargetFor(route, result.ticket.repo_id);
       ticketRepo = target?.name;
       try {
-        if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: ship.cloneScheme })) {
+        if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: ship.cloneScheme, host: target.forgeHost })) {
           emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role });
         }
       } catch (e) {

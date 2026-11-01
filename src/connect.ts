@@ -155,6 +155,8 @@ export interface Discovered {
   repoNames?: Record<string, string>;
   /** The `Repos` table's own `remote` column, id -> `owner/repo`, for auto-clone. */
   repoRemotes?: Record<string, string>;
+  /** The `Repos` table's `forge_host` column, id -> host; only rows that set one (CREW-2798). */
+  repoForgeHosts?: Record<string, string>;
   shipsModelId?: string;
   epicsModelId?: string;
   /** The optional `Periscopes` table (EPIC-077); its columns are checked by `crew doctor`. */
@@ -612,7 +614,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // Optional, like Ships/Epics/Locks: a workspace with only one repo, or one
   // that has not sliced its board by repository at all, has no Repos table.
   if (out.reposModelId) {
-    const repos = await get<Array<{ id: string; name?: string | null; remote?: string | null }>>(
+    const repos = await get<Array<{ id: string; name?: string | null; remote?: string | null; forge_host?: string | null }>>(
       o, `/data-models/${out.reposModelId}/records?limit=200`,
     );
     out.repoNames = Object.fromEntries(repos.map((r) => [r.id, r.name ?? '']));
@@ -620,6 +622,10 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       repos.filter((r) => r.remote).map((r) => [r.id, r.remote as string]),
     );
     if (Object.keys(remotes).length > 0) out.repoRemotes = remotes;
+    const forgeHosts = Object.fromEntries(
+      repos.filter((r) => r.forge_host?.trim()).map((r) => [r.id, r.forge_host!.trim().toLowerCase()]),
+    );
+    if (Object.keys(forgeHosts).length > 0) out.repoForgeHosts = forgeHosts;
   }
 
   if (o.area) {

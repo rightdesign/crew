@@ -395,6 +395,8 @@ export interface PassengerCheckoutSyncSpec {
   originUrl?: string | null;
   /** `ship.cloneScheme`: the scheme when there is no `originUrl` to copy. */
   cloneScheme?: CloneScheme;
+  /** The Repos row's `forge_host` (CREW-2798); absent means `github.com`. */
+  forgeHost?: string;
 }
 
 /**
@@ -438,6 +440,7 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
         base: effective.branch.base,
         originUrl: ordinary ? originUrlOf(ordinary.dir, effective.branch.remote) : null,
         cloneScheme: cfg.ship.cloneScheme,
+        ...(target.forgeHost ? { forgeHost: target.forgeHost } : {}),
       });
     }
   }
@@ -463,6 +466,6 @@ export function syncAllPassengerCheckouts(cfg: CrewConfig): PassengerCheckoutSyn
   return passengerCheckoutSyncSpecs(cfg).map((spec) => ({
     name: spec.name,
     workspaceId: spec.workspaceId,
-    outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base, { originUrl: spec.originUrl, scheme: spec.cloneScheme }),
+    outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base, { originUrl: spec.originUrl, scheme: spec.cloneScheme, host: spec.forgeHost }),
   }));
 }

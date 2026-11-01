@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseForges, parseCredentialInput, answerCredential, gitCredentialEnv, forgeRunEnv, readForgeToken,
-  storeForgeToken, hostOfRemote, forgeOfRemote, ForgeError, defaultTokenFilePath, type ForgesConfig,
+  storeForgeToken, hostOfRemote, forgeOfRemote, forgeDescriptorFor, ForgeError, defaultTokenFilePath, type ForgesConfig,
 } from '../src/forges.ts';
 import { runCredential, runForge } from '../src/forge-cmd.ts';
 import { probePushAuth } from '../src/doctor-checks.ts';
@@ -147,4 +147,30 @@ test('crew forge set/rotate: writes the entry comment-safe, stores 0600, no home
   assert.equal(runForge({ sub: 'rotate', host: 'gitlab.com', tokenStdin: false, token: 'x' }, io).code, 2);
   assert.match(runForge({ sub: 'list', tokenStdin: false }, io).out, /github\.com\s+token present/);
   assert.ok(!existsSync(join(state, '.git-credentials')));
+});
+
+test('cloneUrlFor builds GitHub and GitLab shapes for both schemes, defaulting to github.com (CREW-2798)', () => {
+  setForgeTokenHosts([]);
+  assert.equal(cloneUrlFor('g/p', { host: 'gitlab.com', scheme: 'ssh' }), 'git@gitlab.com:g/p.git');
+  assert.equal(cloneUrlFor('g/p', { host: 'gitlab.com', scheme: 'https' }), 'https://gitlab.com/g/p.git');
+  assert.equal(cloneUrlFor('g/sub/p', { host: 'git.example.org', scheme: 'https' }), 'https://git.example.org/g/sub/p.git');
+  assert.equal(cloneUrlFor('a/b', { host: null, scheme: 'https' }), 'https://github.com/a/b.git');
+  assert.equal(cloneUrlFor('a/b', { host: '  ', scheme: 'ssh' }), 'git@github.com:a/b.git');
+  assert.equal(cloneUrlFor('a/b'), 'git@github.com:a/b.git');
+});
+
+test('a token for the row\'s host forces HTTPS for that host only (CREW-2798)', () => {
+  setForgeTokenHosts(['gitlab.example.com']);
+  assert.equal(cloneUrlFor('g/p', { host: 'GitLab.Example.com', scheme: 'ssh' }), 'https://gitlab.example.com/g/p.git');
+  assert.equal(cloneUrlFor('a/b', { scheme: 'ssh' }), 'git@github.com:a/b.git');
+  setForgeTokenHosts([]);
+});
+
+test('forge descriptors: GitLab hosts present oauth2, GitHub keeps x-access-token (CREW-2798)', () => {
+  assert.equal(forgeDescriptorFor('gitlab.com').credentialUsername, 'oauth2');
+  assert.equal(forgeDescriptorFor('my.gitlab.corp').kind, 'gitlab');
+  assert.equal(forgeDescriptorFor(undefined).credentialUsername, 'x-access-token');
+  const f = parseForges({ 'gitlab.com': { token: { source: 'env', var: 'T' } }, 'github.com': { token: { source: 'env', var: 'T' } } })!;
+  assert.equal(f['gitlab.com']!.username, 'oauth2');
+  assert.equal(f['github.com']!.username, 'x-access-token');
 });

@@ -600,6 +600,29 @@ test('an omitted repos: map derives every tracker-known repo from the base-path 
   assert.equal(alpha.remote, 'acme/alpha');
 });
 
+test('a Repos row\'s forge_host reaches its RepoTarget and passenger checkout target (CREW-2798)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
+  writeFileSync(join(dir, 'crew.yaml'), [
+    'ship:', '  name: S', '  agent:', '    bin: /bin/echo', '    model: m',
+    'routes:',
+    '  - route: acme/proj', '    apiKey: k', '    baseUrl: https://example.com', '    dir: /tmp/whatever',
+    '    hostPassengers: true',
+    '    resolved:',
+    '      workspaceId: ws', '      operator: op-1',
+    '      models: { issues: i, comments: c, crew: m }',
+    '      repoNames: { r-a: alpha, r-b: beta }',
+    '      repoRemotes: { r-a: grp/alpha, r-b: acme/beta }',
+    '      repoForgeHosts: { r-a: gitlab.example.com }',
+  ].join('\n'));
+  const r = findRoute(loadConfig(dir, join(dir, 'crew.yaml')), 'acme/proj');
+  const byName = Object.fromEntries(reposOf(r).map((t) => [t.name, t]));
+  assert.equal(byName.alpha!.forgeHost, 'gitlab.example.com');
+  assert.equal(byName.beta!.forgeHost, undefined);
+  const pass = Object.fromEntries(passengerCheckoutTargets(r).map((t) => [t.name, t]));
+  assert.equal(pass.alpha!.forgeHost, 'gitlab.example.com');
+  assert.equal(pass.beta!.forgeHost, undefined);
+});
+
 test('reposBasePath defaults to ~/Crew, and a route override wins over a ship-level one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-repos-'));
   writeFileSync(join(dir, 'crew.yaml'), [

@@ -25,6 +25,8 @@ export interface RepoRemotes {
   repoNames?: Record<string, string>;
   /** repo id -> `owner/repo` */
   repoRemotes?: Record<string, string>;
+  /** repo id -> `forge_host`, for rows that set one (CREW-2798) */
+  repoForgeHosts?: Record<string, string>;
 }
 
 /**
@@ -448,6 +450,8 @@ export interface ClonePlan extends AddPlan {
   remote: string;
   /** Where the clone goes. */
   target: string;
+  /** The row's `forge_host`, when it sets one. */
+  forgeHost?: string;
 }
 
 export interface CloneInput {
@@ -494,5 +498,6 @@ export function planRepoClone(i: CloneInput): ClonePlan {
   const basePath = String(m.get('reposBasePath') ?? (isMap(ship) ? ship.get('reposBasePath') : undefined) ?? '~/Crew');
   const target = i.dir ? expandDir(i.dir, i.base) : join(expandDir(basePath, i.base), i.route.split('/')[0]!, name);
   const add = planRepoAdd({ text: i.text, base: i.base, route: i.route, path: target, origin: remote, resolved: i.resolved, name, isCheckout: i.isCheckout });
-  return { ...add, remote, target };
+  const forgeHost = i.resolved?.repoForgeHosts?.[id];
+  return { ...add, remote, target, ...(forgeHost ? { forgeHost } : {}) };
 }

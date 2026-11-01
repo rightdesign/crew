@@ -32,6 +32,53 @@ export interface ForgeEntry {
 export type ForgesConfig = Record<string, ForgeEntry>;
 
 export const DEFAULT_FORGE_USERNAME = 'x-access-token';
+
+/** The host a Repos row without a `forge_host` lives on (CREW-2798). */
+export const DEFAULT_FORGE_HOST = 'github.com';
+
+/**
+ * What differs between forge kinds for cloning and pushing (CREW-2798): the
+ * URL shapes and the HTTP username the credential helper presents with a
+ * token. GitHub and GitLab share the `<host>/<path>.git` shape, so a
+ * self-hosted GitLab is the GitLab descriptor at another host; `remote` may
+ * carry more than two path segments there (nested groups).
+ */
+export interface ForgeDescriptor {
+  kind: 'github' | 'gitlab';
+  httpsUrl(host: string, remote: string): string;
+  sshUrl(host: string, remote: string): string;
+  /** The username a personal/project access token is presented with. */
+  credentialUsername: string;
+}
+
+export const FORGE_DESCRIPTORS: Record<ForgeDescriptor['kind'], ForgeDescriptor> = {
+  github: {
+    kind: 'github',
+    httpsUrl: (host, remote) => `https://${host}/${remote}.git`,
+    sshUrl: (host, remote) => `git@${host}:${remote}.git`,
+    credentialUsername: DEFAULT_FORGE_USERNAME,
+  },
+  gitlab: {
+    kind: 'gitlab',
+    httpsUrl: (host, remote) => `https://${host}/${remote}.git`,
+    sshUrl: (host, remote) => `git@${host}:${remote}.git`,
+    credentialUsername: 'oauth2',
+  },
+};
+
+/** Lowercased bare host; blank or missing reads as `github.com`. */
+export function normalizeForgeHost(host: string | null | undefined): string {
+  const h = host?.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/\/+$/, '');
+  return h || DEFAULT_FORGE_HOST;
+}
+
+/**
+ * The descriptor for a host: GitLab for `gitlab.com` or any host whose name
+ * contains `gitlab` (the usual self-hosted naming), GitHub otherwise.
+ */
+export function forgeDescriptorFor(host: string | null | undefined): ForgeDescriptor {
+  return normalizeForgeHost(host).includes('gitlab') ? FORGE_DESCRIPTORS.gitlab : FORGE_DESCRIPTORS.github;
+}
 export const DEFAULT_KEYCHAIN_SERVICE = 'crew-forge';
 
 /** One way of keeping a token. Add a new entry to `TOKEN_SOURCES` to add a backend. */
@@ -326,7 +373,7 @@ export function parseForges(raw: unknown): ForgesConfig | undefined {
       throw new ForgeError(`${where}.token.source must be one of: ${Object.keys(TOKEN_SOURCES).join(', ')}`);
     }
     out[host.toLowerCase()] = {
-      username: typeof e.username === 'string' && e.username ? e.username : DEFAULT_FORGE_USERNAME,
+      username: typeof e.username === 'string' && e.username ? e.username : forgeDescriptorFor(host).credentialUsername,
       token,
     };
   }
