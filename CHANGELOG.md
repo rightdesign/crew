@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.113.0] — 2026-11-01
+
+- CREW-2909 The sandbox image's crew layer installs Claude Code at a pinned, checksum-verified version, so a sandboxed run finds the harness on its PATH.
+
 ## [0.112.0] — 2026-11-01
 
 - CREW-2800 Sandboxed runs get their own environment section and a Sandbox Setup skill instead of the worktree one, and a setup hook that reaches for a container engine fails at once with a message naming the in-sandbox services pattern.
