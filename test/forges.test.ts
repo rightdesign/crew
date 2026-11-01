@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseForges, parseCredentialInput, answerCredential, gitCredentialEnv, forgeRunEnv, readForgeToken,
-  storeForgeToken, hostOfRemote, forgeOfRemote, forgeDescriptorFor, ForgeError, defaultTokenFilePath, type ForgesConfig,
+  storeForgeToken, readForgeMisses, hostOfRemote, forgeOfRemote, forgeDescriptorFor, ForgeError, defaultTokenFilePath, type ForgesConfig,
 } from '../src/forges.ts';
 import { runCredential, runForge } from '../src/forge-cmd.ts';
 import { probePushAuth } from '../src/doctor-checks.ts';
@@ -173,4 +173,31 @@ test('forge descriptors: GitLab hosts present oauth2, GitHub keeps x-access-toke
   const f = parseForges({ 'gitlab.com': { token: { source: 'env', var: 'T' } }, 'github.com': { token: { source: 'env', var: 'T' } } })!;
   assert.equal(f['gitlab.com']!.username, 'oauth2');
   assert.equal(f['github.com']!.username, 'x-access-token');
+});
+
+// --- missing forge hosts (CREW-2903) ----------------------------------------
+
+test('credential get records an unanswered https host (host only) and clears it once answered', () => {
+  const d = dir();
+  const forges = envForges();
+  const ask = (host: string, env: NodeJS.ProcessEnv) => runCredential('get', `protocol=https\nhost=${host}\npath=org/secret-repo\n\n`, forges, d, env);
+  ask('gitlab.example.com:8443', {});
+  const misses = readForgeMisses(d);
+  assert.deepEqual(misses.map((m) => m.host), ['gitlab.example.com']);
+  assert.ok(Date.now() - Date.parse(misses[0]!.lastMissAt) < 5000);
+  assert.equal(readFileSync(join(d, 'forge-misses.json'), 'utf8').includes('secret-repo'), false);
+  // a configured host with no readable token is a miss too; the same host again keeps one entry
+  ask('github.com', {});
+  ask('github.com', {});
+  assert.deepEqual(readForgeMisses(d).map((m) => m.host), ['github.com', 'gitlab.example.com']);
+  ask('github.com', { T: 'tok' });
+  assert.deepEqual(readForgeMisses(d).map((m) => m.host), ['gitlab.example.com']);
+});
+
+test('credential get ignores other protocols, store and erase when recording misses', () => {
+  const d = dir();
+  runCredential('get', 'protocol=ssh\nhost=x.example.com\n\n', undefined, d);
+  runCredential('store', 'protocol=https\nhost=x.example.com\n\n', undefined, d);
+  runCredential('erase', 'protocol=https\nhost=x.example.com\n\n', undefined, d);
+  assert.deepEqual(readForgeMisses(d), []);
 });

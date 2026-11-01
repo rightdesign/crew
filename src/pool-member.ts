@@ -65,6 +65,8 @@ export interface StatusBody {
   activeRuns?: number;
   /** ISO time the most recent run finished; null when none has. Sent with `activeRuns`. */
   lastRunEndedAt?: string | null;
+  /** Forge hosts git asked the credential helper for and got no token (CREW-2903). Sent with `running` only; empty clears it. */
+  missingForgeHosts?: Array<{ host: string; lastMissAt: string }>;
 }
 
 /** An HTTP answer reduced to what the loop decides on. A transport failure is a thrown error instead. */
@@ -99,6 +101,8 @@ export interface PoolMemberDeps {
   /** This ship's hashed machine id and the tunnel URL, once known. */
   machineId(): string | null;
   relayUrl(): string | null;
+  /** The forge hosts the credential helper could not answer; absent on a host that does not track them. */
+  missingForgeHosts?(): Array<{ host: string; lastMissAt: string }>;
   /** Run activity read from the daemon's own bookkeeping (CREW-2906); absent means the fields are not reported. */
   activity?(): { activeRuns: number; lastRunEndedAt: string | null };
   /**
@@ -152,6 +156,7 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
     const act = state === 'running' ? deps.activity?.() : undefined;
     if (act) { body.activeRuns = act.activeRuns; body.lastRunEndedAt = act.lastRunEndedAt; }
     if (act) busy = act.activeRuns > 0;
+    if (state === 'running' && deps.missingForgeHosts) body.missingForgeHosts = deps.missingForgeHosts();
     const r = await settle('status', () => deps.api.status(body));
     if (!r) return 'stopped';
     if (r.status === 401) return 'credential';
@@ -258,7 +263,7 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
       if (ans.status === 204) {
         // The tunnel comes up after provision returns; fill the URL in once it exists.
         const url = current ? deps.relayUrl() : null;
-        if (current && (url !== relayReported && url || deps.activity)) {
+        if (current && (url !== relayReported && url || deps.activity || deps.missingForgeHosts)) {
           const r = await report('running', { leaseId: current });
           if (r === 'credential') return POOL_EXIT.credential;
           relayReported = url ?? relayReported;

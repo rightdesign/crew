@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { crewVersion, findConfigFile, loadConfig } from './config.ts';
+import { readForgeMisses } from './forges.ts';
 import { crewInvocation } from './install.ts';
 import { ensureMachineId } from './machine-id.ts';
 import { hostArchitecture, type LeasePayload, type PoolApi, type PoolMemberDeps, type MemberStore } from './pool-member.ts';
@@ -108,6 +109,10 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
       return null;
     },
 
+    missingForgeHosts() {
+      const cfg = loadShip(o.crewHome);
+      return cfg ? readForgeMisses(cfg.ship.stateDir) : [];
+    },
     activity() {
       const cfg = loadShip(o.crewHome);
       return cfg ? runActivity(cfg.ship.stateDir) : { activeRuns: 0, lastRunEndedAt: null };

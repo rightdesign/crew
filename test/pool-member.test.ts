@@ -347,3 +347,22 @@ test('a run starting while the long poll is in flight is reported at once', asyn
   const running = w.statuses.filter((s) => s.state === 'running');
   assert.deepEqual(running.map((s) => s.activeRuns), [0, 1]);
 });
+
+// --- missing forge hosts (CREW-2903) ----------------------------------------
+
+test('running reports carry the missing forge hosts, and an empty list once they are gone', async () => {
+  const w = world({ leases: [{ status: 200, body: { action: 'provision', lease: lease() } }, { status: 204 }, { status: 204 }] });
+  const lists = [[{ host: 'gitlab.example.com', lastMissAt: '2026-11-01T22:00:00.000Z' }], []];
+  w.deps.missingForgeHosts = () => lists.shift() ?? [];
+  await runPoolMember(w.deps);
+  const running = w.statuses.filter((s) => s.state === 'running');
+  assert.deepEqual(running[0]!.missingForgeHosts, [{ host: 'gitlab.example.com', lastMissAt: '2026-11-01T22:00:00.000Z' }]);
+  assert.deepEqual(running[1]!.missingForgeHosts, []);
+  for (const s of w.statuses.filter((x) => x.state !== 'running')) assert.equal('missingForgeHosts' in s, false);
+});
+
+test('a host that does not track forge misses sends no field', async () => {
+  const w = world({ leases: [{ status: 200, body: { action: 'provision', lease: lease() } }] });
+  await runPoolMember(w.deps);
+  assert.equal(w.statuses.some((s) => 'missingForgeHosts' in s), false);
+});

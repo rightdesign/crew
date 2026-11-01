@@ -73,6 +73,16 @@ Body `{ state, leaseId, machineId, relayUrl, reason, crewVersion }` with
 `state` one of `unprovisioned`, `provisioning`, `running`, `wiping`, `failed`.
 Response 200 `{ memberState, leaseState }`.
 
+A `running` report also carries `missingForgeHosts: [{host, lastMissAt}]`: the
+forge hosts git asked the credential helper (`crew credential get`, https only)
+for and the helper could not answer, de-duplicated, with the time of the last
+miss. Only the bare host is recorded (never a URL path, username or token), in
+`<stateDir>/forge-misses.json`. A host is removed when the helper next answers a
+request for it, so a late token delivery clears it after the next successful
+lookup. The list is sent on every `running` report, empty when nothing is
+missing, so the platform can replace what it stored; an older crew omits it.
+The run itself still fails as before.
+
 A `running` report also carries `activeRuns` (agent runs in progress on the
 ship, across all routes) and `lastRunEndedAt` (ISO time the most recent run
 finished, null when none has). Both are read from the ship's own run

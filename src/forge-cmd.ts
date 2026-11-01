@@ -6,7 +6,7 @@
 
 import { parseDocument } from 'yaml';
 import {
-  answerCredential, describeForgeSource, forgeDescriptorFor, forgeFor, hasForgeToken, parseCredentialInput, storeForgeToken,
+  answerCredential, describeForgeSource, forgeDescriptorFor, forgeFor, hasForgeToken, noteForgeMiss, parseCredentialInput, storeForgeToken,
   ForgeError, TOKEN_SOURCES, type ForgesConfig, type ForgeTokenSource,
 } from './forges.ts';
 
@@ -17,7 +17,13 @@ export function runCredential(
   action: string | undefined, stdin: string, forges: ForgesConfig | undefined, stateDir: string, env: NodeJS.ProcessEnv = process.env,
 ): CmdResult {
   try {
-    return { code: 0, out: answerCredential(action ?? '', parseCredentialInput(stdin), forges, stateDir, env), err: '' };
+    const input = parseCredentialInput(stdin);
+    const out = answerCredential(action ?? '', input, forges, stateDir, env);
+    // A lookup for an https host is either answered (any recorded miss is stale) or a miss (CREW-2903).
+    if (action === 'get' && input.host && (!input.protocol || input.protocol === 'https')) {
+      noteForgeMiss(stateDir, input.host, out ? null : new Date().toISOString());
+    }
+    return { code: 0, out, err: '' };
   } catch (e) {
     // A helper that errors makes git fail the whole operation; say why on stderr and answer nothing.
     return { code: 0, out: '', err: `crew credential: ${(e as Error).message}\n` };

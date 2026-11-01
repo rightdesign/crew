@@ -296,6 +296,41 @@ export function answerCredential(
   return `username=${f.entry.username}\npassword=${token}\n`;
 }
 
+// --- forge hosts the helper could not answer (CREW-2903) -------------------
+
+export interface MissingForgeHost { host: string; lastMissAt: string }
+
+const missesPath = (stateDir: string) => join(stateDir, 'forge-misses.json');
+
+/** The recorded misses, oldest first by host name; an unreadable or absent file is an empty list. */
+export function readForgeMisses(stateDir: string): MissingForgeHost[] {
+  try {
+    const raw = JSON.parse(readFileSync(missesPath(stateDir), 'utf8')) as Record<string, unknown>;
+    return Object.entries(raw)
+      .filter(([, t]) => typeof t === 'string')
+      .map(([host, lastMissAt]) => ({ host, lastMissAt: lastMissAt as string }))
+      .sort((a, b) => a.host.localeCompare(b.host));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Records (`at` given) or clears (`at` null) a miss for `host`. The file holds
+ * the bare host and a time only: never a URL path, username or token. Best
+ * effort: bookkeeping must never make git's credential lookup fail.
+ */
+export function noteForgeMiss(stateDir: string, host: string, at: string | null): void {
+  try {
+    const bare = bareHost(host);
+    const cur: Record<string, string> = {};
+    for (const m of readForgeMisses(stateDir)) cur[m.host] = m.lastMissAt;
+    if (at === null) { if (!(bare in cur)) return; delete cur[bare]; } else cur[bare] = at;
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(missesPath(stateDir), JSON.stringify(cur), { mode: 0o600 });
+  } catch { /* best effort */ }
+}
+
 // --- environment handed to git (crew's own, and every agent run's) --------
 
 /**
