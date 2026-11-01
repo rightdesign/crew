@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.91.0] — 2026-11-01
+
+- CREW-2783 A ship can hold its own git forge token (`ship.forges`): `crew credential` serves it to git, `crew forge set|rotate` manages it, and `crew doctor` reports a missing, read-only or refused token.
+
 ## [0.90.0] — 2026-11-01
 
 - CREW-2866 `crew periscope up` and `down` now work from a shell without arguments (route, repository and ticket come from the working directory, the topic is optional, the URL opens in the browser), and `crew shell-init` prints a `periscope` shell function that lands in the worktree.
