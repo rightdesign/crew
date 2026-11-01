@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.100.3] — 2026-11-01
+
+- CREW-2886 A daemon pass whose run claims nothing no longer chains with no sleep, so the loop backs off normally and honors `crew reload`.
+
 ## [0.100.2] — 2026-11-01
 
 - CREW-2884 `crew status --json` ships entries now include id, kind, instanceClass and relayUrl.
