@@ -39,6 +39,17 @@ export interface PeriscopeHosting {
   run: (args: string[], onLine: (line: string) => void) => Promise<CliResult>;
   /** Is `token` a member of `workspaceId`? */
   verifyIn: (token: string, workspaceId: string) => Promise<AuthVerdict>;
+  /**
+   * Per-periscope MCP endpoints (CREW-2862). When set, `up` is run with `--serve-mcp`
+   * (the secret is minted by the command, never passed on its command line) and
+   * the result goes to `onUp`, whose fields are merged into the answer; `onDown`
+   * runs after a successful `down`. Neither may throw: a failure to register is
+   * reported in the answer, and the periscope itself stays up.
+   */
+  mcp?: {
+    onUp(route: { route: string; workspaceId: string }, result: Record<string, unknown>): Promise<Record<string, unknown>>;
+    onDown(route: { route: string; workspaceId: string }, result: Record<string, unknown>): Promise<void>;
+  };
 }
 
 export interface PeriscopeReply {
@@ -117,14 +128,22 @@ function parseLine(line: string): Record<string, unknown> | null {
  * Runs a long operation either buffered or, when `streaming`, relaying each
  * progress event to the caller as it is printed.
  */
-async function execute(h: PeriscopeHosting, args: string[], streaming: boolean): Promise<PeriscopeReply> {
-  const finish = (r: CliResult): { status: number; body: Record<string, unknown> } => {
+async function execute(
+  h: PeriscopeHosting, args: string[], streaming: boolean,
+  after?: (done: Record<string, unknown>) => Promise<Record<string, unknown>>,
+): Promise<PeriscopeReply> {
+  const finishRaw = (r: CliResult): { status: number; body: Record<string, unknown> } => {
     if (r.code !== 0) return { status: failureStatus(r), body: { error: cliMessage(r) } };
     const done = lastJsonLine(r.stdout);
     return done ? { status: 200, body: done } : { status: 502, body: { error: 'the command finished without a result' } };
   };
+  /** The command's own result, then whatever the caller adds once it succeeded. */
+  const finish = async (r: CliResult): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const f = finishRaw(r);
+    return f.status === 200 && after ? { status: 200, body: await after(f.body) } : f;
+  };
   if (!streaming) {
-    const f = finish(await h.run(args, () => {}));
+    const f = await finish(await h.run(args, () => {}));
     return reply(f.status, f.body);
   }
   return {
@@ -132,7 +151,7 @@ async function execute(h: PeriscopeHosting, args: string[], streaming: boolean):
     body: null,
     stream: async (write) => {
       const r = await h.run(args, (line) => { const ev = parseLine(line); if (ev) write(ev); });
-      const f = finish(r);
+      const f = await finish(r);
       write(f.status === 200 ? f.body : { event: 'error', status: f.status, message: f.body.error });
     },
   };
@@ -204,7 +223,7 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
     return execute(h, [
       'periscope', 'down', picked.route, ticket, `--${b.outcome}`,
       ...(b.allowEmpty === true ? ['--allow-empty'] : []), '--json',
-    ], q.wantsStream);
+    ], q.wantsStream, h.mcp ? async (done) => { await h.mcp!.onDown(picked, done); return done; } : undefined);
   }
 
   const repo = plainText(b.repo, 'repo', true);
@@ -226,8 +245,8 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
     'periscope', 'up', picked.route, repo as string, '--topic', topic as string,
     '--host', h.previewHost,
     ...(requestedBy ? ['--requested-by', requestedBy as string] : []),
-    ...(b.isolate === true ? ['--isolate'] : []), '--no-open', '--json',
-  ], q.wantsStream);
+    ...(b.isolate === true ? ['--isolate'] : []), ...(h.mcp ? ['--serve-mcp'] : []), '--no-open', '--json',
+  ], q.wantsStream, h.mcp ? async (done) => ({ ...done, ...(await h.mcp!.onUp(picked, done)) }) : undefined);
 }
 
 /** Runs this same crew program with `args`, relaying complete stderr lines as they arrive. */

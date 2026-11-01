@@ -153,6 +153,12 @@ import {
 } from './daemon.ts';
 import { ControlAuth, controlSocketFor, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
 import { runCrew } from './periscope-control.ts';
+import { handlePeriscopeMcp, findPeriscope, type PeriscopeHook } from './periscope-mcp.ts';
+import {
+  mintPeriscopeSecret, readPeriscopeSecret, removePeriscopeSecret, listPeriscopeEndpoints, registerPeriscopeEndpoint, removeEndedPeriscopeEndpoints,
+  type PeriscopeEndpointDeps,
+} from './periscope-endpoints.ts';
+import { readPeriscopeSidecars } from './periscope-state.ts';
 
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
@@ -391,7 +397,7 @@ function usage(problem?: string, requested = false): never {
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
-  crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--host H] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]
+  crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--serve-mcp] [--host H] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]
   crew periscope up --resume NNN restart the preview an idle periscope's server was stopped for
                                  file a draft ticket, cut and prepare its worktree, start the repo's preview hook and record a Periscopes row (alias: start)
   crew periscope down [[route] NNN] --keep|--discard [--allow-empty] [--json]
@@ -997,6 +1003,7 @@ async function syncShipTunnels(
     for (const plan of containerPlans) pending.push(reconcileEndpoint(plan.workspaceId, reconcile));
     for (const plan of plans) pending.push(reconcileRelayUrl(plan.workspaceId, apiRoutes));
     await Promise.all(pending);
+    await reconcilePeriscopeEndpoints();
   } catch (e) {
     emit.warn(`ship tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });
   }
@@ -1052,6 +1059,71 @@ function endpointApiFor(routes: Route[]): (workspaceId: string) => EndpointApi |
       return undefined;
     }
   };
+}
+
+function periscopeEndpointDeps(): PeriscopeEndpointDeps {
+  return {
+    stateDir: cfg.ship.stateDir,
+    shipName: cfg.ship.name,
+    apiFor: endpointApiFor(cfg.routes.filter((r) => r.enabled)),
+    warn: (m) => emit.warn(m, { step: 'passengers' }),
+  };
+}
+
+/** Last time a periscope's activity was written to its row, so a burst of tool calls is one write. */
+const periscopeTouched = new Map<string, number>();
+const PERISCOPE_TOUCH_EVERY_MS = 30_000;
+
+/** What the per-periscope MCP server needs from this ship (CREW-2862). */
+function periscopeMcpDeps(): import('./periscope-mcp.ts').PeriscopeMcpDeps {
+  const stateDir = cfg.ship.stateDir;
+  return {
+    stateDir,
+    find: (segment) => findPeriscope(readPeriscopeSidecars(stateDir), segment),
+    runHook: async (sc, name: PeriscopeHook, env) => {
+      const rt = cfg.routes.find((r) => r.route === sc.route && r.enabled);
+      const repo = rt && (await resolvedRepos(rt)).find((r) => r.name === sc.repo);
+      const script = repo?.config.hooks[name as keyof typeof repo.config.hooks] as string | undefined;
+      if (!repo || !script) return null;
+      return runScript(script, {
+        cwd: sc.worktree, env, shell: resolveShell(repo.config.shell ?? cfg.ship.shell),
+        timeoutMs: name === 'preview' ? 180_000 : 15 * 60_000,
+      });
+    },
+    touch: async (sc) => {
+      const now = Date.now();
+      if (now - (periscopeTouched.get(sc.ticketRecordId) ?? 0) < PERISCOPE_TOUCH_EVERY_MS) return;
+      periscopeTouched.set(sc.ticketRecordId, now);
+      const rt = cfg.routes.find((r) => r.route === sc.route && r.enabled);
+      if (!rt) return;
+      const { idleMinutes } = periscopeCaps(cfg.ship as typeof cfg.ship & PeriscopeLimits);
+      const at = new Date(now).toISOString();
+      const expiresAt = new Date(now + idleMinutes * 60_000).toISOString();
+      await new Tracker(rt, cfg.ship).updatePeriscope(sc.periscopeRecordId, { last_activity_at: at, expires_at: expiresAt });
+      writePeriscopeSidecar(stateDir, { ...sc, lastActivityAt: at, expiresAt });
+    },
+    log: (m) => emit.warn(m, { step: 'passengers' }),
+  };
+}
+
+/**
+ * Per cycle (CREW-2862): drops the workspace endpoint of every periscope that
+ * ended, whichever way, and registers one that is live but has none yet (the
+ * relay URL did not exist when it opened, or the registration failed).
+ */
+async function reconcilePeriscopeEndpoints(): Promise<void> {
+  const d = periscopeEndpointDeps();
+  await removeEndedPeriscopeEndpoints(d);
+  const have = new Set(listPeriscopeEndpoints(cfg.ship.stateDir).map((e) => e.ticketRecordId));
+  for (const sc of readPeriscopeSidecars(cfg.ship.stateDir)) {
+    if (have.has(sc.ticketRecordId) || !sc.route || !readPeriscopeSecret(cfg.ship.stateDir, sc.ticketRecordId)) continue;
+    const rt = cfg.routes.find((r) => r.route === sc.route && r.enabled);
+    const ws = rt?.resolved?.workspaceId;
+    const relayUrl = rt && routeRelayUrl(rt);
+    if (!rt || !ws || !relayUrl) continue;
+    const out = await registerPeriscopeEndpoint(d, { ticket: sc.ticket, ticketRecordId: sc.ticketRecordId, route: sc.route, workspaceId: ws, relayUrl });
+    if (!out.ok) d.warn(`could not register the MCP endpoint of ${sc.ticket}: ${out.message}`);
+  }
 }
 
 function endpointReconcileDeps(routes: Route[], relayHost: string): ReconcileDeps {
@@ -2734,7 +2806,21 @@ switch (command) {
         maxPeriscopes: cfg.ship.maxPeriscopes,
         run: runCrew,
         verifyIn: (token, ws) => controlAuth.verifyIn(token, ws),
+        mcp: {
+          onUp: async (r, done) => {
+            const id = typeof done.ticketRecordId === 'string' ? done.ticketRecordId : '';
+            const ticket = typeof done.ticket === 'string' ? done.ticket : '';
+            const relayUrl = routeRelayUrl(cfg.routes.find((x) => x.route === r.route)!);
+            if (!relayUrl) return { mcpEndpointId: null, mcpWarning: 'this ship has no relay URL yet, so the periscope\'s MCP endpoint is not registered; it is retried each cycle' };
+            const out = await registerPeriscopeEndpoint(periscopeEndpointDeps(), { ticket, ticketRecordId: id, route: r.route, workspaceId: r.workspaceId, relayUrl });
+            return out.ok ? { mcpEndpointId: out.endpointId, mcpUrl: out.url } : { mcpEndpointId: null, mcpWarning: out.message };
+          },
+          onDown: async () => { await removeEndedPeriscopeEndpoints(periscopeEndpointDeps()); },
+        },
       },
+      periscopeMcp: controlRoutes.some((r) => r.enabled && r.hostPeriscopes)
+        ? (req, res, ticket) => handlePeriscopeMcp(periscopeMcpDeps(), req, res, ticket)
+        : undefined,
       status: () => crewJson(['status', route.route, '--json']),
       doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
       scheduler: schedulerHandler(planDaemonControl(CREW_HOME, hostPlatform(), detectSystemd())),
@@ -4717,7 +4803,7 @@ switch (command) {
             if (deleteBranch) gitOk(repoD.dir, ['branch', '-D', branch]);
           },
           setRowState: (id, state) => trD.updatePeriscope(id, { state }),
-          forgetLocal: (id) => { removePeriscopeSidecar(cfg.ship.stateDir, id); removePeriscopePrior(cfg.ship.stateDir, id); },
+          forgetLocal: (id) => { removePeriscopeSecret(cfg.ship.stateDir, id); removePeriscopeSidecar(cfg.ship.stateDir, id); removePeriscopePrior(cfg.ship.stateDir, id); },
           say,
         };
         if (dryRun) {
@@ -4862,7 +4948,11 @@ switch (command) {
           return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : undefined }) : null;
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
-        recordLocal: (sc) => writePeriscopeSidecar(cfg.ship.stateDir, sc),
+        recordLocal: (sc) => {
+          writePeriscopeSidecar(cfg.ship.stateDir, { ...sc, route: routeP.route });
+          // CREW-2862: the daemon serves an MCP endpoint for this worktree only when asked (the control API asks).
+          if (flag('serve-mcp')) mintPeriscopeSecret(cfg.ship.stateDir, sc.ticketRecordId);
+        },
         comment: (ticketId, body) => trackerP.postComment(ticketId, body, memberId),
         teardown: async (path, branch) => {
           const n = Number(path.match(/(\d+)\/?$/)?.[1]);
@@ -6320,6 +6410,11 @@ switch (command) {
           `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
       }
+    }
+    // CREW-2862: the MCP endpoints live periscopes have registered in their workspaces.
+    for (const e of listPeriscopeEndpoints(cfg.ship.stateDir)) {
+      const secret = readPeriscopeSecret(cfg.ship.stateDir, e.ticketRecordId) ? 'live' : 'ended, awaiting removal';
+      process.stdout.write(`periscope mcp:     ${e.ticket} ${e.route} ${e.url} (${secret})\n`);
     }
     // CREW-2803: the control API over the relay, end to end, for this route's workspace.
     if (cfg.ship.relayHost && !flag('offline')) {

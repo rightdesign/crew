@@ -169,3 +169,62 @@ test('server: periscope paths need the bearer token, 404 with the flag off, and 
     assert.deepEqual(streamed.text.trim().split('\n').map((l) => JSON.parse(l).event), ['setup', 'done']);
   } finally { await srv.close(); }
 });
+
+test('mcp: up runs with --serve-mcp, merges the registration into the answer, and a failed registration leaves the periscope up', async () => {
+  const f = fake();
+  const seen: string[] = [];
+  f.h.mcp = {
+    onUp: async (r, done) => { seen.push(`up ${r.route} ${String(done.ticket)}`); return { mcpEndpointId: 'ep-1' }; },
+    onDown: async (r) => { seen.push(`down ${r.route}`); },
+  };
+  const up = await handlePeriscopes(f.h, req({ body: upBody }));
+  assert.equal(up.status, 200);
+  assert.deepEqual(up.body, { event: 'done', ticket: 'CREW-9', url: 'http://ship.lan:5173', mcpEndpointId: 'ep-1' });
+  assert.ok(f.runs.find((a) => a[1] === 'up')!.includes('--serve-mcp'));
+  const down = await handlePeriscopes(f.h, req({ path: '/periscopes/9/down', body: { route: 'ws/issues', outcome: 'discard' } }));
+  assert.equal(down.status, 200);
+  assert.deepEqual(seen, ['up ws/issues CREW-9', 'down ws/issues']);
+
+  // Without the hook the command is the same as before this ticket.
+  const plain = fake();
+  await handlePeriscopes(plain.h, req({ body: upBody }));
+  assert.ok(!plain.runs.find((a) => a[1] === 'up')!.includes('--serve-mcp'));
+
+  // A command that failed registers nothing.
+  const bad = fake({ up: { code: 1, stdout: '', stderr: 'crew periscope: boom\n' } });
+  bad.h.mcp = { onUp: async () => { seen.push('should not run'); return {}; }, onDown: async () => {} };
+  assert.equal((await handlePeriscopes(bad.h, req({ body: upBody }))).status, 422);
+  assert.ok(!seen.includes('should not run'));
+});
+
+test('mcp: the control server hands /periscopes/<ticket>/mcp to the handler before the tracker-key check', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ctl-'));
+  const seen: string[] = [];
+  const srv = (await startControlServer({
+    stateDir: dir, state: new State(dir), auth: { verify: async () => 'unauthorized' }, status: async () => ({}), doctor: async () => ({}),
+    scheduler: () => ({ accepted: false, detail: '' }),
+    periscopeMcp: async (_req, res, ticket) => { seen.push(ticket); res.writeHead(204).end(); },
+  }))!;
+  const call = (path: string) => new Promise<number>((resolve, reject) => {
+    const r = request({ socketPath: srv.path, method: 'POST', path }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
+    r.on('error', reject); r.end('{}');
+  });
+  try {
+    assert.equal(await call('/periscopes/CREW-12/mcp'), 204, 'no bearer needed: the periscope secret is the credential');
+    assert.deepEqual(seen, ['CREW-12']);
+    assert.equal(await call('/periscopes/CREW-12/down'), 401, 'every other path still needs a key');
+  } finally { await srv.close(); }
+  // Not configured: a plain 404, no tracker check involved.
+  const dir2 = mkdtempSync(join(tmpdir(), 'ctl-'));
+  const srv2 = (await startControlServer({
+    stateDir: dir2, state: new State(dir2), auth: { verify: async () => 'unauthorized' }, status: async () => ({}), doctor: async () => ({}),
+    scheduler: () => ({ accepted: false, detail: '' }),
+  }))!;
+  try {
+    const status = await new Promise<number>((resolve, reject) => {
+      const r = request({ socketPath: srv2.path, method: 'POST', path: '/periscopes/CREW-12/mcp' }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
+      r.on('error', reject); r.end('{}');
+    });
+    assert.equal(status, 404);
+  } finally { await srv2.close(); }
+});

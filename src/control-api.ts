@@ -21,6 +21,10 @@
  *  - `POST /periscopes`, `POST /periscopes/<ticket>/down`, `GET /periscopes`
  *                             Passenger periscopes (CREW-2859, `periscope-control.ts`);
  *                             404 unless a route sets `hostPeriscopes: true`.
+ *  - `POST /periscopes/<ticket>/mcp`  one periscope's MCP server (CREW-2862,
+ *                             `periscope-mcp.ts`). The one path NOT behind the
+ *                             tracker-key check: its own per-periscope secret is
+ *                             the credential, and anything else answers 404.
  *
  * Nothing under setup, connect, key minting or provisioning is exposed, and no
  * endpoint accepts or returns a secret. Pause is the same sentinel files
@@ -300,6 +304,12 @@ export interface ControlDeps {
   startedAt?: number;
   /** Passenger periscope hosting; absent on a ship that cannot host them. */
   periscopes?: PeriscopeHosting;
+  /**
+   * Serves `/periscopes/<ticket>/mcp` (CREW-2862). Called BEFORE the bearer
+   * check: that path is authenticated by the periscope's own secret, which the
+   * handler checks. Absent: the path is a plain 404.
+   */
+  periscopeMcp?: (req: IncomingMessage, res: ServerResponse, ticket: string) => Promise<void>;
   log?: (m: string) => void;
 }
 
@@ -470,6 +480,11 @@ export async function startControlServer(deps: ControlDeps): Promise<RunningCont
     res.on('close', () => abort.abort());
     void (async () => {
       try {
+        const mcp = /^\/periscopes\/([^/]+)\/mcp\/?$/.exec(new URL(req.url ?? '/', 'http://ship').pathname);
+        if (mcp) {
+          if (!deps.periscopeMcp) return send(res, err(404, 'not found'));
+          return await deps.periscopeMcp(req, res, decodeURIComponent(mcp[1]!));
+        }
         const m = /^Bearer (.+)$/.exec(req.headers.authorization ?? '');
         const verdict = await deps.auth.verify(m?.[1]?.trim() ?? '');
         if (verdict === 'unauthorized') return send(res, err(401, 'invalid or revoked key'));

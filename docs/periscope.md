@@ -129,6 +129,38 @@ The preview URL is a plain address on the ship's network. It is reachable
 over the LAN or a private network only; it is not relayed, and nothing about
 it is public.
 
+### The periscope's own MCP endpoint
+
+A periscope opened through the ship's control API also gets an MCP endpoint, so
+the chat agent can change the code it is previewing. The ship serves it for that
+one worktree and registers it in the workspace when the periscope opens; ending
+the periscope removes it.
+
+| Tool | What it does |
+|---|---|
+| `read_file`, `list_directory`, `search_files` | Read the worktree (search lists files git tracks or would not ignore). |
+| `write_file`, `edit_file`, `create_directory`, `delete_file` | Change files. `edit_file` replaces one exact string. |
+| `run_hook` | Run `test`, `build`, `ports`, `handoff` or `preview` in the worktree with the periscope's environment, and return the output. `isolate` only for a periscope opened isolated. A hook the repository does not declare is refused. |
+| `git_status`, `git_diff`, `git_commit` | Inspect and commit on the ticket branch. |
+
+Every path is checked against the worktree's real location, so `..` and a
+symlink that leaves the worktree are refused, and `.git` is never reachable.
+There is no push, no checkout, no other worktree and no shell: the branch only
+leaves the ship when someone ends the periscope with `--keep`. The Passenger's
+own read-only server, and its container, are unchanged.
+
+Each periscope has its own secret, minted when it opens and kept in the ship's
+state directory (never in `crew status`). A request with no secret, a wrong
+one, another periscope's, or for a periscope that has ended gets the same
+`404`. Every tool call counts as activity for the idle expiry. The endpoint is
+registered under the label `Periscope: <ship> <ticket>` with the ship's relay URL
+(`<relay url>/control/periscopes/<ticket>/mcp`), which needs the route's key to
+hold `REGISTER_MCP_ENDPOINTS`; the control API's `up` answer carries
+`mcpEndpointId`, or `mcpWarning` when registering failed (the periscope still
+opens, and the daemon retries each cycle). `crew doctor` lists the live
+endpoints as `periscope mcp:`. Opening a periscope from a terminal does not
+create one unless `crew periscope up --serve-mcp` is passed.
+
 ## Limits and settings
 
 | Setting | Default | Meaning |

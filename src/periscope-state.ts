@@ -17,6 +17,8 @@ export interface PeriscopeSidecar {
   ticketRecordId: string;
   periscopeRecordId: string;
   repo: string;
+  /** The route that serves it; absent on a record written before CREW-2862. */
+  route?: string;
   worktree: string;
   branch: string;
   url: string;
