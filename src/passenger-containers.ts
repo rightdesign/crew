@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import type { CrewConfig } from './config.ts';
 import { crewVersion, passengerCheckoutTargets, passengerMirrorArea, reposOf } from './config.ts';
 import { cacheSettingsOf, type CacheSettings } from './sandbox-cache.ts';
-import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
+import { loadRepoConfigTolerant, resolveRepoConfig, type RepoConfigError } from './repo-config.ts';
 import { syncPassengerCheckout, originUrlOf, type CloneScheme, type PassengerCheckoutOutcome } from './git.ts';
 
 export type Exec = (cmd: string, args: string[], opts?: { timeoutMs?: number }) => string;
@@ -424,7 +424,9 @@ export interface PassengerCheckoutSyncSpec {
  * and `resolveRepoConfig` falls through to the route's own `branch`
  * override, then to `main`/`origin`).
  */
-export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string): PassengerCheckoutSyncSpec[] {
+export function passengerCheckoutSyncSpecs(
+  cfg: CrewConfig, workspaceId?: string, onRefused?: (repo: string, e: RepoConfigError) => void,
+): PassengerCheckoutSyncSpec[] {
   const specs: PassengerCheckoutSyncSpec[] = [];
   for (const route of cfg.routes) {
     if (!route.enabled || !route.hostPassengers || !route.resolved?.workspaceId) continue;
@@ -436,8 +438,14 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
     for (const target of passengerCheckoutTargets(route, mirrorArea)) {
       const ordinary = ordinaryByName.get(target.name);
       const override = route.repoOverrides[target.name];
+      // A refused contract skips this repository alone (CREW-2928).
+      let refused = false;
+      const declared = ordinary
+        ? loadRepoConfigTolerant(ordinary.dir, (e) => { refused = true; onRefused?.(target.name, e); })
+        : null;
+      if (refused) continue;
       const effective = resolveRepoConfig(
-        ordinary ? loadRepoConfig(ordinary.dir) : null,
+        declared,
         { branch: { ...route.branch, ...override?.branch } },
         ordinary?.dir ?? target.dir,
       );
@@ -473,10 +481,12 @@ export function passengerCheckoutSyncSpecs(cfg: CrewConfig, workspaceId?: string
  * `syncPassengerContainers` — a checkout must be cloned and current before
  * a container can mount it.
  */
-export function syncAllPassengerCheckouts(cfg: CrewConfig): PassengerCheckoutSyncResult[] {
+export function syncAllPassengerCheckouts(
+  cfg: CrewConfig, onRefused?: (repo: string, e: RepoConfigError) => void,
+): PassengerCheckoutSyncResult[] {
   // Mirror-fed checkouts (CREW-2807) are not clones of the forge: they are
   // refreshed by `materializeMirrorCheckouts` (passenger-mirror.ts).
-  return passengerCheckoutSyncSpecs(cfg).filter((spec) => !spec.mirror).map((spec) => ({
+  return passengerCheckoutSyncSpecs(cfg, undefined, onRefused).filter((spec) => !spec.mirror).map((spec) => ({
     name: spec.name,
     workspaceId: spec.workspaceId,
     outcome: syncPassengerCheckout(spec.dir, spec.remote, spec.gitRemoteName, spec.base, { originUrl: spec.originUrl, scheme: spec.cloneScheme, host: spec.forgeHost }),

@@ -22,10 +22,10 @@ import { INTERVAL_SECONDS, findOnPath, pathFor, dockerPathProblem } from './inst
 import { existsSync, statfsSync } from 'node:fs';
 import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
-import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
+import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -140,6 +140,21 @@ export function seatKeyUnreadableItem(route: string, seat: string, storeError: s
   return {
     kind: 'seat_key_unreadable', key: seatKeyUnreadableKey(route, seat), since: nowIso,
     message: `${route}: the ${seat} seat's agent key cannot be read (${storeError}) — its runs are refused until the key store is readable. Resumes automatically once it is; \`crew doctor\` names the store in use`,
+  };
+}
+
+/** The key of a repo's `repo_contract_refused` item; one per repo, so one refused contract does not mask another. */
+export const repoContractRefusedKey = (repo: string): string => `repo_contract_refused:${repo}`;
+
+/**
+ * A repository whose `.crew.yaml` is refused (CREW-2928). Only that repository
+ * is skipped by the per-route passes (passenger sync, poll); the route's other
+ * repositories carry on. Cleared the next time the file loads.
+ */
+export function repoContractRefusedItem(repo: string, detail: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'repo_contract_refused', key: repoContractRefusedKey(repo), since: nowIso,
+    message: `${repo}: its repo contract is refused and the repository is skipped — ${detail}. Resumes automatically once the file is valid on its base; \`crew doctor\` names the problem`,
   };
 }
 
@@ -315,7 +330,7 @@ export function recheckBaseStops(state: State, route: Route): string[] {
   for (const item of open) {
     const target = reposOf(route).find((t) => baseUnsafeKey(t.name) === item.key);
     if (!target) continue;
-    const cfg = resolveRepoConfig(loadRepoConfig(target.dir), undefined, target.dir);
+    const cfg = resolveRepoConfig(loadRepoConfigTolerant(target.dir), undefined, target.dir);
     const outcome = refreshBaseBranch(target.dir, cfg.branch.remote, cfg.branch.base, true);
     if (outcome.action === 'level' || outcome.action === 'would-fast-forward') {
       clearShipAttention(state, item.key);

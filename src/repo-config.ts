@@ -909,6 +909,22 @@ export function loadRepoConfig(dir: string): RepoConfig | null {
   return parseRepoConfig(readFileSync(file, 'utf8'), file);
 }
 
+/**
+ * `loadRepoConfig` for a pass that serves many repositories (CREW-2928): a
+ * refused contract is reported through `refused` and reads as no contract, so
+ * one repository's bad file never fails the pass for the others. Anything but
+ * a `RepoConfigError` still throws.
+ */
+export function loadRepoConfigTolerant(dir: string, refused?: (e: RepoConfigError) => void): RepoConfig | null {
+  try {
+    return loadRepoConfig(dir);
+  } catch (e) {
+    if (!(e instanceof RepoConfigError)) throw e;
+    refused?.(e);
+    return null;
+  }
+}
+
 /** A hook's readable name, for a log line or a filed ticket. */
 export function hookLabel(cfg: RepoConfig, hook: keyof RepoHooks): string {
   return cfg.labels[hook] ?? cfg.hooks[hook] ?? hook;

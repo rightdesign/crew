@@ -88,7 +88,7 @@ import { AgentSpawnError, WorkspaceAuthRefused, WorkspaceAllowanceExhausted, str
 import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
 import { listPendingHandoffs } from './pending-handoff.ts';
 import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.ts';
-import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
+import { loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { withRepoMaps } from './repo-map.ts';
@@ -1153,7 +1153,7 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
       name: t.name,
       dir: t.dir,
       id,
-      config: resolveRepoConfig(loadRepoConfig(t.dir), {
+      config: resolveRepoConfig(loadRepoConfigTolerant(t.dir), {
         hooks: { ...route.hooks, ...o?.hooks },
         labels: { ...route.labels, ...o?.labels },
         branch: { ...route.branch, ...o?.branch },

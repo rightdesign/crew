@@ -92,6 +92,12 @@ export interface ReleaseRunOptions {
    * the base carried before it. Absent: the config read at the start stands.
    */
   reloadRepo?: (dir: string) => EffectiveRepoConfig | null;
+  /**
+   * Set when the base's repo contract was refused (CREW-2928): `repo` is then
+   * the route's defaults only. The merge must replace the file with one that
+   * loads, or the release is refused with this message.
+   */
+  contractRefusal?: string;
   contract: Contract;
   tickets: Ticket[];
   /** Status of every blocker `tickets` name; a verified ticket one still gates is held, not merged (CREW-1506). */
@@ -1408,8 +1414,11 @@ async function mergeAndRelease(
           o.emit.emit(`${changed.split('\n')[0]} changed in this release — continuing under the merged contract`);
         }
       } catch (e) {
+        if (o.contractRefusal) throw new Error(`${o.contractRefusal}; the merged contract is also refused: ${(e as Error).message}`);
         o.emit.warn(`could not re-read the merged repo config: ${(e as Error).message}; releasing under the earlier one`);
       }
+    } else if (o.contractRefusal) {
+      throw new Error(`${o.contractRefusal}; nothing merged replaces it`);
     }
   }
 

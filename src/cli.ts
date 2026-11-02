@@ -73,7 +73,7 @@ import {
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
-import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
+import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket } from './ticket-branch.ts';
@@ -169,7 +169,8 @@ import { runBridge } from './intel-bridge.ts';
 import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
+import { contractFixers } from './contract-refusal.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey } from './ship-attention.ts';
 import {
   runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -982,7 +983,22 @@ async function syncHostPassengers(): Promise<void> {
     // sync below can mount them — decision 8's poll-cadence half of
     // freshness. A checkout that won't fast-forward (diverged
     // upstream) is reported, not force-reset past.
-    for (const r of syncAllPassengerCheckouts(cfg)) {
+    const refusedRepos = new Map<string, string>();
+    const checkouts = syncAllPassengerCheckouts(cfg, (repo, e) => refusedRepos.set(repo, e.message));
+    // CREW-2928: a refused contract skips that repository alone — one warning
+    // and one attention item, raised when it first appears and cleared once
+    // the file loads again.
+    for (const [repo, detail] of refusedRepos) {
+      if (await raiseShipAttention({ state, emit }, repoContractRefusedItem(repo, detail))) {
+        emit.warn(`passenger sync skips ${repo}: ${detail}`, { step: 'passengers', data: { repo } });
+      }
+    }
+    for (const item of state.shipAttention().previous()) {
+      if (item.kind === 'repo_contract_refused' && !refusedRepos.has(item.key.slice(repoContractRefusedKey('').length))) {
+        clearShipAttention(state, item.key);
+      }
+    }
+    for (const r of checkouts) {
       // Once per repo: a repeat means the same clone URL already failed and
       // was skipped (git.ts#syncPassengerCheckout), so there is nothing new to say.
       if (r.outcome.action === 'clone-failed') {
@@ -1457,7 +1473,10 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
   }
   const tracker = new Tracker(c, cfg.ship);
   problems.push(...validateContract(tracker.contract).map((p) => `contract: ${p}`));
-  for (const r of await resolvedRepos(c)) {
+  // The doctor keeps reporting a refused contract (CREW-2928), which every other pass now skips.
+  const { settled: doctorRepos, errors: refusedRepos } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
+  for (const e of refusedRepos) problems.push(`repo ${e.repo}: ${e.detail}`);
+  for (const r of doctorRepos) {
     if (!existsSync(r.dir)) problems.push(`repo ${r.name}: ${r.dir} is missing on disk`);
     if (!satisfies(host, r.config.platform)) problems.push(`repo ${r.name}: requires ${r.config.platform}, this host is ${host}`);
     readiness.push(...validateEffective(r.config).map((p) => `repo ${r.name}: ${p}`));
@@ -1591,8 +1610,20 @@ function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: 
   };
 }
 
+/**
+ * Every repo of the route whose contract loads (CREW-2928). A repo whose
+ * `.crew.yaml` is refused is left out and reported as one attention item, never
+ * thrown: this runs at daemon start (`anyRepoServable`), and one repository's
+ * bad file must not take down every lane on the ship.
+ */
 async function resolvedRepos(c: typeof route) {
-  return Promise.all(reposOf(c).map((t) => resolveOneRepo(c, t)));
+  const { settled, errors } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
+  for (const e of errors) {
+    try { await raiseShipAttention({ state, emit }, repoContractRefusedItem(e.repo, e.detail)); } catch { /* the skip below still holds */ }
+  }
+  const refused = new Set(errors.map((e) => e.repo));
+  for (const t of reposOf(c)) if (!refused.has(t.name)) clearShipAttention(state, repoContractRefusedKey(t.name));
+  return settled;
 }
 
 /** Every repo of `routes` that declares a `sandbox:` section, once per repo name (CREW-2794). */
@@ -1817,7 +1848,10 @@ async function releasePhase(
   let boardLock: BoardLockResult | undefined;
   try {
 
-    const repoFile = loadRepoConfig(target.dir);
+    // CREW-2928: a refused base contract is held, not thrown, so the ticket
+    // that replaces it can still be released (decided once the candidates are known).
+    let contractRefusal: Error | null = null;
+    const repoFile = loadRepoConfigTolerant(target.dir, (e) => { contractRefusal = e; });
     const o = c.repoOverrides[target.name];
     const repo = resolveRepoConfig(repoFile, {
       hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
@@ -1943,6 +1977,21 @@ async function releasePhase(
       byRepo.get(target.name) ?? [], tracker.contract.statuses.verified, releaseModes,
     );
     reportUnplaceable(c.route, unplaceable, tracker.contract.statuses.verified, remit);
+    if (contractRefusal) {
+      const refusal: Error = contractRefusal;
+      const baseRef = remoteBranchExists(target.dir, repo.branch.remote, repo.branch.base)
+        ? `${repo.branch.remote}/${repo.branch.base}` : repo.branch.base;
+      const fixers = contractFixers(
+        target.dir, baseRef, tickets.filter((t) => t.status === tracker.contract.statuses.verified),
+        (t) => locateBranchForTicket(target.dir, repo, t as Ticket)?.branch ?? null,
+      );
+      if (fixers.length === 0) throw refusal;
+      remit.emit(
+        `${target.name}: the base contract is refused (${refusal.message}); ` +
+          `${fixers.map((f) => f.issueId).join(', ')} replace${fixers.length === 1 ? 's' : ''} ${fixers[0]!.file} — merging first`,
+        { step: 'release' },
+      );
+    }
     // Blocker statuses for the verified tickets only (CREW-1506): `all` is open
     // tickets, and a blocker already closed is not in it, so fetch the rest.
     const blockerInfo = blockerInfoMap(all, await tracker.ticketsByIds(missingBlockerIds(all)));
@@ -1975,6 +2024,7 @@ async function releasePhase(
         worktrees: { prefix: shipWorktreePrefixFor(c), nameOverride: o?.worktreeName },
       }, dir),
       contract: tracker.contract, tickets, blockerInfo, emit: remit, scope, verifiedShas,
+      ...(contractRefusal ? { contractRefusal: (contractRefusal as Error).message } : {}),
       state: state.release(scope),
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
