@@ -14,6 +14,7 @@ import { ensureClaudeMcp, ensureClaudeMcpResult, inspectClaudeMcp, removeClaudeM
 import type { PairInstaller } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
 import { wrapInvocation, isOmlxLauncher } from '../launcher.ts';
+import { INTEL_SERVER_NAME } from '../intel.ts';
 import { profileFor, type CapabilityProfile } from '../capability.ts';
 
 /**
@@ -198,14 +199,18 @@ export const claudeAdapter: HarnessAdapter = {
       // so the resolved key is never written to an argv string or a config
       // file on disk. Skipped when there's no key to send: a route `crew
       // connect` hasn't resolved yet has nothing to authenticate with.
-      ...(o.mcp
+      ...(o.mcp || o.code
         ? ['--mcp-config', JSON.stringify({
             mcpServers: {
-              tablation: {
-                type: 'http',
-                url: o.mcp.url,
-                headers: { Authorization: `Bearer \${${o.mcp.keyVar}}` },
-              },
+              ...(o.mcp ? {
+                tablation: {
+                  type: 'http',
+                  url: o.mcp.url,
+                  headers: { Authorization: `Bearer \${${o.mcp.keyVar}}` },
+                },
+              } : {}),
+              // CREW-2912: the bridge to the worktree's symbol service, attached once `crew worktree` has started it.
+              ...(o.code ? { [INTEL_SERVER_NAME]: { type: 'stdio', command: o.code.command, args: o.code.args } } : {}),
             },
           })]
         : []),

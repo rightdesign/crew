@@ -155,7 +155,8 @@ export const geminiAdapter: HarnessAdapter = {
     return wrapInvocation(spec, { model: o.model, args });
   },
 
-  runEnv: (spec) => ({ ...spec.env }),
+  // CREW-2912: Gemini has no per-run server list, so the bridge is declared in a per-run system settings file the planner wrote.
+  runEnv: (spec, o) => ({ ...spec.env, ...(o?.code?.settingsFile ? { GEMINI_CLI_SYSTEM_SETTINGS_PATH: o.code.settingsFile } : {}) }),
 
   provider: () => 'google',
 

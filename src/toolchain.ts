@@ -75,6 +75,14 @@ export interface ToolchainSpec {
   reasoningEffort?: string;
 }
 
+/** The crew-owned stdio bridge registered as `code` at launch (CREW-2912). */
+export interface CodeBridge {
+  command: string;
+  args: string[];
+  /** Gemini only: the per-run settings file the bridge is declared in, named by env var (it has no per-run `--mcp-config`). */
+  settingsFile?: string;
+}
+
 export interface McpTarget {
   /** `<baseUrl>/api/mcp`. */
   url: string;
@@ -130,9 +138,9 @@ export interface HarnessAdapter {
    * `pluginDirs` are harness plugin directories to load for this run
    * (CREW-2916); only the Claude adapter uses them, the others ignore them.
    */
-  invocation(spec: ToolchainSpec, o: { role: RoleName; model: string; mcp?: McpTarget; pluginDirs?: string[] }): { bin: string; args: string[] };
+  invocation(spec: ToolchainSpec, o: { role: RoleName; model: string; mcp?: McpTarget; pluginDirs?: string[]; code?: CodeBridge }): { bin: string; args: string[] };
   /** Environment to add for a run (beyond the tracker key). */
-  runEnv(spec: ToolchainSpec): Record<string, string>;
+  runEnv(spec: ToolchainSpec, o?: { code?: CodeBridge }): Record<string, string>;
   /** Variables removed from the inherited environment before exec. */
   unsetEnv: string[];
   mapStreamLine(parsed: unknown): StreamKindEvent[];

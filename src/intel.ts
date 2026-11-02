@@ -110,6 +110,15 @@ export function intelFlavor(script: string | undefined): IntelFlavor | undefined
   return w && Object.prototype.hasOwnProperty.call(INTEL_FLAVORS, w) ? (w as IntelFlavor) : undefined;
 }
 
+/**
+ * Whether a lane run registers the `code` stdio bridge (CREW-2912) for this `hooks.intel`
+ * value: a command or the `serena` flavor yes; nothing declared or `typescript-lsp` no, since
+ * that flavor is loaded by the harness at launch and needs no attach step.
+ */
+export function wantsCodeBridge(script: string | undefined): boolean {
+  return !!script?.trim() && intelFlavor(script) !== 'typescript-lsp';
+}
+
 /** What a service must offer for the brief to promise it. */
 export const INTEL_MINIMUM_TOOLS = [
   'find symbols by name',

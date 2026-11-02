@@ -25,7 +25,9 @@ import type { SandboxPolicyInput } from './sandbox-policy.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { inferenceBaseUrl } from './adapters/claude.ts';
-import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice, type ToolchainSpec } from './toolchain.ts';
+import { adapterFor, resolveSeat, toolchainProvider, type CodeBridge, type PersonaChoice, type ToolchainSpec } from './toolchain.ts';
+import { INTEL_SERVER_NAME, wantsCodeBridge } from './intel.ts';
+import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
 import { BeforeFirstEditTracker } from './tool-classify.ts';
 import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
@@ -369,6 +371,37 @@ const digestPathFor = (stateDir: string, routeLabel: string, role: string, runId
   join(stateDir, `digest-${routeLabel}-${role}${runId ? `-${runId}` : ''}.md`);
 
 /** Everything the run WOULD do, decided without doing any of it. */
+/**
+ * CREW-2912: the stdio bridge registered as `code` at launch, for a host lane run on a
+ * repository whose `.crew.yaml` declares `intel`. The session cannot add a server after it
+ * starts and the worktree (so the service's URL) does not exist yet, so crew registers a
+ * server it owns now and `crew worktree` hands it the URL later. Nothing is registered for a
+ * repository without `intel` or a run without a ticket; a sandbox run has no `crew` binary or
+ * state directory of ours inside it.
+ */
+export function codeBridgeFor(o: PlanOptions, harness: string): CodeBridge | undefined {
+  if (o.ship.runner === 'sandbox' || !o.ticket) return undefined;
+  const number = /(\d+)$/.exec(o.ticket)?.[1];
+  if (!number) return undefined;
+  let intel: string | undefined;
+  try {
+    const repos = reposOf(o.route);
+    const target = repos.find((r) => r.name === o.repo) ?? (repos.length === 1 ? repos[0] : undefined);
+    intel = target ? loadRepoConfig(target.dir)?.hooks?.intel : undefined;
+  } catch { /* a malformed .crew.yaml is reported where it is read; a route with no checkout has nothing to bridge */ }
+  if (!wantsCodeBridge(intel)) return undefined;
+  const args = [...process.execArgv, process.argv[1] ?? 'crew', 'intel', 'bridge', o.route.route, number, '--state-dir', o.stateDir];
+  const bridge: CodeBridge = { command: process.execPath, args };
+  if (harness === 'gemini') {
+    // Gemini has no per-run server list; a system settings file named by env var is the per-run scope.
+    const file = join(intelDir(o.stateDir, o.route.route, number), 'gemini-settings.json');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ mcpServers: { [INTEL_SERVER_NAME]: { command: bridge.command, args } } }, null, 2)}\n`);
+    bridge.settingsFile = file;
+  }
+  return bridge;
+}
+
 export function planAgentRun(o: PlanOptions): AgentPlan {
   const briefPath = join(o.route.promptsDir, 'personas', `lane-${o.role}.md`);
   if (!existsSync(briefPath)) {
@@ -445,7 +478,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     toolchain = { ...toolchain, inference: { baseUrl: inferenceBaseUrl(o.route.baseUrl, o.route.resolved.workspaceId), token: o.apiKey } };
   }
   const adapter = adapterFor(toolchain.harness);
+  const code = codeBridgeFor(o, adapter.harness);
   const invocation = adapter.invocation(toolchain, {
+    code,
     role: o.role,
     model,
     pluginDirs: adapter.harness === 'claude' ? lspPluginDirsFor(o.route, o.repo, o.stateDir) : undefined,
@@ -513,7 +548,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     unsetEnv: adapter.unsetEnv,
     setEnv: {
       ...(o.apiKey ? { [API_KEY_VAR]: o.apiKey } : {}),
-      ...adapter.runEnv(toolchain),
+      ...adapter.runEnv(toolchain, { code }),
       // The operator's global SessionStart hook (pair-context-hook.sh) injects
       // the interactive Pair persona's prompt for any session it can't tell
       // apart from a person's own terminal. Every headless lane run this

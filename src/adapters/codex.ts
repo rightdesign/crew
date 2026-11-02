@@ -18,6 +18,7 @@ import type { StreamKindEvent, StreamResult } from '../stream.ts';
 import type { HarnessAdapter, McpRegistrationOpts, McpRegistration } from '../toolchain.ts';
 import type { PairInstaller } from '../pair-install.ts';
 import { wrapInvocation, selectsCustomModelProvider } from '../launcher.ts';
+import { INTEL_SERVER_NAME } from '../intel.ts';
 import {
   PAIR_KEY_VAR, SERVER, readIfExists, writeFileMkdir, installBlockFile, removeBlockFile, blockVerdict,
   type McpFileState, tomlTableRange, tomlValue, tomlString, upsertTomlTable, removeTomlTable,
@@ -255,6 +256,14 @@ export const codexAdapter: HarnessAdapter = {
             ...cfg(`mcp_servers.${SERVER}.url`, o.mcp.url),
             ...cfg(`mcp_servers.${SERVER}.bearer_token_env_var`, o.mcp.keyVar),
             ...cfg(`mcp_servers.${SERVER}.default_tools_approval_mode`, 'approve'),
+          ]
+        : []),
+      // CREW-2912: the bridge to the worktree's symbol service, scoped to this run like the tracker entry above.
+      ...(o.code
+        ? [
+            '-c', `mcp_servers.${INTEL_SERVER_NAME}.command=${tomlString(o.code.command)}`,
+            '-c', `mcp_servers.${INTEL_SERVER_NAME}.args=[${o.code.args.map(tomlString).join(', ')}]`,
+            ...cfg(`mcp_servers.${INTEL_SERVER_NAME}.default_tools_approval_mode`, 'approve'),
           ]
         : []),
       ...spec.args,

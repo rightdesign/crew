@@ -165,6 +165,8 @@ import {
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
 import { launchProxy, runProxyFromEnv } from './periscope-proxy.ts';
+import { runBridge } from './intel-bridge.ts';
+import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
@@ -517,7 +519,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
  * test/help-cli.test.ts checks this set against the `case` labels.
  */
 const KNOWN_COMMANDS = new Set([
-  'passenger-sync-daemon', 'periscope-proxy', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
+  'passenger-sync-daemon', 'periscope-proxy', 'intel', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'sandbox', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
@@ -677,6 +679,16 @@ if (command === 'passenger-sync-daemon') {
   const dropFile = positional[1];
   if (!dropFile) { process.stderr.write('crew periscope-proxy is started by `crew periscope up`, not run by hand\n'); process.exit(2); }
   runProxyFromEnv(dropFile);
+} else if (command === 'intel') {
+  // CREW-2912: hidden. The stdio server a lane run registers as `code` at launch; like the proxy it needs no crew.yaml
+  // (the state directory travels in as an argument). Can be run by hand against a cut worktree for debugging.
+  const [, sub, bridgeRoute, bridgeTicket] = positional;
+  const stateDir = value('state-dir');
+  if (sub !== 'bridge' || !bridgeRoute || !bridgeTicket || !stateDir) {
+    process.stderr.write('usage: crew intel bridge <route> <ticket number> --state-dir DIR (registered by a lane run, not run by hand)\n');
+    process.exit(2);
+  }
+  await runBridge(stateDir, bridgeRoute, bridgeTicket);
 } else {
 
 /**
@@ -4982,6 +4994,31 @@ switch (command) {
     if (dryRun) { emit.emit(`would ${describeRunWorktreePlan(planWt)}`); break; }
     const pathWt = applyRunWorktree(repoWt.dir, repoWt.config, planWt);
     emit.emit(describeRunWorktreePlan(planWt));
+    // CREW-2912: start the repository's symbol service and hand its URL to the session's `code` bridge.
+    // The path stays alone on stdout (callers `cd "$(crew worktree N)"`), so the paragraph goes to the log.
+    if (pathWt && planIsUsable(planWt) && repoWt.config.hooks.intel) {
+      const shellWt = resolveShell(repoWt.config.shell ?? cfg.ship.shell);
+      const paragraph = await startWorktreeIntel({
+        worktree: pathWt, route: routeWt.route, number: String(nWt), stateDir: cfg.ship.stateDir,
+        ticketTag: String(ticketWt.issue_tag ?? ticketWt.issue_id ?? `ISSUE-${nWt}`),
+        branch: planWt.branch ?? '', startupSeconds: cfg.ship.intelStartupSeconds,
+        prepare: async (path) => {
+          for (const f of repoWt.config.worktrees.copy) {
+            const src = join(repoWt.dir, f);
+            if (!existsSync(src) || existsSync(join(path, f))) continue;
+            mkdirSync(dirOf(join(path, f)), { recursive: true });
+            copyFileSync(src, join(path, f));
+          }
+          const setup = repoWt.config.hooks.setup;
+          return setup ? runScript(setup, { cwd: path, shell: shellWt }) : null;
+        },
+        runHook: async (name, cwd, env) => {
+          const script = repoWt.config.hooks[name];
+          return script ? runScript(script, { cwd, env, shell: shellWt, timeoutMs: name === 'intel' ? 60_000 : undefined }) : null;
+        },
+      });
+      emit.emit(paragraph);
+    }
     if (pathWt) process.stdout.write(`${pathWt}\n`);
     if (!planIsUsable(planWt)) process.exitCode = 1;
     break;
