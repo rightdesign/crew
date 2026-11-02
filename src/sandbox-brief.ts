@@ -1,3 +1,5 @@
+import { INTEL_MINIMUM_TOOLS, INTEL_SERVER_NAME, lspFlavor, lspToolsParagraph, wantsCodeBridge } from './intel.ts';
+
 /**
  * What differs in a run's prompt and sandbox when the run executes under the
  * sandbox runner (CREW-2800).
@@ -53,6 +55,20 @@ export function containerEngineStubScript(dir = SANDBOX_STUB_DIR): string {
   ].join(' && ');
 }
 
+/**
+ * A shell line that writes `files` (absolute path, text) inside a sandbox, creating directories
+ * (CREW-2922). Content travels base64-encoded so no quoting of the text can break the line, and a
+ * sandbox's `sandbox upload` does not have to create parent directories.
+ */
+export function writeFilesScript(files: ReadonlyArray<{ path: string; content: string }>): string {
+  return files
+    .map((f) => {
+      const dir = f.path.slice(0, f.path.lastIndexOf('/')) || '/';
+      return `mkdir -p ${shSingle(dir)} && printf %s ${shSingle(Buffer.from(f.content, 'utf8').toString('base64'))} | base64 -d > ${shSingle(f.path)}`;
+    })
+    .join(' && ');
+}
+
 function shSingle(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
@@ -85,6 +101,24 @@ export function sandboxCheckoutSection(workDir: string, heading: string): string
     'The sandbox has no container engine, and nothing installs at run time: a service the',
     'tests need is a process the repository\'s `setup` hook starts. Fetch the `Sandbox Setup`',
     'skill for setup, ports and the hand-off push.',
+  ];
+}
+
+/**
+ * The "Code tools" paragraph of a sandboxed lane run (CREW-2922), for a repository's `hooks.intel`;
+ * empty when it declares none. Written for the lane-run form: the symbol service is not running at
+ * launch, so the paragraph says when it appears and what the agent does about it (nothing, beyond
+ * running `setup` first, which the order of the lane policy already has it do).
+ */
+export function sandboxCodeToolsSection(intel: string | undefined): string[] {
+  if (lspFlavor(intel)) return ['', `**Code tools.** On the Claude Code harness: ${lspToolsParagraph('claude').replace(/^The harness's/, 'the harness\'s')}`];
+  if (!wantsCodeBridge(intel)) return [];
+  return [
+    '',
+    `**Code tools.** A \`${INTEL_SERVER_NAME}\` MCP server serves this repository's symbols from its language server. It offers at least: ${INTEL_MINIMUM_TOOLS.join('; ')}.`,
+    'It lists only `code_status` until the symbol service is up. The service starts inside this sandbox',
+    'the first time the session asks the server for tools, and it expects `setup` to have run, so run `setup`',
+    'before your first lookup. `code_status` says whether it is starting, attached, or failed to start (and why).',
   ];
 }
 

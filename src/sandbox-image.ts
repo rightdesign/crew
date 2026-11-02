@@ -37,8 +37,9 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { RepoSandbox } from './repo-config.ts';
 import { realExec, type Exec } from './passenger-containers.ts';
@@ -67,6 +68,21 @@ export const SANDBOX_CLAUDE_SHA256: Record<string, { platform: string; sha256: s
 export const SANDBOX_UID = 1000;
 /** Where the crew layer puts everything it adds; caches live under it at absolute paths. */
 export const CREW_PREFIX = '/opt/crew';
+/** Where the crew layer puts the in-sandbox symbol bridge (CREW-2922); a run starts it with the image's `node`. */
+export const SANDBOX_BRIDGE_PATH = `${CREW_PREFIX}/bin/intel-bridge`;
+
+/**
+ * The bundled bridge (`tsup.config.ts` writes `dist/sandbox-intel-bridge.cjs` beside `dist/cli.js`),
+ * or undefined when this process runs without a build beside it. A repository that declares
+ * `intel` has it copied into its image; one that does not keeps the image it always had.
+ */
+export function readBridgeBundle(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const p of [join(here, 'sandbox-intel-bridge.cjs'), join(here, '..', 'dist', 'sandbox-intel-bridge.cjs')]) {
+    if (existsSync(p)) return readFileSync(p, 'utf8');
+  }
+  return undefined;
+}
 /**
  * What `hooks.intel: serena` adds to the crew layer (CREW-2915): `uv` from PyPI into a venv, then
  * the bridge as a uv tool, both pinned. Build time has network; a run has none.
@@ -175,8 +191,8 @@ function baseLayer(): SandboxLayer {
   return { name: 'base', tag: `crew-sandbox-base:${hash({ SANDBOX_BASE_IMAGE, SANDBOX_OPENSHELL_VERSION })}`, dockerfile, files: {} };
 }
 
-function crewLayer(base: SandboxLayer, intel?: 'serena'): SandboxLayer {
-  const files = { 'credential-helper': CREDENTIAL_HELPER, 'mcp.json': MCP_CONFIG };
+function crewLayer(base: SandboxLayer, intel?: 'serena', bridge?: string): SandboxLayer {
+  const files: Record<string, string> = { 'credential-helper': CREDENTIAL_HELPER, 'mcp.json': MCP_CONFIG, ...(bridge ? { 'intel-bridge': bridge } : {}) };
   const env = Object.entries(CREW_ENV).map(([k, v]) => `${k}=${v}`).join(' ');
   const dockerfile = [
     `FROM ${base.tag}`,
@@ -184,6 +200,7 @@ function crewLayer(base: SandboxLayer, intel?: 'serena'): SandboxLayer {
     run(`apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git${intel ? ' python3 python3-venv nodejs' : ''} && rm -rf /var/lib/apt/lists/*`),
     `COPY credential-helper ${CREW_PREFIX}/bin/credential-helper`,
     `COPY mcp.json ${CREW_PREFIX}/mcp/mcp.json`,
+    ...(bridge ? [`COPY intel-bridge ${SANDBOX_BRIDGE_PATH}`] : []),
     run(claudeInstallCommand()),
     ...(intel ? [run(`mkdir -p ${CREW_PREFIX}/cache && ${serenaInstallCommand()}`)] : []),
     run(`chmod 0755 ${CREW_PREFIX}/bin/credential-helper && git config --system credential.helper ${CREW_PREFIX}/bin/credential-helper`),
@@ -261,10 +278,10 @@ function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer, warm: Wa
   return { name: 'repo', tag: `crew-sandbox/${slug(repo)}:${hash({ crew: crew.tag, dockerfile, files })}`, dockerfile, files };
 }
 
-/** The three layers and the tag a repo's declaration builds to. */
-export function planSandbox(repo: string, decl: RepoSandbox, warm: WarmFiles = {}): SandboxPlan {
+/** The three layers and the tag a repo's declaration builds to. `bridge` is the bundled symbol bridge, passed only for a repository that declares `intel` (CREW-2922). */
+export function planSandbox(repo: string, decl: RepoSandbox, warm: WarmFiles = {}, bridge?: string): SandboxPlan {
   const base = baseLayer();
-  const crew = crewLayer(base, decl.intel);
+  const crew = crewLayer(base, decl.intel, bridge);
   const layer = repoLayer(repo, decl, crew, warm);
   return { repo, tag: layer.tag, claude: SANDBOX_CLAUDE_VERSION, layers: [base, crew, layer] };
 }
@@ -429,7 +446,7 @@ export function sandboxFailedItem(repo: string, tag: string, layer: string, logP
   };
 }
 
-export interface SandboxRepoRef { name: string; decl: RepoSandbox; /** Files read for `decl.warm`, at the base ref. */ warm?: WarmFiles }
+export interface SandboxRepoRef { name: string; decl: RepoSandbox; /** Files read for `decl.warm`, at the base ref. */ warm?: WarmFiles; /** The bundled symbol bridge, set only when the repository declares `intel` (CREW-2922). */ bridge?: string }
 
 export interface TickDeps extends BuildDeps {
   raise: (item: ShipAttentionItem) => void;
@@ -447,7 +464,7 @@ export interface TickDeps extends BuildDeps {
 export async function sandboxBuildTick(repos: SandboxRepoRef[], deps: TickDeps, force = false): Promise<string | null> {
   const nowMs = (deps.now ?? (() => new Date()))().getTime();
   for (const r of repos) {
-    const plan = planSandbox(r.name, r.decl, r.warm);
+    const plan = planSandbox(r.name, r.decl, r.warm, r.bridge);
     const state = readSandboxState(deps.stateDir)[r.name];
     const upToDate = state?.tags[0]?.tag === plan.tag && deps.hasImage(plan.tag);
     if (upToDate) { deps.clear(sandboxFailedKey(r.name)); continue; }

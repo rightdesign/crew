@@ -95,6 +95,8 @@ export interface SerenaStart {
   worktree: string;
   /** The route's main checkout. */
   mainCheckout: string;
+  /** A sandbox run (CREW-2922) has no main checkout to keep an index of: skip the background index. */
+  noMainIndex?: boolean;
   /**
    * Language servers already on disk (the sandbox image's, CREW-2915). Linked into the service's
    * home so it finds them without a download, which a sandboxed run cannot make.
@@ -152,7 +154,7 @@ export function startSerena(d: SerenaDeps, s: SerenaStart): HookResult {
     const cache = join(p.project, 'cache');
     if (!d.exists(cache) && d.exists(mainCache)) d.copyDir(mainCache, cache);
     // Index the main checkout for the next worktree; never delays this start.
-    try { ensureMainIndex(d, s); } catch { /* an index that cannot start costs the next worktree its head start, nothing more */ }
+    try { if (!s.noMainIndex) ensureMainIndex(d, s); } catch { /* an index that cannot start costs the next worktree its head start, nothing more */ }
     const port = intelPortFor(s.ticket);
     d.spawnDetached('serena', serenaServeArgs(port, s.worktree), { SERENA_HOME: p.home }, join(p.project, 'serena.log'));
     return { code: 0, output: `http://127.0.0.1:${port}/mcp\n` };

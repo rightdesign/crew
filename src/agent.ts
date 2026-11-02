@@ -20,12 +20,12 @@ import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRe
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
 import { loadRepoConfig } from './repo-config.ts';
-import { ensureLspPlugin, lspFlavor } from './intel.ts';
+import { SANDBOX_INTEL_DIR, ensureLspPlugin, lspFlavor, sandboxLspPlugin } from './intel.ts';
 import type { SandboxPolicyInput } from './sandbox-policy.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { inferenceBaseUrl } from './adapters/claude.ts';
-import { adapterFor, resolveSeat, toolchainProvider, type CodeBridge, type PersonaChoice, type ToolchainSpec } from './toolchain.ts';
+import { adapterFor, resolveSeat, toolchainProvider, type CodeBridge, type PersonaChoice, type SandboxFile, type ToolchainSpec } from './toolchain.ts';
 import { INTEL_SERVER_NAME, wantsCodeBridge } from './intel.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
@@ -33,7 +33,8 @@ import { BeforeFirstEditTracker } from './tool-classify.ts';
 import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
-import { swapSandboxSkills } from './sandbox-brief.ts';
+import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
+import { SANDBOX_BRIDGE_PATH } from './sandbox-image.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
 import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKind } from './runner.ts';
@@ -130,6 +131,8 @@ export interface AgentPlan {
   sandboxConfig?: Partial<import('./runner.ts').SandboxConfig>;
   /** CREW-2801: what the generated sandbox policy is derived from. Set with `runner: sandbox`. */
   sandboxPolicy?: SandboxPolicyInput;
+  /** CREW-2922: files the runner writes into the sandbox before launching the harness (the symbol bridge's Gemini settings, the `typescript-lsp` plugin). */
+  sandboxFiles?: SandboxFile[];
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -323,6 +326,18 @@ export function lspPluginDirsFor(route: Route, repo: string | null | undefined, 
   } catch { return undefined; }
 }
 
+/**
+ * CREW-2922: the same plugin for a sandbox run, whose files cannot live under a host state directory.
+ * `dir` is where the harness is told to load it from; `files` are written there at create time.
+ */
+export function sandboxLspPluginFor(route: Route, repo: string | null | undefined): ReturnType<typeof sandboxLspPlugin> | undefined {
+  try {
+    const dir = reposOf(route).find((r) => r.name === repo)?.dir ?? route.dir;
+    const flavor = lspFlavor(loadRepoConfig(dir)?.hooks.intel);
+    return flavor ? sandboxLspPlugin(flavor) : undefined;
+  } catch { return undefined; }
+}
+
 export class AgentSpawnError extends AgentError {}
 
 /**
@@ -376,11 +391,12 @@ const digestPathFor = (stateDir: string, routeLabel: string, role: string, runId
  * repository whose `.crew.yaml` declares `intel`. The session cannot add a server after it
  * starts and the worktree (so the service's URL) does not exist yet, so crew registers a
  * server it owns now and `crew worktree` hands it the URL later. Nothing is registered for a
- * repository without `intel` or a run without a ticket; a sandbox run has no `crew` binary or
- * state directory of ours inside it.
+ * repository without `intel` or a run without a ticket. A sandbox run (CREW-2922) has no `crew`
+ * binary, state directory or `crew worktree`, so it gets the bundled bridge from its image,
+ * which starts the service itself on first use.
  */
 export function codeBridgeFor(o: PlanOptions, harness: string): CodeBridge | undefined {
-  if (o.ship.runner === 'sandbox' || !o.ticket) return undefined;
+  if (!o.ticket) return undefined;
   const number = /(\d+)$/.exec(o.ticket)?.[1];
   if (!number) return undefined;
   let intel: string | undefined;
@@ -390,14 +406,26 @@ export function codeBridgeFor(o: PlanOptions, harness: string): CodeBridge | und
     intel = target ? loadRepoConfig(target.dir)?.hooks?.intel : undefined;
   } catch { /* a malformed .crew.yaml is reported where it is read; a route with no checkout has nothing to bridge */ }
   if (!wantsCodeBridge(intel)) return undefined;
-  const args = [...process.execArgv, process.argv[1] ?? 'crew', 'intel', 'bridge', o.route.route, number, '--state-dir', o.stateDir];
-  const bridge: CodeBridge = { command: process.execPath, args };
+  const sandbox = o.ship.runner === 'sandbox';
+  // CREW-2922: inside a sandbox the bridge is the bundled file in the image, started with the image's
+  // node, and it starts the service itself (there is no `crew worktree` there to do it).
+  const args = sandbox
+    ? [SANDBOX_BRIDGE_PATH, '--attach-file', `${SANDBOX_INTEL_DIR}/url`, '--start', intel!.trim(),
+       '--clone', o.ship.sandbox?.workDir ?? DEFAULT_SANDBOX_WORKDIR, '--state-dir', dirname(SANDBOX_INTEL_DIR), '--ticket', number]
+    : [...process.execArgv, process.argv[1] ?? 'crew', 'intel', 'bridge', o.route.route, number, '--state-dir', o.stateDir];
+  const bridge: CodeBridge = { command: sandbox ? 'node' : process.execPath, args };
   if (harness === 'gemini') {
     // Gemini has no per-run server list; a system settings file named by env var is the per-run scope.
-    const file = join(intelDir(o.stateDir, o.route.route, number), 'gemini-settings.json');
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify({ mcpServers: { [INTEL_SERVER_NAME]: { command: bridge.command, args } } }, null, 2)}\n`);
-    bridge.settingsFile = file;
+    const text = `${JSON.stringify({ mcpServers: { [INTEL_SERVER_NAME]: { command: bridge.command, args } } }, null, 2)}\n`;
+    if (sandbox) {
+      bridge.settingsFile = `${SANDBOX_INTEL_DIR}/gemini-settings.json`;
+      bridge.files = [{ path: bridge.settingsFile, content: text }];
+    } else {
+      const file = join(intelDir(o.stateDir, o.route.route, number), 'gemini-settings.json');
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, text);
+      bridge.settingsFile = file;
+    }
   }
   return bridge;
 }
@@ -479,11 +507,13 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   }
   const adapter = adapterFor(toolchain.harness);
   const code = codeBridgeFor(o, adapter.harness);
+  const sandboxLsp = o.ship.runner === 'sandbox' && adapter.harness === 'claude' ? sandboxLspPluginFor(o.route, o.repo) : undefined;
+  const sandboxFiles = [...(code?.files ?? []), ...(sandboxLsp?.files ?? [])];
   const invocation = adapter.invocation(toolchain, {
     code,
     role: o.role,
     model,
-    pluginDirs: adapter.harness === 'claude' ? lspPluginDirsFor(o.route, o.repo, o.stateDir) : undefined,
+    pluginDirs: adapter.harness !== 'claude' ? undefined : sandboxLsp ? [sandboxLsp.dir] : lspPluginDirsFor(o.route, o.repo, o.stateDir),
     // Skipped when there's no key to send: a route `crew connect` hasn't
     // resolved yet has nothing to authenticate the MCP connection with either.
     mcp: o.apiKey ? { url: `${o.route.baseUrl}/api/mcp`, keyVar: API_KEY_VAR } : undefined,
@@ -539,6 +569,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
           runner: 'sandbox' as const,
           ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}),
           sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox }),
+          ...(sandboxFiles.length ? { sandboxFiles } : {}),
         }
       : {}),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },

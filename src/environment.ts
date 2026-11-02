@@ -17,7 +17,7 @@ import type { Route } from './config.ts';
 import type { EffectiveRepoConfig, RepoHooks } from './repo-config.ts';
 import type { Contract } from './contract.ts';
 import type { Authorship, AttachmentsProbe } from './tracker.ts';
-import { sandboxCheckoutSection } from './sandbox-brief.ts';
+import { sandboxCheckoutSection, sandboxCodeToolsSection } from './sandbox-brief.ts';
 import { renderBranchName, renderWorktreeName, effectiveBranchTemplate, effectiveWorktreeDirName } from './repo-config.ts';
 
 /** The environment variable the crew hands the session its tracker key in. */
@@ -461,7 +461,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
   }
 
   if (only && i.sandbox) {
-    lines.push(...sandboxCheckoutSection(i.sandbox.workDir, '## Your checkout'));
+    lines.push(...sandboxCheckoutSection(i.sandbox.workDir, '## Your checkout'), ...sandboxCodeToolsSection(only.config.hooks.intel));
   } else if (only) {
     lines.push(...repoSection(only, key, '## Your worktree'));
   } else {
@@ -477,7 +477,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
     );
     if (i.sandbox) lines.push(...sandboxCheckoutSection(i.sandbox.workDir, '### Your checkout'));
     for (const r of repos) {
-      lines.push(...(i.sandbox ? ['', `### ${r.name}`] : repoSection(r, key, `### ${r.name} — \`${r.dir}\``)));
+      lines.push(...(i.sandbox ? ['', `### ${r.name}`, ...sandboxCodeToolsSection(r.config.hooks.intel)] : repoSection(r, key, `### ${r.name} — \`${r.dir}\``)));
       lines.push('', `Hooks for ${r.name} — the only commands you should run here:`, '', hookTable(r.config));
       lines.push(...mapSection(r, `#### Repository map — ${r.name}`));
     }

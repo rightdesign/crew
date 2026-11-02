@@ -18,7 +18,7 @@
  * a restarted daemon can delete it when it finishes the run.
  */
 
-import { containerEngineStubScript, SANDBOX_STUB_DIR, DEFAULT_SANDBOX_WORKDIR } from './sandbox-brief.ts';
+import { containerEngineStubScript, SANDBOX_STUB_DIR, DEFAULT_SANDBOX_WORKDIR, writeFilesScript } from './sandbox-brief.ts';
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -226,6 +226,10 @@ export class SandboxRunner implements Runner {
         mirrorDir: cfg.mirrorDir, repo, workDir: cfg.workDir, origin, branch, lockfile: cfg.depsLockfile ?? DEFAULT_CACHE_SETTINGS.depsLockfile,
       })} && ${containerEngineStubScript()}`;
       await this.os(['sandbox', 'exec', '-n', name, '--no-login-shell', '--', 'sh', '-c', clone]);
+      // CREW-2922: the symbol bridge's Gemini settings and the `typescript-lsp` plugin, written before the harness starts.
+      if (plan.sandboxFiles?.length) {
+        await this.os(['sandbox', 'exec', '-n', name, '--no-login-shell', '--', 'sh', '-c', writeFilesScript(plan.sandboxFiles)]);
+      }
 
       const harness = cfg.agentBin ?? basename(plan.bin);
       const viaUpload = Buffer.byteLength(plan.prompt) > SANDBOX_STDIN_LIMIT;

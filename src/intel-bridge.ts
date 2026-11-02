@@ -17,6 +17,13 @@
  *
  * Deliberately dumb: everything but those two requests and the notification is
  * the SDK's default.
+ *
+ * Inside a sandbox (CREW-2922) there is no `crew worktree` to write the attach file,
+ * so the bridge is given a `start` function instead and runs it lazily: the first
+ * `tools/list` or `tools/call` after launch starts the service in the background
+ * (`tools/list` answers at once with `code_status`, so the harness's startup is
+ * never held), and a call for a symbol tool waits for that start. A start that fails is
+ * reported by `code_status`, and calling `code_status` again retries it.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -35,6 +42,9 @@ export const STATUS_TOOL = 'code_status';
 
 /** Text the status tool (and a call the upstream could not answer) returns before and after an attach. */
 export const STATUS_WAITING = 'The symbol service is not available yet: the worktree has not been cut. Run `crew worktree` for the ticket; the symbol tools appear in this server afterwards.';
+export const STATUS_STARTING = 'The symbol service is starting inside this sandbox. Call `code_status` again in a few seconds; the symbol tools replace it once the service answers.';
+export const statusFailed = (reason: string): string =>
+  `The symbol service did not start (${reason}). Run the repository's \`setup\` hook first if you have not; this call has started a retry, so call \`code_status\` again in a few seconds; until it starts use text search.`;
 export const STATUS_LOST = 'The symbol service stopped answering, so its tools are unavailable. They return if the service comes back; until then use text search.';
 
 /** `<stateDir>/intel/<route>/<ticket>`, the per-run folder (removed with the worktree). */
@@ -69,9 +79,19 @@ const statusTool: Tool = {
   inputSchema: { type: 'object', properties: {} },
 };
 
+/** What a lazy `start` reports: the service's URL, or a one-line reason it did not come up. */
+export type StartResult = { url: string } | { error: string };
+
 export interface BridgeOptions {
-  /** The attach file to watch. */
+  /** The attach file to watch (and, with `start`, to write). */
   attachFile: string;
+  /**
+   * Starts the service on demand (sandbox runs). Absent on a host run, where `crew worktree`
+   * starts it and writes the attach file.
+   */
+  start?: () => Promise<StartResult>;
+  /** How long a symbol-tool call waits for a start in progress. Default 120s. */
+  startWaitMs?: number;
   /** Poll interval; 1s in production. */
   pollMs?: number;
   /** Connects to the upstream service; injectable so tests can use an in-process MCP server. */
@@ -105,6 +125,8 @@ export function createBridge(o: BridgeOptions): Bridge {
   let lost = false;
   let connecting = false;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let starting: Promise<void> | undefined;
+  let startError: string | undefined;
 
   const notify = (): void => { void server.sendToolListChanged().catch(() => {}); };
 
@@ -117,9 +139,40 @@ export function createBridge(o: BridgeOptions): Bridge {
     notify();
   };
 
-  const status = (): CallToolResult => ({ content: [{ type: 'text', text: lost ? STATUS_LOST : STATUS_WAITING }] });
+  const statusText = (): string =>
+    lost ? STATUS_LOST : starting ? STATUS_STARTING : startError !== undefined ? statusFailed(startError) : STATUS_WAITING;
+  const status = (): CallToolResult => ({ content: [{ type: 'text', text: statusText() }] });
+
+  /** Begins a lazy start unless one is running; never throws. A no-op without `start`. */
+  const ensureStarted = (): void => {
+    if (!o.start || upstream || starting) return;
+    startError = undefined;
+    starting = (async () => {
+      try {
+        const r = await o.start!();
+        if ('error' in r) { startError = r.error; return; }
+        writeAttachFile(o.attachFile, r.url);
+        await tryAttach();
+        if (!upstream) startError = `${r.url} did not accept a connection`;
+      } catch (e) {
+        startError = (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
+      } finally {
+        starting = undefined;
+        notify();
+      }
+    })();
+  };
+
+  const waitForStart = async (): Promise<void> => {
+    const running = starting;
+    if (!running) return;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([running, new Promise<void>((r) => { t = setTimeout(r, o.startWaitMs ?? 120_000); })]);
+    if (t) clearTimeout(t);
+  };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    ensureStarted();
     if (!upstream) return { tools: [statusTool] };
     try {
       return await upstream.listTools();
@@ -130,6 +183,12 @@ export function createBridge(o: BridgeOptions): Bridge {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToolResult> => {
+    // A status call after a failed start reports the failure, then retries in the background.
+    const failedNow = req.params.name === STATUS_TOOL && !upstream && !starting && startError !== undefined;
+    const failedText = failedNow ? statusText() : undefined;
+    ensureStarted();
+    if (failedText !== undefined) return { content: [{ type: 'text', text: failedText }] };
+    if (req.params.name !== STATUS_TOOL) await waitForStart();
     if (!upstream) return status();
     try {
       return (await upstream.callTool({ name: req.params.name, arguments: req.params.arguments })) as CallToolResult;

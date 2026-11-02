@@ -17,7 +17,7 @@ import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } fr
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import {
-  planSandbox, readWarmFiles, type WarmFiles, readSandboxState, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
+  planSandbox, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
@@ -1600,7 +1600,7 @@ async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoR
       } catch {
         // An unreadable ref builds without warm files; the next tick retries with a different tag.
       }
-      out.set(r.name, { name: r.name, decl: intelFlavor(r.config.hooks.intel) === 'serena' ? { ...r.config.sandbox, intel: 'serena' } : r.config.sandbox, warm });
+      out.set(r.name, { name: r.name, decl: intelFlavor(r.config.hooks.intel) === 'serena' ? { ...r.config.sandbox, intel: 'serena' } : r.config.sandbox, warm, ...(wantsCodeBridge(r.config.hooks.intel) ? { bridge: readBridgeBundle() } : {}) });
     }
   }
   return [...out.values()];
@@ -4626,7 +4626,7 @@ switch (command) {
         if (subS === 'images') {
           const stateS = readSandboxState(cfg.ship.stateDir);
           const rows = declared.map((r) => {
-            const plan = planSandbox(r.name, r.decl, r.warm);
+            const plan = planSandbox(r.name, r.decl, r.warm, r.bridge);
             return { repo: r.name, wants: plan.tag, tags: stateS[r.name]?.tags ?? [], ...sandboxImageStatus(stateS, plan) };
           });
           if (jsonS) { process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`); break; }
@@ -4653,7 +4653,7 @@ switch (command) {
           // Forced: ignore the retry window, and rebuild even a built tag only if the declaration moved.
           await sandboxBuildTick([t], depsS, true);
           const after = readSandboxState(cfg.ship.stateDir);
-          const st = sandboxImageStatus(after, planSandbox(t.name, t.decl, t.warm));
+          const st = sandboxImageStatus(after, planSandbox(t.name, t.decl, t.warm, t.bridge));
           if (st.status === 'failed') failed = true;
           process.stdout.write(`${t.name}: ${st.status} — ${st.detail}\n`);
         }
@@ -6854,7 +6854,7 @@ switch (command) {
       const declaredS = await sandboxReposOf(cfg.routes.filter((r) => r.enabled));
       const stateS = readSandboxState(cfg.ship.stateDir);
       for (const r of declaredS) {
-        const st = sandboxImageStatus(stateS, planSandbox(r.name, r.decl, r.warm));
+        const st = sandboxImageStatus(stateS, planSandbox(r.name, r.decl, r.warm, r.bridge));
         process.stdout.write(`sandbox image:    ${r.name}: ${st.status.toUpperCase()} — ${st.detail}\n`);
       }
     }

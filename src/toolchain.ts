@@ -81,7 +81,12 @@ export interface CodeBridge {
   args: string[];
   /** Gemini only: the per-run settings file the bridge is declared in, named by env var (it has no per-run `--mcp-config`). */
   settingsFile?: string;
+  /** Files a sandbox run needs written into the sandbox before launch (the Gemini settings file, CREW-2922). */
+  files?: SandboxFile[];
 }
+
+/** A file written into a sandbox at create time: an absolute path inside it and its text. */
+export interface SandboxFile { path: string; content: string }
 
 export interface McpTarget {
   /** `<baseUrl>/api/mcp`. */

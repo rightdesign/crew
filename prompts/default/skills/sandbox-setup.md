@@ -24,6 +24,9 @@ a download that is not is blocked. If setup needs something the image lacks,
 that is the repository's `sandbox:` declaration to fix, not yours: say so on
 the ticket and stop.
 
+- **Symbol tools.** When your environment section lists a `code` server, its
+  symbol tools come up on first use and expect `setup` to have run, so run
+  `setup` before your first symbol lookup.
 - **Services.** A service the tests need (a database, a queue) is a process the
   `setup` hook starts inside this sandbox. The sandbox has no container engine:
   `docker` and `podman` exit at once naming this pattern. Use the ports the
