@@ -20,10 +20,12 @@ import {
 } from './repo-config.ts';
 import { containerEngineUse } from './sandbox-brief.ts';
 import { resolveShell } from './shell.ts';
+import { intelFlavor } from './intel.ts';
 
 export type SyntaxResult = { status: 'ok' | 'error' | 'unchecked'; message?: string };
 
-export interface HookCheck { name: string; label: string; syntax: SyntaxResult }
+/** `flavor` is set for an `intel` hook that names a built-in flavor (CREW-2914) rather than a command. */
+export interface HookCheck { name: string; label: string; syntax: SyntaxResult; flavor?: string }
 
 export interface RenderedSample {
   /** `with a project tag` / `without a project tag`. */
@@ -120,7 +122,11 @@ export function checkRepoSpec(dir: string, opts: RepoCheckOptions = {}): RepoChe
   const hooks = (Object.keys(effective.hooks) as Array<keyof RepoHooks>).map((name) => ({
     name,
     label: hookLabel(effective, name),
-    syntax: checkHookSyntax(effective.hooks[name] as string, effective.shell),
+    // CREW-2914: a flavor name is not shell, so it is not syntax-checked.
+    syntax: name === 'intel' && intelFlavor(effective.hooks.intel)
+      ? { status: 'ok' as const }
+      : checkHookSyntax(effective.hooks[name] as string, effective.shell),
+    ...(name === 'intel' && intelFlavor(effective.hooks.intel) ? { flavor: intelFlavor(effective.hooks.intel) } : {}),
   }));
   const failed = hooks.some((h) => h.syntax.status === 'error');
   return {
@@ -146,6 +152,7 @@ export function renderRepoCheck(r: RepoCheckReport): string {
   lines.push(r.hooks.length ? '  hooks' : '  hooks              none');
   for (const h of r.hooks) {
     const named = h.label !== e.hooks[h.name as keyof RepoHooks] ? ` (${h.label})` : '';
+    if (h.flavor) { lines.push(`    ${h.name}: ${h.flavor}`); continue; }
     const syntax = h.syntax.status === 'ok' ? 'syntax ok' : h.syntax.status === 'unchecked' ? `syntax not checked: ${h.syntax.message}` : 'syntax ERROR';
     lines.push(`    ${h.name}${named}: ${syntax}`);
     if (h.syntax.status === 'error') lines.push(...(h.syntax.message ?? '').split('\n').map((l) => `      ${l}`));

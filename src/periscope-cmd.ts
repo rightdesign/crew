@@ -549,6 +549,8 @@ export interface PeriscopeDownDeps {
   postPushed(ticketRecordId: string, sha: string, remote: string, branch: string): Promise<void>;
   /** Kills what listens for the worktree. Returns how many processes were stopped. */
   stopServer(worktree: string, number: string): Promise<number>;
+  /** Deletes the worktree's crew-managed symbol-service folder (CREW-2914); the main-checkout index stays. */
+  dropIntel?(number: string): void;
   /** Removes the worktree; with `deleteBranch` also the local branch. */
   removeWorktree(worktree: string, branch: string, deleteBranch: boolean): void;
   setRowState(rowId: string, state: 'kept' | 'discarded'): Promise<void>;
@@ -607,6 +609,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
 
   if (existing && args.mode === 'discard') {
     const killed = await d.stopServer(row.worktree, row.number);
+    d.dropIntel?.(row.number);
     d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
     const onRemote = d.remoteHasBranch?.(row.worktree, row.branch) ?? true;
     d.removeWorktree(row.worktree, row.branch, !onRemote);
@@ -621,6 +624,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
 
   if (args.mode === 'discard') {
     const killed = await d.stopServer(row.worktree, row.number);
+    d.dropIntel?.(row.number);
     d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
     d.removeWorktree(row.worktree, row.branch, true);
     d.say('worktree', `removed ${row.worktree} and branch ${row.branch}`);
@@ -661,6 +665,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   await d.postPushed(row.ticketRecordId, pushed.sha, pushed.remote, row.branch);
 
   const killed = await d.stopServer(row.worktree, row.number);
+  d.dropIntel?.(row.number);
   d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
   d.removeWorktree(row.worktree, row.branch, false);
   d.say('worktree', `removed ${row.worktree}; ${row.branch} stays, pushed`);

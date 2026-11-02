@@ -44,6 +44,8 @@ export function repoFindings(o: {
   onPath: (command: string) => boolean;
   /** The `intel` hook's syntax check, when the repository declares one. */
   intelSyntax?: { status: 'ok' | 'error' | 'unchecked'; message?: string };
+  /** A built-in `intel` flavor and the prerequisites it is missing from PATH (CREW-2914), each with its install line. */
+  intelFlavor?: { name: string; missing: string[] };
 }): DoctorFindings {
   const problems: DoctorProblem[] = [];
   let passed = 0;
@@ -78,6 +80,15 @@ export function repoFindings(o: {
         severity: 'attention', kind: 'intel_hook_syntax', ...at, hook: 'intel',
         message: `${o.route}/${o.repo}: the intel hook fails its syntax check, so no symbol service will start: ${(o.intelSyntax.message ?? '').split('\n')[0]}`,
         remedy: 'fix hooks.intel in the repository\'s .crew.yaml (`crew repos check` prints the full error)',
+      });
+    } else passed++;
+  }
+  if (o.intelFlavor) {
+    if (o.intelFlavor.missing.length) {
+      problems.push({
+        severity: 'attention', kind: 'intel_prerequisite_missing', ...at, hook: 'intel',
+        message: `${o.route}/${o.repo}: hooks.intel is \`${o.intelFlavor.name}\`, but ${o.intelFlavor.missing.join(' and ')} is not on the scheduler PATH, so no symbol service will start`,
+        remedy: `install it (${o.intelFlavor.missing.join('; ')}) or add its directory to ship.extraPath in crew.yaml`,
       });
     } else passed++;
   }

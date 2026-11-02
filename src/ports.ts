@@ -65,19 +65,25 @@ export interface PortScheme {
   frontendBase: number;
   /** A periscope's proxy (CREW-2880): the third band beside the backend and frontend ones. */
   proxyBase?: number;
+  /** A worktree's crew-managed symbol service (CREW-2914): the fourth band. */
+  intelBase?: number;
   /** Ports at or above base+span belong to something else. */
   span: number;
 }
 
-export const DEFAULT_PORTS: PortScheme = { backendBase: 30000, frontendBase: 40000, proxyBase: 50000, span: 1000 };
+export const DEFAULT_PORTS: PortScheme = { backendBase: 30000, frontendBase: 40000, proxyBase: 50000, intelBase: 60000, span: 1000 };
 
 /** Which ticket a port belongs to, or null if it is nothing of ours. */
 export function ticketForPort(port: number, s: PortScheme = DEFAULT_PORTS): { n: number; role: string } | null {
   if (port >= s.backendBase && port < s.backendBase + s.span) return { n: port - s.backendBase, role: 'backend' };
   if (port >= s.frontendBase && port < s.frontendBase + s.span) return { n: port - s.frontendBase, role: 'frontend' };
   if (s.proxyBase !== undefined && port >= s.proxyBase && port < s.proxyBase + s.span) return { n: port - s.proxyBase, role: 'proxy' };
+  if (s.intelBase !== undefined && port >= s.intelBase && port < s.intelBase + s.span) return { n: port - s.intelBase, role: 'intel' };
   return null;
 }
+
+/** The port a ticket's crew-managed symbol service listens on. */
+export const intelPortFor = (n: number, s: PortScheme = DEFAULT_PORTS): number => (s.intelBase ?? DEFAULT_PORTS.intelBase!) + n;
 
 /** The port a ticket's periscope proxy listens on. */
 export const proxyPortFor = (n: number, s: PortScheme = DEFAULT_PORTS): number => (s.proxyBase ?? DEFAULT_PORTS.proxyBase!) + n;
@@ -139,7 +145,7 @@ export async function killGently(pids: number[], graceMs = 2000): Promise<void> 
 /** Processes with a foot in a worktree: its ports, plus anything running inside it. */
 export function pidsInWorktree(path: string, n: number, s: PortScheme = DEFAULT_PORTS): number[] {
   const pids = new Set<number>();
-  for (const port of [s.backendBase + n, s.frontendBase + n, ...(s.proxyBase !== undefined ? [s.proxyBase + n] : [])]) for (const p of pidsOnPort(port)) pids.add(p);
+  for (const port of [s.backendBase + n, s.frontendBase + n, ...(s.proxyBase !== undefined ? [s.proxyBase + n] : []), ...(s.intelBase !== undefined ? [s.intelBase + n] : [])]) for (const p of pidsOnPort(port)) pids.add(p);
   const matched = run('pgrep', ['-f', `${path}/`]);
   for (const line of matched.split('\n')) {
     const pid = Number(line.trim());

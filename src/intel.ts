@@ -10,6 +10,35 @@
  */
 import type { HookResult } from './periscope-cmd.ts';
 
+/**
+ * The built-in `hooks.intel` flavors (CREW-2914). The one table both tickets and
+ * `docs/REPO_SPEC.md` read from: a bare flavor name in place of a command.
+ * `prerequisites` are binaries `crew doctor` expects on PATH, with the install line.
+ */
+export const INTEL_FLAVORS = {
+  serena: {
+    summary: 'crew runs a Serena symbol service per worktree, seeded from the main checkout\'s index',
+    prerequisites: [
+      { bin: 'uv', install: 'install uv (https://docs.astral.sh/uv/)' },
+      { bin: 'serena', install: 'uv tool install -p 3.13 serena-agent' },
+    ],
+    implemented: true,
+  },
+  'typescript-lsp': {
+    summary: 'crew runs a TypeScript language-server symbol service per worktree (CREW-2916)',
+    prerequisites: [] as Array<{ bin: string; install: string }>,
+    implemented: false,
+  },
+} as const;
+
+export type IntelFlavor = keyof typeof INTEL_FLAVORS;
+
+/** The flavor a `hooks.intel` value names, or undefined when it is a command. */
+export function intelFlavor(script: string | undefined): IntelFlavor | undefined {
+  const w = script?.trim();
+  return w && Object.prototype.hasOwnProperty.call(INTEL_FLAVORS, w) ? (w as IntelFlavor) : undefined;
+}
+
 /** What a service must offer for the brief to promise it. */
 export const INTEL_MINIMUM_TOOLS = [
   'find symbols by name',

@@ -11,6 +11,8 @@ import { doctorBaseReport } from './doctor-repo.ts';
 import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems, duplicateLivePeriscopes, type PeriscopeProblem } from './periscopes.ts';
 import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { registerCodeServer } from './intel-register.ts';
+import { dropSerenaFolder, missingPrerequisites, realSerenaDeps, startSerena } from './intel-serena.ts';
+import { intelFlavor } from './intel.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
@@ -5112,6 +5114,7 @@ switch (command) {
             gitOk(repoD.dir, ['worktree', 'remove', '--force', wt]);
             if (deleteBranch) gitOk(repoD.dir, ['branch', '-D', branch]);
           },
+          dropIntel: (n) => { try { dropSerenaFolder(cfg.ship.stateDir, routeD.route, n); } catch { /* best effort; the folder is state, not the worktree */ } },
           setRowState: (id, state) => trD.updatePeriscope(id, { state }),
           forgetLocal: (id) => { removePeriscopeSecret(cfg.ship.stateDir, id); removePeriscopeSidecar(cfg.ship.stateDir, id); removePeriscopePrior(cfg.ship.stateDir, id); },
           say,
@@ -5257,6 +5260,13 @@ switch (command) {
         },
         runHook: async (name, cwd, env) => {
           const script = repoP.config.hooks[name];
+          if (name === 'intel' && intelFlavor(script) === 'serena') {
+            return startSerena(realSerenaDeps((bin) => !!findOnPath(bin, pathFor(cfg.ship)), { ...process.env, PATH: pathFor(cfg.ship) }), {
+              stateDir: cfg.ship.stateDir, route: routeP.route, ticket: Number(/(\d+)$/.exec(env.CREW_TICKET ?? '')?.[1] ?? 0),
+              worktree: cwd, mainCheckout: repoP.dir,
+            });
+          }
+          if (name === 'intel' && intelFlavor(script)) return { code: 1, output: `intel: ${intelFlavor(script)} is not available yet` };
           return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : name === 'intel' ? 60_000 : undefined }) : null;
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
@@ -6210,7 +6220,8 @@ switch (command) {
             route: c.route, repo: r.name, dir: r.dir, notes: validateEffective(r.config),
             base: doctorBaseReport(r, r.config.branch.base, baseHealth), hooks: r.config.hooks,
             onPath: (cmd) => !!findOnPath(cmd, doctorSchedulerPath),
-            intelSyntax: r.config.hooks.intel ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
+            intelSyntax: r.config.hooks.intel && !intelFlavor(r.config.hooks.intel) ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
+            intelFlavor: intelFlavor(r.config.hooks.intel) ? { name: intelFlavor(r.config.hooks.intel)!, missing: missingPrerequisites(intelFlavor(r.config.hooks.intel)!, (bin) => !!findOnPath(bin, doctorSchedulerPath)) } : undefined,
           });
           problems.push(...f.problems);
           passed += f.passed;
