@@ -78,15 +78,26 @@ export function urlPort(url: string): number | undefined {
   }
 }
 
-/** True when something accepts a TCP connection on `port` of this machine. */
-export function portListening(port: number, timeoutMs = 500): Promise<boolean> {
+/** True when something accepts a TCP connection on `host` at `port`. */
+function hostListening(port: number, host: string, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const s = connect({ port, host: '127.0.0.1' });
+    const s = connect({ port, host });
     const done = (ok: boolean) => { s.destroy(); resolve(ok); };
     s.setTimeout(timeoutMs, () => done(false));
     s.once('connect', () => done(true));
     s.once('error', () => done(false));
   });
+}
+
+/**
+ * True when something accepts a TCP connection on `port` of this machine, on
+ * either loopback family. A dev server or proxy bound to `localhost` may
+ * resolve to `::1` only, so IPv4 alone reports a live periscope as down.
+ * This is the single probe behind both `crew status` and `crew periscope list`.
+ */
+export async function portListening(port: number, timeoutMs = 500): Promise<boolean> {
+  if (await hostListening(port, '127.0.0.1', timeoutMs)) return true;
+  return hostListening(port, '::1', timeoutMs);
 }
 
 /** Live periscopes with `serving` probed now. `probe` is injectable for tests. */

@@ -36,6 +36,16 @@ test('portListening sees a real listener and then its absence', async () => {
   assert.equal(await portListening(port), false);
 });
 
+test('portListening sees a listener bound to the IPv6 loopback only', async (t) => {
+  const srv = createServer();
+  const bound = await new Promise<boolean>((r) => { srv.once('error', () => r(false)); srv.listen(0, '::1', () => r(true)); });
+  if (!bound) return t.skip('no IPv6 loopback on this machine');
+  const port = (srv.address() as { port: number }).port;
+  assert.equal(await portListening(port), true);
+  await new Promise((r) => srv.close(r));
+  assert.equal(await portListening(port), false);
+});
+
 test('urlPort', () => {
   assert.equal(urlPort('http://x:99/a'), 99);
   assert.equal(urlPort('https://x/'), 443);

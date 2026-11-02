@@ -13,7 +13,7 @@ import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { registerCodeServer } from './intel-register.ts';
 import { dropSerenaFolder, missingPrerequisites, realSerenaDeps, startSerena } from './intel-serena.ts';
 import { intelFlavor, wantsCodeBridge, lspFlavor, lspBinaryFound, ensureLspPlugin, LSP_SERVERS } from './intel.ts';
-import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
+import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import {
@@ -5152,10 +5152,13 @@ switch (command) {
           });
         };
         if (subP === 'list') {
-          const entries = periscopeListEntries(
-            (await Promise.all(routesP.map(gather))).flat().map((r) => ({ ...r, pointedAt: readPointedAt(r.worktree) })), new Date(),
-            (r) => pidsInWorktree(r.worktree, Number(r.number)).length > 0,
-          );
+          const listRows = (await Promise.all(routesP.map(gather))).flat().map((r) => ({ ...r, pointedAt: readPointedAt(r.worktree) }));
+          // Same port probe as `crew status`, so the two commands cannot disagree.
+          const serving = new Map(await Promise.all(listRows.map(async (r) => {
+            const port = urlPort(r.url);
+            return [r.id, port === undefined ? false : await portListening(port)] as const;
+          })));
+          const entries = periscopeListEntries(listRows, new Date(), (r) => serving.get(r.id) ?? false);
           process.stdout.write(jsonP ? `${JSON.stringify(entries)}\n` : `${formatPeriscopeList(entries)}\n`);
           break;
         }
