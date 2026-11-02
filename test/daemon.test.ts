@@ -695,6 +695,32 @@ test('runOnePass: a park raises role_parked once with one sweep event; a later s
   assert.equal(sweepEvents().length, 1, 'clearing announces nothing');
 });
 
+test('runOnePass: a role held by seat_cannot_write is not dispatched until its probe passes, then the item clears (CREW-2963)', async () => {
+  const { opts, state } = rig();
+  const decision = fakeDecision(['dev']);
+  const item = { kind: 'seat_cannot_write' as const, key: 'seat_cannot_write:dev', message: 'dev seat: x', since: '2026-11-02T00:00:00Z' };
+  state.shipAttention().persist([item]);
+  let refused = true;
+  let spawns = 0;
+  const pass = () => runOnePass({
+    ...opts,
+    decide: async () => decision,
+    seatWriteRefused: async () => refused,
+    spawnRoleAgent: async () => { spawns++; },
+  });
+  const held = await pass();
+  assert.deepEqual(held.started, []);
+  assert.match(held.skipped[0]!.reason, /cannot write/);
+  assert.equal(spawns, 0);
+  assert.deepEqual(state.shipAttention().previous().map((i) => i.key), ['seat_cannot_write:dev']);
+
+  refused = false;
+  assert.deepEqual((await pass()).started, ['dev']);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(spawns, 1);
+  assert.deepEqual(state.shipAttention().previous(), []);
+});
+
 test('runOnePass persists the attention set so the next pass can diff against it (CREW-1413)', async () => {
   const { state, opts } = rig();
   const decision = fakeDecision([]);

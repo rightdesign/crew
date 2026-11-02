@@ -95,7 +95,7 @@ import { SandboxCache, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxC
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
-import { probeSeatReads, describeSeatForbidden, describeSeatTables, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
+import { probeSeatWrites, seatCannotWriteMessage, SEAT_NO_WRITE_REMEDY, probeSeatReads, describeSeatForbidden, describeSeatTables, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
@@ -6405,6 +6405,12 @@ switch (command) {
             problems.push({ severity: 'blocker', kind: 'seat_cannot_read_issues', route: route.route, message: `${p.role} agent key refused on ${p.tables.filter((t) => t.state === 'forbidden').map((t) => t.table).join(', ')} (403)`, remedy: describeSeatForbidden(p.role, p.tables).replace(/^.*?— /, '') });
           } else if (p.state === 'ok') passed++;
         }
+        // CREW-2963: reading is not enough; a hand-off writes status, assignee and the Crew/Ships rows.
+        for (const w of await probeSeatWrites(route, { userAgent: cfg.ship.userAgent })) {
+          if (w.state === 'forbidden') {
+            problems.push({ severity: 'blocker', kind: 'seat_cannot_write', route: route.route, message: seatCannotWriteMessage(w.role, w.tables), remedy: SEAT_NO_WRITE_REMEDY });
+          } else if (w.state === 'ok') passed++;
+        }
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
       if (!flag('offline')) {
@@ -6679,6 +6685,12 @@ switch (command) {
         } else {
           process.stdout.write(p.state === 'ok' ? `${describeSeatTables(p.role, p.tables)}\n` : `seat read:        ${p.role} could not be checked (${p.detail})\n`);
         }
+      }
+      for (const w of await probeSeatWrites(roleRoute, { userAgent: cfg.ship.userAgent })) {
+        if (w.state === 'forbidden') {
+          process.stdout.write(`seat write:       ERROR ${seatCannotWriteMessage(w.role, w.tables)} (READ only) — ${SEAT_NO_WRITE_REMEDY}\n`);
+          process.exitCode = 1;
+        } else if (w.state === 'ok') process.stdout.write(`seat write:       ${w.role}: ok\n`);
       }
     }
 

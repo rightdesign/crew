@@ -62,6 +62,29 @@ function isTransportFailure(isError: boolean, text: string): boolean {
   return TRANSPORT_FAILURE.test(text);
 }
 
+/** A tracker 403 on a write: `No WRITE access to "status"` / `... to this model`. */
+const FORBIDDEN_WRITE = /\b403\b[^]*?No WRITE access/i;
+
+function isForbiddenWrite(isError: boolean, text: string): boolean {
+  if (FORBIDDEN_WRITE.test(text)) return true;
+  if (!isError) {
+    try {
+      const doc: unknown = JSON.parse(text);
+      return !!doc && typeof doc === 'object' && (doc as { statusCode?: unknown }).statusCode === 403;
+    } catch { /* not JSON */ }
+  }
+  return false;
+}
+
+/** The refusal's own wording, trimmed to one line for the attention item. */
+function forbiddenDetail403(text: string): string {
+  const m = /No WRITE access to (?:"[^"]+"|this model|[\w-]+)/i.exec(text);
+  return m ? m[0] : 'a hand-off write was refused';
+}
+
+/** A hand-off write the tracker refused for lack of WRITE access (CREW-2963). */
+export interface ForbiddenHandoff { ticketRecordId: string; detail: string }
+
 interface Write { kind: 'handoff' | 'comment'; recordId: string; body: Record<string, unknown> }
 
 export class HandoffTranscriptTracker {
@@ -71,6 +94,9 @@ export class HandoffTranscriptTracker {
   /** Per ticket record: the last hand-off comment that failed after the status write's turn. */
   private readonly comment = new Map<string, string>();
   private readonly landed = new Set<string>();
+  /** Per ticket record: the last hand-off status write, when the tracker refused it with 403. */
+  private readonly forbiddenWrites = new Map<string, string>();
+  private statusLanded = false;
   private lastText = '';
   private resultLine = '';
 
@@ -92,12 +118,29 @@ export class HandoffTranscriptTracker {
         const w = this.open.get(b.tool_use_id);
         if (!w) continue;
         this.open.delete(b.tool_use_id);
-        const failed = isTransportFailure(b.is_error === true, resultText(b.content));
+        const text = resultText(b.content);
+        if (w.kind === 'handoff') {
+          const refused = isForbiddenWrite(b.is_error === true, text);
+          if (refused) this.forbiddenWrites.set(w.recordId, forbiddenDetail403(text));
+          else { this.forbiddenWrites.delete(w.recordId); if (!isTransportFailure(b.is_error === true, text)) this.statusLanded = true; }
+        }
+        const failed = isTransportFailure(b.is_error === true, text);
         if (w.kind === 'handoff') this.status.set(w.recordId, { ok: !failed, patch: w.body });
         else if (failed && typeof w.body.body === 'string') this.comment.set(w.recordId, w.body.body);
         else if (!failed) { this.comment.delete(w.recordId); this.landed.add(w.recordId); }
       }
     }
+  }
+
+  /** The newest hand-off write the tracker refused with 403 and no later success for that ticket, else null. */
+  forbidden(): ForbiddenHandoff | null {
+    const last = [...this.forbiddenWrites].at(-1);
+    return last ? { ticketRecordId: last[0], detail: last[1] } : null;
+  }
+
+  /** A hand-off status write went through, so the seat can write what a hand-off needs. */
+  handoffLanded(): boolean {
+    return this.statusLanded && this.forbiddenWrites.size === 0;
   }
 
   /** The hand-off that did not land, or null when every hand-off write succeeded (or none was tried). */

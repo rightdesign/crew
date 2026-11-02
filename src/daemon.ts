@@ -103,6 +103,7 @@ import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { runKilledComment } from './run-limit.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
+import { isForbiddenError, forbiddenDetail, seatCannotWriteKey, seatCannotWriteItem, seatWriteStillRefused } from './seat-read-probe.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention, workspaceAuthKey, workspaceAllowanceKey, workspaceAllowanceItem, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
@@ -557,6 +558,8 @@ export interface RunOnePassOptions {
   decide?: Decide;
   /** Injected for testing. Defaults to the real claim+checkout+spawn (`runRoleAgent`). */
   spawnRoleAgent?: SpawnRoleAgent;
+  /** Injected for testing (CREW-2963). Whether a role held by `seat_cannot_write` is still refused. */
+  seatWriteRefused?: (role: RoleName) => Promise<boolean>;
   /**
    * Injected for testing (ISSUE-966) — forwarded to `hydrateApiKeys`'s own
    * `getStore` parameter so a test never touches a real OS keychain.
@@ -756,6 +759,15 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
     for (const role of order) {
       const count = live.get(role);
       if (count === undefined) continue;
+      // CREW-2963: a seat whose role cannot write the hand-off fields would only re-run the same ticket into the same 403.
+      if (openShipAttention(o.state).some((i) => i.key === seatCannotWriteKey(role))) {
+        if (await (o.seatWriteRefused ?? ((r) => seatWriteStillRefused(o.route, r, { userAgent: o.ship.userAgent })))(role)) {
+          if (count === 0) skipped.push({ role, reason: 'seat role cannot write the hand-off fields — see attention' });
+          live.delete(role);
+          continue;
+        }
+        clearShipAttention(o.state, seatCannotWriteKey(role));
+      }
       if (!breaker.allows(role)) {
         if (count === 0) skipped.push({ role, reason: 'agent recently failed to start — waiting before retry' });
         live.delete(role);
@@ -1094,6 +1106,16 @@ async function runRoleAgentLocked(
     resolvedAgentId: await resolveAgentId(route, role, { userAgent: ship.userAgent }),
   });
 
+  // CREW-2963: a 403 on the Crew or Ships patch by the seat's own key is the same stuck role as a refused
+  // hand-off; a log warning nobody reads left a stale `engaged` for days.
+  const raiseIfSeatForbidden = async (e: unknown, what: string): Promise<void> => {
+    if (identity.kind !== 'agent' || !isForbiddenError(e)) return;
+    const d = forbiddenDetail(e, route);
+    try {
+      await raiseShipAttention({ state: ctx.state, emit, route, ship },
+        seatCannotWriteItem(role, `${what} refused${d.table ? ` on ${d.table}` : ''}${d.verb ? ` (no ${d.verb} access)` : ''}`));
+    } catch { /* the warn line says it */ }
+  };
   emit.enter('agent', role);
   emit.emit(`starting agent run for ${route.route}`);
   const memberId = route.resolved?.seats[role];
@@ -1102,12 +1124,14 @@ async function runRoleAgentLocked(
       await tracker.setCrewStatus(memberId, 'working', workingId);
     } catch (e) {
       emit.warn(`could not set crew status: ${(e as Error).message}`, { step: 'agent' });
+      await raiseIfSeatForbidden(e, 'status write');
     }
   }
   try {
     await tracker.beatEngaged(ship.name, route.route, workingId);
   } catch (e) {
     emit.warn(`could not beat ship engaged: ${(e as Error).message}`, { step: 'agent' });
+    await raiseIfSeatForbidden(e, 'Ships heartbeat');
   }
   try {
     const runStart = new Date().toISOString();

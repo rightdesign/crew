@@ -18,6 +18,7 @@ import { State } from './state.ts';
 import { forgeRunEnv, crewCommandLine } from './forges.ts';
 import { authModeOf, streamShowsSignedOut } from './signed-out.ts';
 import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRefusedKey } from './ship-attention.ts';
+import { seatCannotWriteItem, seatCannotWriteKey } from './seat-read-probe.ts';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
 import { loadRepoConfig } from './repo-config.ts';
@@ -1108,6 +1109,14 @@ async function finishRun(
       emit.warn(`could not save the pending hand-off: ${(e as Error).message}`, { step: 'agent' });
     }
   }
+  // CREW-2963: a hand-off refused with 403 is the seat's role, not the work. Say so on the ship, once,
+  // and log the run as an error: the role is held until a probe finds the grant fixed.
+  const forbidden = end.interrupted ? null : obs.handoff.forbidden();
+  if (forbidden) {
+    try { await raiseShipAttention({ state: new State(stateDirOfStream(id.streamPath)), emit }, seatCannotWriteItem(id.role, forbidden.detail)); } catch { /* the error outcome below still says it */ }
+  } else if (!end.interrupted && obs.handoff.handoffLanded()) {
+    try { clearShipAttention(new State(stateDirOfStream(id.streamPath)), seatCannotWriteKey(id.role)); } catch { /* attention is a convenience */ }
+  }
   const before = obs.beforeFirstEdit.result();
   try {
     writeRunMeta(id, startedAt, obs.liveTicket, {
@@ -1127,6 +1136,7 @@ async function finishRun(
     data: {
       ms, code: end.code,
       ...(pending ? { handoff: 'pending' } : {}),
+      ...(forbidden ? { reason: 'forbidden', forbidden: forbidden.detail } : {}),
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
       ...identity,
       attributedTicket: attributedTicket ?? null, attributedBy,
@@ -1142,7 +1152,7 @@ async function finishRun(
   if (id.agentLog && agentLogKey) {
     const report = {
         ticketReference: attributedTicket,
-        outcome: end.interrupted ? 'interrupted' : signedOut ? 'error' : end.code === 0 || (end.code === null && obs.sawResult) ? 'success' : 'error',
+        outcome: end.interrupted ? 'interrupted' : signedOut || forbidden ? 'error' : end.code === 0 || (end.code === null && obs.sawResult) ? 'success' : 'error',
         startedAt,
         finishedAt: new Date().toISOString(),
         cycles: obs.cycles,
