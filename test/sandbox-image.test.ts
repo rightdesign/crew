@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
   planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
-  sandboxFailedKey, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, type BuildDeps, type TickDeps,
+  sandboxFailedKey, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
 
@@ -197,4 +197,26 @@ test('a serena declaration adds the pinned bridge to the crew layer and indexes 
   assert.ok(repo.indexOf('serena project index') < repo.indexOf('rm -rf /tmp/crew-warm'));
   // No warm tree, nothing to index.
   assert.doesNotMatch(planSandbox('r', { packages: [], setup: [], intel: 'serena' }).layers[2]!.dockerfile, /project index/);
+});
+
+test('CREW-2956: the ship plans its own crew-layer image; a declaring repository builds on the same crew layer, neither is the bare base', () => {
+  const ship = shipSandboxRef();
+  const shipPlan = planSandbox(ship.name, ship.decl);
+  const declared = planSandbox('synthesis', { packages: ['git'], setup: ['echo a'] });
+  assert.notEqual(shipPlan.tag, declared.tag);
+  for (const p of [shipPlan, declared]) assert.ok(!p.tag.includes(SANDBOX_BASE_IMAGE) && p.tag.startsWith('crew-sandbox/'));
+  assert.equal(shipPlan.layers[1]!.name, 'crew');
+  assert.equal(shipPlan.layers[1]!.tag, declared.layers[1]!.tag, 'one shared crew layer');
+  assert.match(shipPlan.layers[1]!.dockerfile, /git/);
+  assert.match(shipPlan.layers[1]!.dockerfile, /\/opt\/crew\/bin\/claude|claude/);
+});
+
+test('CREW-2956: a run uses the repository layer when it declares and has built one, else the ship layer', () => {
+  const built = (tag: string) => ({ tags: [{ tag, builtAt: 'x' }] });
+  const state = { [SHIP_SANDBOX_KEY]: built('ship:1'), synthesis: built('repo:1') };
+  assert.equal(sandboxImageForRun(state, 'synthesis', true), 'repo:1');
+  assert.equal(sandboxImageForRun(state, 'synthesis', false), 'ship:1', 'a removed declaration falls back to the ship layer');
+  assert.equal(sandboxImageForRun(state, 'crew', false), 'ship:1');
+  assert.equal(sandboxImageForRun({ [SHIP_SANDBOX_KEY]: built('ship:1') }, 'synthesis', true), 'ship:1', 'declared but not built yet');
+  assert.equal(sandboxImageForRun({}, 'crew', false), null);
 });

@@ -301,3 +301,14 @@ test('a ticket repository the route cannot place fails naming the ticket and rou
     /repository gadgets of ISSUE-7 on route proj/,
   );
 });
+
+test('CREW-2956: the sandbox is created from the plan\'s built image, and ship.sandbox.image overrides it', async () => {
+  const from = (c: { argv: string[] }): string | undefined => { const i = c.argv.indexOf('--from'); return i < 0 ? undefined : c.argv[i + 1]; };
+  const create = (r: ReturnType<typeof rig>) => r.calls().find((c) => c.argv[0] === 'sandbox' && c.argv[1] === 'create')!;
+  const a = rig();
+  await spawnAgent(a.plan(STREAM, { sandboxImage: 'crew-sandbox/ship:abc' }), a.emitter());
+  assert.equal(from(create(a)), 'crew-sandbox/ship:abc');
+  const b = rig();
+  await spawnAgent(b.plan(STREAM, { sandboxImage: 'crew-sandbox/ship:abc', sandboxConfig: { bin: b.bin, agentBin: process.execPath, cacheVolume: 'cache-vol', policy: '/p.yaml', image: 'op/own:1' } }), b.emitter());
+  assert.equal(from(create(b)), 'op/own:1');
+});

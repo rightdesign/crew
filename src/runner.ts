@@ -209,7 +209,8 @@ export class SandboxRunner implements Runner {
 
     const create = ['sandbox', 'create', '--name', name, '--detach'];
     if (policyFile) create.push('--policy', policyFile);
-    if (cfg.image) create.push('--from', cfg.image);
+    const image = cfg.image ?? plan.sandboxImage;
+    if (image) create.push('--from', image);
     if (cfg.cacheVolume) {
       create.push('--driver-config-json', JSON.stringify({
         docker: { mounts: [{ type: 'volume', source: cfg.cacheVolume, target: cfg.mirrorDir, read_only: true }] },

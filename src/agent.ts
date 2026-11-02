@@ -36,7 +36,7 @@ import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachable
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
-import { SANDBOX_BRIDGE_PATH } from './sandbox-image.ts';
+import { SANDBOX_BRIDGE_PATH, readSandboxState, sandboxImageForRun } from './sandbox-image.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
 import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKind } from './runner.ts';
@@ -139,6 +139,8 @@ export interface AgentPlan {
    * repository, where the runner falls back to the route directory's origin.
    */
   sandboxOrigin?: string;
+  /** CREW-2956: the built image the sandbox is created from (`--from`), unless `sandboxConfig.image` overrides it. Absent while nothing has built yet. */
+  sandboxImage?: string;
   /** CREW-2922: files the runner writes into the sandbox before launching the harness (the symbol bridge's Gemini settings, the `typescript-lsp` plugin). */
   sandboxFiles?: SandboxFile[];
   /** Passed on stdin, never as argv — see `spawnAgent`. */
@@ -360,6 +362,21 @@ export function sandboxLspPluginFor(route: Route, repo: string | null | undefine
   } catch { return undefined; }
 }
 
+/**
+ * CREW-2956: the image a sandboxed run starts from. `ship.sandbox.image` (the operator's override)
+ * is applied by the runner and wins; otherwise the ticket repository's built layer if it declares
+ * `sandbox:`, else the ship's crew layer, so a repository with no declaration still has git and
+ * the harness inside its sandbox.
+ */
+export function sandboxImageOf(route: Route, repo: string | null | undefined, stateDir: string): string | undefined {
+  let declares = false;
+  try {
+    const dir = reposOf(route).find((r) => r.name === repo)?.dir ?? route.dir;
+    declares = Boolean(loadRepoConfig(dir)?.sandbox);
+  } catch { /* an unreadable contract declares nothing */ }
+  return sandboxImageForRun(readSandboxState(stateDir), repo, declares) ?? undefined;
+}
+
 export class AgentSpawnError extends AgentError {}
 
 /**
@@ -537,6 +554,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const code = codeBridgeFor(o, adapter.harness);
   const sandboxLsp = o.ship.runner === 'sandbox' && adapter.harness === 'claude' ? sandboxLspPluginFor(o.route, o.repo) : undefined;
   const sandboxOrigin = o.ship.runner === 'sandbox' ? sandboxOriginFor(o.route, o.repo) : undefined;
+  const sandboxImage = o.ship.runner === 'sandbox' ? sandboxImageOf(o.route, o.repo, o.stateDir) : undefined;
   const sandboxFiles = [...(code?.files ?? []), ...(sandboxLsp?.files ?? [])];
   const invocation = adapter.invocation(toolchain, {
     code,
@@ -598,6 +616,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
           runner: 'sandbox' as const,
           ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}),
           ...(sandboxOrigin ? { sandboxOrigin } : {}),
+          ...(sandboxImage ? { sandboxImage } : {}),
           sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox }),
           ...(sandboxFiles.length ? { sandboxFiles } : {}),
         }

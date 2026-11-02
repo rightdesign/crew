@@ -286,6 +286,16 @@ export function planSandbox(repo: string, decl: RepoSandbox, warm: WarmFiles = {
   return { repo, tag: layer.tag, claude: SANDBOX_CLAUDE_VERSION, layers: [base, crew, layer] };
 }
 
+/**
+ * The ship's own image (CREW-2956). Sandboxing is a ship property: on a
+ * `ship.runner: sandbox` ship every run starts from the crew layer (git, curl,
+ * the credential helper, Claude Code), whether or not the ticket's repository
+ * declares `sandbox:`. A declaration only adds that repository's layer on top.
+ * The `@` keeps the state key from ever equalling a repository name.
+ */
+export const SHIP_SANDBOX_KEY = '@ship';
+export const shipSandboxRef = (): SandboxRepoRef => ({ name: SHIP_SANDBOX_KEY, decl: { packages: [], setup: [] } });
+
 // --- state -----------------------------------------------------------------
 
 export interface BuiltTag {
@@ -328,6 +338,15 @@ export function writeSandboxState(stateDir: string, state: SandboxImageState): v
  */
 export function sandboxImageFor(state: SandboxImageState, repo: string): string | null {
   return state[repo]?.tags[0]?.tag ?? null;
+}
+
+/**
+ * The image a run for `repo` starts from on a sandbox ship: the repository's own layer when it
+ * declares `sandbox:` and that layer has built, otherwise the ship's crew layer. null only when
+ * neither has been built yet (the first build tick has not finished).
+ */
+export function sandboxImageForRun(state: SandboxImageState, repo: string | null | undefined, declares: boolean): string | null {
+  return (declares && repo ? sandboxImageFor(state, repo) : null) ?? sandboxImageFor(state, SHIP_SANDBOX_KEY);
 }
 
 export type SandboxImageStatus = 'ok' | 'stale' | 'missing' | 'failed';

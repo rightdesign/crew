@@ -252,8 +252,9 @@ release:
 
 ### Sandbox images
 
-Nothing installs inside a sandbox at run time. A repository that runs in one
-declares what it needs and the ship builds an image from it:
+Nothing installs inside a sandbox at run time. The `sandbox:` section is optional: a
+sandbox ship runs every repository in its own crew layer (git, curl, Claude Code), and a
+repository that needs more declares it and the ship builds a layer on top:
 
 ```yaml
 sandbox:

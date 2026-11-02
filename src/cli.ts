@@ -17,7 +17,7 @@ import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, rem
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import {
-  planSandbox, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
+  planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
@@ -1661,6 +1661,10 @@ async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoR
   return [...out.values()];
 }
 
+/** CREW-2956: the ship's crew layer first when the ship is a sandbox ship, then every declaring repository. */
+const withShipSandbox = (declared: SandboxRepoRef[]): SandboxRepoRef[] =>
+  cfg.ship.runner === 'sandbox' ? [shipSandboxRef(), ...declared] : declared;
+
 /** The injectable pieces of a sandbox image build, bound to the real container engine and this ship's state. */
 function sandboxTickDeps(emit: Emitter, c: typeof route): TickDeps {
   return {
@@ -3139,6 +3143,7 @@ switch (command) {
         if (!sandboxBuilding) {
           sandboxBuilding = true;
           void sandboxReposOf(cfg.routes.filter((r) => r.enabled))
+            .then(withShipSandbox)
             .then((repos) => (repos.length ? sandboxBuildTick(repos, sandboxTickDeps(emit, route)) : null))
             .catch((err) => emit.warn(`sandbox image build tick failed: ${err instanceof Error ? err.message : String(err)}`))
             .finally(() => { sandboxBuilding = false; });
@@ -4724,7 +4729,7 @@ switch (command) {
           if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
           throw e;
         }
-        const declared = await sandboxReposOf(routesS);
+        const declared = withShipSandbox(await sandboxReposOf(routesS));
         if (subS === 'images') {
           const stateS = readSandboxState(cfg.ship.stateDir);
           const rows = declared.map((r) => {
@@ -4745,7 +4750,7 @@ switch (command) {
         const only = positional[2];
         const targets = only ? declared.filter((r) => r.name === only) : declared;
         if (targets.length === 0) {
-          process.stderr.write(only ? `crew: no repository "${only}" declares a sandbox: section\n` : 'crew: no repository declares a sandbox: section in its .crew.yaml\n');
+          process.stderr.write(only ? `crew: no repository "${only}" declares a sandbox: section (${SHIP_SANDBOX_KEY} is the ship's crew layer, built only on a ship.runner: sandbox ship)\n` : 'crew: this ship is not a sandbox ship and no repository declares a sandbox: section in its .crew.yaml\n');
           process.exit(2);
         }
         const emitS = new Emitter({ route: routesS[0]!.route, eventFile: eventFileFor(cfg.ship.stateDir), rotateBytes: cfg.ship.eventsRotateBytes, logFile: cfg.ship.logFile, console: (l) => process.stderr.write(`${l}\n`) });
@@ -6967,7 +6972,7 @@ switch (command) {
     }
     // CREW-2794: a stale or missing sandbox image, per declaring repo.
     {
-      const declaredS = await sandboxReposOf(cfg.routes.filter((r) => r.enabled));
+      const declaredS = withShipSandbox(await sandboxReposOf(cfg.routes.filter((r) => r.enabled)));
       const stateS = readSandboxState(cfg.ship.stateDir);
       for (const r of declaredS) {
         const st = sandboxImageStatus(stateS, planSandbox(r.name, r.decl, r.warm, r.bridge));

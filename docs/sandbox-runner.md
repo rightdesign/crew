@@ -107,6 +107,18 @@ intel/<forge host>/<remote path>/                        symbol cache (`cache/`)
   dependency trees) for repositories the ship no longer serves; `--reset` recreates the volume, and the next
   pass refreshes every mirror again. `--json` prints the list.
 
+## The ship's image (CREW-2956)
+
+Sandboxing is a ship property. On a ship with `ship.runner: sandbox`, the build tick builds the
+crew layer on its own (ca-certificates, curl, git, the credential helper, Claude Code at
+`/opt/crew/bin/claude`), whether or not any repository declares `sandbox:`, and every run
+starts from it. A repository's `sandbox:` section is optional: it only adds that repository's
+layer (packages, warmed caches, setup steps) on top of the same crew layer, and a run for that
+repository uses the layer once it has built (the ship's image until then). `ship.sandbox.image`
+overrides both. `crew sandbox images` lists the ship's image first, as `@ship`, and
+`crew doctor` reports it as MISSING or FAILED until it builds; `crew sandbox build @ship`
+forces a build.
+
 ## The harness in the image
 
 The crew layer installs Claude Code's standalone binary at `/opt/crew/bin/claude`
