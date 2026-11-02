@@ -247,6 +247,13 @@ export interface PersistedTunnel {
   /** The control socket the live `ssh` forwards (CREW-2803); a change respawns it. */
   controlSocket?: string;
   /**
+   * When a tunnel carrying both forwards died before settling and was respawned with passengers
+   * only (CREW-2939): a relay too old for the `-path-control` forward rejects it, and
+   * `ExitOnForwardFailure` then takes the passengers forward down with it. While set (and younger
+   * than `CONTROL_RETRY_MS`) the control forward is left off; afterwards it is tried once more.
+   */
+  controlRefusedAt?: string;
+  /**
    * Consecutive cycles that found this tunnel's ssh child dead before it was
    * ever promoted to `connected` (CREW-2932). The relay closes a rejected claim
    * (slug owned by another key) straight away, so a child that keeps dying this
@@ -360,6 +367,26 @@ export interface SyncTunnelsDeps {
 /** Consecutive quick exits after which `crew doctor` reports the tunnel as rejected. */
 export const TUNNEL_REJECTED_AFTER = 2;
 
+/** How long a relay's refusal of the control forward is remembered before one more attempt (a respawn, so passengers blip for a cycle). */
+export const CONTROL_RETRY_MS = 60 * 60 * 1000;
+
+/** The `crew doctor` / ship-attention key and wording for a relay too old to carry the control forward (CREW-2939). */
+export const RELAY_CONTROL_UNSUPPORTED_KEY = 'relay_control_unsupported';
+
+export function relayControlUnsupportedMessage(workspaceId: string): string {
+  return `the relay refused the control-path forward for workspace ${workspaceId}, so the passengers tunnel runs without the control API (remote ship transport and periscopes will not reach this ship); the relay is too old for \`-path-control\` (crew-relay 0.2.0+) — deploy it with scripts/deploy-relay.sh`;
+}
+
+/** Workspaces whose tunnel currently runs without the control forward because the relay refused it. */
+export function controlRefusedTunnels(stateDir: string, now = Date.now()): string[] {
+  const out: string[] = [];
+  for (const workspaceId of readAllPersistedWorkspaceIds(stateDir)) {
+    const at = readPersistedTunnel(stateDir, workspaceId)?.controlRefusedAt;
+    if (at && now - Date.parse(at) < CONTROL_RETRY_MS) out.push(workspaceId);
+  }
+  return out;
+}
+
 export function syncPassengerTunnels(
   plans: TunnelPlan[],
   relayHost: string,
@@ -376,7 +403,14 @@ export function syncPassengerTunnels(
   for (const plan of plans) {
     const existing = readPersistedTunnel(stateDir, plan.workspaceId);
     const mountsHash = plan.mountsHash ?? CONTROL_ONLY_HASH;
-    const controlUnchanged = existing?.controlSocket === deps.controlSocket;
+    // CREW-2939: a passengers tunnel that died quickly with the control forward on is retried without
+    // it, so a relay too old for `-path-control` still carries passengers. A control-only plan has no
+    // passengers to fall back to, so it keeps asking.
+    const refusedAt = existing?.controlRefusedAt;
+    const refusalFresh = refusedAt !== undefined && Date.now() - Date.parse(refusedAt) < CONTROL_RETRY_MS;
+    let controlSocket = deps.controlSocket && refusalFresh ? undefined : deps.controlSocket;
+    let controlRefusedAt = refusalFresh ? refusedAt : undefined;
+    const controlUnchanged = existing?.controlSocket === controlSocket;
     const currentSecret = mcpSecrets.get(plan.workspaceId);
     const secretUnchanged = (existing?.mcpSecret ?? undefined) === (currentSecret ?? undefined);
     const slug = existing?.slug ?? generateTunnelSlug();
@@ -407,11 +441,16 @@ export function syncPassengerTunnels(
     // never survived a whole cycle: it was refused rather than interrupted.
     const diedQuickly = existing !== undefined && existing.status === 'connecting' && !alive(existing.pid)
       && controlUnchanged && secretUnchanged && slugUnchanged && existing.mountsHash === mountsHash;
-    const quickExits = diedQuickly ? (existing.quickExits ?? 0) + 1 : 0;
+    let quickExits = diedQuickly ? (existing.quickExits ?? 0) + 1 : 0;
+    if (diedQuickly && controlSocket && plan.port !== undefined) {
+      controlSocket = undefined;
+      controlRefusedAt = new Date().toISOString();
+      quickExits = 0;
+    }
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
       relayHost, relayPort, workspaceId: plan.workspaceId, slug, apiKey, localPort: plan.port,
-      controlSocket: deps.controlSocket, privateKeyPath,
+      controlSocket, privateKeyPath,
       mcpSecret: currentSecret,
       spawnFn: deps.spawnFn, onStatus: (s) => { settledStatus = s; },
     });
@@ -420,7 +459,8 @@ export function syncPassengerTunnels(
       containerName: plan.containerName ?? '',
       workspaceId: plan.workspaceId,
       mountsHash,
-      controlSocket: deps.controlSocket,
+      controlSocket,
+      controlRefusedAt,
       startedAt: new Date().toISOString(),
       status: settledStatus,
       mcpSecret: currentSecret,

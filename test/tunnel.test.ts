@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels,
+  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels, controlRefusedTunnels, CONTROL_RETRY_MS,
   type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
@@ -487,4 +487,31 @@ test('a tunnel whose child dies before ever settling counts quick exits, and rej
   assert.deepEqual(rejectedTunnels(stateDir), [{ workspaceId: 'ws-1', quickExits: 2 }]);
   run(true); // survives a cycle: promoted, no longer counted
   assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.status, 'connected');
+});
+
+test('a tunnel with a control forward that dies before settling is respawned with passengers only, then retries control after the window (CREW-2939)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const spawned: string[][] = [];
+  const spawnFn: SpawnFn = (cmd, args) => { spawned.push(args); return new FakeChild() as never; };
+  const run = (alive: boolean) => syncPassengerTunnels(
+    [makePlan('ws-1')], 'crewd@ships.tablation.dev', 2222, '/keys/id_ed25519', stateDir, new Map(),
+    { apiKeys: KEYS, controlSocket: '/run/ctl.sock', spawnFn, isPidAlive: () => alive },
+  );
+  const forwards = (args: string[]) => args.filter((a) => a === '-R').length;
+  run(false);
+  assert.equal(forwards(spawned[0]!), 2);
+  run(false); // died while connecting: drop the control forward
+  assert.equal(forwards(spawned[1]!), 1);
+  const t = readPersistedTunnel(stateDir, 'ws-1')!;
+  assert.equal(t.controlSocket, undefined);
+  assert.ok(t.controlRefusedAt);
+  assert.equal(t.quickExits, 0);
+  assert.deepEqual(controlRefusedTunnels(stateDir), ['ws-1']);
+  run(true); // survives: connected, still without control, no respawn
+  assert.equal(spawned.length, 2);
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.status, 'connected');
+  updatePersistedTunnel(stateDir, 'ws-1', { controlRefusedAt: new Date(Date.now() - CONTROL_RETRY_MS - 1000).toISOString() });
+  run(true); // window over: one more attempt with both forwards
+  assert.equal(forwards(spawned[2]!), 2);
+  assert.deepEqual(controlRefusedTunnels(stateDir), []);
 });

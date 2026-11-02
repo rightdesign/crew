@@ -160,6 +160,7 @@ import {
 import {
   syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
   TUNNEL_REJECTED_KEY, TUNNEL_REJECTED_AFTER, tunnelRejectedMessage, rejectedTunnels,
+  RELAY_CONTROL_UNSUPPORTED_KEY, relayControlUnsupportedMessage, controlRefusedTunnels,
 } from './tunnel.ts';
 import {
   reconcileEndpoint, unregisterEndpoint, probeEndpointAccess, REGISTER_MCP_ENDPOINTS_HINT,
@@ -1100,6 +1101,13 @@ async function syncShipTunnels(
             kind: TUNNEL_REJECTED_KEY, key: rejectedKey, message: tunnelRejectedMessage(workspaceId, info!.quickExits!), since: new Date().toISOString(),
           }).then(() => undefined).catch(() => undefined));
         } else if (status === 'connected') clearShipAttention(state, rejectedKey);
+        // CREW-2939: the relay refused the control forward; passengers carry on without it.
+        const controlKey = `${RELAY_CONTROL_UNSUPPORTED_KEY}:${workspaceId}`;
+        if (info?.controlRefusedAt) {
+          pending.push(raiseShipAttention({ state, emit, route: owningRoute, ship: cfg.ship }, {
+            kind: RELAY_CONTROL_UNSUPPORTED_KEY, key: controlKey, message: relayControlUnsupportedMessage(workspaceId), since: new Date().toISOString(),
+          }).then(() => undefined).catch(() => undefined));
+        } else if (status === 'connected') clearShipAttention(state, controlKey);
       },
     });
     // Every cycle, not just on the connected transition: a 403 or a
@@ -6393,6 +6401,9 @@ switch (command) {
       for (const t of rejectedTunnels(cfg.ship.stateDir)) {
         problems.push({ severity: 'attention', kind: TUNNEL_REJECTED_KEY, message: tunnelRejectedMessage(t.workspaceId, t.quickExits), remedy: 'rotate the slug with `crew rotate-passenger-url`' });
       }
+      for (const workspaceId of controlRefusedTunnels(cfg.ship.stateDir)) {
+        problems.push({ severity: 'attention', kind: RELAY_CONTROL_UNSUPPORTED_KEY, message: relayControlUnsupportedMessage(workspaceId), remedy: 'deploy crew-relay 0.2.0 or later (scripts/deploy-relay.sh in the crew-relay repository)' });
+      }
       const previewProblem = await previewHostProblem(cfg);
       if (previewProblem) problems.push(previewHostFinding(previewProblem));
       if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
@@ -6414,6 +6425,7 @@ switch (command) {
     for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
 
     for (const t of rejectedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${tunnelRejectedMessage(t.workspaceId, t.quickExits)}\n`);
+    for (const workspaceId of controlRefusedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${relayControlUnsupportedMessage(workspaceId)}\n`);
 
     // EPIC-077: periscopes need a host to send a Passenger to.
     process.stdout.write(`periscopes:        ${periscopeSummary(cfg)}\n`);
