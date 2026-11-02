@@ -126,7 +126,11 @@ export interface HarnessAdapter {
    */
   limitations: string[];
   /** Headless argv for one run; prompt delivery is stdin for every harness. */
-  invocation(spec: ToolchainSpec, o: { role: RoleName; model: string; mcp?: McpTarget }): { bin: string; args: string[] };
+  /**
+   * `pluginDirs` are harness plugin directories to load for this run
+   * (CREW-2916); only the Claude adapter uses them, the others ignore them.
+   */
+  invocation(spec: ToolchainSpec, o: { role: RoleName; model: string; mcp?: McpTarget; pluginDirs?: string[] }): { bin: string; args: string[] };
   /** Environment to add for a run (beyond the tracker key). */
   runEnv(spec: ToolchainSpec): Record<string, string>;
   /** Variables removed from the inherited environment before exec. */

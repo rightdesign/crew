@@ -20,6 +20,7 @@ import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRe
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
 import { loadRepoConfig } from './repo-config.ts';
+import { ensureLspPlugin, lspFlavor } from './intel.ts';
 import type { SandboxPolicyInput } from './sandbox-policy.ts';
 import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
@@ -307,6 +308,19 @@ export function sandboxPolicyInputFor(
   };
 }
 
+/**
+ * CREW-2916: the language-server plugin directory a run loads when the ticket's
+ * repository declares an `*-lsp` `hooks.intel` flavor. Best-effort like
+ * `sandboxPolicyInputFor`: a missing or malformed `.crew.yaml` means no plugin.
+ */
+export function lspPluginDirsFor(route: Route, repo: string | null | undefined, stateDir: string): string[] | undefined {
+  try {
+    const dir = reposOf(route).find((r) => r.name === repo)?.dir ?? route.dir;
+    const flavor = lspFlavor(loadRepoConfig(dir)?.hooks.intel);
+    return flavor ? [ensureLspPlugin(stateDir, flavor, dir)] : undefined;
+  } catch { return undefined; }
+}
+
 export class AgentSpawnError extends AgentError {}
 
 /**
@@ -434,6 +448,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const invocation = adapter.invocation(toolchain, {
     role: o.role,
     model,
+    pluginDirs: adapter.harness === 'claude' ? lspPluginDirsFor(o.route, o.repo, o.stateDir) : undefined,
     // Skipped when there's no key to send: a route `crew connect` hasn't
     // resolved yet has nothing to authenticate the MCP connection with either.
     mcp: o.apiKey ? { url: `${o.route.baseUrl}/api/mcp`, keyVar: API_KEY_VAR } : undefined,

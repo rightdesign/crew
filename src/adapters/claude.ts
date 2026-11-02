@@ -209,6 +209,9 @@ export const claudeAdapter: HarnessAdapter = {
             },
           })]
         : []),
+      // A crew-generated language-server plugin (the `typescript-lsp` intel flavor). Not under oMLX,
+      // which denies the LSP tool above.
+      ...(isOmlxLauncher(spec) ? [] : (o.pluginDirs ?? []).flatMap((d) => ['--plugin-dir', d])),
       ...(spec.auth === 'subscription' ? ['--settings', subscriptionSettings()] : []),
       ...(spec.auth === 'workspace' && spec.inference ? ['--settings', workspaceSettings(spec.inference.baseUrl)] : []),
       ...spec.args,

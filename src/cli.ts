@@ -12,7 +12,7 @@ import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscop
 import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { registerCodeServer } from './intel-register.ts';
 import { dropSerenaFolder, missingPrerequisites, realSerenaDeps, startSerena } from './intel-serena.ts';
-import { intelFlavor } from './intel.ts';
+import { intelFlavor, lspFlavor, lspBinaryFound, ensureLspPlugin, LSP_SERVERS } from './intel.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
@@ -5266,7 +5266,7 @@ switch (command) {
               worktree: cwd, mainCheckout: repoP.dir,
             });
           }
-          if (name === 'intel' && intelFlavor(script)) return { code: 1, output: `intel: ${intelFlavor(script)} is not available yet` };
+          if (name === 'intel' && lspFlavor(script)) return null;
           return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : name === 'intel' ? 60_000 : undefined }) : null;
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
@@ -5331,6 +5331,7 @@ switch (command) {
         now: () => new Date(),
         host: a.host ?? 'localhost',
         intelStartupSeconds: cfg.ship.intelStartupSeconds,
+        lspPluginDir: lspFlavor(repoP.config.hooks.intel) ? ensureLspPlugin(cfg.ship.stateDir, lspFlavor(repoP.config.hooks.intel)!, repoP.dir) : undefined,
         say,
       };
       if (dryRun) {
@@ -6221,7 +6222,12 @@ switch (command) {
             base: doctorBaseReport(r, r.config.branch.base, baseHealth), hooks: r.config.hooks,
             onPath: (cmd) => !!findOnPath(cmd, doctorSchedulerPath),
             intelSyntax: r.config.hooks.intel && !intelFlavor(r.config.hooks.intel) ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
-            intelFlavor: intelFlavor(r.config.hooks.intel) ? { name: intelFlavor(r.config.hooks.intel)!, missing: missingPrerequisites(intelFlavor(r.config.hooks.intel)!, (bin) => !!findOnPath(bin, doctorSchedulerPath)) } : undefined,
+            intelFlavor: intelFlavor(r.config.hooks.intel) ? { name: intelFlavor(r.config.hooks.intel)!, missing: [
+              ...missingPrerequisites(intelFlavor(r.config.hooks.intel)!, (bin) => !!findOnPath(bin, doctorSchedulerPath)),
+              // CREW-2916: an `*-lsp` flavor needs the language server in the checkout or on PATH.
+              ...(lspFlavor(r.config.hooks.intel) && !lspBinaryFound(lspFlavor(r.config.hooks.intel)!, r.dir, (bin) => !!findOnPath(bin, doctorSchedulerPath))
+                ? [`${LSP_SERVERS[lspFlavor(r.config.hooks.intel)!].bin} (${LSP_SERVERS[lspFlavor(r.config.hooks.intel)!].install})`] : []),
+            ] } : undefined,
           });
           problems.push(...f.problems);
           passed += f.passed;

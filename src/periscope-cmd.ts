@@ -13,7 +13,7 @@
  * `cli.ts` supplies the real ones.
  */
 
-import { codeToolsParagraph, probeIntel, type IntelOutcome } from './intel.ts';
+import { codeToolsParagraph, lspToolsParagraph, probeIntel, type IntelOutcome } from './intel.ts';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PeriscopeSidecar } from './periscope-state.ts';
@@ -263,6 +263,12 @@ export interface PeriscopeDeps {
   host: string;
   /** `ship.intelStartupSeconds`; the default when absent. */
   intelStartupSeconds?: number;
+  /**
+   * CREW-2916: the generated plugin directory when the repository's `hooks.intel` is an `*-lsp`
+   * flavor. Such a flavor starts no service, so the probe is skipped and the paragraph tells the
+   * session how to load the plugin.
+   */
+  lspPluginDir?: string;
   say(event: string, message: string, data?: Record<string, unknown>): void;
 }
 
@@ -400,7 +406,7 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   d.say('preview', `preview at ${url}`, { url });
 
   // The symbol service is optional: whatever happens to it, the periscope comes up.
-  const intel = await probeIntel(
+  const intel: IntelOutcome = d.lspPluginDir ? { state: 'absent' } : await probeIntel(
     { runHook: (e) => d.runHook('intel', wt!.path, e) },
     env, d.intelStartupSeconds ?? DEFAULT_INTEL_STARTUP_SECONDS,
   );
@@ -415,7 +421,9 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
       d.say('warning', `symbol service not registered: ${(e as Error).message}`);
     }
   }
-  const codeTools = codeToolsParagraph(codeOutcome);
+  const codeTools = d.lspPluginDir
+    ? `${lspToolsParagraph('claude')} Start the Claude session with \`--plugin-dir ${d.lspPluginDir}\` to load it.`
+    : codeToolsParagraph(codeOutcome);
 
   const now = d.now();
   let row: { id: string };
