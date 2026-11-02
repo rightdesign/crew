@@ -84,7 +84,7 @@ import { resolveTopCandidate } from './claim.ts';
 import { refreshUnknownRepos, reportUnservable, repoLabelFor } from './repo-refresh.ts';
 import { applySweep } from './blocked.ts';
 import { runStalledSweep } from './stalled.ts';
-import { AgentSpawnError, WorkspaceAuthRefused, WorkspaceAllowanceExhausted, streamShowsAllowanceRefusal, planAgentRun, spawnAgent } from './agent.ts';
+import { type AgentPlan, AgentSpawnError, WorkspaceAuthRefused, WorkspaceAllowanceExhausted, streamShowsAllowanceRefusal, planAgentRun, spawnAgent } from './agent.ts';
 import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
 import { listPendingHandoffs } from './pending-handoff.ts';
 import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.ts';
@@ -94,6 +94,7 @@ import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { withRepoMaps } from './repo-map.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { settleRunEnd } from './live-runs.ts';
+import { SignedOutError, SIGNED_OUT_PAUSE_MS, streamShowsSignedOut, streamShowsRealTurn, signedOutKey, signedOutItem } from './signed-out.ts';
 import { Tracker } from './tracker.ts';
 import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
@@ -779,6 +780,13 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
         })
         .catch(async (e) => {
           const message = (e as Error).message;
+          if (e instanceof SignedOutError) {
+            // The credential cannot work, so a run per cycle would only burn the cycle: hold the role.
+            breaker.pause(role, SIGNED_OUT_PAUSE_MS);
+            emit.warn(`${role} paused: ${message}`, { step: 'agent', role });
+            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, signedOutItem(e.toolchain, e.mode));
+            return;
+          }
           if (e instanceof WorkspaceAllowanceExhausted) {
             // No retry now: hold the role, and let the next pass after the pause try again.
             breaker.pause(role, ALLOWANCE_PAUSE_MS);
@@ -1128,6 +1136,7 @@ async function runRoleAgentLocked(
       if (plan.workspaceAuth && streamShowsAllowanceRefusal(plan.streamPath)) {
         throw new WorkspaceAllowanceExhausted('the inference endpoint refused the run: the workspace is past its AI allowance');
       }
+      await settleSignOut(plan, tracker, ctx.state, workingId, emit);
     }
   } finally {
     await settleRunEnd({
@@ -1166,4 +1175,33 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
   const authorship = await tracker.authorshipProbe().catch(() => null);
   const attachments = await tracker.attachmentsProbe().catch(() => null);
   return renderEnvironment({ route, userAgent: ship.userAgent, repos: await withRepoMaps(repos, ship.mapTokenBudget, ship.shell), contract, sourceTicket: ticket, authorship, attachments, shipName: ship.name, ...sandboxEnv(ship) });
+}
+
+/**
+ * CREW-2958: a run whose stream ends at the harness's own sign-out error did no work. Release the
+ * ticket hold this ship stamped (its status and assignee stay as they were, so the next run can
+ * claim it), then throw so the role pauses and a `signed_out:<toolchain>` item is raised. A run
+ * that produced a real turn clears the item for its toolchain instead.
+ */
+export async function settleSignOut(
+  plan: AgentPlan, tracker: Tracker, state: State, ticketId: string | null, emit: Emitter,
+): Promise<void> {
+  const toolchain = plan.toolchain;
+  if (!toolchain) return;
+  if (!streamShowsSignedOut(plan.streamPath)) {
+    if (streamShowsRealTurn(plan.streamPath)) clearShipAttention(state, signedOutKey(toolchain));
+    return;
+  }
+  if (ticketId) {
+    try {
+      const affinity = await tracker.claimAffinity();
+      const current = await tracker.ticket(ticketId);
+      if (affinity && current[affinity.column] === affinity.shipId) {
+        await tracker.updateTicket(ticketId, { [affinity.column]: null }, current.updated_at);
+      }
+    } catch (e) {
+      emit.warn(`could not release the ticket hold after a sign-out: ${(e as Error).message}`, { step: 'agent' });
+    }
+  }
+  throw new SignedOutError(toolchain, plan.authMode ?? 'login');
 }

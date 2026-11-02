@@ -16,6 +16,7 @@ import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { State } from './state.ts';
 import { forgeRunEnv, crewCommandLine } from './forges.ts';
+import { authModeOf, streamShowsSignedOut } from './signed-out.ts';
 import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRefusedKey } from './ship-attention.ts';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
@@ -117,6 +118,8 @@ export interface AgentPlan {
   harness?: string;
   /** CREW-2796: the run authenticates through the workspace inference endpoint. */
   workspaceAuth?: boolean;
+  /** CREW-2958: which credential the toolchain's runs depend on, for the sign-out remedy. */
+  authMode?: import('./signed-out.ts').AuthMode;
   /** Who serves/bills the model (`adapter.provider`); a hand-built plan means Anthropic. */
   provider?: string;
   /** Why that toolchain and model (`--dry-run`'s resolution chain). */
@@ -609,6 +612,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     toolchain: toolchain.name,
     harness: toolchain.harness,
     workspaceAuth: toolchain.auth === 'workspace',
+    authMode: authModeOf(toolchain),
     provider: toolchainProvider(toolchain),
     maxRunMinutes: resolveMaxRunMinutes(o.route.maxRunMinutes, toolchain.maxRunMinutes),
     ...(o.ship.runner === 'sandbox'
@@ -1133,10 +1137,12 @@ async function finishRun(
       ...(result?.costUsd !== undefined ? { totalCostUsd: result.costUsd } : {}),
     },
   });
+  // CREW-2958: a harness that answers with its own sign-out error exits 0; it did no work.
+  const signedOut = !end.interrupted && streamShowsSignedOut(id.streamPath);
   if (id.agentLog && agentLogKey) {
     const report = {
         ticketReference: attributedTicket,
-        outcome: end.interrupted ? 'interrupted' : end.code === 0 || (end.code === null && obs.sawResult) ? 'success' : 'error',
+        outcome: end.interrupted ? 'interrupted' : signedOut ? 'error' : end.code === 0 || (end.code === null && obs.sawResult) ? 'success' : 'error',
         startedAt,
         finishedAt: new Date().toISOString(),
         cycles: obs.cycles,

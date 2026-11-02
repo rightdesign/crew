@@ -16,6 +16,7 @@
  * failure classification is tested against a faked adapter stream.
  */
 
+import { SIGNED_OUT_PATTERN, signedOutMessage, authModeOf } from './signed-out.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -215,6 +216,10 @@ export function classify(spec: ToolchainSpec, run: SpawnedRun, seen: Seen): { fa
     return fail('mcp-unavailable', 'the tracker MCP tool was not available to the session');
   }
   const answered = seen.texts.length > 0 || seen.finalText;
+  // CREW-2958: the harness's own sign-out wording names the credential to renew, by auth mode.
+  if (SIGNED_OUT_PATTERN.test(`${run.stderr}\n${seen.finalText ?? ''}\n${seen.texts.join('\n')}`)) {
+    return { failure: 'login-missing', detail: signedOutMessage(spec.name, authModeOf(spec)) };
+  }
   if (!answered || LOGIN.test(run.stderr) || LOGIN.test(seen.finalText ?? '')) {
     return fail('login-missing', `\`${bin}\` exited${run.code !== null ? ` (${run.code})` : ''} before answering; the vendor login is probably missing`);
   }
