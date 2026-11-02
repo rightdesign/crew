@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.4] — 2026-11-02
+
+- CREW-2960 Sandbox image builds rewrite every Ubuntu apt source (including arm64's ports.ubuntu.com) to https, so 443-only hosts can build on arm64 too.
+
 ## [0.127.3] — 2026-11-02
 
 - CREW-2961 A sandbox ship's cache refresh works with a token-only forge entry, and a failing refresh now shows in `crew sandbox cache`, the attention item and `crew doctor`.
