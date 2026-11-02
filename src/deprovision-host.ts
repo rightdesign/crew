@@ -8,7 +8,8 @@
  * someone else made is never touched. Everything crew creates for a route
  * carries `crew.owner=crew`; a cache volume also `crew.kind=cache`, an image
  * `crew.layer=base|crew|repo`. Only `repo` image layers and cache volumes are
- * removed: the base and crew layers are what the next lease boots from. The
+ * removed, plus every `crew-sandbox/*` tag (the repository layers and the ship layer):
+ * the base and crew layers are what the next lease boots from. The
  * labels are applied where the volumes and layers are built (CREW-2794,
  * CREW-2799); a host that has none simply has nothing to remove here.
  */
@@ -47,7 +48,12 @@ export function labeledDocker(): LabeledDockerResources {
   if (!dockerAvailable()) return { volumes: [], images: [] };
   return {
     volumes: lines(docker(['volume', 'ls', '-q', '--filter', `label=${DOCKER_LABEL_OWNER}`, '--filter', `label=${DOCKER_LABEL_CACHE}`])),
-    images: lines(docker(['image', 'ls', '-q', '--filter', `label=${DOCKER_LABEL_OWNER}`, '--filter', `label=${DOCKER_LABEL_REPO_LAYER}`])),
+    // CREW-2984: the repository and ship layers are tagged `crew-sandbox/<name>:<hash>` but carry only an `io.crew.sandbox.*` label,
+    // so the label filter alone missed them. The tag namespace is crew's own; the base and crew layers are `crew-sandbox-base`/`-crew`.
+    images: [...new Set([
+      ...lines(docker(['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=crew-sandbox/*'])),
+      ...lines(docker(['image', 'ls', '-q', '--filter', `label=${DOCKER_LABEL_OWNER}`, '--filter', `label=${DOCKER_LABEL_REPO_LAYER}`])),
+    ])],
   };
 }
 

@@ -316,3 +316,35 @@ test('withFoundSeats puts the release seat in the mint targets of a route resolv
   const after = await mintMissingSeatKeys(withFoundSeats(stale, found, 'agent-release'), { dryRun: true, getStore: () => memoryStore() });
   assert.deepEqual(after.find((o) => o.role === 'release'), { role: 'release', action: 'minted', detail: 'dry run' });
 });
+
+test('revokeSeatKeys with a ship name also revokes live server keys named for the ship that the keychain lost (CREW-2984)', async () => {
+  // A failed lease minted keys and was wiped; the state directory no longer holds them.
+  const store = memoryStore();
+  const live = new Map([
+    ['agent-dev', [
+      { id: 'k1', name: 'crew ship-a dev', revokedAt: null },
+      { id: 'k2', name: 'crew ship-b dev', revokedAt: null },
+      { id: 'k3', name: 'crew ship-a dev', revokedAt: '2026-11-02T00:00:00Z' },
+    ]],
+    ['agent-qa', [{ id: 'k4', name: 'crew ship-a qa', revokedAt: null }]],
+  ]);
+  const deleted: string[] = [];
+  const out = await revokeSeatKeys(route(), {
+    shipName: 'ship-a',
+    getStore: () => store,
+    fetchImpl: async (url, init) => {
+      const parts = String(url).split('/');
+      if (init?.method === 'DELETE') { deleted.push(`${parts.at(-3)}/${parts.at(-1)}`); return new Response(null, { status: 204 }); }
+      return new Response(JSON.stringify(live.get(parts.at(-2)!)), { status: 200 });
+    },
+  });
+  assert.deepEqual(deleted, ['agent-dev/k1', 'agent-qa/k4']);
+  assert.deepEqual(out.filter((o) => o.action === 'revoked').map((o) => o.role), ['dev', 'qa']);
+  assert.equal(out.some((o) => o.action === 'failed'), false);
+});
+
+test('revokeSeatKeys without a ship name never lists server keys (CREW-2984)', async () => {
+  const seen: string[] = [];
+  await revokeSeatKeys(route(), { getStore: () => memoryStore(), fetchImpl: async (url) => { seen.push(String(url)); return new Response('[]', { status: 200 }); } });
+  assert.deepEqual(seen, []);
+});

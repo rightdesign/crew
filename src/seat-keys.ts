@@ -322,7 +322,7 @@ export interface RevokeOutcome {
  */
 export async function revokeSeatKeys(
   route: Route,
-  o: { userAgent?: string; dryRun?: boolean; getStore?: () => SessionStore; fetchImpl?: typeof fetch },
+  o: { userAgent?: string; dryRun?: boolean; shipName?: string; getStore?: () => SessionStore; fetchImpl?: typeof fetch },
 ): Promise<RevokeOutcome[]> {
   const out: RevokeOutcome[] = [];
   if (!route.resolved) return out;
@@ -342,12 +342,38 @@ export async function revokeSeatKeys(
   }
   const host = hostFromUrl(route.baseUrl);
   const base = route.baseUrl.replace(/\/+$/, '');
+  const headers = { Authorization: `Bearer ${resolveApiKey(route)}`, 'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' };
+  // CREW-2984: the keychain only knows the keys it recorded. A lease that failed
+  // after minting and was wiped left live keys the next wipe could not name, so
+  // with a ship name the server's own list is swept for `crew <ship> <role>`.
+  const sweepNamedKeys = async (role: RoleName | 'release', agentId: string): Promise<void> => {
+    const prefix = `crew ${o.shipName} `;
+    try {
+      const res = await doFetch(`${base}/api/workspaces/${resolved.workspaceId}/agents/${agentId}/api-keys`, { headers });
+      // 403/404: the caller cannot list this seat's keys, so there is nothing it could revoke by name.
+      if (!res.ok) return;
+      const keys = (await res.json()) as Array<{ id?: string; name?: string; revokedAt?: string | null }>;
+      for (const k of Array.isArray(keys) ? keys : []) {
+        if (!k.id || k.revokedAt || !k.name?.startsWith(prefix)) continue;
+        if (o.dryRun) { out.push({ role, action: 'revoked', detail: `dry run; key "${k.name}" found on the server` }); continue; }
+        const del = await doFetch(`${base}/api/workspaces/${resolved.workspaceId}/agents/${agentId}/api-keys/${k.id}`, { method: 'DELETE', headers });
+        if (del.ok || del.status === 404) out.push({ role, action: 'revoked', detail: `key "${k.name}" found on the server, not in the keychain` });
+        else out.push({ role, action: 'failed', detail: `key "${k.name}": ${del.status} ${del.statusText}` });
+      }
+    } catch (e) {
+      out.push({ role, action: 'failed', detail: `could not sweep keys named for this ship (${(e as Error).message})` });
+    }
+  };
   for (const { role, agentId } of targets) {
     if (!agentId) { out.push({ role, action: 'no_agent' }); continue; }
     const slug = slugFor(route, agentId);
     try {
       const session = (await store.get(host, slug)) as SeatSession | undefined;
-      if (!session?.apiKey) { out.push({ role, action: 'not_stored' }); continue; }
+      if (!session?.apiKey) {
+        out.push({ role, action: 'not_stored' });
+        if (o.shipName) await sweepNamedKeys(role, agentId);
+        continue;
+      }
       if (!session.keyId) {
         out.push({ role, action: 'failed', detail: "no key id was recorded when this key was minted — revoke it from the seat's Agents row" });
         continue;
@@ -361,6 +387,7 @@ export async function revokeSeatKeys(
       if (!del.ok && del.status !== 404) { out.push({ role, action: 'failed', detail: `${del.status} ${del.statusText}` }); continue; }
       await store.clear(host, slug);
       out.push({ role, action: 'revoked', detail: del.ok ? undefined : 'server already had no such key' });
+      if (o.shipName) await sweepNamedKeys(role, agentId);
     } catch (e) {
       out.push({ role, action: 'failed', detail: /Command failed|security|sk_|-w /i.test((e as Error).message) ? describeStoreError(e) : (e as Error).message });
     }

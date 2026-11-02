@@ -3352,7 +3352,7 @@ switch (command) {
     const { personaResult, skillResult } = run;
     if (flag('revoke-seat-keys')) {
       // CREW-1802: rotate this ship's keys; a following sync mints fresh ones.
-      for (const o of await revokeSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun })) {
+      for (const o of await revokeSeatKeys(target, { userAgent: cfg.ship.userAgent, dryRun, shipName: cfg.ship.name })) {
         process.stdout.write(`${describeRevokeOutcome(o)}\n`);
       }
     } else {
@@ -5807,7 +5807,7 @@ switch (command) {
       },
       removePair: removePairEntries,
       async revokeSeatKeys(r, dry) {
-        const outcomes = await revokeSeatKeys(r, { userAgent: cfg.ship.userAgent, dryRun: dry });
+        const outcomes = await revokeSeatKeys(r, { userAgent: cfg.ship.userAgent, dryRun: dry, shipName: cfg.ship.name });
         return outcomes.map((o) => ({ line: describeRevokeOutcome(o), ok: o.action !== 'failed' }));
       },
       async credential(r) {
