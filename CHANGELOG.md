@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.125.0] — 2026-11-02
+
+- CREW-2922 Sandbox lane runs get the `code` server: the bridge and the symbol service run inside the sandbox, started lazily by the bridge.
+
 ## [0.124.0] — 2026-11-02
 
 - CREW-2915 Sandbox images carry the Serena symbol service and its language servers for repositories that declare `hooks.intel: serena`.
