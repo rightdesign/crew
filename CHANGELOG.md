@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.128.1] — 2026-11-02
+
+- CREW-2952 `crew status --json` now reports a periscope's current last activity and expiry when the daemon's idle pass refreshes it.
+- CREW-2973 Sandbox images set pnpm_config_store_dir, so the pnpm store warmed at build time is the one a sandbox's offline `pnpm install` reads.
+
 ## [0.128.0] — 2026-11-02
 
 - CREW-2970 The brief and the acceptance-bounce comment carry a ready-to-fill Acceptance checklist, and Agent Log runs record handoff_bounces (sortable with `crew logbook list --bounces`).
