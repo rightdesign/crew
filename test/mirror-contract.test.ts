@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SandboxCache, type CacheExec, type CacheSettings } from '../src/sandbox-cache.ts';
-import { firstReport, lacksCheckout, noCheckoutReleaseNote, readMirrorContract, resetReported } from '../src/mirror-contract.ts';
+import { cacheRepoOfTarget, firstReport, lacksCheckout, noCheckoutReleaseNote, releasesFromSandbox, readMirrorContract, resetReported } from '../src/mirror-contract.ts';
 
 const settings: CacheSettings = { engine: 'docker', volume: 'v', workspace: 'w', helperImage: 'img', depsLockfile: 'pnpm-lock.yaml' };
 const repo = { host: 'github.com', path: 'o/r' };
@@ -45,7 +45,13 @@ test('a mirror with no contract reads as none', async () => {
 test('the release note names what happens for each mode, and local names the deploy-hook hand-off', () => {
   assert.match(noCheckoutReleaseNote('r', 'local'), /released by the host that owns the deploy hook/);
   assert.match(noCheckoutReleaseNote('r', null), /release\.mode "local"/);
-  assert.match(noCheckoutReleaseNote('r', 'integrate'), /sandboxed release over a mirror-fed clone/);
+  assert.match(noCheckoutReleaseNote('r', 'external'), /handed off by a ship with a checkout/);
+  assert.equal(releasesFromSandbox('integrate'), true);
+  assert.equal(releasesFromSandbox('ci_auto'), true);
+  assert.equal(releasesFromSandbox('ci_manual'), true);
+  assert.equal(releasesFromSandbox('local'), false);
+  assert.equal(releasesFromSandbox('external'), false);
+  assert.equal(releasesFromSandbox(null), false);
 });
 
 test('firstReport is true once per key', () => {
@@ -53,4 +59,18 @@ test('firstReport is true once per key', () => {
   assert.equal(firstReport('a'), true);
   assert.equal(firstReport('a'), false);
   assert.equal(firstReport('b'), true);
+});
+
+test('a target with no checkout is mirrored from its Repos row remote and forge host', () => {
+  const gone = join(mkdtempSync(join(tmpdir(), 'mc-')), 'nope');
+  const t = { name: 'r', dir: gone, remote: 'o/r', forgeHost: 'git.example.com' };
+  assert.deepEqual(cacheRepoOfTarget({ runner: 'sandbox' }, t, null), { host: 'git.example.com', path: 'o/r' });
+  assert.equal(cacheRepoOfTarget({ runner: 'sandbox' }, { name: 'r', dir: gone }, null), null);
+});
+
+test('a checkout\'s origin wins, and a host ship with no checkout is not mirrored', () => {
+  const gone = join(mkdtempSync(join(tmpdir(), 'mc-')), 'nope');
+  const t = { name: 'r', dir: gone, remote: 'o/r' };
+  assert.deepEqual(cacheRepoOfTarget({ runner: 'sandbox' }, t, 'git@github.com:a/b.git'), { host: 'github.com', path: 'a/b' });
+  assert.equal(cacheRepoOfTarget({ runner: 'host' }, t, null), null);
 });

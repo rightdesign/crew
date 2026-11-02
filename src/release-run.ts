@@ -12,6 +12,7 @@
 import type { ShipAttentionItem } from './ship-attention.ts';
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { existsAt, readTextAt, remoteOf, writeTextAt } from './remote-dir.ts';
 import { tmpdir, hostname } from 'node:os';
 import {
   BRANCH_TIP_TRAILER, createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
@@ -667,6 +668,26 @@ function isConflict(message: string, unmergedPaths: string[]): boolean {
   return unmergedPaths.length > 0 || /CONFLICT \(|Automatic merge failed|unmerged (files|paths)/i.test(message);
 }
 
+/** Commits each deepening of a shallow release clone adds, and how many times it is tried before the merge proceeds. */
+const DEEPEN_STEP = 200;
+const DEEPEN_ATTEMPTS = 5;
+
+/**
+ * A release sandbox's clone is shallow (CREW-2940). A ticket branch that forked
+ * before the window has no merge base with the base yet; deepen the clone until
+ * it does, rather than fail a merge that history would have allowed. Stops once
+ * a deepening adds nothing (the whole history is here) so it cannot spin.
+ */
+function deepenUntilMergeBase(o: ReleaseRunOptions, branch: string): void {
+  const { remote } = o.repo.branch;
+  for (let i = 0; i < DEEPEN_ATTEMPTS && gitOk(o.cwd, ['merge-base', 'HEAD', branch]) === null; i++) {
+    const before = gitOk(o.cwd, ['rev-list', '--count', '--all']);
+    if (gitOk(o.cwd, ['fetch', '--quiet', `--deepen=${DEEPEN_STEP}`, remote]) === null) return;
+    o.emit.emit(`deepened the release clone to find the merge base of ${branch}`, { step: 'merge' });
+    if (gitOk(o.cwd, ['rev-list', '--count', '--all']) === before) return;
+  }
+}
+
 function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   const subject = c.entries[0] ?? `${c.ticket.title ?? c.ticket.issue_id} (${c.ticket.issue_id})`;
   if (o.dryRun) {
@@ -678,6 +699,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   // with "no merge to abort", and when that failure came from inside the catch
   // block it replaced the real error and killed the whole cycle.
   const before = headSha(o.cwd);
+  if (remoteOf(o.cwd)) deepenUntilMergeBase(o, c.branch!);
   // A merge that goes through means whatever raised release_merge_failed (an
   // identity, a hook, a lock) is fixed: drop the item so it does not outlive
   // the problem (CREW-2954).
@@ -775,8 +797,8 @@ async function bump(o: ReleaseRunOptions, size: string): Promise<string | null> 
   // The built-in path: npm-shaped, and documented as such.
   const files = o.repo.release.versionFiles.map((f) => join(o.cwd, f));
   const first = files[0]!;
-  if (!existsSync(first)) { o.emit.error(`no ${o.repo.release.versionFiles[0]} to read a version from`); return null; }
-  const firstText = readFileSync(first, 'utf8');
+  if (!existsAt(first, existsSync)) { o.emit.error(`no ${o.repo.release.versionFiles[0]} to read a version from`); return null; }
+  const firstText = readTextAt(first, (p) => readFileSync(p, 'utf8'));
   const problem = versionFileProblem(o.repo.release.versionFiles[0]!, firstText);
   if (problem) { o.emit.error(problem); return null; }
   const current = (JSON.parse(firstText) as { version: string }).version;
@@ -786,10 +808,10 @@ async function bump(o: ReleaseRunOptions, size: string): Promise<string | null> 
   const version = next.join('.');
   if (o.dryRun) { o.emit.emit(`would bump ${current} -> ${version} in ${files.length} file(s)`); return version; }
   for (const f of files) {
-    const src = readFileSync(f, 'utf8');
+    const src = readTextAt(f, (p) => readFileSync(p, 'utf8'));
     const out = src.replace(/("version"\s*:\s*")[^"]*(")/, `$1${version}$2`);
     if (out === src) { o.emit.error(`no version field in ${f}`); return null; }
-    writeFileSync(f, out);
+    writeTextAt(f, out, writeFileSync);
   }
   return version;
 }
@@ -803,8 +825,8 @@ function writeChangelog(o: ReleaseRunOptions, version: string, entries: string[]
     o.emit.emit(`would prepend ${entries.length} entr(ies) to ${file}`);
     return;
   }
-  const existing = existsSync(path) ? readFileSync(path, 'utf8') : '# Changelog\n';
-  writeFileSync(path, insertChangelogSection(existing, section));
+  const existing = existsAt(path, existsSync) ? readTextAt(path, (p) => readFileSync(p, 'utf8')) : '# Changelog\n';
+  writeTextAt(path, insertChangelogSection(existing, section), writeFileSync);
 }
 
 /**
@@ -1192,6 +1214,14 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
   // way it always has.
   if (inPlace) {
     return mergeAndRelease(o, decision, fresh);
+  }
+  // CREW-2940: the clone in a release sandbox is itself disposable, so the release branch is cut in
+  // place of a worktree and the sandbox's deletion is the cleanup.
+  if (remoteOf(o.cwd)) {
+    const releaseBranch = `crew/release-${Date.now()}`;
+    git(o.cwd, ['checkout', '-q', '--no-track', '-b', releaseBranch, remoteRef]);
+    o.emit.emit('release checkout: the release sandbox clone', { step: 'release' });
+    return mergeAndRelease(o, decision, fresh, releaseBranch);
   }
   // Informational only: the release does not depend on the primary, but an
   // operator should still see why it is behind (CREW-2603).

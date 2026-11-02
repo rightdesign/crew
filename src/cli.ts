@@ -73,10 +73,11 @@ import {
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
-import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
+import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
-import { locateBranchForTicket } from './ticket-branch.ts';
+import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
+import { remoteOf } from './remote-dir.ts';
 import { planStamp, applyStamp, applyMergeStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
@@ -90,8 +91,10 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
-import { lacksCheckout, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, firstReport } from './mirror-contract.ts';
-import { SandboxCache, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo } from './sandbox-cache.ts';
+import { lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, releasesFromSandbox, firstReport } from './mirror-contract.ts';
+import { openReleaseSandbox } from './release-sandbox.ts';
+import { sandboxImageForRun } from './sandbox-image.ts';
+import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo } from './sandbox-cache.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
@@ -1594,7 +1597,8 @@ function sandboxCacheRepos(c: typeof route, ship: Ship): PassRepo[] {
   let images: ReturnType<typeof readSandboxState> | undefined;
   for (const t of reposOf(c)) {
     const origin = originUrlOf(t.dir, 'origin');
-    const repo = origin ? parseRemote(origin) : null;
+    // CREW-2940: with no checkout there is no origin to read; the Repos row's remote and forge host name the mirror.
+    const repo = cacheRepoOfTarget(ship, t, origin);
     if (!repo) continue;
     let token: string | null = null;
     try { token = readForgeToken(ship.forges, repo.host, ship.stateDir); } catch { /* the doctor reports an unreadable token */ }
@@ -1678,6 +1682,19 @@ function sandboxTickDeps(emit: Emitter, c: typeof route): TickDeps {
   };
 }
 
+/**
+ * A repository's own contract: its checkout's `.crew.yaml`, or, on a sandbox-runner ship with no
+ * checkout of it, the one committed on the base branch in its mirror (CREW-2940). A mirror not yet
+ * fetched, or one carrying no contract, reads as no contract, the same as an empty checkout.
+ */
+async function loadContractOf(c: typeof route, t: RepoTarget): Promise<RepoConfig | null> {
+  if (!lacksCheckout(cfg.ship, t.dir)) return loadRepoConfig(t.dir);
+  const settings = cacheSettingsOf(cfg.ship.sandbox);
+  const mirror = mirrorRepoOfTarget(t);
+  if (!settings || !mirror) return null;
+  return readMirrorContract(new SandboxCache(settings), mirror, c.branch?.base ?? 'main');
+}
+
 /** One repo of a route, resolved on its own so a caller can survive a bad contract in a sibling. */
 async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[number]) {
   {
@@ -1692,7 +1709,7 @@ async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[num
       name: t.name,
       dir: t.dir,
       id,
-      config: resolveRepoConfig(loadRepoConfig(t.dir), {
+      config: resolveRepoConfig(await loadContractOf(c, t), {
         hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
         release: mergeRouteRelease(c.release, o?.release),
         branch: { ...c.branch, ...o?.branch },
@@ -1801,6 +1818,8 @@ async function sweepClosedTickets(
   tracker: Tracker, dryRun: boolean, remit: ReturnType<typeof emit.forRoute>,
   idle = false,
 ): Promise<void> {
+  // CREW-2940: a release sandbox's clone has no worktrees or local branches to sweep; it is deleted whole.
+  if (remoteOf(target.dir)) return;
   try {
     // The idle path runs every cycle, so it skips the tracker reads when the
     // checkout has nothing local to sweep. After a release the pushed-branch
@@ -1842,6 +1861,67 @@ async function sweepClosedTickets(
 const precheckTickets = new Map<string, Promise<Ticket[]>>();
 const scope0 = (c: { route: string }, t: { name: string }): string => releaseLockScope(c.route, t.name);
 
+/**
+ * CREW-2940: the release of a repository this ship has no checkout of. Nothing
+ * verified means nothing is created (a sandbox per poll would be wasteful);
+ * otherwise a release sandbox holds a shallow clone from the mirror, the whole
+ * release phase runs against it, and the sandbox is deleted afterwards.
+ */
+async function releaseFromSandbox(
+  c: typeof route, target: RepoTarget, contract: RepoConfig, mirror: CacheRepo,
+  opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean },
+): Promise<RepoReleaseSummary> {
+  const scope = releaseLockScope(c.route, target.name);
+  const remit = emit.forRoute(c.route);
+  const identity = await resolveReleaseKey(c);
+  const tracker = new Tracker(c, cfg.ship, { apiKey: identity.apiKey });
+  const { byRepo } = ticketsByRepo(c, await tracker.openTickets());
+  const modes = { modes: await tracker.projectWorkModes(), agentAssignees: new Set<string>() };
+  const verified = withoutManualVerified(byRepo.get(target.name) ?? [], tracker.contract.statuses.verified, modes)
+    .filter((t) => t.status === tracker.contract.statuses.verified);
+  const force = command === 'deploy' || flag('force');
+  if (!dryRun && verified.length === 0 && !force) {
+    return { scope, tests: 'skipped', outcome: 'skipped', detail: 'nothing verified — no release sandbox created' };
+  }
+  const o = c.repoOverrides[target.name];
+  const effective = resolveRepoConfig(contract, {
+    hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
+    release: mergeRouteRelease(c.release, o?.release),
+    branch: { ...c.branch, ...o?.branch },
+    worktrees: { prefix: shipWorktreePrefixFor(c), nameOverride: o?.worktreeName },
+  }, target.dir);
+  const forgeHost = mirror.host;
+  let token: string | null = null;
+  try { token = readForgeToken(cfg.ship.forges, forgeHost, cfg.ship.stateDir); } catch { /* the push then fails with git's own message */ }
+  const sandbox = await openReleaseSandbox({
+    sandbox: cfg.ship.sandbox ?? {}, route: c.route, repoName: target.name,
+    image: sandboxImageForRun(readSandboxState(cfg.ship.stateDir), target.name, Boolean(contract.sandbox)) ?? undefined,
+    policy: {
+      forgeHosts: [...new Set(reposOf(c).map((r) => r.forgeHost ?? 'github.com'))],
+      tablationUrl: c.baseUrl, authMode: 'workspace', provider: 'anthropic', harnessBin: 'claude',
+      ...(contract.sandboxNetwork ? { extraHosts: contract.sandboxNetwork.hosts, toolchains: contract.sandboxNetwork.toolchains } : {}),
+    },
+    policyFile: join(cfg.ship.stateDir, 'release', `${target.name}.policy.yaml`),
+    repo: mirror, origin: forgeDescriptorFor(forgeHost).httpsUrl(mirror.host, mirror.path),
+    base: effective.branch.base,
+    branches: verified.map((t) => pushedBranchForTicket(effective, t)),
+    tagPattern: effective.release.tagPattern ?? 'v*',
+    token, username: forgeFor(cfg.ship.forges, forgeHost)?.entry.username || forgeDescriptorFor(forgeHost).credentialUsername,
+    emit: remit,
+  }).catch((e: Error) => {
+    remit.warn(`${scope}: could not start the release sandbox: ${e.message}`, { step: 'release' });
+    return null;
+  });
+  if (!sandbox) return { scope, tests: 'skipped', outcome: 'skipped', detail: 'could not start the release sandbox' };
+  remit.emit(`${scope}: releasing from sandbox ${sandbox.sandbox}`, { step: 'release', data: { event: 'release_sandbox', sandbox: sandbox.sandbox } });
+  try {
+    const summary = await releasePhase(c, { ...target, dir: sandbox.dir }, opts);
+    return { ...summary, detail: `${summary.detail ? `${summary.detail}; ` : ''}ran in sandbox ${sandbox.sandbox}` };
+  } finally {
+    await sandbox.close();
+  }
+}
+
 async function releasePhase(
   c: typeof route, target: RepoTarget,
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
@@ -1857,11 +1937,19 @@ async function releasePhase(
   // `.crew.yaml` to read; the contract comes from the mirror, and one line says what happens instead.
   if (lacksCheckout(cfg.ship, target.dir)) {
     let mode: string | null = null;
+    let contract: RepoConfig | null = null;
     const settings = cacheSettingsOf(cfg.ship.sandbox);
     const mirror = mirrorRepoOfTarget(target);
     if (settings && mirror) {
-      try { mode = (await readMirrorContract(new SandboxCache(settings), mirror, c.branch?.base ?? 'main'))?.release.mode ?? null; }
+      try {
+        contract = await readMirrorContract(new SandboxCache(settings), mirror, c.branch?.base ?? 'main');
+        mode = contract?.release.mode ?? null;
+      }
       catch (e) { if (firstReport(`${scope0(c, target)}:contract`)) remit.warn(`${target.name}: could not read the contract from the mirror: ${(e as Error).message}`, { step: 'release' }); }
+    }
+    // CREW-2940: `integrate` and `ci_*` repositories are released from a sandbox over a mirror-fed clone.
+    if (releasesFromSandbox(mode) && settings && mirror && contract) {
+      return releaseFromSandbox(c, target, contract, mirror, opts);
     }
     const note = noCheckoutReleaseNote(target.name, mode);
     if (firstReport(`${scope0(c, target)}:release`)) remit.emit(note, { step: 'release' });

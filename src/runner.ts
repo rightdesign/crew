@@ -152,7 +152,7 @@ export const SANDBOX_NAME_MAX = 19;
  * The readable route, role and ticket live in the run sidecar and the
  * `sandbox_created` event; nothing reads them back from the name.
  */
-export function sandboxName(plan: Pick<AgentPlan, 'route' | 'role' | 'ticket'>, now = Date.now()): string {
+export function sandboxName(plan: Pick<AgentPlan, 'route' | 'ticket'> & { role: string }, now = Date.now()): string {
   const h = createHash('sha256').update([plan.route, plan.role, plan.ticket ?? ''].join('\0')).digest();
   const tag = (h.readUInt32BE(0) % 36 ** 6).toString(36).padStart(6, '0');
   return `crew-${tag}${now.toString(36).slice(-8).padStart(8, '0')}`;

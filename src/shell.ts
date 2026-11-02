@@ -10,6 +10,7 @@
 
 import { spawn } from 'node:child_process';
 import { platform } from 'node:process';
+import { remoteOf, sandboxExecArgs } from './remote-dir.ts';
 
 export interface ShellSpec {
   /** The interpreter, e.g. "bash", "sh", "pwsh". */
@@ -56,6 +57,14 @@ export interface RunOptions {
   timeoutMs?: number;
 }
 
+/** The hook text for a sandbox: the image prelude, then each extra variable exported, then the script. */
+function remoteScript(script: string, prelude: string | undefined, env: NodeJS.ProcessEnv | undefined): string {
+  const q = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  const exports = Object.entries(env ?? {}).filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}=${q(String(v))}; export ${k}; `).join('');
+  return `${prelude ?? ''}${exports}${script}`;
+}
+
 /**
  * Runs a hook script and captures its combined output. Never throws on a
  * non-zero exit — the exit status IS the result, and every caller decides what
@@ -63,9 +72,15 @@ export interface RunOptions {
  */
 export function runScript(script: string, opts: RunOptions): Promise<RunResult> {
   const shell = opts.shell ?? defaultShell();
+  // CREW-2940: a hook for a checkout in a release sandbox runs there, under the `openshell` client.
+  // Its extra variables are exported in the script (the exec carries none of the host's).
+  const hit = remoteOf(opts.cwd);
+  const [bin, args, cwd] = hit
+    ? [hit.remote.bin, sandboxExecArgs(hit.remote, hit.path, [shell.bin, ...shell.args, remoteScript(script, hit.remote.prelude, opts.env)]), undefined]
+    : [shell.bin, [...shell.args, script], opts.cwd];
   return new Promise((resolvePromise) => {
-    const child = spawn(shell.bin, [...shell.args, script], {
-      cwd: opts.cwd,
+    const child = spawn(bin, args, {
+      cwd,
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

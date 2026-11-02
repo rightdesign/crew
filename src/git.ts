@@ -13,8 +13,23 @@ import {
 } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
 import { forgeDescriptorFor, normalizeForgeHost } from './forges.ts';
+import { remoteOf, execRemoteSync } from './remote-dir.ts';
 
 export class GitError extends Error {}
+
+/**
+ * One git call. A directory that is a clone inside a release sandbox (CREW-2940,
+ * `remote-dir.ts`) runs the same argv there; anything else is a host `git`.
+ * `input` is piped to stdin.
+ */
+function execGit(cwd: string, args: string[], input?: string): string {
+  const hit = remoteOf(cwd);
+  if (hit) return execRemoteSync(hit, ['git', ...args], { input });
+  return execFileSync('git', args, {
+    cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024,
+    ...(input === undefined ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : { input }),
+  });
+}
 
 /**
  * An `execFileSync` error stream as text. `stderr`/`stdout` are Buffers on any
@@ -37,7 +52,7 @@ export function streamText(x: unknown): string {
  */
 export function gitRaw(cwd: string, args: string[]): string {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return execGit(cwd, args);
   } catch (e) {
     const err = e as { stderr?: unknown; stdout?: unknown; message: string };
     const why = [err.stderr, err.stdout].map(streamText).filter(Boolean).join(' / ');
@@ -47,7 +62,7 @@ export function gitRaw(cwd: string, args: string[]): string {
 
 export function git(cwd: string, args: string[]): string {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    return execGit(cwd, args).trim();
   } catch (e) {
     // stdout matters as much as stderr here: git reports several failures
     // there, "nothing to commit, working tree clean" among them. Reading only
@@ -385,6 +400,13 @@ export interface ClosureCheck {
 
 /** Cheap, and the only network the crew does against a git remote. */
 export function fetchRemote(cwd: string, remote = 'origin'): boolean {
+  // CREW-2940: a shallow release clone keeps its depth and its narrow refspecs. No prune (it would drop the
+  // ticket branches fetched by name) and no all-tags fetch (it would pull the whole history); tags that
+  // point into the downloaded commits are followed by git itself, which is the release tag the hooks read.
+  if (remoteOf(cwd)) {
+    const depth = gitOk(cwd, ['config', '--get', 'crew.releaseDepth']);
+    return gitOk(cwd, ['fetch', '--quiet', ...(depth ? ['--depth', depth] : []), remote]) !== null;
+  }
   if (gitOk(cwd, ['fetch', '--prune', '--quiet', remote]) === null) return false;
   // Release tags are the marker for "what has shipped", so every ship has to
   // see the ones another ship pushed (CREW-1412). A plain fetch only follows
@@ -449,9 +471,9 @@ export function keyCommitsInRange(cwd: string, key: string | string[], range: st
 /** The stable patch-id of a diff between two refs, or null when it is empty or unreadable. */
 function patchIdOf(cwd: string, from: string, to: string): string | null {
   try {
-    const diff = execFileSync('git', ['diff', from, to], { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    const diff = execGit(cwd, ['diff', from, to]);
     if (!diff) return null;
-    const out = execFileSync('git', ['patch-id', '--stable'], { cwd, encoding: 'utf8', input: diff });
+    const out = execGit(cwd, ['patch-id', '--stable'], diff);
     return out.split(' ')[0]?.trim() || null;
   } catch {
     return null;

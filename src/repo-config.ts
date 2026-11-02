@@ -12,7 +12,8 @@
  * make that record a remote-code-execution vector on every connected ship.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync as hostExists } from 'node:fs';
+import { existsAt, readTextAt } from './remote-dir.ts';
 import { join, basename, dirname } from 'node:path';
 import { parse } from 'yaml';
 import { parseSandboxNetwork } from './sandbox-policy.ts';
@@ -528,7 +529,7 @@ export const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
 export function findRepoConfig(dir: string): string | null {
   for (const name of REPO_CONFIG_FILENAMES) {
     const p = join(dir, name);
-    if (existsSync(p)) return p;
+    if (existsAt(p, hostExists)) return p;
   }
   return null;
 }
@@ -847,10 +848,10 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   if (versionFilesGiven) {
     for (const name of versionFiles) {
       const path = join(dirname(file), name);
-      if (!existsSync(path)) continue;
+      if (!existsAt(path, hostExists)) continue;
       let text: string;
       try {
-        text = readFileSync(path, 'utf8');
+        text = readTextAt(path, (p) => readFileSync(p, 'utf8'));
       } catch (e) {
         throw new RepoConfigError(
           `${file}: release.versionFiles entry "${name}" cannot be read (${(e as NodeJS.ErrnoException).code ?? 'read error'})`,
@@ -906,7 +907,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
 export function loadRepoConfig(dir: string): RepoConfig | null {
   const file = findRepoConfig(dir);
   if (!file) return null;
-  return parseRepoConfig(readFileSync(file, 'utf8'), file);
+  return parseRepoConfig(readTextAt(file, (p) => readFileSync(p, 'utf8')), file);
 }
 
 /**
