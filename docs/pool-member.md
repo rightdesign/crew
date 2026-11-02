@@ -79,8 +79,10 @@ forge hosts git asked the credential helper (`crew credential get`, https only)
 for and the helper could not answer, de-duplicated, with the time of the last
 miss. Only the bare host is recorded (never a URL path, username or token), in
 `<stateDir>/forge-misses.json`. A host is removed when the helper next answers a
-request for it, so a late token delivery clears it after the next successful
-lookup. The list is sent on every `running` report, empty when nothing is
+request for it, or when `crew forge set`/`rotate` (and so provisioning and a
+pushed token set) stores a token for it. Crew's own compare-before-store probe
+(`crew credential get --no-miss`) never records one, since no token yet is
+expected there. The list is sent on every `running` report, empty when nothing is
 missing, so the platform can replace what it stored; an older crew omits it.
 The run itself still fails as before.
 

@@ -15,12 +15,14 @@ export interface CmdResult { code: number; out: string; err: string }
 /** `crew credential get|store|erase`: git's helper protocol, answering from the forge block. */
 export function runCredential(
   action: string | undefined, stdin: string, forges: ForgesConfig | undefined, stateDir: string, env: NodeJS.ProcessEnv = process.env,
+  recordMisses = true,
 ): CmdResult {
   try {
     const input = parseCredentialInput(stdin);
     const out = answerCredential(action ?? '', input, forges, stateDir, env);
     // A lookup for an https host is either answered (any recorded miss is stale) or a miss (CREW-2903).
-    if (action === 'get' && input.host && (!input.protocol || input.protocol === 'https')) {
+    // `recordMisses` is off for crew's own compare-before-store probe (CREW-2991): no token yet is expected there, not a miss.
+    if (recordMisses && action === 'get' && input.host && (!input.protocol || input.protocol === 'https')) {
       noteForgeMiss(stateDir, input.host, out ? null : new Date().toISOString());
     }
     return { code: 0, out, err: '' };

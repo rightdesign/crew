@@ -516,7 +516,7 @@ export function realProvisionDeps(crewHome: string): ProvisionDeps {
       return wrote ? 'set' : 'kept';
     },
     storedToken(host) {
-      const res = spawnCrew(['credential', 'get'], { input: `protocol=https\nhost=${host}\n\n` });
+      const res = spawnCrew(['credential', 'get', '--no-miss'], { input: `protocol=https\nhost=${host}\n\n` });
       const m = /^password=(.*)$/m.exec(res.stdout);
       return m ? m[1]! : null;
     },

@@ -241,6 +241,8 @@ export function storeForgeToken(
   if (!i.write) throw new ForgeError(`forges.${host} reads its token from ${i.describe(f.entry.token, { host: f.host, stateDir, env })}, which crew cannot write`);
   if (!token.trim()) throw new ForgeError('empty token');
   i.write(f.entry.token, token.trim(), { host: f.host, stateDir, env });
+  // The store is proof the helper can now answer; a miss recorded before it (CREW-2991) is stale.
+  noteForgeMiss(stateDir, f.host, null);
 }
 
 /**

@@ -778,7 +778,7 @@ try {
 // CREW-2783: `credential` is git calling us, so it answers before anything
 // else loads (nothing but stdout may be written), and `forge` needs no route.
 if (command === 'credential') {
-  const r = runCredential(positional[1], readFileSync(0, 'utf8'), cfg.ship.forges, cfg.ship.stateDir);
+  const r = runCredential(positional[1], readFileSync(0, 'utf8'), cfg.ship.forges, cfg.ship.stateDir, process.env, !flag('no-miss'));
   process.stdout.write(r.out);
   process.stderr.write(r.err);
   process.exit(r.code);

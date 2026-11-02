@@ -194,6 +194,25 @@ test('credential get records an unanswered https host (host only) and clears it 
   assert.deepEqual(readForgeMisses(d).map((m) => m.host), ['gitlab.example.com']);
 });
 
+test('CREW-2991: a probe with recordMisses off leaves no miss, and storing a token clears a recorded one', () => {
+  const d = dir();
+  const forges = parseForges({ 'github.com': { token: { source: 'file', path: join(d, 'gh-token') } } })!;
+  const input = 'protocol=https\nhost=github.com\n\n';
+  runCredential('get', input, forges, d, {}, false);
+  assert.deepEqual(readForgeMisses(d), []);
+  // git asking and getting nothing still records a miss
+  runCredential('get', input, forges, d, {});
+  assert.deepEqual(readForgeMisses(d).map((m) => m.host), ['github.com']);
+  // set/rotate store the token, which clears it
+  const io = { forges, stateDir: d, configFile: join(d, 'crew.yaml'), readFile: () => '', writeFile: () => {}, stdin: () => '', env: {} };
+  assert.equal(runForge({ sub: 'set', host: 'github.com', token: 'tok', tokenStdin: false }, io).code, 0);
+  assert.deepEqual(readForgeMisses(d), []);
+  runCredential('get', 'protocol=https\nhost=github.com\n\n', parseForges({ 'github.com': { token: { source: 'file', path: join(d, 'none') } } }), d, {});
+  assert.deepEqual(readForgeMisses(d).map((m) => m.host), ['github.com']);
+  assert.equal(runForge({ sub: 'rotate', host: 'github.com', token: 'tok2', tokenStdin: false }, io).code, 0);
+  assert.deepEqual(readForgeMisses(d), []);
+});
+
 test('credential get ignores other protocols, store and erase when recording misses', () => {
   const d = dir();
   runCredential('get', 'protocol=ssh\nhost=x.example.com\n\n', undefined, d);
