@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.115.0] — 2026-11-02
+
+- CREW-2874 Periscopes get a `.crew/pointed-at.jsonl` drop file: the preview hook receives `CREW_POINTED_AT_FILE`, a new line counts as activity, and `periscope list --json` shows the newest line as `pointedAt`.
+
 ## [0.114.0] — 2026-11-01
 
 - CREW-2910 A provisioned managed ship now defaults to the sandbox runner and `auth: workspace`, `crew doctor` warns when a managed ship says otherwise, and the ship config loader accepts `ship.runner` and `ship.sandbox`.
