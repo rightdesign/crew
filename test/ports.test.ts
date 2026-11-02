@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ticketForPort, worktreeExists, worktreeExistsIn, DEFAULT_PORTS, listeners } from '../src/ports.ts';
+import { proxyPortFor, ticketForPort, worktreeExists, worktreeExistsIn, DEFAULT_PORTS, listeners } from '../src/ports.ts';
 
 test('a port maps back to its ticket and role', () => {
   assert.deepEqual(ticketForPort(30042), { n: 42, role: 'backend' });
@@ -60,4 +60,12 @@ test('a worktree counts as present when any of the route\'s repos has it', () =>
   assert.equal(worktreeExistsIn(where, 350), true);
   assert.equal(worktreeExistsIn([where[0]!], 350), false);   // the pre-ISSUE-350 answer
   assert.equal(worktreeExistsIn(where, 351), false);
+});
+
+test('a periscope proxy port maps back to its ticket and is part of the worktree\'s processes', () => {
+  assert.deepEqual(ticketForPort(50900), { n: 900, role: 'proxy' });
+  assert.equal(ticketForPort(51000), null);
+  assert.equal(proxyPortFor(900), 50900);
+  // A scheme without a proxy band (a caller's own) has no proxy ports to claim.
+  assert.equal(ticketForPort(50900, { backendBase: 30000, frontendBase: 40000, span: 1000 }), null);
 });

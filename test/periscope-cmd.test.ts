@@ -487,6 +487,31 @@ test('parsePeriscopeUpArgs carries --requested-by, trimmed, and omits it when bl
   assert.equal('requestedBy' in parsePeriscopeUpArgs(['periscope', 'up', 'app'], { ...base, requestedBy: ' ' }), false);
 });
 
+test('runPeriscopeUp: a proxy fronts the preview; the row and the result carry the proxy URL', async () => {
+  const seen: string[] = [];
+  const h = harness({ startProxy: async (wt, url, n) => { seen.push(`${wt} ${url} ${n}`); return 'http://localhost:50900/'; } });
+  const res = await runPeriscopeUp(h.deps, ARGS);
+  assert.deepEqual(seen, ['/w/tablation-tabl-900 http://localhost:40900 900']);
+  assert.equal(res.url, 'http://localhost:50900/');
+  assert.equal(h.rows[0]!.url, 'http://localhost:50900/');
+  assert.match(h.comments[0]!, /Periscope is up: http:\/\/localhost:50900\//);
+});
+
+test('runPeriscopeUp: a proxy that will not start abandons the periscope and writes no row', async () => {
+  const h = harness({ startProxy: async () => { throw new Error('port busy'); } });
+  await assert.rejects(runPeriscopeUp(h.deps, ARGS), /starting the periscope proxy failed: port busy/);
+  assert.ok(h.calls.includes('teardown'));
+  assert.equal(h.rows.length, 0);
+});
+
+test('periscope list marks the proxy URL', () => {
+  const row = { id: 'p', ticketRecordId: 't', ticket: 'TABL-900', number: '900', repo: 'synthesis', state: 'live', url: 'http://localhost:50900/', worktree: '/w', branch: 'b', lastActivityAt: null };
+  const [proxied, direct] = periscopeListEntries([row, { ...row, url: 'http://localhost:40900/' }], new Date(), () => true);
+  assert.equal(proxied!.proxied, true);
+  assert.equal(direct!.proxied, false);
+  assert.match(formatPeriscopeList([proxied!]), /http:\/\/localhost:50900\/ \(proxy\)/);
+});
+
 // CREW-2872. A ready service is registered in the worktree and named in the paragraph; a registration that throws is not fatal.
 async function mcpServer(): Promise<{ url: string; close: () => void }> {
   const srv = createServer((req, res) => {

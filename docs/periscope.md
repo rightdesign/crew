@@ -124,11 +124,11 @@ hooks:
 
 Every periscope's worktree has a drop file, `.crew/pointed-at.jsonl`, created
 empty by `periscope up` (and by `--resume` for a periscope opened before it
-existed). It is how a viewer says "this one" without describing it: the
-repository's own dev server, when it has an inspector, appends a line each time
-the viewer clicks something. The preview hook receives the absolute path as
-`CREW_POINTED_AT_FILE`, together with `CREW_PERISCOPE=1`, and should enable
-the inspector only when both are set.
+existed). It is how a viewer says "this one" without describing it: each time
+the viewer clicks something, a line is appended. By default crew writes it
+itself, through the periscope proxy below. The preview hook still receives the
+absolute path as `CREW_POINTED_AT_FILE`, together with `CREW_PERISCOPE=1`, for
+a repository that keeps its own inspector (`periscope.inspector: repo`).
 
 Each line is one JSON object: `path` (the source file, relative to the
 worktree), `line` (1-based), `at` (an ISO timestamp), and optionally `column`,
@@ -142,8 +142,41 @@ are appended, never rewritten.
 - **Reading it.** `crew periscope list --json` and `crew status --json` carry
   `pointedAt`, the newest well-formed line, or `null` when nothing has been
   pointed at.
-- **Clipboard fallback.** A repository with no inspector writes nothing; the
-  viewer pastes a file and line (or a description) into the chat instead.
+- **Clipboard fallback.** A repository with no source attributes has nothing
+  to point at; the viewer pastes a file and line (or a description) into the
+  chat instead.
+
+## The proxy
+
+`periscope up` starts a small reverse proxy in front of the URL the `preview`
+hook printed, and the periscope's recorded URL (the row, `list`, what `up`
+prints) is the proxy's. The dev server's own URL keeps working but is not
+advertised. The proxy listens on the same address the hook was told to bind
+(`CREW_PREVIEW_HOST`), on port 50000 plus the ticket number; `crew ports`
+shows it as `proxy` next to the ticket, and `crew periscope list` marks the
+URL `(proxy)`.
+
+- **Injection.** For HTML responses the proxy adds one
+  `<script type="module">` tag that loads the inspector overlay, which the
+  proxy serves itself. Holding Alt/Option outlines the element under the
+  pointer, and a click appends `{ path, line, component, url }` to the drop
+  file and copies `path:line` to the clipboard. Only elements carrying a
+  `data-source="<path>:<line>"` attribute can be pointed at; adding it at
+  compile time stays the repository's job.
+- **Pass-through.** Everything else is proxied unchanged, including the
+  hot-reload websocket upgrade. A `Content-Security-Policy` header that would
+  block the overlay gets `'self'` (the proxy's own origin) added to
+  `default-src`, `script-src`, `script-src-elem` and `connect-src`, and nothing
+  else; a policy set by a `<meta>` tag in the page is not rewritten. Compressed
+  HTML is decompressed for injection and sent uncompressed.
+- **Opting out.** A repository whose `.crew.yaml` sets
+  `periscope.inspector: repo` serves its own overlay and drop-file route; the
+  proxy is still in front, but injects nothing and serves no
+  `/__periscope/` routes.
+- **Lifecycle.** The proxy ends with the periscope: `down` and the idle check
+  stop it with the dev server, and `up --resume` starts it again. It adds no
+  authentication and no remote reach; it is the place a remote viewer's
+  authentication will go.
 
 ## Periscopes for Passengers
 

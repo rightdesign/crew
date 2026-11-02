@@ -53,3 +53,10 @@ test('refusals: no live row, worktree gone, failing preview (row and item untouc
   const noUrl = harness({}, { preview: { code: 0, output: 'ready' } });
   await assert.rejects(runPeriscopeResume(noUrl.deps, '9'), /no URL/);
 });
+
+test('resume puts the proxy back in front of the preview and records the proxy URL', async () => {
+  const h = harness({ startProxy: async (_w, url, n) => `proxy:${n}:${url}` });
+  const r = await runPeriscopeResume(h.deps, '9');
+  assert.equal(r.url, 'proxy:9:http://box.local:4009/');
+  assert.match(h.log.find((l) => l.startsWith('update'))!, /"url":"proxy:9:/);
+});

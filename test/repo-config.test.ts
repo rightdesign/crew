@@ -521,3 +521,12 @@ test('hooks.preview loads and is not rejected as an unknown key', () => {
   const c = parseRepoConfig('version: 1\nhooks:\n  deploy: ./ship.sh\n  preview: |\n    ./serve.sh\n    echo http://localhost:1\n', 'f');
   assert.match(c.hooks.preview!, /serve\.sh/);
 });
+
+test('periscope.inspector defaults to absent (proxy) and accepts proxy or repo only', () => {
+  const base = MIN;
+  assert.equal(parseRepoConfig(base, 'f').periscope, undefined);
+  assert.deepEqual(parseRepoConfig(`${base}periscope:\n  inspector: repo\n`, 'f').periscope, { inspector: 'repo' });
+  assert.deepEqual(parseRepoConfig(`${base}periscope:\n  inspector: proxy\n`, 'f').periscope, { inspector: 'proxy' });
+  assert.throws(() => parseRepoConfig(`${base}periscope:\n  inspector: both\n`, 'f'), /periscope\.inspector must be/);
+  assert.throws(() => parseRepoConfig(`${base}periscope:\n  other: 1\n`, 'f'), /unknown periscope key/);
+});

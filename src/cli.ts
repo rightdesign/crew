@@ -70,7 +70,7 @@ import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
-import { unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
+import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
@@ -162,6 +162,7 @@ import {
   type EndpointApi, type ReconcileDeps,
 } from './mcp-endpoint-registry.ts';
 import { runSyncDaemonFromEnv, syncPassengerSyncDaemons } from './passenger-sync-daemon.ts';
+import { launchProxy, runProxyFromEnv } from './periscope-proxy.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
@@ -514,7 +515,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
  * test/help-cli.test.ts checks this set against the `case` labels.
  */
 const KNOWN_COMMANDS = new Set([
-  'passenger-sync-daemon', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
+  'passenger-sync-daemon', 'periscope-proxy', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'sandbox', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
@@ -669,6 +670,11 @@ if (command === 'passenger-sync-daemon') {
   // Deliberately falls through to nothing further: the listening HTTP
   // server keeps the event loop alive on its own, same as any other
   // long-running Node server.
+} else if (command === 'periscope-proxy') {
+  // CREW-2880: the detached process `launchProxy` starts; like the sync daemon it needs no crew.yaml.
+  const dropFile = positional[1];
+  if (!dropFile) { process.stderr.write('crew periscope-proxy is started by `crew periscope up`, not run by hand\n'); process.exit(2); }
+  runProxyFromEnv(dropFile);
 } else {
 
 /**
@@ -5152,6 +5158,7 @@ switch (command) {
           find: async () => hit && { row: hit.row, tag: hit.tag },
           worktreeExists: (p) => existsSync(p),
           prepareDropFile,
+          startProxy: (wt, url, n) => launchProxy(crewInvocation(CREW_HOME), wt, url, Number(n), { host: hit!.row.host || 'localhost', inject: hit!.repo.config.periscope?.inspector !== 'repo' }),
           caps: periscopeCaps(cfg.ship as typeof cfg.ship & PeriscopeLimits),
           runHook: async (name, cwd, env) => {
             const script = hit?.repo.config.hooks[name];
@@ -5254,6 +5261,7 @@ switch (command) {
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
         prepareDropFile,
+        startProxy: (wt, url, n) => launchProxy(crewInvocation(CREW_HOME), wt, url, Number(n), { host: a.host ?? 'localhost', inject: repoP.config.periscope?.inspector !== 'repo' }),
         registerCode: registerCodeServer,
         recordLocal: (sc) => {
           writePeriscopeSidecar(cfg.ship.stateDir, { ...sc, route: routeP.route });

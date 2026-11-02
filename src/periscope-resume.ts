@@ -15,6 +15,8 @@ export interface ResumeDeps {
   worktreeExists(path: string): boolean;
   /** Creates the drop file in a worktree opened before CREW-2874 (CREW-2874). */
   prepareDropFile?(worktree: string): void;
+  /** Starts the periscope proxy in front of the preview URL and returns the viewer's URL (CREW-2880). */
+  startProxy?(worktree: string, previewUrl: string, number: string): Promise<string>;
   caps: { idleMinutes: number };
   runHook(name: 'ports' | 'isolate' | 'preview', cwd: string, env: Record<string, string>): Promise<HookResult | null>;
   update(rowId: string, fields: Record<string, unknown>): Promise<void>;
@@ -48,8 +50,16 @@ export async function runPeriscopeResume(d: ResumeDeps, number: string): Promise
   if (!preview || preview.code !== 0) {
     throw new PeriscopeError(`preview exited ${preview?.code ?? 'without running'}\n${tail(preview?.output ?? '')}`);
   }
-  const url = previewUrlFrom(preview.output);
+  let url = previewUrlFrom(preview.output);
   if (!url) throw new PeriscopeError(`preview printed no URL as its last line\n${tail(preview.output)}`);
+
+  if (d.startProxy) {
+    try {
+      url = await d.startProxy(row.worktree, url, /(\d+)$/.exec(tag)?.[1] ?? '0');
+    } catch (e) {
+      throw new PeriscopeError(`starting the periscope proxy failed: ${(e as Error).message}`);
+    }
+  }
 
   const now = d.now();
   await d.update(row.id, {

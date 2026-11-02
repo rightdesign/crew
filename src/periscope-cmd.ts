@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import type { PeriscopeSidecar } from './periscope-state.ts';
 import { pointedAtEnv, type PointedAt } from './periscope-pointed.ts';
+import { proxyPortFor } from './ports.ts';
 
 export class PeriscopeError extends Error {}
 
@@ -244,6 +245,11 @@ export interface PeriscopeDeps {
   recordLocal?(sc: PeriscopeSidecar): void;
   /** Creates `.crew/pointed-at.jsonl` in the worktree and excludes `.crew/` from git (CREW-2874). */
   prepareDropFile(worktree: string): void;
+  /**
+   * Starts the periscope proxy in front of `previewUrl` and returns the URL a viewer
+   * should use (CREW-2880). Absent where proxying is not supported; a throw abandons the `up`.
+   */
+  startProxy?(worktree: string, previewUrl: string, number: string): Promise<string>;
   /** Registers the symbol service as the `code` MCP server in the worktree's harness configuration; returns one-line reasons for files left alone. */
   registerCode?(worktree: string, url: string): { skipped: string[] };
   comment(ticketId: string, body: string): Promise<void>;
@@ -380,8 +386,17 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   if (!preview || preview.code !== 0) {
     return abandon(`preview exited ${preview?.code ?? 'without running'}\n${tail(preview?.output ?? '')}`);
   }
-  const url = previewUrlFrom(preview.output);
-  if (!url) return abandon(`preview printed no URL as its last line\n${tail(preview.output)}`);
+  const previewUrl = previewUrlFrom(preview.output);
+  if (!previewUrl) return abandon(`preview printed no URL as its last line\n${tail(preview.output)}`);
+  let url = previewUrl;
+  if (d.startProxy) {
+    try {
+      url = await d.startProxy(wt.path, previewUrl, /(\d+)$/.exec(draft.issueId)?.[1] ?? '0');
+    } catch (e) {
+      return abandon(`starting the periscope proxy failed: ${(e as Error).message}`);
+    }
+    d.say('proxy', `proxy at ${url} in front of ${previewUrl}`, { url, previewUrl });
+  }
   d.say('preview', `preview at ${url}`, { url });
 
   // The symbol service is optional: whatever happens to it, the periscope comes up.
@@ -655,19 +670,29 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   return { ticket: row.ticket, mode: 'keep', outcome: 'done', state: 'kept', sha: pushed.sha, ...(existing ? { existing: true as const, ...(prior ? { status: prior.status } : {}) } : {}) };
 }
 
-export interface PeriscopeListEntry extends PeriscopeRowInfo { idleMinutes: number | null; listening: boolean }
+export interface PeriscopeListEntry extends PeriscopeRowInfo {
+  idleMinutes: number | null;
+  listening: boolean;
+  /** The row's URL is the periscope proxy's (CREW-2880), not the dev server's own. */
+  proxied: boolean;
+}
+
+/** Whether `url` is on the ticket's proxy port. */
+export function isProxyUrl(url: string, number: string): boolean {
+  try { return Number(new URL(url).port) === proxyPortFor(Number(number)); } catch { return false; }
+}
 
 export function periscopeListEntries(rows: PeriscopeRowInfo[], now: Date, isListening: (r: PeriscopeRowInfo) => boolean): PeriscopeListEntry[] {
   return rows.filter((r) => r.state === 'live').map((r) => {
     const at = r.lastActivityAt ? new Date(r.lastActivityAt).getTime() : NaN;
-    return { ...r, idleMinutes: Number.isNaN(at) ? null : Math.max(0, Math.floor((now.getTime() - at) / 60_000)), listening: isListening(r) };
+    return { ...r, idleMinutes: Number.isNaN(at) ? null : Math.max(0, Math.floor((now.getTime() - at) / 60_000)), listening: isListening(r), proxied: isProxyUrl(r.url, r.number) };
   });
 }
 
 export function formatPeriscopeList(entries: PeriscopeListEntry[]): string {
   if (entries.length === 0) return 'no live periscopes on this ship';
   return entries.map((e) => [
-    e.ticket, e.repo, e.worktree, e.url, e.state,
+    e.ticket, e.repo, e.worktree, e.proxied ? `${e.url} (proxy)` : e.url, e.state,
     e.idleMinutes === null ? 'idle ?' : `idle ${e.idleMinutes} min`,
     e.listening ? 'listening' : 'not listening',
   ].join('  ')).join('\n');

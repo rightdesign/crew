@@ -357,8 +357,22 @@ export interface RepoSandbox {
   warm?: string[];
 }
 
+/** Who delivers the periscope inspector overlay and writes the drop file (CREW-2880). */
+export type PeriscopeInspector = 'proxy' | 'repo';
+
+export interface RepoPeriscope {
+  /**
+   * `proxy` (the default): crew fronts the preview URL, injects the overlay and
+   * appends to the drop file itself. `repo`: the repository's dev server does
+   * both, and the proxy injects nothing.
+   */
+  inspector: PeriscopeInspector;
+}
+
 export interface RepoConfig {
   version: number;
+  /** Absent means the defaults (`inspector: proxy`). */
+  periscope?: RepoPeriscope;
   sandbox?: RepoSandbox;
   branch: BranchNaming;
   worktrees: Worktrees;
@@ -425,7 +439,7 @@ const HOOK_NAMES: Array<keyof RepoHooks> = [
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
 export type BumpSize = (typeof BUMP_SIZES)[number];
 const TOP_LEVEL = new Set([
-  'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release', 'sandbox',
+  'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release', 'sandbox', 'periscope',
 ]);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote', 'lowercase']);
 const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag|issue)\}/g;
@@ -567,6 +581,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.release?.isolateFailures, ISOLATE_KEYS, 'release.isolateFailures', file);
   rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
   rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
+  rejectUnknown(raw.periscope, new Set(['inspector']), 'periscope', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
   rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup', 'warm', 'hosts', 'toolchains']), 'sandbox', file);
 
@@ -798,10 +813,16 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     throw new RepoConfigError(`${file}: release.versionFiles cannot be empty`);
   }
 
+  const inspectorRaw = raw.periscope?.inspector;
+  if (inspectorRaw !== undefined && inspectorRaw !== 'proxy' && inspectorRaw !== 'repo') {
+    throw new RepoConfigError(`${file}: periscope.inspector must be "proxy" or "repo"`);
+  }
+
   return {
     version: SPEC_VERSION,
     branch,
     worktrees,
+    ...(inspectorRaw ? { periscope: { inspector: inspectorRaw as PeriscopeInspector } } : {}),
     docs,
     ...(sandbox ? { sandbox } : {}),
     platform: platform as PlatformRequirement,
