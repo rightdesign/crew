@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.1] — 2026-11-02
+
+- CREW-2925 The first release of a new repository runs under the .crew.yaml its first ticket adds, and a verified ticket already merged onto an untagged base is released and stamped instead of waiting forever.
+
 ## [0.126.0] — 2026-11-02
 
 - CREW-2924 Sandbox runs on a `hooks.intel: serena` repository start with a symbol cache the host keeps per mirror on the sandbox cache volume, so only the branch's changed files are re-indexed.
