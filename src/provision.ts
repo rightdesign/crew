@@ -30,6 +30,7 @@ import { hostPlatform } from './platform.ts';
 import {
   crewInvocation, detectSystemd, installContext, labelFor, planInstall, systemUnitPathFor,
   type InstallJob,
+  withUserBusEnv,
 } from './install.ts';
 import { planEnable } from './doctor-fix.ts';
 import { MANAGED_GIT_EMAIL, readGlobalGitIdentity } from './doctor-checks.ts';
@@ -474,7 +475,7 @@ export function realProvisionDeps(crewHome: string): ProvisionDeps {
       if (mechanism === 'systemd') {
         const system = ctx.root || existsSync(systemUnitPathFor(label));
         const ctl = system ? ['systemctl'] : ['systemctl', '--user'];
-        running = spawnSync(ctl[0]!, [...ctl.slice(1), 'is-active', '--quiet', `${label}.service`]).status === 0;
+        running = spawnSync(ctl[0]!, [...ctl.slice(1), 'is-active', '--quiet', `${label}.service`], { env: withUserBusEnv() }).status === 0;
         if (!system) {
           const out = spawnSync('loginctl', ['show-user', ctx.user, '-p', 'Linger'], { encoding: 'utf8' });
           lingering = /Linger=yes/.test(out.stdout ?? '');

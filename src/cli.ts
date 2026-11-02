@@ -20,12 +20,12 @@ import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, managedGitIdentityWarnings, readGlobalGitIdentity, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, managedGitIdentityWarnings, readGlobalGitIdentity, runtimeDirWarning, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hostname, homedir } from 'node:os';
+import { hostname, homedir, userInfo } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
 import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
@@ -72,7 +72,7 @@ import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
-import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits } from './install.ts';
+import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
@@ -1466,7 +1466,7 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
         `removing stale run timer from before the persistent-service cutover: ${staleTimer}${dryRun ? ' (dry run)' : ''}\n`,
       );
       if (!dryRun) {
-        spawnSync('systemctl', ['--user', 'disable', '--now', `${label}.timer`], { cwd: CREW_HOME });
+        spawnSync('systemctl', ['--user', 'disable', '--now', `${label}.timer`], { cwd: CREW_HOME, env: withUserBusEnv() });
         try { unlinkSync(staleTimer); } catch { /* already gone */ }
       }
     }
@@ -3069,7 +3069,7 @@ switch (command) {
         }
         let failed = false;
         for (const cmd of commands) {
-          const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+          const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() });
           if (res.stdout) process.stdout.write(res.stdout);
           if (res.stderr) process.stderr.write(res.stderr);
           // The stop half (launchd `unload`) fails harmlessly if the unit
@@ -3086,7 +3086,7 @@ switch (command) {
       }
       const cmd = daemonSub === 'start' ? control.startCommand! : daemonSub === 'stop' ? control.stopCommand! : control.statusCommand!;
       if (dryRun) { process.stdout.write(`would run: ${cmd.join(' ')}\n`); break; }
-      const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+      const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() });
       if (res.stdout) process.stdout.write(res.stdout);
       if (res.stderr) process.stderr.write(res.stderr);
       // `status` reports through its own exit code (e.g. launchctl list /
@@ -5874,7 +5874,7 @@ switch (command) {
     const host = hostPlatform();
     const control = host === 'windows' ? null : planDaemonControl(CREW_HOME, host, detectSystemd());
     const unitStatus = control?.statusCommand
-      ? spawnSync(control.statusCommand[0]!, control.statusCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' })
+      ? spawnSync(control.statusCommand[0]!, control.statusCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() })
       : null;
     const unitRunning = unitStatus !== null && !unitStatus.error && unitStatus.status === 0;
     if (!unitRunning && control?.mechanism === 'systemd' && control.startCommand) {
@@ -5902,7 +5902,7 @@ switch (command) {
     );
     if (flag('now') && control?.stopCommand && control.startCommand) {
       for (const cmd of [control.stopCommand, control.startCommand]) {
-        const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+        const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() });
         if (cmd === control.startCommand && (res.error || res.status !== 0)) {
           process.stderr.write(`crew reload: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
           process.exitCode = 1;
@@ -6515,6 +6515,8 @@ switch (command) {
         }
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
+      const runtimeDir = runtimeDirWarning(process.platform, process.getuid?.() ?? null, existsSync, userInfo().username);
+      if (runtimeDir) problems.push({ severity: 'attention', kind: 'runtime_dir_missing', message: runtimeDir });
       if (!flag('offline')) {
         const shipKind = await doctorShipKind(route, cfg.ship);
         for (const message of managedRuntimeWarnings(shipKind, cfg.ship)) problems.push({ severity: 'attention', kind: 'managed_runtime_default', message });

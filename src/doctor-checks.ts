@@ -206,6 +206,22 @@ export function managedRuntimeWarnings(
   return out;
 }
 
+/**
+ * A Linux ship whose per-user runtime directory `/run/user/<uid>` is missing has no user manager, so
+ * `systemctl --user` fails and a user unit dies at logout: lingering is off (CREW-2937). Null on a
+ * healthy host, on root (system units) and off Linux.
+ */
+export function runtimeDirWarning(
+  platform: string,
+  uid: number | null,
+  exists: (p: string) => boolean,
+  user = 'the crew user',
+): string | null {
+  if (platform !== 'linux' || uid === null || uid === 0) return null;
+  if (exists(`/run/user/${uid}`)) return null;
+  return `/run/user/${uid} is missing, so \`systemctl --user\` cannot reach the user manager: lingering is off for ${user}; run \`sudo loginctl enable-linger ${user}\``;
+}
+
 /** The git identity crew gives a managed ship's `crew` user (CREW-2955). The email is shared; the name is the ship's own. */
 export const MANAGED_GIT_EMAIL = 'crew@tablation.dev';
 

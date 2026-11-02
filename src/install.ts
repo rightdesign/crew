@@ -649,10 +649,34 @@ export interface InstallLog {
   warn(msg: string, extra?: Record<string, unknown>): unknown;
 }
 
+/**
+ * `systemctl --user` reaches the user manager through `XDG_RUNTIME_DIR` (and the bus
+ * address). A headless caller (a system unit with `User=`, `sudo -u crew env -i`) has
+ * neither, so the call fails even where the user lingers (CREW-2937). Returns `env`
+ * with both defaulted from `/run/user/<uid>` when unset and that directory exists;
+ * anything already set is left alone. Linux only; elsewhere `env` comes back as is.
+ */
+export function withUserBusEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { platform?: string; uid?: number | null; exists?: (p: string) => boolean } = {},
+): NodeJS.ProcessEnv {
+  const platform = opts.platform ?? process.platform;
+  const uid = opts.uid === undefined ? (process.getuid?.() ?? null) : opts.uid;
+  if (platform !== 'linux' || uid === null) return env;
+  const dir = `/run/user/${uid}`;
+  if (env.XDG_RUNTIME_DIR && env.DBUS_SESSION_BUS_ADDRESS) return env;
+  if (!(opts.exists ?? existsSync)(dir)) return env;
+  return {
+    ...env,
+    XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR || dir,
+    DBUS_SESSION_BUS_ADDRESS: env.DBUS_SESSION_BUS_ADDRESS || `unix:path=${env.XDG_RUNTIME_DIR || dir}/bus`,
+  };
+}
+
 /** Runs a plan's argv list in order, stopping at the first failure. */
 function runAll(commands: string[][], cwd: string, log: InstallLog): boolean {
   for (const [bin, ...args] of commands) {
-    const res = spawnSync(bin!, args, { cwd, encoding: 'utf8' });
+    const res = spawnSync(bin!, args, { cwd, encoding: 'utf8', env: withUserBusEnv() });
     if (res.error || res.status !== 0) {
       log.warn(`${bin} ${args.join(' ')} exited ${res.status ?? 'error'}`, {
         output: `${res.stdout ?? ''}${res.stderr ?? ''}${res.error ? String(res.error) : ''}`,
@@ -981,7 +1005,7 @@ function removeCrontabLine(marker: string): void {
 /** Is `systemctl --user` usable on this host? Probed once, at the call site. */
 export function detectSystemd(): boolean {
   if (process.platform !== 'linux') return false;
-  const res = spawnSync('systemctl', ['--user', 'status'], { encoding: 'utf8' });
+  const res = spawnSync('systemctl', ['--user', 'status'], { encoding: 'utf8', env: withUserBusEnv() });
   // Absent binary -> ENOENT (res.error). Present but no session bus is
   // still "has systemd", just not running right now — code alone would
   // wrongly read that as absent, so only a missing binary falls back.
