@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.119.0] — 2026-11-02
+
+- CREW-2880 A periscope is now served through a crew proxy that injects the point-at-it inspector and writes the drop file itself, so a repository only needs the source-attribute transform; `periscope.inspector: repo` opts out.
+
 ## [0.118.0] — 2026-11-02
 
 - CREW-2879 The Agent Log records how many searches and symbol lookups a run made before its first edit, and how long that took; `crew logbook list --before-edit` surfaces the worst searches.
