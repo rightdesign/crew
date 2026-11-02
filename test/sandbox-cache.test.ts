@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createServer } from 'node:http';
 import {
-  SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, describe as describeExec, cacheSettingsOf, makeCachePass, sandboxCacheKey, unmirroredRepos,
+  SandboxCache, REFRESH_SCRIPT, parseRemote, mirrorRelPath, intelRelDir, cloneScript, describe as describeExec, cacheSettingsOf, makeCachePass, sandboxCacheKey, unmirroredRepos,
   CACHE_REFRESH_INTERVAL_MS, OPENSHELL_ATTACHABLE_LABEL, SANDBOX_WORKSPACE, type CacheExec, type CacheSettings,
 } from '../src/sandbox-cache.ts';
 import { parseShipSandbox } from '../src/config.ts';
@@ -337,6 +339,77 @@ test('a refresh with no token names the missing token rather than git\'s prompt 
   assert.match(out!.detail ?? '', /no readable forge token for forge\.test/);
   const [withTok] = await r.cache.refresh([{ ...REPO, token: 't' }]);
   assert.doesNotMatch(withTok!.detail ?? '', /no readable forge token/);
+});
+
+test('the refresh script authenticates through a credential helper, which a forge that challenges with 401 accepts (CREW-2965)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'crew-sbauth-'));
+  const bare = join(root, 'srv', 'acme', 'widgets.git');
+  mkdirSync(bare, { recursive: true });
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+  const work = join(root, 'work');
+  execFileSync('git', ['clone', '-q', bare, work], { stdio: 'ignore' });
+  execFileSync('git', ['-C', work, '-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'one']);
+  execFileSync('git', ['-C', work, 'push', '-q', 'origin', 'HEAD:main'], { stdio: 'ignore' });
+
+  const token = 'tok$x"y;`z`\'q';
+  const want = `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`;
+  // A `git` shim that records its argv, to show the token never reaches it.
+  const shim = join(root, 'shim');
+  mkdirSync(shim);
+  const real = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(shim, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${join(root, 'argv.log')}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const seen: Array<string | undefined> = [];
+  const backend = join(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), 'git-http-backend');
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization);
+    if (req.headers.authorization !== want) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="forge"' }).end();
+      return;
+    }
+    const u = new URL(req.url!, 'http://x');
+    const cgi = spawn(backend, [], {
+      env: {
+        PATH: process.env.PATH, GIT_PROJECT_ROOT: join(root, 'srv'), GIT_HTTP_EXPORT_ALL: '1', REMOTE_USER: 'x',
+        REQUEST_METHOD: req.method, PATH_INFO: u.pathname, QUERY_STRING: u.search.slice(1), CONTENT_TYPE: req.headers['content-type'] ?? '',
+        CONTENT_LENGTH: req.headers['content-length'] ?? '', HTTP_CONTENT_ENCODING: req.headers['content-encoding'] ?? '',
+        HTTP_GIT_PROTOCOL: String(req.headers['git-protocol'] ?? ''),
+      },
+    });
+    req.pipe(cgi.stdin);
+    const chunks: Buffer[] = [];
+    cgi.stdout.on('data', (c: Buffer) => chunks.push(c));
+    cgi.on('close', () => {
+      const out = Buffer.concat(chunks);
+      const split = out.indexOf('\r\n\r\n');
+      const headers: Record<string, string> = {};
+      for (const l of out.subarray(0, split).toString().split('\r\n')) { const k = l.indexOf(':'); headers[l.slice(0, k)] = l.slice(k + 1).trim(); }
+      const status = Number((headers.Status ?? '200').split(' ')[0]);
+      delete headers.Status;
+      res.writeHead(status, headers).end(out.subarray(split + 4));
+    });
+  });
+  await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const volume = join(root, 'volume');
+    mkdirSync(volume);
+    const home = join(root, 'home');
+    mkdirSync(home);
+    const script = REFRESH_SCRIPT.replaceAll('/cache', volume);
+    const run = () => promisify(execFile)('sh', ['-c', script, 'sh', 'mirrors/m.git', `http://127.0.0.1:${port}/acme/widgets.git`], {
+      encoding: 'utf8',
+      env: { PATH: `${shim}:${process.env.PATH}`, HOME: home, CREW_FORGE_USER: 'x-access-token', CREW_FORGE_TOKEN: token },
+    });
+    await run();
+    assert.equal(sh(join(volume, 'mirrors/m.git'), 'log', '-1', '--format=%s', 'main'), 'one');
+    assert.equal(seen[0], undefined, 'git sends no credentials until the forge challenges');
+    await run();
+    const argv = readFileSync(join(root, 'argv.log'), 'utf8');
+    assert.ok(argv.includes('credential.helper'), 'the shim saw git run');
+    assert.ok(!argv.includes('tok$x'), 'the token never reaches git argv');
+  } finally {
+    server.close();
+  }
 });
 
 test('CREW-2966: the cache volume workspace defaults to the workspace sandboxes are created in', () => {
