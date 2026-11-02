@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.9] — 2026-11-02
+
+- CREW-2944 crew provision now links the personas and mints any missing seat keys before it starts the daemon, and reports 'seat keys: N minted' (and fails if one cannot be minted), so a host wiped and provisioned again from a lease starts its first run without a hand 'crew agents sync'.
+
 ## [0.126.8] — 2026-11-02
 
 - CREW-2939 A relay too old for the control-path forward no longer takes the passengers tunnel down; the ship raises a relay_control_unsupported attention item and crew doctor reports it.
