@@ -21,7 +21,7 @@ export interface DoctorProblem {
   message: string;
   remedy?: string;
   /** `hook_missing` only: which hook, and the binary it runs. */
-  hook?: 'setup' | 'test' | 'build' | 'deploy';
+  hook?: 'setup' | 'test' | 'build' | 'deploy' | 'intel';
   command?: string;
 }
 
@@ -42,6 +42,8 @@ export function repoFindings(o: {
   base: { message: string; failed: boolean; skipRest: boolean };
   hooks: Partial<Record<(typeof HOOK_NAMES)[number], string | undefined>>;
   onPath: (command: string) => boolean;
+  /** The `intel` hook's syntax check, when the repository declares one. */
+  intelSyntax?: { status: 'ok' | 'error' | 'unchecked'; message?: string };
 }): DoctorFindings {
   const problems: DoctorProblem[] = [];
   let passed = 0;
@@ -69,6 +71,15 @@ export function repoFindings(o: {
       message: `${o.route}/${o.repo}: the ${hook} hook runs \`${command}\`, which is not on the scheduler PATH — add its directory to ship.extraPath in crew.yaml`,
       remedy: 'add the directory holding it to ship.extraPath in crew.yaml',
     });
+  }
+  if (o.intelSyntax) {
+    if (o.intelSyntax.status === 'error') {
+      problems.push({
+        severity: 'attention', kind: 'intel_hook_syntax', ...at, hook: 'intel',
+        message: `${o.route}/${o.repo}: the intel hook fails its syntax check, so no symbol service will start: ${(o.intelSyntax.message ?? '').split('\n')[0]}`,
+        remedy: 'fix hooks.intel in the repository\'s .crew.yaml (`crew repos check` prints the full error)',
+      });
+    } else passed++;
   }
   return { problems, passed };
 }

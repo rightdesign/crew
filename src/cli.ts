@@ -10,6 +10,7 @@
 import { doctorBaseReport } from './doctor-repo.ts';
 import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems, duplicateLivePeriscopes, type PeriscopeProblem } from './periscopes.ts';
 import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
+import { registerCodeServer } from './intel-register.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
@@ -115,7 +116,7 @@ import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPro
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
-import { checkRepoSpec, renderRepoCheck } from './repos-check.ts';
+import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.ts';
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
@@ -5246,10 +5247,11 @@ switch (command) {
         },
         runHook: async (name, cwd, env) => {
           const script = repoP.config.hooks[name];
-          return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : undefined }) : null;
+          return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : name === 'intel' ? 60_000 : undefined }) : null;
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
         prepareDropFile,
+        registerCode: registerCodeServer,
         recordLocal: (sc) => {
           writePeriscopeSidecar(cfg.ship.stateDir, { ...sc, route: routeP.route });
           // CREW-2862: the daemon serves an MCP endpoint for this worktree only when asked (the control API asks).
@@ -5307,6 +5309,7 @@ switch (command) {
         },
         now: () => new Date(),
         host: a.host ?? 'localhost',
+        intelStartupSeconds: cfg.ship.intelStartupSeconds,
         say,
       };
       if (dryRun) {
@@ -6196,6 +6199,7 @@ switch (command) {
             route: c.route, repo: r.name, dir: r.dir, notes: validateEffective(r.config),
             base: doctorBaseReport(r, r.config.branch.base, baseHealth), hooks: r.config.hooks,
             onPath: (cmd) => !!findOnPath(cmd, doctorSchedulerPath),
+            intelSyntax: r.config.hooks.intel ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
           });
           problems.push(...f.problems);
           passed += f.passed;

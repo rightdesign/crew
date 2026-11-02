@@ -117,6 +117,7 @@ const HOOK_PURPOSE: Array<[keyof RepoHooks, string]> = [
   ['ports', 'this worktree\'s port assignments; prints KEY=value overrides to export'],
   ['handoff', 'leave the operator able to open what you built; put its output in your progress comment'],
   ['preview', 'start this worktree\'s dev server for a viewer, bound to CREW_PREVIEW_HOST, detached; its last stdout line is the URL'],
+  ['intel', 'start this worktree\'s symbol service, loopback only, detached; its last stdout line is the URL of an MCP endpoint'],
   ['map', 'prints an outline of the repository; the crew places it under "Repository map" below'],
   ['test', 'run the suite'],
   ['build', 'build it'],

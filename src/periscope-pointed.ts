@@ -45,6 +45,16 @@ function excludeFile(worktree: string): string | undefined {
   }
 }
 
+/** Adds `entry` (one line) to the worktree's `info/exclude` unless it is already there. Idempotent. */
+export function excludeFromGit(worktree: string, entry: string): void {
+  const ex = excludeFile(worktree);
+  if (!ex) return;
+  mkdirSync(dirname(ex), { recursive: true });
+  const have = existsSync(ex) ? readFileSync(ex, 'utf8') : '';
+  if (have.split('\n').some((l) => l.trim() === entry)) return;
+  appendFileSync(ex, `${have === '' || have.endsWith('\n') ? '' : '\n'}${entry}\n`);
+}
+
 /**
  * Creates the empty drop file (leaving an existing one alone) and keeps
  * `.crew/` out of git. Idempotent, so `--resume` can call it again.
@@ -53,14 +63,7 @@ export function prepareDropFile(worktree: string): string {
   const file = pointedAtFile(worktree);
   mkdirSync(dirname(file), { recursive: true });
   if (!existsSync(file)) writeFileSync(file, '');
-  const ex = excludeFile(worktree);
-  if (ex) {
-    mkdirSync(dirname(ex), { recursive: true });
-    const have = existsSync(ex) ? readFileSync(ex, 'utf8') : '';
-    if (!have.split('\n').some((l) => l.trim() === `${POINTED_AT_DIR}/`)) {
-      appendFileSync(ex, `${have === '' || have.endsWith('\n') ? '' : '\n'}${POINTED_AT_DIR}/\n`);
-    }
-  }
+  excludeFromGit(worktree, `${POINTED_AT_DIR}/`);
   return file;
 }
 

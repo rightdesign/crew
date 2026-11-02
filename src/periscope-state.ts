@@ -26,6 +26,9 @@ export interface PeriscopeSidecar {
   host: string;
   state: string;
   isolated: boolean;
+  /** The repository's symbol service (`hooks.intel`) and the tools it advertised; absent when none came up. */
+  intelUrl?: string;
+  intelTools?: string[];
   startedAt: string;
   lastActivityAt: string;
   expiresAt: string;

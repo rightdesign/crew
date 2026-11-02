@@ -110,6 +110,24 @@ export interface RepoHooks {
    */
   preview?: string;
   /**
+   * Starts this worktree's symbol service and prints its URL.
+   *
+   * Runs from the worktree after `setup`, with the `ports` output exported in
+   * its environment, plus `CREW_TICKET` and `CREW_BRANCH`. It must start a
+   * symbol service that outlives the hook process (detached), bound to the
+   * loopback interface, and its LAST stdout line is a local http(s) URL that
+   * answers an MCP `initialize` request. There is no stop hook: the service
+   * dies with the worktree.
+   *
+   * The documented minimum tool set is: find symbols by name, references to
+   * a symbol, a symbol's definition, and a file's symbol outline. A service
+   * may offer more. Crew stays language-agnostic: the repository picks an
+   * existing bridge over its own language server. Optional; without it the
+   * brief says no symbol service is available. `crew repos hooks` never
+   * proposes one — a server start is not inferable from a manifest.
+   */
+  intel?: string;
+  /**
    * Prints a plain-text or Markdown outline of the repository on stdout: the
    * top-level areas, the registries where labels and routes live, the
    * directories that matter and the ones to ignore. How it is produced is the
@@ -400,7 +418,7 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'map', 'ci_status',
+  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'intel', 'map', 'ci_status',
   'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */

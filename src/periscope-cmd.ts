@@ -13,6 +13,7 @@
  * `cli.ts` supplies the real ones.
  */
 
+import { codeToolsParagraph, probeIntel, type IntelOutcome } from './intel.ts';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PeriscopeSidecar } from './periscope-state.ts';
@@ -82,6 +83,7 @@ export interface PeriscopeLimits { maxPeriscopes?: number; periscopeIdleMinutes?
 
 export const DEFAULT_MAX_PERISCOPES = 3;
 export const DEFAULT_PERISCOPE_IDLE_MINUTES = 120;
+const DEFAULT_INTEL_STARTUP_SECONDS = 20;
 
 /** What `periscope up` was typed with; `repo` is absent when the working directory names it. */
 export type ParsedPeriscopeUpArgs = Omit<PeriscopeUpArgs, 'repo'> & { repo?: string };
@@ -153,6 +155,8 @@ export interface PeriscopeResult {
   branch: string;
   url: string;
   periscopeRecordId: string;
+  /** The brief's "Code tools" paragraph for this periscope (CREW-2872). */
+  codeTools: string;
   /** `--issue`: the ticket already existed. */
   existing?: true;
   /** `--issue`: the ticket's status, which up and down leave alone. */
@@ -234,12 +238,14 @@ export interface PeriscopeDeps {
   /** Copies `worktrees.copy` files then runs `setup`; a non-zero result is a failure. */
   prepare(path: string): Promise<HookResult | null>;
   /** Runs a hook in the worktree; null when the repository declares none. */
-  runHook(name: 'ports' | 'isolate' | 'handoff' | 'preview', cwd: string, env: Record<string, string>): Promise<HookResult | null>;
+  runHook(name: 'ports' | 'isolate' | 'handoff' | 'preview' | 'intel', cwd: string, env: Record<string, string>): Promise<HookResult | null>;
   createRow(fields: Record<string, unknown>): Promise<{ id: string }>;
   /** Keeps the local record `crew status` reads (CREW-2857); a failure is a warning, not an abandon. */
   recordLocal?(sc: PeriscopeSidecar): void;
   /** Creates `.crew/pointed-at.jsonl` in the worktree and excludes `.crew/` from git (CREW-2874). */
   prepareDropFile(worktree: string): void;
+  /** Registers the symbol service as the `code` MCP server in the worktree's harness configuration; returns one-line reasons for files left alone. */
+  registerCode?(worktree: string, url: string): { skipped: string[] };
   comment(ticketId: string, body: string): Promise<void>;
   /** Stops anything listening for the worktree, removes it and its branch. */
   teardown(path: string, branch: string): Promise<void>;
@@ -249,6 +255,8 @@ export interface PeriscopeDeps {
   existing?: ExistingDeps;
   now(): Date;
   host: string;
+  /** `ship.intelStartupSeconds`; the default when absent. */
+  intelStartupSeconds?: number;
   say(event: string, message: string, data?: Record<string, unknown>): void;
 }
 
@@ -270,7 +278,8 @@ export function openerFor(platform: string): string | undefined {
  * `cd` to the other; piped, the order is unchanged from the first cut.
  */
 export function upOutput(res: PeriscopeResult, terminal: boolean): string {
-  return terminal ? `${res.ticket}\n${res.url}\n${res.worktree}\n` : `${res.ticket}\n${res.worktree}\n${res.url}\n`;
+  const block = terminal ? `${res.ticket}\n${res.url}\n${res.worktree}\n` : `${res.ticket}\n${res.worktree}\n${res.url}\n`;
+  return `${block}\n${res.codeTools}\n`;
 }
 
 /** Whether to open the URL: `--open` forces it, `--no-open` forbids it, otherwise only a person at a terminal gets it. */
@@ -375,6 +384,24 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   if (!url) return abandon(`preview printed no URL as its last line\n${tail(preview.output)}`);
   d.say('preview', `preview at ${url}`, { url });
 
+  // The symbol service is optional: whatever happens to it, the periscope comes up.
+  const intel = await probeIntel(
+    { runHook: (e) => d.runHook('intel', wt!.path, e) },
+    env, d.intelStartupSeconds ?? DEFAULT_INTEL_STARTUP_SECONDS,
+  );
+  if (intel.state === 'ready') d.say('intel', `symbol service at ${intel.url} (${intel.tools.length} tools)`, { intelUrl: intel.url, intelTools: intel.tools });
+  else if (intel.state === 'failed') d.say('warning', `symbol service not started: ${intel.reason}`);
+  let codeOutcome: IntelOutcome = intel;
+  if (intel.state === 'ready' && d.registerCode) {
+    try {
+      for (const why of d.registerCode(wt.path, intel.url).skipped) d.say('warning', why);
+    } catch (e) {
+      codeOutcome = { state: 'failed', reason: `registering it failed: ${(e as Error).message}` };
+      d.say('warning', `symbol service not registered: ${(e as Error).message}`);
+    }
+  }
+  const codeTools = codeToolsParagraph(codeOutcome);
+
   const now = d.now();
   let row: { id: string };
   try {
@@ -399,6 +426,7 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
     d.recordLocal?.({
       ticket: draft.tag, ticketRecordId: draft.id, periscopeRecordId: row.id, repo: args.repo,
       worktree: wt.path, branch: wt.branch, url, host: d.host, state: 'live', isolated: args.isolate,
+      ...(intel.state === 'ready' ? { intelUrl: intel.url, intelTools: intel.tools } : {}),
       startedAt: now.toISOString(), lastActivityAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + d.caps.idleMinutes * 60_000).toISOString(),
     });
@@ -413,7 +441,7 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   });
 
   return {
-    ticket: draft.tag, ticketRecordId: draft.id, worktree: wt.path, branch: wt.branch, url, periscopeRecordId: row.id,
+    ticket: draft.tag, ticketRecordId: draft.id, worktree: wt.path, branch: wt.branch, url, periscopeRecordId: row.id, codeTools,
     ...(prior ? { existing: true as const, priorStatus: prior.status } : {}),
   };
 }

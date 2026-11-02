@@ -40,3 +40,13 @@ test('open attention items are listed once; a hook_missing already found is not 
   ];
   assert.deepEqual(attentionProblems(items, found).map((p) => p.kind), ['disk_low']);
 });
+
+test('an intel hook that fails its syntax check is an attention finding (CREW-2872)', () => {
+  const base = { route: 'r', repo: 'x', dir: '/x', notes: [], base: { message: '', failed: false, skipRest: false }, hooks: {}, onPath: () => true };
+  const bad = repoFindings({ ...base, intelSyntax: { status: 'error', message: 'syntax error near unexpected token' } });
+  assert.equal(bad.problems.length, 1);
+  assert.equal(bad.problems[0]!.kind, 'intel_hook_syntax');
+  assert.equal(bad.problems[0]!.severity, 'attention');
+  assert.equal(repoFindings({ ...base, intelSyntax: { status: 'ok' } }).problems.length, 0);
+  assert.equal(repoFindings(base).problems.length, 0);
+});

@@ -190,12 +190,34 @@ connects to it; only the chat that opened the periscope attaches. `crew doctor`
 lists the live endpoints as `periscope mcp:` and marks them `attached only`. Opening a periscope from a terminal does not
 create one unless `crew periscope up --serve-mcp` is passed.
 
+## Code tools: the repository's symbol service
+
+When the repository declares an `intel` hook, `periscope up` runs it after `preview` and probes the URL it prints with an
+MCP `initialize` request, for up to `ship.intelStartupSeconds`. The URL and the tool names the service advertised are
+recorded in the periscope's sidecar (`intelUrl`, `intelTools`).
+
+When the service answers, crew registers it as a second MCP server named `code` in the worktree's project-level harness
+configuration: `.mcp.json` (Claude), `.codex/config.toml` (Codex) and `.gemini/settings.json` (Gemini). A file the
+repository already has is merged, never replaced, and only the `code` entry is added; a file that cannot be merged (for
+example, invalid JSON) is left alone and reported. The files are hidden from git through the worktree's `info/exclude`, so
+`down --keep` never commits them, and they go away with the worktree: `down` has nothing extra to clean up. A harness that
+asks the person to approve a project-scoped server once is behaving as designed.
+
+`periscope up` prints a "Code tools" paragraph after the URL block. It is the Pair session's brief for the periscope and
+has three forms: the registered service with the tools it advertised, one line saying no symbol service is available (no
+hook), or one line with the reason the hook failed. A failing hook never stops the periscope from coming up.
+
+**Known limit.** The session that ran `periscope up` from the main checkout does not get the `code` server, because a
+harness reads its project configuration when it starts. A session started in the worktree does. Lane runs, where crew builds
+the session itself, are a separate piece of work (CREW-2912).
+
 ## Limits and settings
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `ship.maxPeriscopes` | 3 | Periscopes live at once on this ship. |
 | `ship.periscopeIdleMinutes` | 120 | Idle time recorded as the periscope's expiry. |
+| `ship.intelStartupSeconds` | 20 | How long `periscope up` waits for the repository's `intel` symbol service. |
 | `ship.previewHost` | — | Host a Passenger reaches the ship by; required once a route hosts periscopes. |
 | route `hostPeriscopes` | false | Lets Passengers open periscopes. |
 

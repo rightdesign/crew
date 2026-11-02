@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { readPeriscopeSidecars, writePeriscopeSidecar, removePeriscopeSidecar } from '../src/periscope-state.ts';
 import { readPeriscopePrior, writePeriscopePrior, removePeriscopePrior } from '../src/periscope-cmd.ts';
 import {
@@ -69,6 +71,7 @@ function harness(over: Partial<PeriscopeDeps> = {}, hooks: Partial<Record<string
       if (name === 'ports') return { code: 0, output: 'BACKEND_PORT=30900\n' };
       if (name === 'isolate') return { code: 0, output: 'DATABASE_URL=pg://iso\n' };
       if (name === 'handoff') return { code: 0, output: 'Sign in as a@b' };
+      if (name === 'intel') return null;
       return { code: 0, output: 'booting\nhttp://localhost:40900\n' };
     },
     prepareDropFile: (wt) => { calls.push(`drop:${wt}`); },
@@ -87,8 +90,8 @@ function harness(over: Partial<PeriscopeDeps> = {}, hooks: Partial<Record<string
 test('runPeriscopeUp: files, cuts, prepares, runs hooks in order and records a live row', async () => {
   const h = harness();
   const res = await runPeriscopeUp(h.deps, ARGS);
-  assert.deepEqual(h.calls, ['file:Periscope: navigation spacing', 'cut', 'prepare', 'hook:ports', 'hook:handoff', 'drop:/w/tablation-tabl-900', 'hook:preview']);
-  assert.deepEqual(res, { ticket: 'TABL-900', ticketRecordId: 'rec1', worktree: '/w/tablation-tabl-900', branch: 'tabl-900', url: 'http://localhost:40900', periscopeRecordId: 'per1' });
+  assert.deepEqual(h.calls, ['file:Periscope: navigation spacing', 'cut', 'prepare', 'hook:ports', 'hook:handoff', 'drop:/w/tablation-tabl-900', 'hook:preview', 'hook:intel']);
+  assert.deepEqual(res, { ticket: 'TABL-900', ticketRecordId: 'rec1', worktree: '/w/tablation-tabl-900', branch: 'tabl-900', url: 'http://localhost:40900', periscopeRecordId: 'per1', codeTools: 'No symbol service is available for this repository.' });
   assert.equal(h.rows[0]!.state, 'live');
   assert.equal(h.rows[0]!.isolated, false);
   assert.equal(h.rows[0]!.expires_at, '2026-11-01T14:00:00.000Z');
@@ -102,10 +105,19 @@ test('runPeriscopeUp: files, cuts, prepares, runs hooks in order and records a l
   assert.match(h.comments[0]!, /Sign in as a@b/);
 });
 
+// CREW-2872. The symbol service is optional: a failing hook never fails the periscope.
+test('runPeriscopeUp: an intel hook that prints no URL leaves the periscope up, with a warning', async () => {
+  const said: string[] = [];
+  const h = harness({ say: (e, m) => { said.push(`${e}: ${m}`); } }, { intel: { code: 0, output: 'started' } });
+  const res = await runPeriscopeUp(h.deps, ARGS);
+  assert.equal(res.url, 'http://localhost:40900');
+  assert.ok(said.some((l) => /^warning: symbol service not started: the intel hook printed no URL/.test(l)));
+});
+
 test('runPeriscopeUp: --isolate runs isolate before handoff and records isolated: true', async () => {
   const h = harness();
   await runPeriscopeUp(h.deps, { ...ARGS, isolate: true });
-  assert.deepEqual(h.calls.filter((c) => c.startsWith('hook:')), ['hook:ports', 'hook:isolate', 'hook:handoff', 'hook:preview']);
+  assert.deepEqual(h.calls.filter((c) => c.startsWith('hook:')), ['hook:ports', 'hook:isolate', 'hook:handoff', 'hook:preview', 'hook:intel']);
   assert.equal(h.rows[0]!.isolated, true);
   assert.equal(h.envs.handoff!.DATABASE_URL, 'pg://iso');
 });
@@ -138,9 +150,9 @@ test('runPeriscopeUp: no topic and no prompt defaults to the repo and the date; 
 });
 
 test('upOutput, shouldOpen, openerFor, defaultTopic', () => {
-  const res = { ticket: 'TABL-9', ticketRecordId: 'r', worktree: '/w', branch: 'b', url: 'http://u', periscopeRecordId: 'p' };
-  assert.equal(upOutput(res, false), 'TABL-9\n/w\nhttp://u\n');
-  assert.equal(upOutput(res, true), 'TABL-9\nhttp://u\n/w\n');
+  const res = { ticket: 'TABL-9', ticketRecordId: 'r', worktree: '/w', branch: 'b', url: 'http://u', periscopeRecordId: 'p', codeTools: 'No symbol service.' };
+  assert.equal(upOutput(res, false), 'TABL-9\n/w\nhttp://u\n\nNo symbol service.\n');
+  assert.equal(upOutput(res, true), 'TABL-9\nhttp://u\n/w\n\nNo symbol service.\n');
   const base = { open: false, noOpen: false, json: false, terminal: false };
   assert.equal(shouldOpen(base), false);
   assert.equal(shouldOpen({ ...base, terminal: true }), true);
@@ -473,4 +485,44 @@ test('parsePeriscopeUpArgs carries --requested-by, trimmed, and omits it when bl
   const base = { isolate: false, json: true };
   assert.equal(parsePeriscopeUpArgs(['periscope', 'up', 'app'], { ...base, requestedBy: ' mem-1 ' }).requestedBy, 'mem-1');
   assert.equal('requestedBy' in parsePeriscopeUpArgs(['periscope', 'up', 'app'], { ...base, requestedBy: ' ' }), false);
+});
+
+// CREW-2872. A ready service is registered in the worktree and named in the paragraph; a registration that throws is not fatal.
+async function mcpServer(): Promise<{ url: string; close: () => void }> {
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const m = JSON.parse(body) as { method: string; id?: number };
+      if (m.method === 'notifications/initialized') { res.writeHead(202).end(); return; }
+      const result = m.method === 'tools/list' ? { tools: [{ name: 'find_symbols' }] } : {};
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }));
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${(srv.address() as AddressInfo).port}/mcp`, close: () => srv.close() };
+}
+
+test('runPeriscopeUp: a ready intel service is registered as `code` and listed in the paragraph', async () => {
+  const server = await mcpServer();
+  try {
+    const reg: string[] = [];
+    const h = harness({ registerCode: (wt, url) => { reg.push(`${wt} ${url}`); return { skipped: [] }; } }, { intel: { code: 0, output: `${server.url}\n` } });
+    const res = await runPeriscopeUp(h.deps, ARGS);
+    assert.deepEqual(reg, [`/w/tablation-tabl-900 ${server.url}`]);
+    assert.match(res.codeTools, /`code` MCP server/);
+    assert.match(res.codeTools, /`find_symbols`/);
+  } finally { server.close(); }
+});
+
+test('runPeriscopeUp: a registration that throws leaves the periscope up and the paragraph saying so', async () => {
+  const server = await mcpServer();
+  try {
+    const said: string[] = [];
+    const h = harness({ registerCode: () => { throw new Error('disk full'); }, say: (e, m) => { said.push(`${e}: ${m}`); } }, { intel: { code: 0, output: `${server.url}\n` } });
+    const res = await runPeriscopeUp(h.deps, ARGS);
+    assert.equal(res.url, 'http://localhost:40900');
+    assert.match(res.codeTools, /registering it failed: disk full/);
+    assert.ok(said.some((l) => /^warning: symbol service not registered: disk full/.test(l)));
+  } finally { server.close(); }
 });

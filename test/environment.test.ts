@@ -185,6 +185,13 @@ test('lists this ship\'s seat ids by role for hybrid hand-offs', () => {
   assert.match(out, /- qa: `qa-row`/);
 });
 
+// CREW-2872. An `intel` hook is listed in the brief's table only when the repo declares it.
+test('the hooks table lists intel only for a repo that declares it', () => {
+  const withIntel = render([repo('synthesis', '/w/synthesis', SYN + '  intel: ./intel.sh\n')]);
+  assert.match(withIntel, /\| `intel` \| start this worktree's symbol service[^|]*\| `?\.\/intel\.sh`? \|/);
+  assert.doesNotMatch(render([repo('synthesis', '/w/synthesis', SYN)]), /\| `intel` \|/);
+});
+
 // CREW-2873. A declared `map` hook's budgeted output is placed after the hooks
 // table under "Repository map"; a repo without one is unchanged.
 test('a repo map is placed after the hooks table, and absent when not supplied', () => {
