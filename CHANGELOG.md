@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.123.1] — 2026-11-02
+
+- CREW-2921 `crew worktree` now starts a repository's `hooks.intel: serena` service (seeded from the main checkout's index) instead of running the word `serena` as a command, and no longer starts a bridge for the `typescript-lsp` flavor.
+
 ## [0.123.0] — 2026-11-02
 
 - CREW-2919 `hooks.map` may now name a Markdown file such as `docs/REPO_MAP.md`, which crew reads as the repository map instead of running a command; `crew repos check` and `crew doctor` report it.
