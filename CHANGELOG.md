@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.1] — 2026-11-02
+
+- CREW-2955 `crew provision` now gives a managed ship's user a git identity (the ship's name and crew@tablation.dev) so its commits no longer fail with "Committer identity unknown"; `crew doctor` flags a managed ship without one.
+- CREW-2957 The crew repository declares its own sandbox (Node 24.19.0, pnpm 11.22.0, warmed pnpm store) so a sandbox ship can build and test it.
+
 ## [0.127.0] — 2026-11-02
 
 - CREW-2956 A sandbox ship builds the crew layer itself and runs every repository in it, so a repository with no `sandbox:` section still has git and Claude Code inside its sandbox.
