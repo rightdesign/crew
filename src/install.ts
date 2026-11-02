@@ -394,8 +394,11 @@ function planSystemd(ship: Ship, crewHome: string, job: InstallJob, ctx: Install
 
   // `run` (ISSUE-763) is a persistent service now: a plain `.service`, no
   // companion `.timer` — `Type=simple` (the default; the process is meant to
-  // keep running, not exit) plus `Restart=on-failure` is systemd's own
-  // equivalent of launchd's KeepAlive. `enable --now` both starts it
+  // keep running, not exit) plus `Restart=always` is systemd's own
+  // equivalent of launchd's KeepAlive. `always`, not `on-failure` (CREW-2943):
+  // the daemon exits 0 on purpose for `crew reload` and a self-upgrade swap,
+  // and only a restart-on-clean-exit relaunches it. A deliberate
+  // `systemctl stop` is still honored. `enable --now` both starts it
   // immediately and re-starts it at every future login, matching "installed"
   // meaning "running" for a persistent service. `release`/`passengers` keep
   // the original oneshot service + timer pair, untouched.
@@ -411,7 +414,7 @@ WorkingDirectory=${crewHome}
 ${systemdEnvLines(ship)}
 StandardOutput=append:${schedulerLog}
 StandardError=append:${schedulerLog}
-Restart=on-failure
+Restart=always
 RestartSec=5
 # CREW-1775: a restart stops only the daemon; agent runs it started live in
 # their own process groups and the next daemon reattaches to them.
@@ -606,8 +609,8 @@ export interface DaemonControlPlan {
  * starts it again — so `stop` unloads and `start` loads, not `launchctl
  * start`/`stop`.
  *
- * systemd's `start`/`stop` verbs don't have that gotcha: `Restart=on-failure`
- * only fires on a crash, never on a deliberate `systemctl stop`.
+ * systemd's `start`/`stop` verbs don't have that gotcha: `Restart=always`
+ * relaunches on any exit but never after a deliberate `systemctl stop`.
  *
  * Cron cannot supervise a persistent process at all (see `subcommandFor`'s
  * doc comment) — there is no service for these commands to control there,

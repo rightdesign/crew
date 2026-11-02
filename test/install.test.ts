@@ -135,7 +135,7 @@ test('linux with systemd gets a lone persistent .service for run, no .timer (ISS
   assert.ok(plan.unitPaths[0]!.endsWith('.service'));
   const service = plan.unitContent[plan.unitPaths[0]!]!;
   assert.match(service, /Type=simple/);
-  assert.match(service, /Restart=on-failure/);
+  assert.match(service, /Restart=always/);
   assert.match(service, /ExecStart=.*\bdaemon\b/);
   assert.match(service, /WantedBy=default\.target/);
   assert.deepEqual(plan.loadCommands[1], ['systemctl', '--user', 'enable', '--now', plan.unitPaths[0]!.split('/').pop()!]);

@@ -49,7 +49,7 @@
  * tree's signature moves, the loop returns the `'stale'` stop reason instead
  * of sleeping again; `cli.ts` turns that into a clean `process.exit(0)` so
  * the SAME OS-level auto-restart ISSUE-763 already wired (`KeepAlive`/
- * `Restart=on-failure`) relaunches the daemon against whatever is now on
+ * `Restart=always`) relaunches the daemon against whatever is now on
  * disk. One mechanism covers both crash recovery and staleness, exactly as
  * this file originally proposed. `crew daemon restart` (`cli.ts`) is the
  * explicit, deterministic sibling for a manual `git pull` — it does not go

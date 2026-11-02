@@ -5789,6 +5789,19 @@ switch (command) {
       ? spawnSync(control.statusCommand[0]!, control.statusCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' })
       : null;
     const unitRunning = unitStatus !== null && !unitStatus.error && unitStatus.status === 0;
+    if (!unitRunning && control?.mechanism === 'systemd' && control.startCommand) {
+      // CREW-2943: the daemon exits 0 to reload, and a unit written with
+      // Restart=on-failure never relaunched it. Start it rather than say
+      // nothing needs doing.
+      const res = spawnSync(control.startCommand[0]!, control.startCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+      if (res.error || res.status !== 0) {
+        process.stderr.write(`crew reload: ${control.startCommand.join(' ')} exited ${res.status ?? 'error'}\n`);
+        process.exitCode = 1;
+      } else {
+        process.stdout.write('crew reload: the daemon unit was not running — started it, so it reads crew.yaml fresh\n');
+      }
+      break;
+    }
     if (!unitRunning) {
       process.stdout.write('crew reload: no daemon unit is running — nothing to reload (the next run reads crew.yaml fresh)\n');
       break;
@@ -6491,6 +6504,19 @@ switch (command) {
           'scheduler unit:    WARN the installed unit does not leave agent runs alone when the daemon restarts ' +
             '(no AbandonProcessGroup / KillMode=process) — a daemon crash or relaunch kills the run in flight; run `crew install`\n',
         );
+      }
+    }
+
+    // CREW-2943: a Linux ship whose daemon unit is installed but inactive
+    // (a clean exit under an older Restart=on-failure unit) sits idle.
+    if (host === 'linux' && detectSystemd()) {
+      const ctl = planDaemonControl(CREW_HOME, host, true);
+      const unitPlan = planInstall(cfg.ship, CREW_HOME, host, true, 'run', installContext());
+      if (ctl.statusCommand && unitPlan.unitPaths.some((p) => existsSync(p))) {
+        const st = spawnSync(ctl.statusCommand[0]!, ctl.statusCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
+        if (!st.error && st.status !== 0) {
+          process.stdout.write('daemon unit:      WARN installed but not running — no work is picked up; run `crew reload` (or `crew daemon start`), and `crew install` if the unit still says Restart=on-failure\n');
+        }
       }
     }
 
