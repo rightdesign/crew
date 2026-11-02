@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.129.1] — 2026-11-02
+
+- CREW-2937 crew install and other systemctl --user callers default XDG_RUNTIME_DIR and the session bus address when unset; crew doctor reports a missing runtime directory
+
 ## [0.129.0] — 2026-11-02
 
 - CREW-2940 A managed ship releases integrate and ci_* repositories from a sandbox over a shallow mirror-fed clone, with the gate hooks run inside it, and doctor/status read hooks from the mirror.
