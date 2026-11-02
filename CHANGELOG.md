@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.124.0] — 2026-11-02
+
+- CREW-2915 Sandbox images carry the Serena symbol service and its language servers for repositories that declare `hooks.intel: serena`.
+
 ## [0.123.1] — 2026-11-02
 
 - CREW-2921 `crew worktree` now starts a repository's `hooks.intel: serena` service (seeded from the main checkout's index) instead of running the word `serena` as a command, and no longer starts a bridge for the `typescript-lsp` flavor.
