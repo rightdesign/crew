@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.8] — 2026-11-02
+
+- CREW-2939 A relay too old for the control-path forward no longer takes the passengers tunnel down; the ship raises a relay_control_unsupported attention item and crew doctor reports it.
+
 ## [0.126.7] — 2026-11-02
 
 - CREW-2938 A managed ship with no primary checkouts no longer fails the release phase on a missing directory every pass; it reads each repository's release mode from the mirror, logs one line per repository, and its connect mints the release seat's key.
