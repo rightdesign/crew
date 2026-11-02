@@ -6424,6 +6424,9 @@ switch (command) {
         try {
           const missing = unmirroredRepos(sandboxCacheRepos(route, cfg.ship), await new SandboxCache(cacheSettings).list());
           for (const r of missing) problems.push({ severity: 'attention', kind: 'sandbox_cache_unmirrored', route: route.route, message: `${r} has no mirror in the cache volume ${cacheSettings.volume}, so sandboxed runs cannot clone it`, remedy: 'see `crew sandbox cache` for the last refresh failure' });
+          // CREW-2966: the gateway refuses to mount a volume whose workspace label differs from the one sandboxes are created in.
+          const labeled = await new SandboxCache(cacheSettings).volumeWorkspace();
+          if (labeled !== null && labeled !== cacheSettings.workspace) problems.push({ severity: 'blocker', kind: 'sandbox_cache_workspace_mismatch', route: route.route, message: `the cache volume ${cacheSettings.volume} is labeled for OpenShell workspace "${labeled}" but sandboxes are created in "${cacheSettings.workspace}", so the gateway refuses to mount it`, remedy: 'run `crew sandbox cache --reset` to recreate the volume with the right label' });
         } catch { /* the container engine being down is reported by its own check */ }
       }
       for (const t of rejectedTunnels(cfg.ship.stateDir)) {

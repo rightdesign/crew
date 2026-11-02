@@ -65,8 +65,15 @@ export interface CacheSettings {
   depsLockfile: string;
 }
 
+/**
+ * The OpenShell workspace `sandbox create` runs in. Crew passes no `--workspace`, so the gateway puts every
+ * sandbox in its `default` workspace and admits only volumes labeled for that workspace (CREW-2966). The
+ * cache volume's label defaults to this; if crew ever passes `--workspace <name>`, both sides must use it.
+ */
+export const SANDBOX_WORKSPACE = 'default';
+
 export const DEFAULT_CACHE_SETTINGS = {
-  engine: 'docker', workspace: 'crew', helperImage: 'alpine/git:latest', depsLockfile: 'pnpm-lock.yaml',
+  engine: 'docker', workspace: SANDBOX_WORKSPACE, helperImage: 'alpine/git:latest', depsLockfile: 'pnpm-lock.yaml',
 } as const;
 
 /** A repository as the cache knows it: where it lives on the forge. */
@@ -268,6 +275,15 @@ export class SandboxCache {
       '--label', DOCKER_LABEL_OWNER, '--label', DOCKER_LABEL_CACHE, this.s.volume,
     ]);
     return true;
+  }
+
+  /** The workspace label the existing volume carries, or null when the volume is absent or unlabeled. A volume's labels cannot be changed in place. */
+  async volumeWorkspace(): Promise<string | null> {
+    try {
+      const { stdout } = await this.engine(['volume', 'inspect', '--format', `{{index .Labels "${OPENSHELL_WORKSPACE_LABEL}"}}`, this.s.volume]);
+      const v = stdout.trim();
+      return v && v !== '<no value>' ? v : null;
+    } catch { return null; }
   }
 
   private helper(

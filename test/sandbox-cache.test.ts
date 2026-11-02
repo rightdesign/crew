@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
   SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, describe as describeExec, cacheSettingsOf, makeCachePass, sandboxCacheKey, unmirroredRepos,
-  CACHE_REFRESH_INTERVAL_MS, OPENSHELL_ATTACHABLE_LABEL, type CacheExec, type CacheSettings,
+  CACHE_REFRESH_INTERVAL_MS, OPENSHELL_ATTACHABLE_LABEL, SANDBOX_WORKSPACE, type CacheExec, type CacheSettings,
 } from '../src/sandbox-cache.ts';
 import { parseShipSandbox } from '../src/config.ts';
 
@@ -337,6 +337,19 @@ test('a refresh with no token names the missing token rather than git\'s prompt 
   assert.match(out!.detail ?? '', /no readable forge token for forge\.test/);
   const [withTok] = await r.cache.refresh([{ ...REPO, token: 't' }]);
   assert.doesNotMatch(withTok!.detail ?? '', /no readable forge token/);
+});
+
+test('CREW-2966: the cache volume workspace defaults to the workspace sandboxes are created in', () => {
+  assert.equal(cacheSettingsOf({ cacheVolume: 'crew-cache' } as never)?.workspace, 'default');
+  assert.equal(SANDBOX_WORKSPACE, 'default');
+});
+
+test('CREW-2966: volumeWorkspace reads the label, and is null for an absent volume or label', async () => {
+  const answer = (out: string | Error): CacheExec => async () => { if (out instanceof Error) throw out; return { stdout: out, stderr: '' }; };
+  assert.equal(await new SandboxCache(SETTINGS, answer('crew\n')).volumeWorkspace(), 'crew');
+  assert.equal(await new SandboxCache(SETTINGS, answer('<no value>\n')).volumeWorkspace(), null);
+  assert.equal(await new SandboxCache(SETTINGS, answer('\n')).volumeWorkspace(), null);
+  assert.equal(await new SandboxCache(SETTINGS, answer(new Error('no such volume'))).volumeWorkspace(), null);
 });
 
 test('the clone script reads a mirror git considers owned by someone else (root-written volume)', async () => {

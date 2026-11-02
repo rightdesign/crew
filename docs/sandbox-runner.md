@@ -18,7 +18,7 @@ ship:
     agentBin: claude          # harness binary inside the image (default: basename of the toolchain bin)
     forgeTokenVar: GITHUB_TOKEN   # host env var injected for pushing
     engine: docker            # container engine CLI that owns the cache volume
-    cacheWorkspace: crew      # value of the OpenShell workspace label on the volume
+    cacheWorkspace: default   # OpenShell workspace label on the volume; must match the workspace sandboxes are created in (default)
     cacheImage: alpine/git:latest   # helper image that refreshes the mirrors (needs git, sh, base64)
     depsCommand: pnpm install --frozen-lockfile   # optional: warm a dependency tree per lockfile hash
     depsImage: my-registry/crew-synthesis:latest  # image that command runs in (default: image)
@@ -80,7 +80,7 @@ Hot-reloading the network section of a running sandbox is not supported.
 
 `cacheVolume` names one volume per route on the container engine. Crew creates it on first use with the labels
 OpenShell needs to admit it into a sandbox (`openshell.ai/sandbox-attachable=true` and
-`openshell.ai/sandbox-attachable-workspace=<cacheWorkspace>`) and the labels `crew deprovision` removes by.
+`openshell.ai/sandbox-attachable-workspace=<cacheWorkspace>`, `default` unless set, because that is the workspace `sandbox create` puts sandboxes in and the gateway admits only volumes labeled for it) and the labels `crew deprovision` removes by.
 On Docker Desktop it lives inside the engine's virtual machine; it is never a host bind mount.
 
 ```
