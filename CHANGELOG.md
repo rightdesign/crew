@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.11] — 2026-11-02
+
+- CREW-2947 Sandbox names fit the OpenShell gateway's 19-character limit, and crew doctor probes a gateway with a crew-shaped sandbox name.
+- CREW-2950 Seat keys are now minted with the seat's own Crew row id, so event-log bylines name the right ship's seat; keys minted earlier pick it up on the next seat-key rotation.
+
 ## [0.126.10] — 2026-11-02
 
 - CREW-2946 A sandboxed run clones the ticket's own repository, so a provisioned ship can start runs and a multi-repository route no longer clones the wrong repository.
