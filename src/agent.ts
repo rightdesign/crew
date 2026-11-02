@@ -13,7 +13,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { finished } from 'node:stream/promises';
 import type { StreamKindEvent } from './stream.ts';
 import { join, dirname, basename } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { State } from './state.ts';
 import { forgeRunEnv, crewCommandLine } from './forges.ts';
 import { authModeOf, streamShowsSignedOut } from './signed-out.ts';
@@ -198,6 +198,12 @@ export interface AgentPlan {
    */
   promptVersion?: string;
   promptSha: string;
+  /**
+   * CREW-2980: under `auth: workspace`, the id sent as `X-Crew-Run` on every model call and
+   * written to this run's Agent Log row (`run_id`). Set means the endpoint's rows are the
+   * accounting for the run, so the run row reports no tokens or cost of its own.
+   */
+  workspaceRunId?: string;
 }
 
 export interface PlanOptions {
@@ -545,6 +551,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const seat = resolveSeat(o.ship, o.route, o.role, o.agentPersona ?? (o.agentModel ? { model: o.agentModel } : {}), o.repo);
   const { model } = seat;
   let toolchain = seat.toolchain;
+  let workspaceRunId: string | undefined;
   if (toolchain.auth === 'workspace') {
     if (!o.apiKey || o.seatKind === 'ship') {
       throw new WorkspaceAuthRefused(`${o.role}: toolchain ${toolchain.name} has auth: workspace, which needs the seat's own agent key — this seat would fall back to the ship key (run \`crew agents sync\`)`);
@@ -552,7 +559,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     if (!o.route.resolved) {
       throw new WorkspaceAuthRefused(`${o.role}: toolchain ${toolchain.name} has auth: workspace, but route ${o.route.route} is not connected (run \`crew connect\`)`);
     }
-    toolchain = { ...toolchain, inference: { baseUrl: inferenceBaseUrl(o.route.baseUrl, o.route.resolved.workspaceId), token: o.apiKey } };
+    workspaceRunId = o.runId ?? randomUUID();
+    toolchain = { ...toolchain, inference: { baseUrl: inferenceBaseUrl(o.route.baseUrl, o.route.resolved.workspaceId), token: o.apiKey, ticket: o.ticket, runId: workspaceRunId } };
   }
   const adapter = adapterFor(toolchain.harness);
   const code = codeBridgeFor(o, adapter.harness);
@@ -659,6 +667,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
     agentLog,
     promptVersion: o.route.resolved?.agentPersonas?.[o.role]?.historyId,
     promptSha,
+    ...(workspaceRunId ? { workspaceRunId } : {}),
   };
 }
 
@@ -736,6 +745,7 @@ export interface RunSidecar {
   agentLog?: Omit<AgentLogTarget, 'apiKey'>;
   promptVersion?: string;
   promptSha: string;
+  workspaceRunId?: string;
 }
 
 /** The sidecar path for a stream. */
@@ -772,7 +782,7 @@ export function runIsAlive(sc: Pick<RunSidecar, 'pid' | 'spawnedAt'>): boolean {
 }
 
 /** Everything the finish path needs from a plan, so a reattached run can be reported without one. */
-type RunIdentity = Pick<RunSidecar, 'role' | 'route' | 'ticket' | 'model' | 'toolchain' | 'harness' | 'provider' | 'eventsPath' | 'agentLog' | 'promptVersion' | 'promptSha'> & {
+type RunIdentity = Pick<RunSidecar, 'role' | 'route' | 'ticket' | 'model' | 'toolchain' | 'harness' | 'provider' | 'eventsPath' | 'agentLog' | 'promptVersion' | 'promptSha' | 'workspaceRunId'> & {
   streamPath: string;
 };
 
@@ -784,6 +794,7 @@ function identityOf(plan: AgentPlan, adapterHarness: string): RunIdentity {
     eventsPath: plan.eventsPath, streamPath: plan.streamPath,
     agentLog: plan.agentLog ? withoutKey(plan.agentLog) : undefined,
     promptVersion: plan.promptVersion, promptSha: plan.promptSha,
+    ...(plan.workspaceRunId ? { workspaceRunId: plan.workspaceRunId } : {}),
   };
 }
 
@@ -1157,11 +1168,19 @@ async function finishRun(
         finishedAt: new Date().toISOString(),
         cycles: obs.cycles,
         model: id.model,
-        tokensIn: result?.inputTokens,
-        tokensOut: result?.outputTokens,
-        cacheReadTokens: result?.cacheReadTokens,
-        cacheWriteTokens: result?.cacheWriteTokens,
-        costUsd: result?.costUsd,
+        // CREW-2980: under `auth: workspace` the endpoint's rows are the accounting; the run row
+        // keeps turns only, and `reportAgentRun` sums those rows into the ticket counters.
+        ...(id.workspaceRunId ? { runId: id.workspaceRunId } : {
+          tokensIn: result?.inputTokens,
+          tokensOut: result?.outputTokens,
+          cacheReadTokens: result?.cacheReadTokens,
+          cacheWriteTokens: result?.cacheWriteTokens,
+          costUsd: result?.costUsd,
+        }),
+        ...(id.workspaceRunId ? { harnessTotals: {
+          tokensIn: result?.inputTokens, tokensOut: result?.outputTokens, cacheReadTokens: result?.cacheReadTokens,
+          cacheWriteTokens: result?.cacheWriteTokens, costUsd: result?.costUsd,
+        } } : {}),
         // Both come from a finished run: without the result line (interrupted) neither is trustworthy.
         ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
         ...(result?.numTurns !== undefined && obs.prefixTokens !== undefined ? { prefixTokens: obs.prefixTokens } : {}),
@@ -1289,6 +1308,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
         ticket: plan.ticket ?? null, ticketRecordId: plan.ticketRecordId ?? null, repo: plan.repo ?? null, routeName: plan.routeName, model: plan.model,
         toolchain: id.toolchain, harness: id.harness, provider: id.provider, eventsPath: plan.eventsPath,
         agentLog: id.agentLog, promptVersion: plan.promptVersion, promptSha: plan.promptSha,
+        ...(plan.workspaceRunId ? { workspaceRunId: plan.workspaceRunId } : {}),
       };
       try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify(sidecar)); } catch { /* a run nobody can find again is no worse than before */ }
     }

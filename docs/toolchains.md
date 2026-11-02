@@ -91,6 +91,16 @@ tries again on its own once a pass finds the allowance open. `crew doctor`
 prints the endpoint host per route. Codex and Gemini reject `workspace` at load
 time.
 
+Every model call also carries `X-Crew-Ticket` (the ticket the run was planned
+against) and `X-Crew-Run` (the run's id) through `ANTHROPIC_CUSTOM_HEADERS`, so
+the endpoint's `inference` Agent Log rows name the ticket and run. Those rows
+are the accounting for the run: the run's own `crew` row (which carries the same
+`run_id`) reports turns but no tokens or cost, and after the run crew sums the
+inference rows with that run id into the ticket's counters, so each token counts
+once. If the endpoint wrote no row for the run (a server without the Run Id
+column) the harness's own totals go to the ticket counters instead.
+`crew logbook show` on the run row prints the same call count, tokens and cost.
+
 ### Running on Vertex or an API key
 
 The strip above is deliberate, so a Vertex-billed or API-key-billed machine has

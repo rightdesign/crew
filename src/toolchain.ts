@@ -65,7 +65,14 @@ export interface ToolchainSpec {
    * Set by `planAgentRun` for `auth: workspace` only, never read from config: the endpoint base
    * URL and the seat key a run authenticates with. The key is kept off argv.
    */
-  inference?: { baseUrl: string; token: string };
+  inference?: {
+    baseUrl: string; token: string;
+    /**
+     * CREW-2980: the ticket the run was planned against and the run's own id, sent on every model
+     * call so the endpoint's Agent Log rows carry them (`X-Crew-Ticket`, `X-Crew-Run`).
+     */
+    ticket?: string; runId?: string;
+  };
   /**
    * Wall-clock limit for one agent run, in minutes; 0 disables it. Absent means the ship default
    * (`DEFAULT_MAX_RUN_MINUTES`). A route's own `maxRunMinutes` outranks it (CREW-2786).

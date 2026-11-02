@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reportAgentRun, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
+import { reportAgentRun, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
 
 /** Wires a fetch mock keyed by exact pathname+method, ignoring host/baseUrl — same shape as connect.test.ts's mockFetch. */
 function mockFetch(routes: Record<string, unknown>) {
@@ -339,4 +339,64 @@ test('reportAgentRun sends numTurns and prefixTokens when known and omits them o
   const unknown = calls[1]!.body as Record<string, unknown>;
   assert.equal('numTurns' in unknown, false);
   assert.equal('prefixTokens' in unknown, false);
+});
+
+// --- CREW-2980: auth: workspace counts the endpoint's inference rows, once -----
+
+test('a workspace run carries its run id, no figures of its own, and gives the ticket the inference rows\' sum', async (t) => {
+  resetCounterColumnCache();
+  const inference = [
+    { input_tokens: 10, output_tokens: 100, cache_read_tokens: 1000, cache_write_tokens: 5, cost_usd: 0.25 },
+    { input_tokens: 20, output_tokens: 200, cache_read_tokens: 2000, cache_write_tokens: 7, cost_usd: 0.5 },
+  ];
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/issues-1/records': [{ id: 'rec-9' }],
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-7' },
+    'GET /api/data-models/agent_log': { id: 'log-model' },
+    'GET /api/data-models/log-model': modelOf(['run_id', 'client']),
+    'GET /api/data-models/log-model/records': inference,
+    'GET /api/data-models/issues-1': modelOf([...ALL, 'issue_id']),
+    'PATCH /api/data-models/issues-1/records/rec-9': {},
+  });
+  t.after(restore);
+
+  await reportAgentRun(ticketTarget, {
+    ...base, ticketReference: 'CREW-2980', numTurns: 2, runId: 'run-1',
+    harnessTotals: { tokensOut: 9999, costUsd: 9 },
+  });
+  const log = calls.find((c) => c.key === 'POST /api/workspaces/ws-1/agents/log')!.body as Record<string, unknown>;
+  assert.equal(log.runId, 'run-1');
+  assert.equal(log.numTurns, 2);
+  for (const k of ['tokensIn', 'tokensOut', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd']) assert.equal(k in log, false, k);
+  const patch = calls.find((c) => c.key.startsWith('PATCH'))!;
+  assert.deepEqual(patch.body, {
+    agent_runs: { $op: 'increment', value: 1 },
+    tokens_in: { $op: 'increment', value: 30 },
+    tokens_out: { $op: 'increment', value: 300 },
+    cache_read_tokens: { $op: 'increment', value: 3000 },
+    cache_write_tokens: { $op: 'increment', value: 12 },
+    cost_usd: { $op: 'increment', value: 0.75 },
+  });
+});
+
+test('a workspace run with no inference rows falls back to the harness totals for the counters only', async (t) => {
+  resetCounterColumnCache();
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/issues-1/records': [{ id: 'rec-9' }],
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-7' },
+    'GET /api/data-models/agent_log': { id: 'log-model' },
+    'GET /api/data-models/log-model': modelOf(['run_id', 'client']),
+    'GET /api/data-models/log-model/records': [],
+    'GET /api/data-models/issues-1': modelOf([...ALL, 'issue_id']),
+    'PATCH /api/data-models/issues-1/records/rec-9': {},
+  });
+  t.after(restore);
+  await reportAgentRun(ticketTarget, { ...base, ticketReference: 'CREW-2980', runId: 'run-2', harnessTotals: { tokensOut: 50, costUsd: 0.1 } });
+  const patch = calls.find((c) => c.key.startsWith('PATCH'))!;
+  assert.deepEqual(patch.body, { agent_runs: { $op: 'increment', value: 1 }, tokens_out: { $op: 'increment', value: 50 }, cost_usd: { $op: 'increment', value: 0.1 } });
+});
+
+test('sumInferenceRows adds each figure once and tolerates missing values', () => {
+  assert.deepEqual(sumInferenceRows([{ output_tokens: 5, cost_usd: 0.5 }, { output_tokens: null }, {}]),
+    { calls: 3, tokensIn: 0, tokensOut: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 });
 });

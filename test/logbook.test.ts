@@ -169,3 +169,21 @@ test('showLogEntry --prompt reports approximate when the named history entry no 
   assert.equal(reconstruction.status, 'approximate');
   assert.match(reconstruction.reason!, /no longer exists/);
 });
+
+test('showLogEntry totals a workspace run\'s inference rows (CREW-2980)', async (t) => {
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_log?workspaceId=ws-1': () => ({ status: 200, body: AGENT_LOG_MODEL }),
+    'GET /api/data-models/log-model-1/records/run-row': () => ({ status: 200, body: { id: 'run-row', run_id: 'run-1', client: 'crew' } }),
+    [`GET /api/data-models/log-model-1/records?limit=1000&offset=0&filters=${encodeURIComponent(JSON.stringify({
+      combinator: 'AND',
+      conditions: [{ columnName: 'run_id', operator: 'EQ', value: 'run-1' }, { columnName: 'client', operator: 'EQ', value: 'inference' }],
+    }))}`]: () => ({ status: 200, body: [
+      { output_tokens: 100, cost_usd: 0.25 }, { output_tokens: 50, cost_usd: 0.5 },
+    ] }),
+  });
+  t.after(restore);
+  const r = await showLogEntry(makeRoute(), 'run-row');
+  assert.equal(r.inference?.calls, 2);
+  assert.equal(r.inference?.tokensOut, 150);
+  assert.equal(r.inference?.costUsd, 0.75);
+});

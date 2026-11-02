@@ -108,6 +108,20 @@ export const inferenceBaseUrl = (baseUrl: string, workspaceId: string): string =
   `${baseUrl.replace(/\/+$/, '')}/api/workspaces/${workspaceId}/inference`;
 
 /**
+ * `ANTHROPIC_CUSTOM_HEADERS` for `auth: workspace` (CREW-2980): newline-separated `Name: value`
+ * lines the CLI adds to every model call, which the endpoint writes onto its Agent Log rows.
+ * Undefined when there is nothing to send. Values are single-line by construction.
+ */
+export function inferenceHeaders(inf: { ticket?: string; runId?: string }): string | undefined {
+  const clean = (v: string): string => v.replace(/[\r\n]+/g, ' ').trim();
+  const lines = [
+    ...(inf.ticket ? [`X-Crew-Ticket: ${clean(inf.ticket)}`] : []),
+    ...(inf.runId ? [`X-Crew-Run: ${clean(inf.runId)}`] : []),
+  ];
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+/**
  * The `--settings` payload for `auth: workspace` (CREW-2796): blanks every provider variable a
  * user settings file could set, and pins the endpoint. The token is not here — a settings payload
  * is argv, which `ps` shows — so it travels in the environment.
@@ -237,7 +251,10 @@ export const claudeAdapter: HarnessAdapter = {
         ? withoutProviderVars(spec.env)
         : spec.env),
       ...(spec.auth === 'workspace' && spec.inference
-        ? { ANTHROPIC_BASE_URL: spec.inference.baseUrl, ANTHROPIC_AUTH_TOKEN: spec.inference.token }
+        ? {
+            ANTHROPIC_BASE_URL: spec.inference.baseUrl, ANTHROPIC_AUTH_TOKEN: spec.inference.token,
+            ...(inferenceHeaders(spec.inference) ? { ANTHROPIC_CUSTOM_HEADERS: inferenceHeaders(spec.inference)! } : {}),
+          }
         : {}),
     };
   },

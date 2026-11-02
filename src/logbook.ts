@@ -17,6 +17,7 @@ import { TablationClient } from '@tablation/client';
 import type { Route } from './config.ts';
 import { resolveApiKey } from './config.ts';
 import { fetchHistoryEntries } from './agents.ts';
+import { listInferenceRows, sumInferenceRows, type InferenceTotals } from './agent-log.ts';
 
 export class LogbookError extends Error {}
 
@@ -35,6 +36,8 @@ export interface AgentLogEntry {
   prefix_tokens?: number | null;
   prompt_version?: string | null;
   prompt_sha?: string | null;
+  run_id?: string | null;
+  client?: string | null;
   calls_before_edit_search?: number | null;
   calls_before_edit_symbol?: number | null;
   calls_before_edit_other?: number | null;
@@ -129,6 +132,12 @@ export interface PromptReconstruction {
 
 export interface ShowLogEntryResult {
   entry: AgentLogEntry;
+  /**
+   * CREW-2980: for a run row under `auth: workspace` (one with a `run_id`), the totals of the
+   * run's inference rows: the same figures the ticket's counters were given. Absent for a row
+   * that carries its own figures, or when the rows cannot be read.
+   */
+  inference?: InferenceTotals;
   reconstruction: PromptReconstruction;
 }
 
@@ -159,11 +168,24 @@ export async function showLogEntry(
     throw new LogbookError(`no Agent Log entry ${entryId} in this workspace (${(e as Error).message})`);
   }
 
-  if (!opts.withPrompt) return { entry, reconstruction: { status: 'not_recorded', reason: 'not requested' } };
+  let inference: InferenceTotals | undefined;
+  if (entry.run_id && entry.client !== 'inference') {
+    try {
+      const rows = await listInferenceRows(
+        { baseUrl: route.baseUrl, apiKey: resolveApiKey(route), userAgent: opts.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0' },
+        agentLogModel.id, entry.run_id,
+      );
+      if (rows.length > 0) inference = sumInferenceRows(rows);
+    } catch { /* the entry still prints without totals */ }
+  }
+  const withInference = inference ? { inference } : {};
+
+  if (!opts.withPrompt) return { entry, ...withInference, reconstruction: { status: 'not_recorded', reason: 'not requested' } };
 
   if (!entry.agent_id || !entry.prompt_version) {
     return {
       entry,
+      ...withInference,
       reconstruction: {
         status: 'not_recorded',
         reason: !entry.agent_id
@@ -178,13 +200,14 @@ export async function showLogEntry(
   try {
     historyEntries = await fetchHistoryEntries(route, agentsModel.id, entry.agent_id, opts.userAgent, 200);
   } catch (e) {
-    return { entry, reconstruction: { status: 'approximate', reason: `history lookup failed: ${(e as Error).message}` } };
+    return { entry, ...withInference, reconstruction: { status: 'approximate', reason: `history lookup failed: ${(e as Error).message}` } };
   }
 
   const match = historyEntries.find((h) => h.history_id === entry.prompt_version);
   if (!match) {
     return {
       entry,
+      ...withInference,
       reconstruction: {
         status: 'approximate',
         reason: `history entry ${entry.prompt_version} no longer exists on the Agents row (purged, or the row itself was recreated)`,
@@ -198,6 +221,7 @@ export async function showLogEntry(
   const exact = !!entry.prompt_sha && actualSha === entry.prompt_sha;
   return {
     entry,
+    ...withInference,
     reconstruction: {
       status: exact ? 'exact' : 'approximate',
       historyId: match.history_id,

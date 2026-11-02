@@ -117,6 +117,86 @@ export interface AgentRunReport {
    * reconstruction above, not a storage key.
    */
   promptSha?: string;
+  /**
+   * CREW-2980: set for an `auth: workspace` run. The workspace endpoint wrote one `inference`
+   * row per model call with this run id, so those rows are the accounting: the run row itself
+   * carries no tokens or cost, and `reportAgentRun` sums the inference rows into the ticket's
+   * counters (counted once).
+   */
+  runId?: string;
+  /**
+   * The harness's own totals for that run. Used for the ticket counters only when the endpoint
+   * wrote no inference row for the run (an older server that predates the Run Id column), so a
+   * run's spend is never lost; never written to the run row.
+   */
+  harnessTotals?: Pick<AgentRunReport, 'tokensIn' | 'tokensOut' | 'cacheReadTokens' | 'cacheWriteTokens' | 'costUsd'>;
+}
+
+/** Figures summed over a run's inference rows. */
+export interface InferenceTotals {
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
+}
+
+/** The Agent Log columns an inference row's figures sit in (the server's AGENT_LOG_COLUMNS). */
+const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
+
+/** Sums raw Agent Log rows into totals. Pure, so `crew logbook show` and the ticket counters agree. */
+export function sumInferenceRows(rows: ReadonlyArray<Record<string, unknown>>): InferenceTotals {
+  const t: InferenceTotals = { calls: 0, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+  for (const r of rows) {
+    t.calls++;
+    t.tokensIn += num(r.input_tokens);
+    t.tokensOut += num(r.output_tokens);
+    t.cacheReadTokens += num(r.cache_read_tokens);
+    t.cacheWriteTokens += num(r.cache_write_tokens);
+    t.costUsd += num(r.cost_usd);
+  }
+  return t;
+}
+
+const INFERENCE_PAGE = 1000;
+
+/**
+ * Every `client: inference` Agent Log row of one run (CREW-2980), read through the data-model
+ * records API. `modelId` is the Agent Log table. Pages until a short page, so a long run is not
+ * cut at the list cap.
+ */
+export async function listInferenceRows(
+  target: Pick<AgentLogTarget, 'baseUrl' | 'apiKey' | 'userAgent'>, modelId: string, runId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const filters = encodeURIComponent(JSON.stringify({
+    combinator: 'AND',
+    conditions: [
+      { columnName: 'run_id', operator: 'EQ', value: runId },
+      { columnName: 'client', operator: 'EQ', value: 'inference' },
+    ],
+  }));
+  const out: Array<Record<string, unknown>> = [];
+  for (let offset = 0; ; offset += INFERENCE_PAGE) {
+    const page = await request<Array<Record<string, unknown>>>(
+      target as AgentLogTarget, 'GET', `/data-models/${modelId}/records?limit=${INFERENCE_PAGE}&offset=${offset}&filters=${filters}`,
+    );
+    out.push(...page);
+    if (page.length < INFERENCE_PAGE) return out;
+  }
+}
+
+/**
+ * The run's inference totals, or undefined when the endpoint wrote no row for it (or the table
+ * has no `run_id` column), in which case the caller falls back to the harness's own figures.
+ */
+async function inferenceTotalsFor(target: AgentLogTarget, runId: string): Promise<InferenceTotals | undefined> {
+  const model = await request<{ id: string }>(
+    target, 'GET', `/data-models/agent_log?workspaceId=${encodeURIComponent(target.workspaceId)}`,
+  );
+  if (!(await columnsOf(target, model.id)).has('run_id')) return undefined;
+  const rows = await listInferenceRows(target, model.id, runId);
+  return rows.length > 0 ? sumInferenceRows(rows) : undefined;
 }
 
 /**
@@ -332,20 +412,23 @@ export async function reportAgentRun(
     promptVersion: run.promptVersion,
     promptSha: run.promptSha,
   };
+  // A server that predates the Run Id column rejects `runId` as unknown (a 400), so the
+  // fallback post below drops it.
+  const { runId, ...legacyBody } = { ...body, runId: run.runId };
   const workItem = target.tickets && ticketRecordId
     ? { workItemTable: target.tickets.issuesModelId, workItemRecordId: ticketRecordId }
     : {};
   let entry: { id: string };
   try {
-    entry = await post<{ id: string }>(target, '/agents/log', { ...body, ...workItem, harness: run.harness, provider: run.provider });
+    entry = await post<{ id: string }>(target, '/agents/log', { ...body, ...(runId ? { runId } : {}), ...workItem, harness: run.harness, provider: run.provider });
   } catch (e) {
     if (!(e instanceof AgentLogHttpError)) throw new AgentLogUnreachableError((e as Error).message);
     if (e.status >= 500) throw new AgentLogUnreachableError(e.message);
     // A server that predates the identity or work-item fields validates them
     // away as unknown properties with a 400; the run still deserves its row.
-    if (e.status !== 400 || (!run.harness && !run.provider && !ticketRecordId)) { e.row = true; throw e; }
+    if (e.status !== 400 || (!run.harness && !run.provider && !ticketRecordId && !runId)) { e.row = true; throw e; }
     try {
-      entry = await post<{ id: string }>(target, '/agents/log', body);
+      entry = await post<{ id: string }>(target, '/agents/log', legacyBody);
     } catch (e2) {
       if (e2 instanceof AgentLogHttpError && e2.status < 500) e2.row = true;
       throw e2;
@@ -364,12 +447,24 @@ export async function reportAgentRun(
     const bounces = await countAcceptanceBounces(target, target.tickets.issuesModelId, ticketRecordId);
     if (bounces !== null) await writeHandoffBounces(target, entry.id, bounces);
   }
+  let counterWarning: string | undefined;
+  let counted: AgentRunReport = run;
+  if (runId && target.tickets && ticketRecordId) {
+    // CREW-2980: the inference rows are the accounting under `auth: workspace`; sum them so each token counts once.
+    try {
+      const totals = await inferenceTotalsFor(target, runId);
+      if (totals) counted = { ...run, tokensIn: totals.tokensIn, tokensOut: totals.tokensOut, cacheReadTokens: totals.cacheReadTokens, cacheWriteTokens: totals.cacheWriteTokens, costUsd: totals.costUsd };
+      else counted = { ...run, ...run.harnessTotals };
+    } catch (e) {
+      counterWarning = `could not sum run ${runId}'s inference rows for ${run.ticketReference}: ${(e as Error).message}`;
+    }
+  }
   const counters = target.tickets && ticketRecordId
-    ? await addRunToTicket(target, target.tickets, ticketRecordId, run)
+    ? await addRunToTicket(target, target.tickets, ticketRecordId, counted)
     : undefined;
   return {
     agentLogId: entry.id,
-    ...(counters?.warning ? { counterWarning: counters.warning } : {}),
+    ...(counters?.warning || counterWarning ? { counterWarning: [counterWarning, counters?.warning].filter(Boolean).join('; ') } : {}),
     ...(counters?.retry ? { counterRetry: counters.retry } : {}),
   };
 }

@@ -3810,7 +3810,7 @@ switch (command) {
           );
         }
       } else {
-        const { entry, reconstruction } = await showLogEntry(target, entryId!, {
+        const { entry, inference, reconstruction } = await showLogEntry(target, entryId!, {
           userAgent: cfg.ship.userAgent,
           withPrompt: flag('prompt'),
         });
@@ -3824,6 +3824,9 @@ switch (command) {
           `harness:    ${entry.harness ?? '?'}\n` +
           `provider:   ${entry.provider ?? '?'}\n` +
           (entry.num_turns != null ? `turns:      ${entry.num_turns}\n` : '') +
+          (inference ? `calls:      ${inference.calls}\n` +
+            `tokens:     in ${inference.tokensIn}, out ${inference.tokensOut}, cache read ${inference.cacheReadTokens}, cache write ${inference.cacheWriteTokens}\n` +
+            `cost:       $${inference.costUsd.toFixed(4)}\n` : '') +
           (entry.prefix_tokens != null ? `prefix:     ${entry.prefix_tokens} tokens\n` : '') +
           (formatBeforeEdit(entry) ? `before edit: ${formatBeforeEdit(entry)}\n` : ''),
         );
