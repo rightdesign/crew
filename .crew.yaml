@@ -11,6 +11,8 @@ worktrees:
   copy: []
 
 hooks:
+  intel: typescript-lsp
+
   setup: pnpm install
 
   # Runs directly, not through `pnpm test`: type stripping means there is no
