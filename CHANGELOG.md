@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.128.2] — 2026-11-02
+
+- CREW-2935 A pooled instance connects its routes against the platform URL without the pool URL's trailing `/api`, so a lease no longer fails with 404.
+
 ## [0.128.1] — 2026-11-02
 
 - CREW-2952 `crew status --json` now reports a periscope's current last activity and expiry when the daemon's idle pass refreshes it.
