@@ -254,17 +254,21 @@ test('--runner is parsed from argv (CREW-2910)', () => {
 
 test('applyManagedDefaultsToDoc sets runner, cache volume and claude toolchain auth, leaving existing values alone (CREW-2910)', () => {
   const doc = parseDocument('ship:\n  name: x\n  toolchains:\n    a: {harness: claude}\n    b: {harness: codex}\n    c: {harness: claude, auth: inherit}\n');
-  assert.deepEqual(applyManagedDefaultsToDoc(doc), ['ship.runner', 'ship.sandbox.cacheVolume', 'ship.toolchains.a.auth', 'ship.toolchains.claude.auth']);
+  assert.deepEqual(applyManagedDefaultsToDoc(doc), ['ship.runner', 'ship.sandbox.cacheVolume', 'ship.cloneScheme', 'ship.toolchains.a.auth', 'ship.toolchains.claude.auth']);
   const js = doc.toJS().ship;
   assert.equal(js.runner, 'sandbox');
   assert.equal(js.sandbox.cacheVolume, 'crew-cache');
+  assert.equal(js.cloneScheme, 'https');
   assert.equal(js.toolchains.a.auth, 'workspace');
   assert.equal(js.toolchains.b.auth, undefined);
   assert.equal(js.toolchains.c.auth, 'inherit');
   assert.deepEqual(applyManagedDefaultsToDoc(doc), []);
   const fresh = parseDocument('ship:\n  name: m1\n  platform: linux\n  agent:\n    bin: /opt/claude\n    model: m-x\n');
-  assert.deepEqual(applyManagedDefaultsToDoc(fresh), ['ship.runner', 'ship.sandbox.cacheVolume', 'ship.toolchains.claude.auth']);
+  assert.deepEqual(applyManagedDefaultsToDoc(fresh), ['ship.runner', 'ship.sandbox.cacheVolume', 'ship.cloneScheme', 'ship.toolchains.claude.auth']);
   assert.deepEqual(fresh.toJS().ship.toolchains.claude, { harness: 'claude', bin: '/opt/claude', model: 'm-x', auth: 'workspace' });
+  const ssh = parseDocument('ship:\n  cloneScheme: ssh\n');
+  applyManagedDefaultsToDoc(ssh);
+  assert.equal(ssh.toJS().ship.cloneScheme, 'ssh');
   const host = parseDocument('ship:\n  runner: host\n');
   applyManagedDefaultsToDoc(host);
   assert.equal(host.toJS().ship.runner, 'host');

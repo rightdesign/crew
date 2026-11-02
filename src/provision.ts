@@ -328,6 +328,8 @@ export function applyManagedDefaultsToDoc(doc: Document): string[] {
   const wrote: string[] = [];
   if (doc.getIn(['ship', 'runner']) === undefined) { doc.setIn(['ship', 'runner'], 'sandbox'); wrote.push('ship.runner'); }
   if (doc.getIn(['ship', 'sandbox', 'cacheVolume']) === undefined) { doc.setIn(['ship', 'sandbox', 'cacheVolume'], MANAGED_CACHE_VOLUME); wrote.push('ship.sandbox.cacheVolume'); }
+  // CREW-2942: a managed ship has no forge SSH key and only 443 egress; its forge access is the stored token over HTTPS, so the first checkout must not default to `git@`.
+  if (doc.getIn(['ship', 'cloneScheme']) === undefined) { doc.setIn(['ship', 'cloneScheme'], 'https'); wrote.push('ship.cloneScheme'); }
   // A fresh `crew connect` writes only the legacy `agent:` block; its implicit `claude` toolchain has no yaml entry to carry `auth`. Make it
   // explicit, copying over what an explicit entry would otherwise reset to the adapter default (an explicit `claude` replaces the legacy one).
   const existing = doc.getIn(['ship', 'toolchains']);
