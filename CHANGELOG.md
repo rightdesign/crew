@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.121.0] — 2026-11-02
+
+- CREW-2916 `hooks.intel: typescript-lsp` gives Claude runs the harness's LSP tool for a repository's TypeScript and JavaScript files, through a crew-generated language-server plugin.
+
 ## [0.120.0] — 2026-11-02
 
 - CREW-2914 `hooks.intel` accepts the flavor names `serena` and `typescript-lsp`; `serena` runs a crew-managed Serena symbol service per worktree, seeded from an index of the main checkout.
