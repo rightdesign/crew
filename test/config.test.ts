@@ -1020,7 +1020,8 @@ test('hostPeriscopes and the periscope ship settings default, and validate (CREW
   assert.equal(c2.ship.maxPeriscopes, 5);
   assert.equal(c2.ship.periscopeIdleMinutes, 30);
 
-  for (const bad of ['maxPeriscopes: 0', 'periscopeIdleMinutes: 1.5']) {
+  assert.equal(cfg.ship.mapTokenBudget, 1000);
+  for (const bad of ['maxPeriscopes: 0', 'periscopeIdleMinutes: 1.5', 'mapTokenBudget: 0']) {
     const b = withConfig(ONE.replace('agent: { bin: /bin/true }', `agent: { bin: /bin/true }\n  ${bad}`));
     assert.throws(() => loadConfig(b.dir, b.file), new RegExp(`ship\\.${bad.split(':')[0]} must be a positive integer`));
   }

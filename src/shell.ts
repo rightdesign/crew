@@ -43,6 +43,8 @@ export function resolveShell(configured?: string | ShellSpec): ShellSpec {
 export interface RunResult {
   code: number;
   output: string;
+  /** Stdout alone, for a hook whose contract is what it prints (stderr is only in `output`). */
+  stdout: string;
 }
 
 export interface RunOptions {
@@ -69,6 +71,7 @@ export function runScript(script: string, opts: RunOptions): Promise<RunResult> 
     });
 
     let output = '';
+    let stdout = '';
     let pending = '';
     const absorb = (buf: Buffer) => {
       const text = buf.toString();
@@ -79,7 +82,7 @@ export function runScript(script: string, opts: RunOptions): Promise<RunResult> 
       pending = lines.pop() ?? '';
       for (const l of lines) opts.onLine(l);
     };
-    child.stdout.on('data', absorb);
+    child.stdout.on('data', (buf: Buffer) => { stdout += buf.toString(); absorb(buf); });
     child.stderr.on('data', absorb);
 
     const timer = opts.timeoutMs
@@ -90,12 +93,12 @@ export function runScript(script: string, opts: RunOptions): Promise<RunResult> 
       if (timer) clearTimeout(timer);
       // A missing interpreter is a config problem, and must read as one
       // rather than as the hook having failed.
-      resolvePromise({ code: 127, output: `${output}\ncrew: cannot run ${shell.bin}: ${err.message}` });
+      resolvePromise({ code: 127, output: `${output}\ncrew: cannot run ${shell.bin}: ${err.message}`, stdout });
     });
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
       if (pending && opts.onLine) opts.onLine(pending);
-      resolvePromise({ code: code ?? 1, output });
+      resolvePromise({ code: code ?? 1, output, stdout });
     });
   });
 }

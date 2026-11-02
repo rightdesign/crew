@@ -79,6 +79,7 @@ import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
 import { renderEnvironment } from './environment.ts';
+import { withRepoMaps } from './repo-map.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
@@ -1669,7 +1670,7 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
   // (ISSUE-411) — it names the ticket a spotted-bug report should reference,
   // never which repo section applies.
   return renderEnvironment({
-    route: c, userAgent: cfg.ship.userAgent, repos: await resolvedRepos(c), contract, sourceTicket: ticket,
+    route: c, userAgent: cfg.ship.userAgent, repos: await withRepoMaps(await resolvedRepos(c), cfg.ship.mapTokenBudget, cfg.ship.shell), contract, sourceTicket: ticket,
     authorship: await tracker.authorshipProbe().catch(() => null),
     attachments: await tracker.attachmentsProbe().catch(() => null),
     shipName: cfg.ship.name,

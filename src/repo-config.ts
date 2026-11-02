@@ -110,6 +110,22 @@ export interface RepoHooks {
    */
   preview?: string;
   /**
+   * Prints a plain-text or Markdown outline of the repository on stdout: the
+   * top-level areas, the registries where labels and routes live, the
+   * directories that matter and the ones to ignore. How it is produced is the
+   * repository's business — a committed outline (`cat docs/MAP.md`) is the
+   * place to start, a generated, reference-ranked one the place to move to
+   * when the structure changes often.
+   *
+   * Runs from the repository's checkout. The crew places the output in the
+   * brief under "Repository map", after the hooks table, capped at
+   * `ship.mapTokenBudget` (`src/repo-map.ts`): the repository owns the
+   * content, the crew owns the budget so a map can never crowd out the
+   * ticket. A hook that fails or prints nothing omits the section and never
+   * blocks the run.
+   */
+  map?: string;
+  /**
    * Is CI green for the pushed branch? Exit 0 = yes, non-zero = no (or not yet).
    *
    * Receives `CREW_TICKET` and `CREW_BRANCH`. The dev lane runs it after
@@ -384,7 +400,7 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 const HOOK_NAMES: Array<keyof RepoHooks> = [
-  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'ci_status',
+  'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'map', 'ci_status',
   'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */

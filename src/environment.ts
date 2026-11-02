@@ -30,6 +30,10 @@ export interface EnvironmentRepo {
   /** The checkout on this machine. */
   dir: string;
   config: EffectiveRepoConfig;
+  /** The budgeted output of the repo's `map` hook (`withRepoMaps`, `src/repo-map.ts`). */
+  map?: string;
+  /** Why a declared `map` hook produced no map: one sentence, reported by the session. */
+  mapSkipped?: string;
   /**
    * This repo's row id in the tracker's `Repos` table — what a NEW ticket's
    * `repo` column must hold (ISSUE-411: a bug filed without this sits
@@ -113,6 +117,7 @@ const HOOK_PURPOSE: Array<[keyof RepoHooks, string]> = [
   ['ports', 'this worktree\'s port assignments; prints KEY=value overrides to export'],
   ['handoff', 'leave the operator able to open what you built; put its output in your progress comment'],
   ['preview', 'start this worktree\'s dev server for a viewer, bound to CREW_PREVIEW_HOST, detached; its last stdout line is the URL'],
+  ['map', 'prints an outline of the repository; the crew places it under "Repository map" below'],
   ['test', 'run the suite'],
   ['build', 'build it'],
   ['ci_status', 'after you push and before you hand off: exit 0 means CI is green for your branch; on failure fix and push again, and say in your progress comment if it is still pending'],
@@ -259,6 +264,15 @@ function repoSection(r: EnvironmentRepo, key: string, heading: string): string[]
   }
 
   return lines;
+}
+
+/** The "Repository map" block for one repo, after its hooks table; empty when there is nothing to say. */
+function mapSection(r: EnvironmentRepo, heading: string): string[] {
+  if (r.map) return ['', heading, '', r.map, ''];
+  if (r.mapSkipped) {
+    return ['', `Note: ${r.mapSkipped}. Say so in one line of your progress comment; it does not block the work.`, ''];
+  }
+  return [];
 }
 
 export function renderEnvironment(i: EnvironmentInput): string {
@@ -464,6 +478,7 @@ export function renderEnvironment(i: EnvironmentInput): string {
     for (const r of repos) {
       lines.push(...(i.sandbox ? ['', `### ${r.name}`] : repoSection(r, key, `### ${r.name} — \`${r.dir}\``)));
       lines.push('', `Hooks for ${r.name} — the only commands you should run here:`, '', hookTable(r.config));
+      lines.push(...mapSection(r, `#### Repository map — ${r.name}`));
     }
   }
 
@@ -474,7 +489,10 @@ export function renderEnvironment(i: EnvironmentInput): string {
   // Rendered per repository above when there is more than one: a single hooks
   // table for a board spanning three repos would name one repo's test command
   // as though it ran everywhere.
-  if (only) lines.push('', '## Hooks — the only commands you should run', '', hookTable(only.config));
+  if (only) {
+    lines.push('', '## Hooks — the only commands you should run', '', hookTable(only.config));
+    lines.push(...mapSection(only, '## Repository map'));
+  }
 
   return lines.join('\n');
 }

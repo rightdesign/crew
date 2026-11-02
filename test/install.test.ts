@@ -18,6 +18,7 @@ const ship = (over: Partial<Ship> = {}): Ship => ({
   roleConcurrency: {},
   streamRetentionDays: 7,
   maxPeriscopes: 3,
+  mapTokenBudget: 1000,
   periscopeIdleMinutes: 120,
   eventsRotateBytes: 64 * 1024 * 1024,
   relayPort: 2222, relayHttpPort: 443,

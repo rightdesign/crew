@@ -91,6 +91,7 @@ import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.t
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
+import { withRepoMaps } from './repo-map.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { settleRunEnd } from './live-runs.ts';
 import { Tracker } from './tracker.ts';
@@ -1164,5 +1165,5 @@ async function buildEnvironment(route: Route, ship: Ship, ticket?: string | null
   // leaves the filing block without authorship lines, never a failed cycle.
   const authorship = await tracker.authorshipProbe().catch(() => null);
   const attachments = await tracker.attachmentsProbe().catch(() => null);
-  return renderEnvironment({ route, userAgent: ship.userAgent, repos, contract, sourceTicket: ticket, authorship, attachments, shipName: ship.name, ...sandboxEnv(ship) });
+  return renderEnvironment({ route, userAgent: ship.userAgent, repos: await withRepoMaps(repos, ship.mapTokenBudget, ship.shell), contract, sourceTicket: ticket, authorship, attachments, shipName: ship.name, ...sandboxEnv(ship) });
 }

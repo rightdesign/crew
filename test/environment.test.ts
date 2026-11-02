@@ -184,3 +184,20 @@ test('lists this ship\'s seat ids by role for hybrid hand-offs', () => {
   assert.match(out, /- dev: `dev-row`/);
   assert.match(out, /- qa: `qa-row`/);
 });
+
+// CREW-2873. A declared `map` hook's budgeted output is placed after the hooks
+// table under "Repository map"; a repo without one is unchanged.
+test('a repo map is placed after the hooks table, and absent when not supplied', () => {
+  const base = repo('synthesis', '/w/synthesis', SYN + '  map: cat docs/MAP.md\n');
+  const withMap = render([{ ...base, map: 'src/ — the app\ndocs/ — prose' }]);
+  assert.match(withMap, /## Hooks[\s\S]*## Repository map\n\nsrc\/ — the app\ndocs\/ — prose/);
+  assert.match(withMap, /\| `map` \|/);
+  assert.doesNotMatch(render([repo('synthesis', '/w/synthesis', SYN)]), /Repository map/);
+});
+
+test('a skipped map hook leaves no section, only a one-line note', () => {
+  const base = repo('synthesis', '/w/synthesis', SYN + "  map: \"false\"\n");
+  const out = render([{ ...base, mapSkipped: 'the `map` hook for synthesis exited 1, so the brief has no repository map' }]);
+  assert.doesNotMatch(out, /## Repository map/);
+  assert.match(out, /exited 1, so the brief has no repository map\. Say so in one line/);
+});

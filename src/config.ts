@@ -576,6 +576,8 @@ export interface Ship {
   maxPeriscopes: number;
   /** Minutes without traffic before an open periscope is closed. Default 120. */
   periscopeIdleMinutes: number;
+  /** Token budget (characters / 4) for a repository's `map` hook output in the brief. Default 1000. */
+  mapTokenBudget: number;
   /**
    * Where keys live (CREW-2785): `auto` (the OS secret service when one is
    * reachable, else files under `<stateDir>/keys`), `os`, or `file`.
@@ -610,6 +612,7 @@ export class ConfigError extends Error {}
 
 export const DEFAULT_MAX_PERISCOPES = 3;
 export const DEFAULT_PERISCOPE_IDLE_MINUTES = 120;
+export const DEFAULT_MAP_TOKEN_BUDGET = 1000;
 
 function parseCloneScheme(v: unknown): 'ssh' | 'https' | undefined {
   if (v === undefined || v === null || v === '') return undefined;
@@ -670,7 +673,7 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
-  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'secretStore', 'env', 'runner', 'sandbox',
+  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'mapTokenBudget', 'secretStore', 'env', 'runner', 'sandbox',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -1133,6 +1136,10 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(periscopeIdleMinutes) || periscopeIdleMinutes < 1) {
     missing.add(`ship.periscopeIdleMinutes must be a positive integer (got "${shipRaw.periscopeIdleMinutes}")`);
   }
+  const mapTokenBudget = shipRaw.mapTokenBudget === undefined ? DEFAULT_MAP_TOKEN_BUDGET : Number(shipRaw.mapTokenBudget);
+  if (!Number.isInteger(mapTokenBudget) || mapTokenBudget < 1) {
+    missing.add(`ship.mapTokenBudget must be a positive integer (got "${shipRaw.mapTokenBudget}")`);
+  }
   const secretStoreRaw = shipRaw.secretStore === undefined ? 'auto' : shipRaw.secretStore;
   if (!isSecretStoreMode(secretStoreRaw)) {
     missing.add(`ship.secretStore must be one of ${SECRET_STORE_MODES.join(' | ')} (got "${String(shipRaw.secretStore)}")`);
@@ -1239,6 +1246,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       previewHost: shipRaw.previewHost ? String(shipRaw.previewHost).trim() || undefined : undefined,
       maxPeriscopes,
       periscopeIdleMinutes,
+      mapTokenBudget,
       secretStore,
       env: parseShipEnv(shipRaw.env),
     },
