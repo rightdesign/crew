@@ -225,3 +225,19 @@ test('the sandbox brief names the code server for a bridge flavor and the LSP to
   const env = renderEnvironment({ route: { route: 'ws/p', baseUrl: 'https://t', resolved: undefined } as never, userAgent: 'u', repos: [repo as never], contract: DEFAULT_CONTRACT, ...sandboxEnv({ runner: 'sandbox' }) });
   assert.match(env, /\*\*Code tools\.\*\*/);
 });
+
+test('a sandbox run on a serena repository with a forge origin is told where the host-seeded cache is', () => {
+  const p = plan('serena', 'sandbox');
+  try {
+    execFileSync('git', ['-C', p.dir, 'init', '-q']);
+    execFileSync('git', ['-C', p.dir, 'remote', 'add', 'origin', 'https://forge.test/acme/widgets.git']);
+    const b = codeBridgeFor(p.o, 'claude');
+    assert.deepEqual(b?.args.slice(-2), ['--seed-cache', '/cache/intel/forge.test/acme/widgets/cache']);
+  } finally { p.cleanup(); }
+  const c = plan('scripts/dev-intel.sh', 'sandbox');
+  try { assert.ok(!codeBridgeFor(c.o, 'claude')!.args.includes('--seed-cache')); } finally { c.cleanup(); }
+});
+
+test('--seed-cache parses', () => {
+  assert.equal(parseSandboxBridgeArgs(['--attach-file', '/f', '--start', 'serena', '--clone', '/c', '--seed-cache', '/s']).seedCache, '/s');
+});

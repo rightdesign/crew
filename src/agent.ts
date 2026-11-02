@@ -26,7 +26,9 @@ import { API_KEY_VAR } from './environment.ts';
 import type { Emitter } from './events.ts';
 import { inferenceBaseUrl } from './adapters/claude.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type CodeBridge, type PersonaChoice, type SandboxFile, type ToolchainSpec } from './toolchain.ts';
-import { INTEL_SERVER_NAME, wantsCodeBridge } from './intel.ts';
+import { INTEL_SERVER_NAME, intelFlavor, wantsCodeBridge } from './intel.ts';
+import { originUrlOf } from './git.ts';
+import { intelRelDir, parseRemote } from './sandbox-cache.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
 import { BeforeFirstEditTracker } from './tool-classify.ts';
@@ -400,10 +402,15 @@ export function codeBridgeFor(o: PlanOptions, harness: string): CodeBridge | und
   const number = /(\d+)$/.exec(o.ticket)?.[1];
   if (!number) return undefined;
   let intel: string | undefined;
+  let seed: string | undefined;
   try {
     const repos = reposOf(o.route);
     const target = repos.find((r) => r.name === o.repo) ?? (repos.length === 1 ? repos[0] : undefined);
     intel = target ? loadRepoConfig(target.dir)?.hooks?.intel : undefined;
+    // CREW-2924: the host's index of the mirror's default branch, read from the read-only cache volume.
+    const origin = target && o.ship.runner === 'sandbox' && intelFlavor(intel) === 'serena' ? originUrlOf(target.dir, 'origin') : null;
+    const remote = origin ? parseRemote(origin) : null;
+    if (remote) seed = `${o.ship.sandbox?.mirrorDir ?? '/cache'}/${intelRelDir(remote)}/cache`;
   } catch { /* a malformed .crew.yaml is reported where it is read; a route with no checkout has nothing to bridge */ }
   if (!wantsCodeBridge(intel)) return undefined;
   const sandbox = o.ship.runner === 'sandbox';
@@ -411,7 +418,8 @@ export function codeBridgeFor(o: PlanOptions, harness: string): CodeBridge | und
   // node, and it starts the service itself (there is no `crew worktree` there to do it).
   const args = sandbox
     ? [SANDBOX_BRIDGE_PATH, '--attach-file', `${SANDBOX_INTEL_DIR}/url`, '--start', intel!.trim(),
-       '--clone', o.ship.sandbox?.workDir ?? DEFAULT_SANDBOX_WORKDIR, '--state-dir', dirname(SANDBOX_INTEL_DIR), '--ticket', number]
+       '--clone', o.ship.sandbox?.workDir ?? DEFAULT_SANDBOX_WORKDIR, '--state-dir', dirname(SANDBOX_INTEL_DIR), '--ticket', number,
+       ...(seed ? ['--seed-cache', seed] : [])]
     : [...process.execArgv, process.argv[1] ?? 'crew', 'intel', 'bridge', o.route.route, number, '--state-dir', o.stateDir];
   const bridge: CodeBridge = { command: sandbox ? 'node' : process.execPath, args };
   if (harness === 'gemini') {

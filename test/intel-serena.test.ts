@@ -110,3 +110,18 @@ test('shared language servers are linked into the service home once, when they e
   startSerena(none.deps, { ...start, languageServers: '/missing' });
   assert.equal(links.length, 1);
 });
+
+test('a seed cache replaces the main checkout cache for a first start, and is copied rather than used in place', () => {
+  const { deps, dirs, log } = fakeDeps();
+  const p = serenaPaths('/s', 'r', '2914');
+  dirs.add(`${p.mainProject}/cache`);
+  dirs.add('/cache/intel/forge.test/acme/widgets/cache');
+  startSerena(deps, { ...start, noMainIndex: true, seedCache: '/cache/intel/forge.test/acme/widgets/cache' });
+  assert.deepEqual(log.filter((l) => l.startsWith('copy')), [`copy /cache/intel/forge.test/acme/widgets/cache -> ${p.project}/cache`]);
+});
+
+test('a seed cache that is absent leaves the cold start as it was', () => {
+  const { deps, log } = fakeDeps();
+  startSerena(deps, { ...start, noMainIndex: true, seedCache: '/cache/intel/none/cache' });
+  assert.deepEqual(log.filter((l) => l.startsWith('copy')), []);
+});

@@ -98,6 +98,11 @@ export interface SerenaStart {
   /** A sandbox run (CREW-2922) has no main checkout to keep an index of: skip the background index. */
   noMainIndex?: boolean;
   /**
+   * A symbol cache to start from instead of the main checkout's (CREW-2924): a sandbox's copy of
+   * the index the host keeps on the cache volume. Copied, never shared; the volume is read-only.
+   */
+  seedCache?: string;
+  /**
    * Language servers already on disk (the sandbox image's, CREW-2915). Linked into the service's
    * home so it finds them without a download, which a sandboxed run cannot make.
    */
@@ -149,8 +154,8 @@ export function startSerena(d: SerenaDeps, s: SerenaStart): HookResult {
       const dest = join(p.home, 'language_servers');
       if (!d.exists(dest)) d.link(s.languageServers, dest);
     }
-    // A worktree's first start takes the main checkout's cache; later starts keep their own.
-    const mainCache = join(p.mainProject, 'cache');
+    // A worktree's first start takes the main checkout's cache (a sandbox's: the host's seeded one); later starts keep their own.
+    const mainCache = s.seedCache ?? join(p.mainProject, 'cache');
     const cache = join(p.project, 'cache');
     if (!d.exists(cache) && d.exists(mainCache)) d.copyDir(mainCache, cache);
     // Index the main checkout for the next worktree; never delays this start.

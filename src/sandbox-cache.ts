@@ -11,6 +11,7 @@
  *
  *   mirrors/<forge host>/<remote path>.git                 bare mirror (+ `crew-last-refresh`)
  *   cache/deps/<forge host>/<remote path>/<lockfile hash>/ node_modules trees, relative paths kept
+ *   intel/<forge host>/<remote path>/                      symbol cache of the default branch (`cache/`) + `indexed-commit` (CREW-2924)
  *
  * Only the host writes the volume (through short helper containers), so every
  * sandbox mount stays read-only. On Docker Desktop the volume lives inside the
@@ -32,6 +33,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DOCKER_LABEL_CACHE, DOCKER_LABEL_OWNER } from './deprovision-host.ts';
 import type { SandboxConfig } from './runner.ts';
+import { serenaConfigYaml } from './intel-serena.ts';
 import { DEFAULT_FORGE_HOST, DEFAULT_FORGE_USERNAME, forgeDescriptorFor, normalizeForgeHost } from './forges.ts';
 
 const execFileP = promisify(execFile);
@@ -90,6 +92,14 @@ export function mirrorRelPath(r: CacheRepo): string {
 /** Path of a repository's dependency trees, relative to the volume root. */
 export function depsRelDir(r: CacheRepo): string {
   return `cache/deps/${r.host}/${r.path}`;
+}
+
+/**
+ * Path of a repository's seeded symbol index, relative to the volume root (CREW-2924).
+ * Holds `cache/` (Serena's document-symbol cache) and `indexed-commit`.
+ */
+export function intelRelDir(r: CacheRepo): string {
+  return `intel/${r.host}/${r.path}`;
 }
 
 /** POSIX single-quote. */
@@ -156,6 +166,39 @@ rm -rf "$droot/$h"; mv "$droot/$h.tmp" "$droot/$h"
 `;
 
 /**
+ * Indexes the mirror's default-branch tip with Serena into `intel/<repo>/` on the volume (CREW-2924).
+ * Runs in the repository's sandbox image, which carries `serena` and its language servers
+ * (CREW-2915). Skips when `indexed-commit` already names the tip. The index is built in a
+ * temporary project folder and swapped in, so a run copying the previous `cache/` never sees
+ * a half-written one; a failed index leaves the previous one in place.
+ * `$3` is the `serena_config.yml` text with `@PROJECT@` for the project folder; the image's own
+ * `CREW_SERENA_LANGUAGE_SERVERS` names the warmed language servers.
+ */
+const INTEL_SCRIPT = `
+set -e
+m=${VOLUME_ROOT}/"$1"; iroot=${VOLUME_ROOT}/"$2"; config="$3"; ls="\${CREW_SERENA_LANGUAGE_SERVERS:-}"
+export GIT_TERMINAL_PROMPT=0
+git config --global --add safe.directory '*'
+tip=$(git -C "$m" rev-parse --verify --quiet "HEAD^{commit}") || { echo "the mirror has no default branch" >&2; exit 3; }
+[ "$(cat "$iroot/indexed-commit" 2>/dev/null)" = "$tip" ] && { echo "unchanged $tip"; exit 0; }
+w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+git clone --quiet --shared "$m" "$w/src"
+git -C "$w/src" checkout --quiet "$tip"
+mkdir -p "$w/home" "$w/project"
+printf '%s' "$config" | sed "s#@PROJECT@#$w/project#" > "$w/home/serena_config.yml"
+git -C "$w/src" show "$tip:.serena/project.yml" > "$w/project/project.yml" 2>/dev/null || : > "$w/project/project.yml"
+if grep -q '^read_only' "$w/project/project.yml"; then sed -i 's/^read_only.*/read_only: true/' "$w/project/project.yml"; else echo 'read_only: true' >> "$w/project/project.yml"; fi
+[ -n "$ls" ] && [ -d "$ls" ] && ln -s "$ls" "$w/home/language_servers"
+SERENA_HOME="$w/home" serena project index "$w/src"
+cd "$w/project"; mkdir -p cache
+mkdir -p "$(dirname "$iroot")"; rm -rf "$iroot.tmp"; mkdir -p "$iroot.tmp"
+cp -R -P cache "$iroot.tmp/"
+printf '%s\n' "$tip" > "$iroot.tmp/indexed-commit"
+rm -rf "$iroot"; mv "$iroot.tmp" "$iroot"
+echo "updated $tip"
+`;
+
+/**
  * Writes a mirror's base-branch tip into a host directory (CREW-2807). The
  * helper reads the volume and mounts the checkout's parent at /out. Files
  * are extracted over the existing tree and the ones the tip no longer has are
@@ -183,7 +226,12 @@ echo "updated $tip"
 
 export interface MaterializeOutcome { tip: string; changed: boolean }
 
-export interface MirrorInfo { repo: CacheRepo; lastRefresh: string | null }
+export interface MirrorInfo {
+  repo: CacheRepo;
+  lastRefresh: string | null;
+  /** The seeded symbol index (CREW-2924), when the volume holds one. */
+  intel?: { commit: string; indexedAt: string | null };
+}
 export interface RefreshOutcome { repo: CacheRepo; ok: boolean; detail?: string }
 
 export class SandboxCache {
@@ -220,7 +268,7 @@ export class SandboxCache {
    * repository failing does not stop the others; the caller raises attention
    * for the failures and the runs keep using the previous mirror state.
    */
-  async refresh(repos: Array<CacheRepo & { token?: string | null; username?: string }>): Promise<RefreshOutcome[]> {
+  async refresh(repos: Array<CacheRepo & { token?: string | null; username?: string; intelImage?: string | null }>): Promise<RefreshOutcome[]> {
     await this.ensureVolume();
     const out: RefreshOutcome[] = [];
     for (const r of repos) {
@@ -237,6 +285,15 @@ export class SandboxCache {
         } catch (e) {
           // The mirror is current; only the warmed tree is stale, and a run falls back to installing.
           out.push({ repo: r, ok: false, detail: `dependency tree: ${describe(e)}` });
+          continue;
+        }
+      }
+      if (r.intelImage) {
+        try {
+          await this.helper(r.intelImage, INTEL_SCRIPT, [mirrorRelPath(r), intelRelDir(r), serenaConfigYaml('@PROJECT@')]);
+        } catch (e) {
+          // The mirror is current; runs keep using the previous index (or none).
+          out.push({ repo: r, ok: false, detail: `intel index: ${describe(e)}` });
           continue;
         }
       }
@@ -263,13 +320,13 @@ export class SandboxCache {
   /** Mirrors in the volume with their last refresh; empty when the volume does not exist. */
   async list(): Promise<MirrorInfo[]> {
     try { await this.engine(['volume', 'inspect', this.s.volume]); } catch { return []; }
-    const script = `cd ${VOLUME_ROOT}/mirrors 2>/dev/null || exit 0; find . -name '*.git' -type d -prune | while read -r d; do printf '%s\\t%s\\n' "\${d#./}" "$(cat "$d/crew-last-refresh" 2>/dev/null)"; done`;
+    const script = `cd ${VOLUME_ROOT}/mirrors 2>/dev/null || exit 0; find . -name '*.git' -type d -prune | while read -r d; do r="\${d#./}"; i=${VOLUME_ROOT}/intel/"\${r%.git}"; printf '%s\\t%s\\t%s\\t%s\\n' "$r" "$(cat "$d/crew-last-refresh" 2>/dev/null)" "$(cat "$i/indexed-commit" 2>/dev/null)" "$(stat -c %y "$i/indexed-commit" 2>/dev/null | cut -c1-19)"; done`;
     const { stdout } = await this.helper(this.s.helperImage, script, []);
     const rows: MirrorInfo[] = [];
     for (const line of stdout.split('\n').filter(Boolean)) {
-      const [rel, when] = line.split('\t');
+      const [rel, when, commit, indexedAt] = line.split('\t');
       const m = /^([^/]+)\/(.+)\.git$/.exec(rel ?? '');
-      if (m) rows.push({ repo: { host: m[1]!, path: m[2]! }, lastRefresh: when?.trim() || null });
+      if (m) rows.push({ repo: { host: m[1]!, path: m[2]! }, lastRefresh: when?.trim() || null, ...(commit?.trim() ? { intel: { commit: commit.trim(), indexedAt: indexedAt?.trim() || null } } : {}) });
     }
     return rows;
   }
@@ -279,7 +336,7 @@ export class SandboxCache {
     const have = new Set(keep.map((r) => `${r.host}/${r.path}`));
     const drop = (await this.list()).map((m) => m.repo).filter((r) => !have.has(`${r.host}/${r.path}`));
     for (const r of drop) {
-      await this.helper(this.s.helperImage, `rm -rf ${VOLUME_ROOT}/${q(mirrorRelPath(r))} ${VOLUME_ROOT}/${q(depsRelDir(r))}`, []);
+      await this.helper(this.s.helperImage, `rm -rf ${VOLUME_ROOT}/${q(mirrorRelPath(r))} ${VOLUME_ROOT}/${q(depsRelDir(r))} ${VOLUME_ROOT}/${q(intelRelDir(r))}`, []);
     }
     return drop;
   }
@@ -310,7 +367,7 @@ export function cacheSettingsOf(cfg: Partial<SandboxConfig> | undefined): CacheS
   };
 }
 
-export type PassRepo = CacheRepo & { dir: string; token?: string | null; username?: string };
+export type PassRepo = CacheRepo & { dir: string; token?: string | null; username?: string; intelImage?: string | null };
 
 export const sandboxCacheKey = (volume: string, r: CacheRepo): string => `sandbox_cache:${volume}:${r.host}/${r.path}`;
 

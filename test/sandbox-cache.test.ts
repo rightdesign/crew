@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
-  SandboxCache, parseRemote, mirrorRelPath, cloneScript, cacheSettingsOf, makeCachePass, sandboxCacheKey,
+  SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, cacheSettingsOf, makeCachePass, sandboxCacheKey,
   CACHE_REFRESH_INTERVAL_MS, OPENSHELL_ATTACHABLE_LABEL, type CacheExec, type CacheSettings,
 } from '../src/sandbox-cache.ts';
 import { parseShipSandbox } from '../src/config.ts';
@@ -250,4 +250,71 @@ test('materialize fails clearly when the mirror lacks the base branch', async ()
   const r = rig();
   await r.cache.refresh([REPO]);
   await assert.rejects(r.cache.materialize(REPO, 'nope', join(r.root, 'area'), 'widgets'), /no branch nope/);
+});
+
+/** A `serena` on PATH that records each index and writes one cache file per tracked file; its config names the project folder. */
+function fakeSerena(root: string): { calls: string; restore: () => void } {
+  const bin = join(root, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const calls = join(root, 'serena-calls');
+  writeFileSync(join(bin, 'serena'), `#!/bin/sh
+echo "$@" >> ${calls}
+folder=$(sed -n 's/^project_serena_folder_location: "\\(.*\\)"$/\\1/p' "$SERENA_HOME/serena_config.yml")
+mkdir -p "$folder/cache" && git -C "$3" ls-files > "$folder/cache/files.txt"
+`, { mode: 0o755 });
+  const prev = process.env.PATH;
+  process.env.PATH = `${bin}:${prev}`;
+  return { calls, restore: () => { process.env.PATH = prev; } };
+}
+
+test('a repository with an intel image gets its default-branch index on the volume, re-indexed only when the tip moves', async () => {
+  const r = rig();
+  const fake = fakeSerena(r.root);
+  try {
+    const repo = { ...REPO, intelImage: 'crew-sandbox:widgets' };
+    const [first] = await r.cache.refresh([repo]);
+    assert.equal(first!.ok, true, first!.detail);
+    const dir = join(r.volume, intelRelDir(REPO));
+    const tip = sh(r.mirror, 'rev-parse', 'HEAD');
+    assert.equal(readFileSync(join(dir, 'indexed-commit'), 'utf8').trim(), tip);
+    assert.ok(existsSync(join(dir, 'cache', 'files.txt')));
+    assert.equal(readFileSync(fake.calls, 'utf8').trim().split('\n').length, 1);
+
+    await r.cache.refresh([repo]);
+    assert.equal(readFileSync(fake.calls, 'utf8').trim().split('\n').length, 1, 'same tip: no second index');
+
+    r.commit('two');
+    await r.cache.refresh([repo]);
+    assert.equal(readFileSync(fake.calls, 'utf8').trim().split('\n').length, 2);
+    assert.equal(readFileSync(join(dir, 'indexed-commit'), 'utf8').trim(), sh(r.mirror, 'rev-parse', 'HEAD'));
+
+    const [row] = await r.cache.list();
+    assert.equal(row!.intel?.commit, sh(r.mirror, 'rev-parse', 'HEAD'));
+    await r.cache.prune([]);
+    assert.ok(!existsSync(dir), 'pruning the mirror removes its index');
+  } finally { fake.restore(); }
+});
+
+test('a repository without an intel image has no index on the volume', async () => {
+  const r = rig();
+  await r.cache.refresh([REPO]);
+  assert.ok(!existsSync(join(r.volume, 'intel')));
+  assert.equal((await r.cache.list())[0]!.intel, undefined);
+});
+
+test('a failing index reports it, keeps the previous index and leaves the mirror current', async () => {
+  const r = rig();
+  const fake = fakeSerena(r.root);
+  try {
+    const repo = { ...REPO, intelImage: 'img' };
+    await r.cache.refresh([repo]);
+    const before = readFileSync(join(r.volume, intelRelDir(REPO), 'indexed-commit'), 'utf8');
+    writeFileSync(join(r.root, 'bin', 'serena'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    r.commit('three');
+    const [out] = await r.cache.refresh([repo]);
+    assert.equal(out!.ok, false);
+    assert.match(out!.detail!, /^intel index:/);
+    assert.equal(readFileSync(join(r.volume, intelRelDir(REPO), 'indexed-commit'), 'utf8'), before);
+    assert.equal(sh(r.mirror, 'rev-parse', 'HEAD'), sh(r.root + '/work', 'rev-parse', 'HEAD'));
+  } finally { fake.restore(); }
 });

@@ -10,7 +10,7 @@
  * command from the clone and probes it until it answers MCP.
  *
  *   node /opt/crew/bin/intel-bridge --attach-file F --start <flavor|command> --clone DIR
- *        [--state-dir D] [--ticket N] [--startup-seconds S]
+ *        [--state-dir D] [--seed-cache DIR] [--ticket N] [--startup-seconds S]
  *
  * Only what the symbol service needs is imported here: the bundle must stay small
  * and must not pull in the CLI.
@@ -30,6 +30,8 @@ export interface SandboxBridgeArgs {
   start: string;
   clone: string;
   stateDir: string;
+  /** The host's symbol cache for the mirror's default branch, on the read-only cache volume (CREW-2924). */
+  seedCache?: string;
   ticket: number;
   startupSeconds: number;
 }
@@ -42,10 +44,11 @@ export function parseSandboxBridgeArgs(argv: string[]): SandboxBridgeArgs {
   const attachFile = get('--attach-file');
   const start = get('--start');
   const clone = get('--clone');
-  if (!attachFile || !start || !clone) throw new Error('usage: intel-bridge --attach-file FILE --start FLAVOR|COMMAND --clone DIR [--state-dir DIR] [--ticket N] [--startup-seconds S]');
+  if (!attachFile || !start || !clone) throw new Error('usage: intel-bridge --attach-file FILE --start FLAVOR|COMMAND --clone DIR [--state-dir DIR] [--seed-cache DIR] [--ticket N] [--startup-seconds S]');
   return {
     attachFile, start, clone,
     stateDir: get('--state-dir') ?? '/sandbox/.crew',
+    ...(get('--seed-cache') ? { seedCache: get('--seed-cache')! } : {}),
     ticket: Number(get('--ticket')) || 0,
     startupSeconds: Number(get('--startup-seconds')) || 90,
   };
@@ -77,7 +80,7 @@ export function sandboxStarter(a: SandboxBridgeArgs, run: typeof runScript = run
       runHook: async (e) => {
         if (flavor === 'serena') {
           return startSerena(realSerenaDeps(onPath), {
-            stateDir: a.stateDir, route: 'sandbox', ticket: a.ticket, worktree: a.clone, mainCheckout: a.clone, noMainIndex: true,
+            stateDir: a.stateDir, route: 'sandbox', ticket: a.ticket, worktree: a.clone, mainCheckout: a.clone, noMainIndex: true, seedCache: a.seedCache,
             languageServers: process.env.CREW_SERENA_LANGUAGE_SERVERS,
           });
         }

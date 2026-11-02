@@ -17,7 +17,7 @@ import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } fr
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import {
-  planSandbox, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
+  planSandbox, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
@@ -1555,13 +1555,20 @@ function baseHealth(r: { dir: string; config: { branch: { remote: string; base: 
 /** CREW-2799: the repositories of a route as the sandbox cache knows them, with the forge credential for each host. */
 function sandboxCacheRepos(c: typeof route, ship: Ship): PassRepo[] {
   const out: PassRepo[] = [];
+  let images: ReturnType<typeof readSandboxState> | undefined;
   for (const t of reposOf(c)) {
     const origin = originUrlOf(t.dir, 'origin');
     const repo = origin ? parseRemote(origin) : null;
     if (!repo) continue;
     let token: string | null = null;
     try { token = readForgeToken(ship.forges, repo.host, ship.stateDir); } catch { /* the doctor reports an unreadable token */ }
-    out.push({ ...repo, dir: t.dir, token, username: forgeFor(ship.forges, repo.host)?.entry.username });
+    // CREW-2924: only a repository declaring `intel: serena` is indexed, in its own built sandbox image
+    // (none built yet means no index this pass; a later pass retries).
+    let intelImage: string | null = null;
+    try {
+      if (intelFlavor(loadRepoConfig(t.dir)?.hooks.intel) === 'serena') intelImage = sandboxImageFor(images ??= readSandboxState(ship.stateDir), t.name);
+    } catch { /* a malformed .crew.yaml is reported where it is read */ }
+    out.push({ ...repo, dir: t.dir, token, username: forgeFor(ship.forges, repo.host)?.entry.username, intelImage });
   }
   return out;
 }
@@ -4680,7 +4687,9 @@ switch (command) {
           } else {
             for (const d of dropped) process.stdout.write(`dropped ${d.host}/${d.path}\n`);
             if (mirrors.length === 0) process.stdout.write(`volume ${settings.volume}: no mirrors yet\n`);
-            for (const m of mirrors) process.stdout.write(`${m.repo.host}/${m.repo.path}  last refresh ${m.lastRefresh ?? 'never'}\n`);
+            for (const m of mirrors) {
+              process.stdout.write(`${m.repo.host}/${m.repo.path}  last refresh ${m.lastRefresh ?? 'never'}${m.intel ? `  intel ${m.intel.commit.slice(0, 12)} (${m.intel.indexedAt ?? 'age unknown'})` : ''}\n`);
+            }
           }
         } catch (e) {
           process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);

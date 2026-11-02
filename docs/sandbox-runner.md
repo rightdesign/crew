@@ -82,6 +82,7 @@ On Docker Desktop it lives inside the engine's virtual machine; it is never a ho
 ```
 mirrors/<forge host>/<remote path>.git                   bare mirror, plus a crew-last-refresh stamp
 cache/deps/<forge host>/<remote path>/<lockfile hash>/   node_modules trees, relative paths kept
+intel/<forge host>/<remote path>/                        symbol cache (`cache/`) + `indexed-commit` of the default branch; `intel: serena` repos only (CREW-2924)
 ```
 
 - **Refresh.** At the start of each daemon pass (at most once a minute) crew refreshes every served repository's
