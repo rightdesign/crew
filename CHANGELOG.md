@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.128.3] — 2026-11-02
+
+- CREW-2942 `crew provision` sets `ship.cloneScheme: https` on a managed ship, so its first checkout is cloned over HTTPS instead of timing out on SSH.
+- CREW-2943 On Linux the daemon unit restarts after a clean exit, so `crew reload` and self-upgrades no longer leave the ship without a daemon; `crew reload` starts a stopped unit and `crew doctor` flags one.
+
 ## [0.128.2] — 2026-11-02
 
 - CREW-2935 A pooled instance connects its routes against the platform URL without the pool URL's trailing `/api`, so a lease no longer fails with 404.
