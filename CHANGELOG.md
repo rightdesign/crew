@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.128.0] — 2026-11-02
+
+- CREW-2970 The brief and the acceptance-bounce comment carry a ready-to-fill Acceptance checklist, and Agent Log runs record handoff_bounces (sortable with `crew logbook list --bounces`).
+
 ## [0.127.10] — 2026-11-02
 
 - CREW-2965 Sandbox cache refresh authenticates through an inline git credential helper instead of http.extraHeader, so GitHub accepts it and the token stays out of git's argument list.
