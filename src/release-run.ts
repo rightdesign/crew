@@ -12,7 +12,7 @@
 import type { ShipAttentionItem } from './ship-attention.ts';
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import {
   BRANCH_TIP_TRAILER, createReleaseTag, detectClosure, fileAtRef, git, gitOk, GitError, headSha,
   isAncestor, latestReleaseTag, pushBranch, pushTag, refreshBaseBranch, describeUnsafeBase, recoverStrandedReleaseCheckouts, sweepStaleReleaseRoots, remoteBranchExists, remoteConfigured, fetchRemote, resolve, tagCommit, tagExists,
@@ -616,7 +616,18 @@ async function confirmExternalReleased(
  * distinction: a cycle in which every merge was a no-op has nothing to
  * release, however many branches it merged.
  */
-type MergeResult = { applied: true; sha?: string } | 'noop' | { conflict: ConflictFailure };
+type MergeResult =
+  | { applied: true; sha?: string }
+  | 'noop'
+  | { conflict: ConflictFailure }
+  // The merge step failed for a reason that is not a conflict (CREW-2954): no
+  // committer identity, a pre-commit hook, a lock, a full disk. The branch is
+  // not at fault, so it is neither handed back nor escalated.
+  | { error: string };
+
+/** True for a `mergeOne` result that did not merge the branch, whatever the reason. */
+const mergeFailed = (r: MergeResult): r is { conflict: ConflictFailure } | { error: string } =>
+  typeof r === 'object' && ('conflict' in r || 'error' in r);
 
 /**
  * A branch that would not merge, and what it disagreed about.
@@ -633,6 +644,29 @@ export interface ConflictFailure {
   message: string;
 }
 
+/**
+ * Makes sure `git commit` in the release checkout has someone to commit as.
+ *
+ * A ship whose service user has no `user.name`/`user.email` fails every squash
+ * with "Committer identity unknown", which used to be read as a merge conflict
+ * (CREW-2954). `git var GIT_COMMITTER_IDENT` is git's own strict check, the
+ * same one `git commit` makes, so it agrees with what the commit will do. When
+ * it fails, a repo-local identity naming the ship is set — local config only,
+ * never the operator's global one — and the release says it did.
+ */
+function ensureCommitterIdentity(o: ReleaseRunOptions): void {
+  if (gitOk(o.cwd, ['var', 'GIT_COMMITTER_IDENT'])) return;
+  const ship = hostname().split('.')[0] || 'ship';
+  git(o.cwd, ['config', 'user.name', `Crew (${ship})`]);
+  git(o.cwd, ['config', 'user.email', `crew@${ship}`]);
+  o.emit.warn(`no git committer identity here — set a checkout-local one, Crew (${ship}), for the release commit`);
+}
+
+/** Does this failed `git merge --squash` / `git commit` output describe a merge conflict, as opposed to some other fault? */
+function isConflict(message: string, unmergedPaths: string[]): boolean {
+  return unmergedPaths.length > 0 || /CONFLICT \(|Automatic merge failed|unmerged (files|paths)/i.test(message);
+}
+
 function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   const subject = c.entries[0] ?? `${c.ticket.title ?? c.ticket.issue_id} (${c.ticket.issue_id})`;
   if (o.dryRun) {
@@ -644,7 +678,12 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
   // with "no merge to abort", and when that failure came from inside the catch
   // block it replaced the real error and killed the whole cycle.
   const before = headSha(o.cwd);
+  // A merge that goes through means whatever raised release_merge_failed (an
+  // identity, a hook, a lock) is fixed: drop the item so it does not outlive
+  // the problem (CREW-2954).
+  const clearFailure = (): void => { o.attention?.clear(`release_merge_failed:${o.scope ?? 'release'}`); };
   try {
+    ensureCommitterIdentity(o);
     git(o.cwd, ['merge', '--squash', c.branch!]);
 
     // A verified branch can stage nothing: its change is already on the
@@ -658,6 +697,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
         `${c.branch} is already contained in the integration branch — nothing to apply`,
         { ticket: c.ticket.issue_id },
       );
+      clearFailure();
       return 'noop';
     }
 
@@ -670,6 +710,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.${trailer}`]);
     const sha = headSha(o.cwd);
     o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
+    clearFailure();
     return { applied: true, sha };
   } catch (e) {
     // WHAT disagreed, read while the failed merge is still in the index —
@@ -686,8 +727,23 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     // useful left to do about it here, and the ORIGINAL error is the one worth
     // reporting — the release phase reads this return value and stops.
     gitOk(o.cwd, ['reset', '--hard', before]);
-    o.emit.error(`could not merge ${c.branch}: ${(e as Error).message}`, { ticket: c.ticket.issue_id });
-    return { conflict: { candidate: c, paths, message: (e as Error).message } };
+    const message = (e as Error).message;
+    o.emit.error(`could not merge ${c.branch}: ${message}`, { ticket: c.ticket.issue_id });
+    // Only a real conflict is the branch's problem. Anything else is this
+    // ship's: leave the ticket verified so the next pass retries it, and say
+    // so where the operator looks (CREW-2954).
+    if (!isConflict(message, paths)) {
+      if (o.attention) {
+        void o.attention.raise({
+          kind: 'release_merge_failed',
+          key: `release_merge_failed:${o.scope ?? 'release'}`,
+          message: `${o.scope ?? 'release'}: could not merge ${c.branch} (${c.ticket.issue_id}) — not a conflict, so the ticket stays verified and is retried: ${message.slice(0, 400)}`,
+          since: new Date().toISOString(),
+        });
+      }
+      return { error: message };
+    }
+    return { conflict: { candidate: c, paths, message } };
   }
 }
 
@@ -1275,7 +1331,7 @@ async function isolateAndRetry(
     for (const c of applied) {
       gitOk(o.cwd, ['reset', '--hard', preMerge]);
       const m = mergeOne(o, c);
-      if (typeof m === 'object' && 'conflict' in m) continue;
+      if (mergeFailed(m)) continue;
       const r = await hook(o, name);
       if (r && r.code !== 0) {
         o.emit.warn(`${c.branch} fails the ${name} hook on its own`, { ticket: c.ticket.issue_id });
@@ -1291,8 +1347,8 @@ async function isolateAndRetry(
       for (const [i, j] of pairs) {
         gitOk(o.cwd, ['reset', '--hard', preMerge]);
         const a = mergeOne(o, applied[i]!);
-        const b = typeof a === 'object' && 'conflict' in a ? a : mergeOne(o, applied[j]!);
-        if (typeof b === 'object' && 'conflict' in b) continue;
+        const b = mergeFailed(a) ? a : mergeOne(o, applied[j]!);
+        if (mergeFailed(b)) continue;
         const r = await hook(o, name);
         if (r && r.code !== 0) {
           o.emit.warn(`${applied[j]!.branch} fails the ${name} hook together with ${applied[i]!.branch}`, { ticket: applied[j]!.ticket.issue_id });
@@ -1312,7 +1368,7 @@ async function isolateAndRetry(
           let clean = true;
           for (const c of applied.slice(0, mid)) {
             const m = mergeOne(o, c);
-            if (typeof m === 'object' && 'conflict' in m) { clean = false; break; }
+            if (mergeFailed(m)) { clean = false; break; }
           }
           const r = clean ? await hook(o, name) : null;
           if (r && r.code !== 0) { hi = mid; tail = lastLines(r.output, HOOK_FAILURE_TAIL_LINES); } else lo = mid + 1;
@@ -1394,6 +1450,7 @@ async function mergeAndRelease(
     }
     const r = mergeOne(o, c);
     if (typeof r === 'object' && 'conflict' in r) { conflicts.push(r.conflict); continue; }
+    if (typeof r === 'object' && 'error' in r) continue;   // not a conflict: stays verified, retried next pass (CREW-2954)
     if (typeof r === 'object' && r.applied) {
       applied++;
       c.sha = r.sha;

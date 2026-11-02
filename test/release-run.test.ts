@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runRelease, summarizeOutcome, emitReleaseSummary, type ReleaseOutcome } from '../src/release-run.ts';
@@ -1444,6 +1444,70 @@ test('a conflicting branch is reported rather than silently skipped', async () =
   assert.deepEqual(out.conflicts![0]!.paths, ['contested.txt'], 'the caller needs to know WHAT disagreed');
   // and the failed merge left nothing behind
   assert.equal(git(dir, ['status', '--porcelain']), '');
+});
+
+test('a failed commit that is not a conflict leaves the ticket verified and raises attention, no hand-back (CREW-2954)', async () => {
+  const { dir, repo } = project(LOCAL);
+  // The branch merges cleanly; the commit is refused for an unrelated reason.
+  const hook = join(dir, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\necho "hook says no" >&2\nexit 1\n', { mode: 0o755 });
+  const raised: Array<{ kind: string; message: string }> = [];
+  const before = git(dir, ['rev-parse', 'HEAD']);
+
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+    emit: emitter(), dryRun: false,
+    attention: { raise: (i) => { raised.push(i); }, clear: () => {} },
+  });
+
+  assert.equal(out.merged.length, 0);
+  assert.deepEqual(out.conflicts ?? [], [], 'not a conflict, so nothing is handed back');
+  assert.equal(raised.length, 1);
+  assert.equal(raised[0]!.kind, 'release_merge_failed');
+  assert.match(raised[0]!.message, /hook says no/);
+  assert.equal(git(dir, ['rev-parse', 'HEAD']), before);
+  assert.equal(git(dir, ['status', '--porcelain']), '');
+});
+
+test('release_merge_failed attention is cleared once a later pass merges (CREW-2954)', async () => {
+  const { dir, repo } = project(LOCAL);
+  const hook = join(dir, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const active = new Set<string>();
+  const attention = {
+    raise: (i: { key: string }) => { active.add(i.key); },
+    clear: (k: string) => { active.delete(k); },
+  };
+  const opts = { cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false, attention };
+
+  await runRelease(opts);
+  assert.equal(active.size, 1, 'the failure is shown');
+
+  rmSync(hook);                                  // the fault is fixed
+  const out = await runRelease(opts);
+  assert.equal(out.merged.length, 1);
+  assert.equal(active.size, 0, 'a clean merge clears the item');
+});
+
+test('a checkout with no committer identity gets a local one and merges (CREW-2954)', async () => {
+  const { dir, repo, g } = project(LOCAL);
+  g('config', '--unset', 'user.email'); g('config', '--unset', 'user.name');
+  g('config', 'user.useConfigOnly', 'true');     // git refuses to guess an identity
+  const saved = { g: process.env.GIT_CONFIG_GLOBAL, s: process.env.GIT_CONFIG_NOSYSTEM };
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null'; process.env.GIT_CONFIG_NOSYSTEM = '1';
+  try {
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+      emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.merged.length, 1);
+    assert.deepEqual(out.conflicts ?? [], []);
+    assert.match(git(dir, ['config', 'user.name']), /^Crew \(/);
+    assert.ok(lines.some((l) => /no git committer identity/.test(l)));
+  } finally {
+    if (saved.g === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved.g;
+    if (saved.s === undefined) delete process.env.GIT_CONFIG_NOSYSTEM; else process.env.GIT_CONFIG_NOSYSTEM = saved.s;
+  }
 });
 
 // summarizeOutcome — the per-repo row behind the fan-out release summary
