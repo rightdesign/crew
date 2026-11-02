@@ -80,6 +80,7 @@ test('the harness exec exports the crew layer environment (CREW-2968)', async ()
   const exec = r.calls().filter((c) => c.argv[1] === 'exec').at(-1)!.argv.join(' ');
   assert.match(exec, /PNPM_HOME=\/opt\/crew\/pnpm; export PNPM_HOME;/);
   assert.match(exec, /npm_config_store_dir=\/opt\/crew\/pnpm-store; export npm_config_store_dir;/);
+  assert.match(exec, /pnpm_config_store_dir=\/opt\/crew\/pnpm-store; export pnpm_config_store_dir;/);
   assert.match(exec, /XDG_CACHE_HOME=\/opt\/crew\/cache; export XDG_CACHE_HOME;/);
 });
 

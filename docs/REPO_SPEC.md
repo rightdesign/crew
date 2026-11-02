@@ -302,7 +302,7 @@ Three facts a declaration has to respect, all measured in the CREW-2787 spike:
 - A sandbox's `HOME` is its workdir (`/sandbox`), not the image user's home. A
   cache warmed under `~` at build time is invisible at run time. Put caches at
   absolute paths; the crew layer exports `XDG_CACHE_HOME`, `npm_config_cache`,
-  `npm_config_store_dir` and `PNPM_HOME` pointing under `/opt/crew`.
+  `npm_config_store_dir`, `pnpm_config_store_dir` (the only spelling pnpm 11 reads) and `PNPM_HOME` pointing under `/opt/crew`.
 - The base image runs as uid 1000 (`ubuntu`) and has no `/sandbox`; the repo
   layer creates it and the ownership.
 - A download at run time fails under the default network policy, so every

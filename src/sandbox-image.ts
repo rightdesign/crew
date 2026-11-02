@@ -138,6 +138,9 @@ export const CREW_ENV: Record<string, string> = {
   XDG_CACHE_HOME: `${CREW_PREFIX}/cache`,
   npm_config_cache: `${CREW_PREFIX}/cache/npm`,
   npm_config_store_dir: `${CREW_PREFIX}/pnpm-store`,
+  // pnpm 11 ignores npm_config_store_dir and reads only this spelling (CREW-2973): without it `pnpm fetch`
+  // at build time fills the builder's home store, and a run's offline install finds /opt/crew/pnpm-store empty.
+  pnpm_config_store_dir: `${CREW_PREFIX}/pnpm-store`,
   PNPM_HOME: `${CREW_PREFIX}/pnpm`,
   // A run cannot reach the download host, so an in-run update attempt is only noise.
   DISABLE_AUTOUPDATER: '1',
