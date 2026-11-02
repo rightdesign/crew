@@ -205,9 +205,11 @@ export async function mintMissingSeatKeys(
   const resolved = route.resolved;
   const doFetch = o.fetchImpl ?? fetch;
   // The release seat is not a RoleName, so it is minted for alongside the roles.
-  const targets: Array<{ role: RoleName | 'release'; agentId: string | undefined }> = [
-    ...SEAT_KEY_ROLES.filter((r) => resolved.seats[r]).map((role) => ({ role, agentId: seatAgentId(route, role) })),
-    ...(resolved.releaseSeat ? [{ role: 'release' as const, agentId: resolved.releaseAgentId }] : []),
+  // `actorRecordId` is the seat's own Crew row: ships share one Agents row per
+  // role, so the key must name the Crew row for event bylines to tell them apart.
+  const targets: Array<{ role: RoleName | 'release'; agentId: string | undefined; actorRecordId: string | undefined }> = [
+    ...SEAT_KEY_ROLES.filter((r) => resolved.seats[r]).map((role) => ({ role, agentId: seatAgentId(route, role), actorRecordId: resolved.seats[role] })),
+    ...(resolved.releaseSeat ? [{ role: 'release' as const, agentId: resolved.releaseAgentId, actorRecordId: resolved.releaseSeat }] : []),
   ];
   let store: SessionStore;
   try {
@@ -233,7 +235,7 @@ export async function mintMissingSeatKeys(
       return targets.map(({ role, agentId }) => (agentId ? { role, action: 'failed' as const, detail } : { role, action: 'no_agent' as const }));
     }
   }
-  for (const { role, agentId } of targets) {
+  for (const { role, agentId, actorRecordId } of targets) {
     if (!agentId) { out.push({ role, action: 'no_agent' }); continue; }
     const slug = slugFor(route, agentId);
     try {
@@ -246,7 +248,7 @@ export async function mintMissingSeatKeys(
           'Content-Type': 'application/json',
           'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
         },
-        body: JSON.stringify({ name: `crew ${o.shipName ?? 'ship'} ${role}` }),
+        body: JSON.stringify({ name: `crew ${o.shipName ?? 'ship'} ${role}`, ...(actorRecordId ? { actorRecordId } : {}) }),
       });
       if (res.status === 403) {
         // The capability is the caller's, not the seat's: every remaining mint
@@ -326,9 +328,11 @@ export async function revokeSeatKeys(
   if (!route.resolved) return out;
   const resolved = route.resolved;
   const doFetch = o.fetchImpl ?? fetch;
-  const targets: Array<{ role: RoleName | 'release'; agentId: string | undefined }> = [
-    ...SEAT_KEY_ROLES.filter((r) => resolved.seats[r]).map((role) => ({ role, agentId: seatAgentId(route, role) })),
-    ...(resolved.releaseSeat ? [{ role: 'release' as const, agentId: resolved.releaseAgentId }] : []),
+  // `actorRecordId` is the seat's own Crew row: ships share one Agents row per
+  // role, so the key must name the Crew row for event bylines to tell them apart.
+  const targets: Array<{ role: RoleName | 'release'; agentId: string | undefined; actorRecordId: string | undefined }> = [
+    ...SEAT_KEY_ROLES.filter((r) => resolved.seats[r]).map((role) => ({ role, agentId: seatAgentId(route, role), actorRecordId: resolved.seats[role] })),
+    ...(resolved.releaseSeat ? [{ role: 'release' as const, agentId: resolved.releaseAgentId, actorRecordId: resolved.releaseSeat }] : []),
   ];
   let store: SessionStore;
   try {

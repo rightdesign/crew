@@ -74,6 +74,16 @@ test('mintMissingSeatKeys mints once per linked seat, skips stored keys and pair
   assert.equal(calls.length, 2);
 });
 
+test('mint sends the seat\'s own Crew row id as actorRecordId', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const fetchImpl = (async (_u: string, init: RequestInit) => {
+    bodies.push(JSON.parse(init.body as string) as Record<string, unknown>);
+    return new Response(JSON.stringify({ key: 'sk_x' }), { status: 201 });
+  }) as unknown as typeof fetch;
+  await mintMissingSeatKeys(route(), { getStore: () => memoryStore(), fetchImpl });
+  assert.deepEqual(bodies.map((b) => b.actorRecordId), ['crew-dev', 'crew-qa']);
+});
+
 test('a refused (403) mint is reported once, stores nothing, and does not throw', async () => {
   const store = memoryStore();
   const out = await mintMissingSeatKeys(route({ dev: 'agent-dev' }), {
