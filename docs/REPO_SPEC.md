@@ -274,6 +274,13 @@ with the build log path and sandboxes keep running the previous image. Builds
 run in the background between daemon passes, never on the cycle path. Bumping
 the pinned harness version rebuilds every repository's image.
 
+A sandbox host needs no port 80: the crew layer rewrites the base image's apt
+sources to `https://` before its first `apt-get update` (and the repo layer does
+the same before installing `packages`), and everything else the crew layer
+downloads, such as Claude Code, is fetched over https. `setup` steps therefore
+see https apt sources too, and a host whose egress allows only TCP 443 builds
+images for repositories with and without a `sandbox:` section.
+
 A `setup` step cannot see the repository, so a cache that comes from its own
 files (a pnpm store from its lockfile) is declared with `warm`:
 

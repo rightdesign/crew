@@ -191,12 +191,21 @@ function baseLayer(): SandboxLayer {
   return { name: 'base', tag: `crew-sandbox-base:${hash({ SANDBOX_BASE_IMAGE, SANDBOX_OPENSHELL_VERSION })}`, dockerfile, files: {} };
 }
 
+// A managed sandbox host allows egress on TCP 443 only, and Ubuntu's stock apt
+// sources are http://. Rewriting them to https before any `apt-get update`
+// (the same sed the host image applies to the host's own sources) keeps image
+// builds off port 80. No-op where the file is absent (non-Ubuntu images).
+// Any *.ubuntu.com host is rewritten, not just archive/security: arm64 images
+// use http://ports.ubuntu.com.
+export const APT_HTTPS_COMMAND = "sed -i -E 's#http://([a-z0-9.-]*\\.)?ubuntu\\.com#https://\\1ubuntu.com#g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true";
+
 function crewLayer(base: SandboxLayer, intel?: 'serena', bridge?: string): SandboxLayer {
   const files: Record<string, string> = { 'credential-helper': CREDENTIAL_HELPER, 'mcp.json': MCP_CONFIG, ...(bridge ? { 'intel-bridge': bridge } : {}) };
   const env = Object.entries(CREW_ENV).map(([k, v]) => `${k}=${v}`).join(' ');
   const dockerfile = [
     `FROM ${base.tag}`,
     'USER root',
+    run(APT_HTTPS_COMMAND),
     run(`apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git${intel ? ' python3 python3-venv nodejs' : ''} && rm -rf /var/lib/apt/lists/*`),
     `COPY credential-helper ${CREW_PREFIX}/bin/credential-helper`,
     `COPY mcp.json ${CREW_PREFIX}/mcp/mcp.json`,
@@ -258,6 +267,7 @@ function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer, warm: Wa
     lines.push(`FROM ${crew.tag}`, 'USER root');
   }
   if (decl.packages.length > 0) {
+    lines.push(run(APT_HTTPS_COMMAND));
     lines.push(run(`apt-get update && apt-get install -y --no-install-recommends ${decl.packages.join(' ')} && rm -rf /var/lib/apt/lists/*`));
   }
   lines.push(run(`mkdir -p /sandbox && chown -R ${SANDBOX_UID}:${SANDBOX_UID} /sandbox ${CREW_PREFIX}`),

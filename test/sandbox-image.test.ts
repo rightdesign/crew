@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
   planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
-  sandboxFailedKey, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, type BuildDeps, type TickDeps,
+  sandboxFailedKey, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
 
@@ -219,4 +219,28 @@ test('CREW-2956: a run uses the repository layer when it declares and has built 
   assert.equal(sandboxImageForRun(state, 'crew', false), 'ship:1');
   assert.equal(sandboxImageForRun({ [SHIP_SANDBOX_KEY]: built('ship:1') }, 'synthesis', true), 'ship:1', 'declared but not built yet');
   assert.equal(sandboxImageForRun({}, 'crew', false), null);
+});
+
+test('apt sources are rewritten to https before the first apt-get update, so a 443-only host builds', () => {
+  const plan = planSandbox('r', { packages: ['jq'], setup: [] });
+  const crew = plan.layers[1]!.dockerfile;
+  assert.ok(crew.includes(JSON.stringify(APT_HTTPS_COMMAND).slice(1, -1)));
+  assert.ok(crew.indexOf('ubuntu.sources') < crew.indexOf('apt-get update'));
+  const repo = plan.layers[2]!.dockerfile;
+  assert.ok(repo.indexOf('ubuntu.sources') < repo.indexOf('apt-get update'));
+  // Nothing the layers download is plain http.
+  assert.doesNotMatch(crew.replace(/sed -i[^\n]*/, ''), /http:\/\//);
+});
+
+test('the apt https rewrite leaves no http:// in the amd64 or arm64 ubuntu.sources', () => {
+  const expr = /sed -i -E '([^']*)'/.exec(APT_HTTPS_COMMAND)![1]!;
+  const samples = [
+    'URIs: http://archive.ubuntu.com/ubuntu/\nURIs: http://security.ubuntu.com/ubuntu/\n',
+    'URIs: http://ports.ubuntu.com/ubuntu-ports/\nURIs: http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\n',
+  ];
+  for (const sample of samples) {
+    const out = execFileSync('sed', ['-E', expr], { input: sample }).toString();
+    assert.doesNotMatch(out, /http:\/\//);
+    assert.match(out, /^URIs: https:\/\/[a-z0-9.-]+\.ubuntu\.com\//m);
+  }
 });
