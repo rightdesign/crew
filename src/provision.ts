@@ -32,6 +32,7 @@ import {
   type InstallJob,
 } from './install.ts';
 import { planEnable } from './doctor-fix.ts';
+import { MANAGED_GIT_EMAIL, readGlobalGitIdentity } from './doctor-checks.ts';
 
 /** Exit codes mirror `connect --json`: 0 done, 1 a step failed, 2 bad input or a problem, 3 a decision is needed. */
 export const PROVISION_EXIT = { ok: 0, failed: 1, problem: 2, choice: 3 } as const;
@@ -93,13 +94,18 @@ export interface ProvisionDeps {
   setShipSetting(key: string, value: string | number): boolean;
   /** CREW-2910: writes the managed-ship runtime defaults into crew.yaml where unset; returns the dotted keys it wrote. */
   applyManagedDefaults(): string[];
+  /**
+   * CREW-2955: gives the user running crew a global git identity where none is set (each of `user.name` / `user.email` independently, so
+   * one an operator already set is never overwritten). `set` when it wrote anything, `kept` when both already existed.
+   */
+  ensureGitIdentity(name: string, email: string): 'set' | 'kept';
   /** The token the credential helper currently answers for a host, or null. */
   storedToken(host: string): string | null;
   defaultShipName(): string;
 }
 
 export type ProvisionEvent =
-  | 'connect' | 'route_enabled' | 'seat_keys' | 'forge' | 'install' | 'daemon' | 'choice' | 'problem' | 'done';
+  | 'connect' | 'route_enabled' | 'git_identity' | 'seat_keys' | 'forge' | 'install' | 'daemon' | 'choice' | 'problem' | 'done';
 
 export interface ProvisionSummary {
   ok: boolean;
@@ -112,6 +118,8 @@ export interface ProvisionSummary {
   daemon?: { mechanism: string; running: boolean; lingering: boolean };
   /** CREW-2944: the seats whose agent key this run minted, per route (a re-provision of an existing Ships row lists what a wiped host was missing). */
   seatKeys?: Array<{ route: string; minted: string[] }>;
+  /** CREW-2955: only on a managed ship kind; an operator-run machine keeps its own identity and this stays unset. */
+  gitIdentity?: 'set' | 'kept';
   configPath?: string;
 }
 
@@ -225,6 +233,14 @@ export async function runProvision(
       summary.changed = true;
       emit('connect', `set ${key}`, { setting: key });
     }
+  }
+
+  // 1d. CREW-2955: a managed ship has no operator to have configured git, so its commits (the release phase's squash-merge, a hand-off)
+  // would fail with `Committer identity unknown`. Never on an operator-run machine: that keeps the operator's own identity.
+  if (isManagedShipKind(o.shipKind)) {
+    summary.gitIdentity = deps.ensureGitIdentity(shipName, MANAGED_GIT_EMAIL);
+    if (summary.gitIdentity === 'set') summary.changed = true;
+    emit('git_identity', `git identity: ${summary.gitIdentity}`, { action: summary.gitIdentity });
   }
 
   // 2. forge tokens, compared through the credential helper so a re-run with the same token changes nothing.
@@ -484,6 +500,17 @@ export function realProvisionDeps(crewHome: string): ProvisionDeps {
       const wrote = applyManagedDefaultsToDoc(doc);
       if (wrote.length) writeFileSync(file, doc.toString());
       return wrote;
+    },
+    ensureGitIdentity(name, email) {
+      const have = readGlobalGitIdentity();
+      let wrote = false;
+      for (const [key, value] of [['user.name', have.name ? null : name], ['user.email', have.email ? null : email]] as const) {
+        if (value === null) continue;
+        const res = spawnSync('git', ['config', '--global', key, value], { encoding: 'utf8' });
+        if (res.status !== 0) throw new Error(`git config --global ${key}: ${(res.stderr ?? '').trim() || `exited ${res.status}`}`);
+        wrote = true;
+      }
+      return wrote ? 'set' : 'kept';
     },
     storedToken(host) {
       const res = spawnCrew(['credential', 'get'], { input: `protocol=https\nhost=${host}\n\n` });

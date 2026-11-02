@@ -99,3 +99,15 @@ test('managedRuntimeWarnings names a managed ship left on the host runner or non
   assert.equal(implicit.length, 1);
   assert.match(implicit[0]!, /ship\.toolchains\.claude\.auth is "inherit"/);
 });
+
+test('managedGitIdentityWarnings names a missing identity on a managed ship and says nothing on a developer machine (CREW-2955)', async () => {
+  const { managedGitIdentityWarnings } = await import('../src/doctor-checks.ts');
+  const none = { name: null, email: null };
+  assert.deepEqual(managedGitIdentityWarnings('managed_instance', { name: 'ship', email: 'crew@tablation.dev' }), []);
+  assert.deepEqual(managedGitIdentityWarnings('developer_machine', none), []);
+  assert.deepEqual(managedGitIdentityWarnings(null, none), []);
+  const both = managedGitIdentityWarnings('pooled_instance', none);
+  assert.equal(both.length, 1);
+  assert.match(both[0]!, /user\.name and user\.email/);
+  assert.match(managedGitIdentityWarnings('managed_instance', { name: 'ship', email: null })[0]!, /user\.email not set/);
+});

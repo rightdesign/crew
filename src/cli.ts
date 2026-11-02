@@ -20,7 +20,7 @@ import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, managedGitIdentityWarnings, readGlobalGitIdentity, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
@@ -6401,7 +6401,9 @@ switch (command) {
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
       if (!flag('offline')) {
-        for (const message of managedRuntimeWarnings(await doctorShipKind(route, cfg.ship), cfg.ship)) problems.push({ severity: 'attention', kind: 'managed_runtime_default', message });
+        const shipKind = await doctorShipKind(route, cfg.ship);
+        for (const message of managedRuntimeWarnings(shipKind, cfg.ship)) problems.push({ severity: 'attention', kind: 'managed_runtime_default', message });
+        for (const message of managedGitIdentityWarnings(shipKind, readGlobalGitIdentity())) problems.push({ severity: 'attention', kind: 'managed_git_identity', message });
       }
       for (const t of rejectedTunnels(cfg.ship.stateDir)) {
         problems.push({ severity: 'attention', kind: TUNNEL_REJECTED_KEY, message: tunnelRejectedMessage(t.workspaceId, t.quickExits), remedy: 'rotate the slug with `crew rotate-passenger-url`' });
@@ -6695,6 +6697,7 @@ switch (command) {
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
         for (const w of managedRuntimeWarnings(row.kind, cfg.ship)) process.stdout.write(`managed runtime:  WARN ${w}\n`);
+        for (const w of managedGitIdentityWarnings(row.kind, readGlobalGitIdentity())) process.stdout.write(`managed git:      WARN ${w}\n`);
       }
     }
 

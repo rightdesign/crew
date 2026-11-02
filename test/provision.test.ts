@@ -16,7 +16,7 @@ const base = (over: Partial<ProvisionOptions> = {}): ProvisionOptions => ({
   key: 'sk_test', routes: ['acme'], forgeHosts: [], tokens: {}, json: true, dryRun: false, choices: [], ...over,
 });
 
-interface Fake { managed: string[][]; deps: ProvisionDeps; calls: Array<{ args: string[]; env?: Record<string, string>; input?: string }>; state: InstallState; enabled: Set<string>; settings: Record<string, string | number> }
+interface Fake { managed: string[][]; identities: string[][]; deps: ProvisionDeps; calls: Array<{ args: string[]; env?: Record<string, string>; input?: string }>; state: InstallState; enabled: Set<string>; settings: Record<string, string | number> }
 function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: Record<string, string>; enabled?: string[]; crew?: (args: string[]) => RunResult | undefined } = {}): Fake {
   const state: InstallState = { mechanism: 'systemd', unitsStale: false, running: true, lingering: true, ...o.state };
   const calls: Fake['calls'] = [];
@@ -24,6 +24,7 @@ function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: 
   const stored = { ...(o.stored ?? {}) };
   const settings: Record<string, string | number> = {};
   const managed: string[][] = [];
+  const identities: string[][] = [];
   const deps: ProvisionDeps = {
     crew(args, opts) {
       calls.push({ args, env: opts?.env, input: opts?.input });
@@ -39,10 +40,11 @@ function fake(o: { connect?: RunResult; state?: Partial<InstallState>; stored?: 
     installState: () => ({ ...state }),
     setShipSetting: (k, v) => { settings[k] = v; return true; },
     applyManagedDefaults: () => { const w = ['ship.runner', 'ship.sandbox.cacheVolume']; managed.push(w); return w; },
+    ensureGitIdentity: (n, e) => { identities.push([n, e]); return 'set'; },
     storedToken: (h) => stored[h] ?? null,
     defaultShipName: () => 'host-1',
   };
-  return { deps, calls, state, enabled, settings, managed };
+  return { deps, calls, state, enabled, settings, managed, identities };
 }
 
 const run = (o: ProvisionOptions, f: Fake) => {
@@ -217,6 +219,23 @@ test('a managed ship kind gets the sandbox defaults without any flag; a develope
   await run(base(), plain);
   assert.equal(plain.managed.length, 0);
   assert.equal(plain.settings.runner, undefined);
+});
+
+test('a managed ship kind gets a git identity named for the ship; a developer machine gets none (CREW-2955)', async () => {
+  for (const kind of ['pooled_instance', 'managed_instance']) {
+    const f = fake();
+    const r = await run(base({ shipKind: kind, shipName: 'crew-2892-acceptance' }), f);
+    assert.deepEqual(f.identities, [['crew-2892-acceptance', 'crew@tablation.dev']], kind);
+    assert.equal(r.summary.gitIdentity, 'set', kind);
+    assert.equal(r.summary.changed, true, kind);
+    assert.ok(r.out.some((l) => l.includes('git identity: set')), kind);
+  }
+  for (const kind of ['developer_machine', undefined]) {
+    const f = fake();
+    const r = await run(base({ shipKind: kind }), f);
+    assert.deepEqual(f.identities, [], String(kind));
+    assert.equal(r.summary.gitIdentity, undefined);
+  }
 });
 
 test('--runner host on a managed ship skips the defaults and logs the explicit choice (CREW-2910)', async () => {

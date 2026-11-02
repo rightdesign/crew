@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { hostOfRemote } from './forges.ts';
 
 /**
@@ -204,4 +204,29 @@ export function managedRuntimeWarnings(
     if (t.harness === 'claude' && t.auth !== 'workspace') out.push(`ship.toolchains.${t.name}.auth is "${t.auth ?? 'inherit'}" on a ${kind} ship; a managed ship reaches a model only through the workspace endpoint (set auth: workspace)`);
   }
   return out;
+}
+
+/** The git identity crew gives a managed ship's `crew` user (CREW-2955). The email is shared; the name is the ship's own. */
+export const MANAGED_GIT_EMAIL = 'crew@tablation.dev';
+
+/** The global git identity of the user running crew; either part is null when unset. */
+export function readGlobalGitIdentity(): { name: string | null; email: string | null } {
+  const get = (key: string): string | null => {
+    const res = spawnSync('git', ['config', '--global', '--get', key], { encoding: 'utf8' });
+    const v = (res.stdout ?? '').trim();
+    return res.status === 0 && v ? v : null;
+  };
+  return { name: get('user.name'), email: get('user.email') };
+}
+
+/**
+ * CREW-2955: a Tablation-managed ship has no operator to have configured git, so every commit it makes (the release phase's squash-merge, a
+ * hand-off, `periscope down --keep`) fails with `Committer identity unknown` unless `crew provision` wrote one. Names what is missing.
+ * Empty for any other kind: an operator-run machine keeps the operator's own identity and crew says nothing about it.
+ */
+export function managedGitIdentityWarnings(kind: string | null | undefined, identity: { name: string | null; email: string | null }): string[] {
+  if (kind !== 'managed_instance' && kind !== 'pooled_instance' && kind !== 'pooled') return [];
+  const missing = [identity.name ? '' : 'user.name', identity.email ? '' : 'user.email'].filter(Boolean);
+  if (missing.length === 0) return [];
+  return [`git ${missing.join(' and ')} not set for this user on a ${kind} ship; every commit crew makes here fails with "Committer identity unknown" (re-run \`crew provision\`, or \`git config --global user.name <ship name>\` and \`user.email ${MANAGED_GIT_EMAIL}\`)`];
 }
