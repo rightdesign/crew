@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.118.0] — 2026-11-02
+
+- CREW-2879 The Agent Log records how many searches and symbol lookups a run made before its first edit, and how long that took; `crew logbook list --before-edit` surfaces the worst searches.
+
 ## [0.117.1] — 2026-11-02
 
 - CREW-2878 Lane briefs and the pair persona gain "Finding where something lives" guidance: read the repository map, use the symbol tools, search a visible string once, and read the periscope's pointed-at file.
