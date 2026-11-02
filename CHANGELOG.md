@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.3] — 2026-11-02
+
+- CREW-2961 A sandbox ship's cache refresh works with a token-only forge entry, and a failing refresh now shows in `crew sandbox cache`, the attention item and `crew doctor`.
+
 ## [0.127.2] — 2026-11-02
 
 - CREW-2958 A run that ends at the harness's sign-out error (an expired Vertex or claude.ai login) is now logged as an error, releases its ticket hold, pauses the role and raises a `signed_out` attention item naming the fix; `crew selftest` prints the same remedy.
