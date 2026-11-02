@@ -43,7 +43,11 @@ live run and deletes the sandbox when it finishes. The event stream carries `san
 
 ## Doctor
 
-`crew doctor` checks that the CLI runs and the gateway answers. On Docker Desktop the gateway's docker
+`crew doctor` checks that the CLI runs and the gateway answers, then creates and deletes a probe sandbox
+with a crew-shaped name (`crew-` plus 14 characters, 19 in all: a Linux host-mode gateway rejects names
+longer than 19). A refusal is reported as the gateway refusing the probe, with its message. The probe
+create is allowed 120 s because of the image pull below; a timeout is reported as a timeout, not a refusal.
+The probe runs `sleep 60`, so it stops by itself even if the delete fails. On Docker Desktop the gateway's docker
 section needs `supervisor_network_mode = "bridge"` (otherwise every create fails with
 `ControlSupervisorStartFailed` after 12 s), and `allow_driver_config = true` for the cache volume. Linux
 hosts use host mode. The first create on a host pulls the supervisor and runtime images (about 12 s on a Mac).

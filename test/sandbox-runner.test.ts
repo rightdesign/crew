@@ -93,7 +93,7 @@ test('the sidecar names the sandbox and a client pid; runner events carry timing
   await new Promise((res) => setTimeout(res, 800));
   const sc = readRunSidecar(plan.streamPath)!;
   assert.equal(sc.runner, 'sandbox');
-  assert.match(sc.sandbox!, /^crew-proj-dev-issue-7-/);
+  assert.match(sc.sandbox!, /^crew-[a-z0-9]{14}$/);
   assert.ok(sc.pid > 0);
   await done;
 });
@@ -179,10 +179,21 @@ test('a small prompt still goes over the exec client stdin', async () => {
   assert.equal(readFileSync(log, 'utf8'), '5');
 });
 
-test('sandbox names are lowercase, bounded and unique per call time', () => {
+test('sandbox names are lowercase, at most 19 characters and distinct per ticket', () => {
   const n = sandboxName({ route: 'My_Route/Proj', role: 'dev', ticket: 'CREW-2793' }, 1000);
-  assert.match(n, /^crew-my-route-proj-dev-crew-2793-[a-z0-9]+$/);
-  assert.ok(sandboxName({ route: 'a'.repeat(200), role: 'dev', ticket: undefined }).length < 63);
+  assert.match(n, /^crew-[a-z0-9]{14}$/);
+  const plans: Parameters<typeof sandboxName>[0][] = [
+    { route: 'a'.repeat(200), role: 'dev', ticket: undefined },
+    { route: 'synthesis', role: 'design', ticket: 'TABL-123456' },
+  ];
+  for (const plan of plans) {
+    assert.ok(sandboxName(plan).length <= 19, sandboxName(plan));
+    assert.ok(sandboxName(plan, 0).length <= 19);
+    assert.ok(sandboxName(plan, Number.MAX_SAFE_INTEGER).length <= 19);
+  }
+  const a = sandboxName({ route: 'r', role: 'dev', ticket: 'CREW-1' }, 5);
+  assert.notEqual(a, sandboxName({ route: 'r', role: 'qa', ticket: 'CREW-1' }, 5));
+  assert.notEqual(a, sandboxName({ route: 'r', role: 'dev', ticket: 'CREW-2' }, 5));
   assert.equal(shQuote("it's"), `'it'\\''s'`);
 });
 
@@ -202,6 +213,21 @@ test('doctor: reports a missing CLI, a dead gateway and a healthy setup', () => 
   const down = checkSandboxRunner({}, (_b, a) => { if (a[0] === 'status') throw Object.assign(new Error('x'), { stderr: 'Connection refused' }); return 'openshell 0.1.6'; });
   assert.equal(down.ok, false);
   assert.match(down.detail, /supervisor_network_mode/);
+  const calls: string[][] = [];
+  checkSandboxRunner({}, (_b, a) => { calls.push(a); return 'openshell 0.1.6'; });
+  const created = calls.find((a) => a[1] === 'create')!;
+  assert.ok(created[3]!.length <= 19);
+  assert.deepEqual(calls.at(-1), ['sandbox', 'delete', created[3]]);
+  const refuses = checkSandboxRunner({}, (_b, a) => { if (a[1] === 'create') throw Object.assign(new Error('x'), { stderr: 'name exceeds maximum length (41 > 19)' }); return 'openshell 0.1.6'; });
+  assert.equal(refuses.ok, false);
+  assert.match(refuses.detail, /refused a probe sandbox.*maximum length/);
+  const slow = checkSandboxRunner({}, (_b, a) => { if (a[1] === 'create') throw Object.assign(new Error('spawnSync openshell ETIMEDOUT'), { code: 'ETIMEDOUT' }); return 'openshell 0.1.6'; });
+  assert.equal(slow.ok, false);
+  assert.match(slow.detail, /timed out/);
+  assert.doesNotMatch(slow.detail, /refused/);
+  const timeouts: Array<number | undefined> = [];
+  checkSandboxRunner({}, (_b, a, t) => { if (a[1] === 'create') timeouts.push(t); return 'openshell 0.1.6'; });
+  assert.ok(timeouts[0]! > 15_000);
 });
 
 test('CREW-2801: the run gets a generated policy written beside its stream file, and the log records declared hosts', async () => {

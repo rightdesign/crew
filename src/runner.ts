@@ -21,6 +21,7 @@
 import { containerEngineStubScript, SANDBOX_STUB_DIR, DEFAULT_SANDBOX_WORKDIR, writeFilesScript } from './sandbox-brief.ts';
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -139,10 +140,21 @@ export function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** A sandbox name OpenShell accepts: lowercase, digits and dashes, bounded. */
+/** The longest sandbox name the OpenShell gateway accepts on Linux (CREW-2947): the host-mode supervisor derives a network interface name (15 characters) from it. */
+export const SANDBOX_NAME_MAX = 19;
+
+/**
+ * A sandbox name OpenShell accepts: lowercase, digits and dashes, at most
+ * {@link SANDBOX_NAME_MAX} characters. `crew-` + a 6-character hash of route,
+ * role and ticket + the time in base36 (8 characters for any date this century),
+ * with no separator: the dash would make it 20.
+ * The readable route, role and ticket live in the run sidecar and the
+ * `sandbox_created` event; nothing reads them back from the name.
+ */
 export function sandboxName(plan: Pick<AgentPlan, 'route' | 'role' | 'ticket'>, now = Date.now()): string {
-  const base = [plan.route, plan.role, plan.ticket ?? ''].join('-').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return `crew-${base.slice(0, 36)}-${now.toString(36)}`.replace(/-+/g, '-');
+  const h = createHash('sha256').update([plan.route, plan.role, plan.ticket ?? ''].join('\0')).digest();
+  const tag = (h.readUInt32BE(0) % 36 ** 6).toString(36).padStart(6, '0');
+  return `crew-${tag}${now.toString(36).slice(-8).padStart(8, '0')}`;
 }
 
 export class SandboxRunner implements Runner {
@@ -332,8 +344,10 @@ export interface SandboxCheck { ok: boolean; detail: string }
  * its gateway answers. The gateway's host-specific settings are the spike's
  * "found the hard way" list (CREW-2787), so a refusal names them.
  */
-export function checkSandboxRunner(cfg: Partial<SandboxConfig> = {}, run: (bin: string, args: string[]) => string = (b, a) =>
-  execFileSync(b, a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000 })): SandboxCheck {
+const PROBE_CREATE_TIMEOUT_MS = 120_000;
+
+export function checkSandboxRunner(cfg: Partial<SandboxConfig> = {}, run: (bin: string, args: string[], timeoutMs?: number) => string = (b, a, t) =>
+  execFileSync(b, a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: t ?? 15_000 })): SandboxCheck {
   const bin = cfg.bin ?? DEFAULT_SANDBOX_CONFIG.bin;
   let version: string;
   try { version = run(bin, ['--version']).trim(); } catch (e) {
@@ -346,6 +360,22 @@ export function checkSandboxRunner(cfg: Partial<SandboxConfig> = {}, run: (bin: 
       detail: `${version}: the gateway does not answer (${(err.stderr || err.message).trim().split('\n').filter(Boolean).slice(0, 2).join(' / ')}). ` +
         'Start it; on Docker Desktop its docker section needs supervisor_network_mode = "bridge", and allow_driver_config = true for the cache volume mount.',
     };
+  }
+  // CREW-2947: a gateway can be healthy and still refuse crew's names (the
+  // host-mode length limit), so create and delete one with a crew-shaped name.
+  const probe = sandboxName({ route: 'doctor', role: 'dev', ticket: undefined });
+  // The first create on a host pulls the supervisor and runtime images, which
+  // outlasts the default 15 s, so the probe gets its own limit. It ends in
+  // `-- sleep 60` like the real create: no wait on a command, and a probe that
+  // outlives a failed delete still stops by itself.
+  try { run(bin, ['sandbox', 'create', '--name', probe, '--detach', '--', 'sleep', '60'], PROBE_CREATE_TIMEOUT_MS); } catch (e) {
+    const err = e as { stderr?: string; message: string; code?: string; killed?: boolean };
+    if (err.code === 'ETIMEDOUT' || err.killed) {
+      return { ok: false, detail: `${version}: creating a probe sandbox named ${probe} timed out after ${PROBE_CREATE_TIMEOUT_MS / 1000} s; the gateway may still be pulling its images on a first create, so run crew doctor again` };
+    }
+    return { ok: false, detail: `${version}: the gateway refused a probe sandbox named ${probe} (${(err.stderr || err.message).trim().split('\n').filter(Boolean).slice(0, 2).join(' / ')})` };
+  } finally {
+    try { run(bin, ['sandbox', 'delete', probe]); } catch { /* never created, or already gone */ }
   }
   return { ok: true, detail: version };
 }
