@@ -177,3 +177,24 @@ test('changing the Claude pin changes every tag; the version is recorded with th
   assert.equal(readSandboxState(h.stateDir).synthesis!.tags[0]!.claude, SANDBOX_CLAUDE_VERSION);
   assert.match(sandboxImageStatus(readSandboxState(h.stateDir), plan).detail, new RegExp(`claude ${SANDBOX_CLAUDE_VERSION}`));
 });
+
+test('a serena declaration adds the pinned bridge to the crew layer and indexes the warm tree; without it the crew layer is unchanged', () => {
+  const plain = planSandbox('r', { packages: [], setup: ['true'], warm: ['a.ts'] }, { 'a.ts': 'x' });
+  const intel = planSandbox('r', { packages: [], setup: ['true'], warm: ['a.ts'], intel: 'serena' }, { 'a.ts': 'x' });
+  assert.equal(plain.layers[1]!.dockerfile, planSandbox('r', { packages: [], setup: [] }).layers[1]!.dockerfile);
+  assert.doesNotMatch(plain.layers[1]!.dockerfile, /serena/);
+  assert.doesNotMatch(plain.layers[2]!.dockerfile, /serena/);
+  assert.notEqual(intel.layers[1]!.tag, plain.layers[1]!.tag);
+  assert.match(intel.layers[1]!.dockerfile, /uv==\d+\.\d+\.\d+/);
+  assert.match(intel.layers[1]!.dockerfile, /serena-agent==\d+\.\d+\.\d+/);
+  assert.match(intel.layers[1]!.dockerfile, /CREW_SERENA_LANGUAGE_SERVERS=\/opt\/crew\/serena\/language_servers/);
+  assert.match(intel.layers[2]!.dockerfile, /serena project index \/tmp\/crew-warm/);
+  // Serena generates its own default config; a hand-written partial one fails indexing (no `projects` key).
+  assert.doesNotMatch(intel.layers[2]!.dockerfile, /serena_config\.yml/);
+  // The Python and TypeScript language servers run on node.
+  assert.match(intel.layers[1]!.dockerfile, /apt-get install[^\n]* nodejs/);
+  const repo = intel.layers[2]!.dockerfile;
+  assert.ok(repo.indexOf('serena project index') < repo.indexOf('rm -rf /tmp/crew-warm'));
+  // No warm tree, nothing to index.
+  assert.doesNotMatch(planSandbox('r', { packages: [], setup: [], intel: 'serena' }).layers[2]!.dockerfile, /project index/);
+});

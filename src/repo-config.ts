@@ -359,6 +359,11 @@ export interface RepoSandbox {
    * the image tag. Steps then run in `/tmp/crew-warm`, which is removed after.
    */
   warm?: string[];
+  /**
+   * Not read from `.crew.yaml`: set from the repository's `hooks.intel` when it names the
+   * `serena` flavor (CREW-2915), so the image carries the bridge and its language servers.
+   */
+  intel?: 'serena';
 }
 
 /** Who delivers the periscope inspector overlay and writes the drop file (CREW-2880). */

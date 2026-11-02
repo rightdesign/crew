@@ -19,7 +19,7 @@
  * Every side effect goes through `SerenaDeps` so the sequencing is testable.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { intelPortFor } from './ports.ts';
 import { INTEL_FLAVORS } from './intel.ts';
@@ -83,6 +83,8 @@ export interface SerenaDeps {
   /** Starts the main-checkout index detached; `onDone` text is written to `stamp` only when the index succeeds. */
   spawnIndex(args: string[], env: Record<string, string>, log: string, stamp: string, stampText: string): number;
   alive(pid: number): boolean;
+  /** Makes `path` a symlink to `target`; absent in test doubles that do not exercise it. */
+  link?(target: string, path: string): void;
 }
 
 export interface SerenaStart {
@@ -93,6 +95,11 @@ export interface SerenaStart {
   worktree: string;
   /** The route's main checkout. */
   mainCheckout: string;
+  /**
+   * Language servers already on disk (the sandbox image's, CREW-2915). Linked into the service's
+   * home so it finds them without a download, which a sandboxed run cannot make.
+   */
+  languageServers?: string;
 }
 
 const fail = (output: string): HookResult => ({ code: 1, output });
@@ -136,6 +143,10 @@ export function startSerena(d: SerenaDeps, s: SerenaStart): HookResult {
   const p = serenaPaths(s.stateDir, s.route, String(s.ticket));
   try {
     prepareFolder(d, p.home, p.project, s.worktree);
+    if (s.languageServers && d.exists(s.languageServers) && d.link) {
+      const dest = join(p.home, 'language_servers');
+      if (!d.exists(dest)) d.link(s.languageServers, dest);
+    }
     // A worktree's first start takes the main checkout's cache; later starts keep their own.
     const mainCache = join(p.mainProject, 'cache');
     const cache = join(p.project, 'cache');
@@ -176,6 +187,7 @@ export function realSerenaDeps(onPath: (bin: string) => boolean, extraEnv: NodeJ
     // `&&` so the stamp exists only for an index that finished; a killed one is retried next start.
     spawnIndex: (args, env, log, stamp, stampText) =>
       detached('sh', ['-c', 'serena "$@" && printf %s "$STAMP_TEXT" > "$STAMP_FILE"', 'serena', ...args], { ...env, STAMP_FILE: stamp, STAMP_TEXT: stampText }, log),
+    link: (target, path) => symlinkSync(target, path),
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } },
   };
 }

@@ -96,3 +96,17 @@ test('doctor names the missing prerequisite of a flavor', () => {
   assert.match(f.problems[0]!.message, /uv tool install/);
   assert.equal(repoFindings({ ...base, intelFlavor: { name: 'serena', missing: [] } }).problems.length, 0);
 });
+
+test('shared language servers are linked into the service home once, when they exist', () => {
+  const links: string[] = [];
+  const { deps, dirs } = fakeDeps({ link: (t, p) => { links.push(`${t} -> ${p}`); dirs.add(p); } });
+  dirs.add('/opt/crew/serena/language_servers');
+  const p = serenaPaths('/s', 'r', '2914');
+  startSerena(deps, { ...start, languageServers: '/opt/crew/serena/language_servers' });
+  assert.deepEqual(links, [`/opt/crew/serena/language_servers -> ${p.home}/language_servers`]);
+  startSerena(deps, { ...start, languageServers: '/opt/crew/serena/language_servers' });
+  assert.equal(links.length, 1);
+  const none = fakeDeps({ link: (t) => { links.push(t); } });
+  startSerena(none.deps, { ...start, languageServers: '/missing' });
+  assert.equal(links.length, 1);
+});

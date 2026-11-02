@@ -67,6 +67,17 @@ export const SANDBOX_CLAUDE_SHA256: Record<string, { platform: string; sha256: s
 export const SANDBOX_UID = 1000;
 /** Where the crew layer puts everything it adds; caches live under it at absolute paths. */
 export const CREW_PREFIX = '/opt/crew';
+/**
+ * What `hooks.intel: serena` adds to the crew layer (CREW-2915): `uv` from PyPI into a venv, then
+ * the bridge as a uv tool, both pinned. Build time has network; a run has none.
+ */
+export const SANDBOX_UV_VERSION = '0.13.6';
+export const SANDBOX_SERENA_VERSION = '2.1.0';
+/** The bridge's home in the image; its `language_servers/` is where the servers it downloads land. */
+export const SERENA_IMAGE_HOME = `${CREW_PREFIX}/serena`;
+/** Read by the built-in starter (`startSerena`) to link the shared servers into a run's own home. */
+export const SERENA_LANGUAGE_SERVERS_ENV = 'CREW_SERENA_LANGUAGE_SERVERS';
+
 /** A failed build is not retried for the same declaration until this long has passed (or a forced build). */
 export const SANDBOX_RETRY_AFTER_MS = 60 * 60 * 1000;
 /** Newest tags kept per repo after a successful build: the current one and the one it replaced. */
@@ -130,6 +141,31 @@ export function claudeInstallCommand(): string {
   ].join('; ');
 }
 
+/** Build-time install of the `serena` flavor's prerequisites into `/opt/crew`, pinned. */
+export function serenaInstallCommand(): string {
+  return [
+    `python3 -m venv ${CREW_PREFIX}/uv-venv`,
+    `${CREW_PREFIX}/uv-venv/bin/pip install --no-cache-dir uv==${SANDBOX_UV_VERSION}`,
+    `ln -sf ${CREW_PREFIX}/uv-venv/bin/uv ${CREW_PREFIX}/bin/uv`,
+    `UV_TOOL_DIR=${CREW_PREFIX}/uv/tools UV_TOOL_BIN_DIR=${CREW_PREFIX}/bin UV_PYTHON_INSTALL_DIR=${CREW_PREFIX}/uv/python UV_CACHE_DIR=${CREW_PREFIX}/cache/uv ${CREW_PREFIX}/bin/uv tool install -p 3.13 serena-agent==${SANDBOX_SERENA_VERSION}`,
+    `${CREW_PREFIX}/bin/serena --help >/dev/null`,
+  ].join('; ');
+}
+
+/**
+ * Runs the bridge's project indexing once over the warmed source tree, with its home in the
+ * image, so language detection happens and the servers it needs are downloaded while the build
+ * still has network. Serena writes its own default `serena_config.yml` into the home on first
+ * use: a hand-written partial config lacks keys it requires (`projects`) and fails the build.
+ * The index lands in the warm tree's `.serena/`, which the repo layer removes with the tree.
+ */
+export function serenaWarmCommand(): string {
+  return [
+    `mkdir -p ${SERENA_IMAGE_HOME}`,
+    `SERENA_HOME=${SERENA_IMAGE_HOME} serena project index ${WARM_DIR}`,
+  ].join('; ');
+}
+
 function baseLayer(): SandboxLayer {
   const dockerfile = [
     `FROM ${SANDBOX_BASE_IMAGE}`,
@@ -139,18 +175,20 @@ function baseLayer(): SandboxLayer {
   return { name: 'base', tag: `crew-sandbox-base:${hash({ SANDBOX_BASE_IMAGE, SANDBOX_OPENSHELL_VERSION })}`, dockerfile, files: {} };
 }
 
-function crewLayer(base: SandboxLayer): SandboxLayer {
+function crewLayer(base: SandboxLayer, intel?: 'serena'): SandboxLayer {
   const files = { 'credential-helper': CREDENTIAL_HELPER, 'mcp.json': MCP_CONFIG };
   const env = Object.entries(CREW_ENV).map(([k, v]) => `${k}=${v}`).join(' ');
   const dockerfile = [
     `FROM ${base.tag}`,
     'USER root',
-    run('apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git && rm -rf /var/lib/apt/lists/*'),
+    run(`apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git${intel ? ' python3 python3-venv nodejs' : ''} && rm -rf /var/lib/apt/lists/*`),
     `COPY credential-helper ${CREW_PREFIX}/bin/credential-helper`,
     `COPY mcp.json ${CREW_PREFIX}/mcp/mcp.json`,
     run(claudeInstallCommand()),
+    ...(intel ? [run(`mkdir -p ${CREW_PREFIX}/cache && ${serenaInstallCommand()}`)] : []),
     run(`chmod 0755 ${CREW_PREFIX}/bin/credential-helper && git config --system credential.helper ${CREW_PREFIX}/bin/credential-helper`),
     run(`mkdir -p ${CREW_PREFIX}/cache ${CREW_PREFIX}/pnpm-store ${CREW_PREFIX}/pnpm /sandbox && chown -R ${SANDBOX_UID}:${SANDBOX_UID} ${CREW_PREFIX} /sandbox`),
+    ...(intel ? [`ENV ${SERENA_LANGUAGE_SERVERS_ENV}=${SERENA_IMAGE_HOME}/language_servers UV_PYTHON_INSTALL_DIR=${CREW_PREFIX}/uv/python`] : []),
     `ENV ${env} PATH=${CREW_PREFIX}/pnpm:${CREW_PREFIX}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
     `LABEL io.crew.sandbox.layer="crew" io.crew.sandbox.claude="${SANDBOX_CLAUDE_VERSION}"`,
     '',
@@ -215,6 +253,8 @@ function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer, warm: Wa
   }
   // One RUN per step so a changed trailing step reuses every cached layer before it.
   for (const step of decl.setup) lines.push(run(step));
+  // After the repo's own steps, while the warm tree still exists. A declaration without warm files has no tree to index.
+  if (warming && decl.intel) lines.push(run(serenaWarmCommand()));
   if (warming) lines.push('WORKDIR /sandbox', run(`rm -rf ${WARM_DIR}`));
   lines.push(`LABEL io.crew.sandbox.layer="repo" io.crew.sandbox.repo=${JSON.stringify(repo)}`, '');
   const dockerfile = lines.join('\n');
@@ -224,7 +264,7 @@ function repoLayer(repo: string, decl: RepoSandbox, crew: SandboxLayer, warm: Wa
 /** The three layers and the tag a repo's declaration builds to. */
 export function planSandbox(repo: string, decl: RepoSandbox, warm: WarmFiles = {}): SandboxPlan {
   const base = baseLayer();
-  const crew = crewLayer(base);
+  const crew = crewLayer(base, decl.intel);
   const layer = repoLayer(repo, decl, crew, warm);
   return { repo, tag: layer.tag, claude: SANDBOX_CLAUDE_VERSION, layers: [base, crew, layer] };
 }

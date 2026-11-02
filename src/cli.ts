@@ -1600,7 +1600,7 @@ async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoR
       } catch {
         // An unreadable ref builds without warm files; the next tick retries with a different tag.
       }
-      out.set(r.name, { name: r.name, decl: r.config.sandbox, warm });
+      out.set(r.name, { name: r.name, decl: intelFlavor(r.config.hooks.intel) === 'serena' ? { ...r.config.sandbox, intel: 'serena' } : r.config.sandbox, warm });
     }
   }
   return [...out.values()];
@@ -5309,6 +5309,7 @@ switch (command) {
             return startSerena(realSerenaDeps((bin) => !!findOnPath(bin, pathFor(cfg.ship)), { ...process.env, PATH: pathFor(cfg.ship) }), {
               stateDir: cfg.ship.stateDir, route: routeP.route, ticket: Number(/(\d+)$/.exec(env.CREW_TICKET ?? '')?.[1] ?? 0),
               worktree: cwd, mainCheckout: repoP.dir,
+              languageServers: process.env.CREW_SERENA_LANGUAGE_SERVERS,
             });
           }
           if (name === 'intel' && lspFlavor(script)) return null;
