@@ -23,6 +23,7 @@ import {
 import { planEpicSync, epicsNeedingClosedCheck, trackedEpics, type EpicStep } from './epics.ts';
 import { attentionReasons, attentionTransitions, type AttentionReason } from './attention.ts';
 import { pendingHandoffFor } from './pending-handoff.ts';
+import { acceptanceChecklistBlock, acceptanceLines } from './handoff-guard.ts';
 import { buildingDigest, DIRECTION_EVENT_TYPES, STATUS_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
 import { loadRepoConfigTolerant, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
@@ -355,7 +356,7 @@ export const digestPath = (stateDir: string, route: string, role: RoleName, runI
  * `in_progress` ticket as "yours, resume it first".
  */
 export interface OwnRun {
-  ticket: { id: string; issue_id: string };
+  ticket: { id: string; issue_id: string; description?: unknown };
   inFlight: (ticketId: string) => boolean;
 }
 
@@ -366,8 +367,11 @@ export function otherRunsRemoved<T extends { id: string }>(tickets: T[], own?: O
 }
 
 export function ownRunBanner(own: OwnRun): string {
-  return `**Your ticket for this run: ${own.ticket.issue_id}.** Work this one. Any other ticket a live run ` +
+  const banner = `**Your ticket for this run: ${own.ticket.issue_id}.** Work this one. Any other ticket a live run ` +
     `on this ship is already working has been left out of this digest: it belongs to that run.`;
+  // CREW-2970: the hand-off guard wants every Acceptance line quoted; hand the seat the block to copy.
+  const block = acceptanceChecklistBlock(acceptanceLines(own.ticket.description));
+  return block ? `${banner}\n\n\`\`\`\n${block}\n\`\`\`` : banner;
 }
 
 /**

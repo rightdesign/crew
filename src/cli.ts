@@ -457,7 +457,7 @@ function usage(problem?: string, requested = false): never {
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches (--json: every Repos row too)
-  crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket; --before-edit sorts by searches before the first edit
+  crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket; --before-edit sorts by searches before the first edit, --bounces by acceptance bounces
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew passengers [route]       sync Host Passengers containers/tunnels once; what the passengers unit invokes
   crew install                  write and load this platform's scheduler unit
@@ -3684,7 +3684,7 @@ switch (command) {
     const sub = positional[1];
     if (sub !== 'list' && sub !== 'show') {
       process.stderr.write(
-        'crew logbook list [route] [--role R] [--ticket T] [--limit N] [--before-edit]\n' +
+        'crew logbook list [route] [--role R] [--ticket T] [--limit N] [--before-edit] [--bounces]\n' +
         'crew logbook show [route] <entryId> [--prompt]\n',
       );
       process.exit(2);
@@ -3710,6 +3710,7 @@ switch (command) {
           ticket: value('ticket'),
           limit: value('limit') ? Number(value('limit')) : undefined,
           beforeEdit: flag('before-edit'),
+          bounces: flag('bounces'),
         });
         if (entries.length === 0) { process.stdout.write('(no Agent Log entries match)\n'); break; }
         for (const e of entries) {

@@ -67,6 +67,16 @@ export function acceptanceLines(description: unknown): string[] {
   return out;
 }
 
+/**
+ * CREW-2970: the Acceptance lines as the ready-to-fill block the hand-off comment must contain, rendered
+ * verbatim (backticks and quotes included) so the seat copies and fills it rather than recalling it.
+ * Empty when the ticket has no Acceptance section.
+ */
+export function acceptanceChecklistBlock(lines: string[]): string {
+  if (lines.length === 0) return '';
+  return `## Acceptance checklist (copy into your last comment and fill each result)\n${lines.map((l) => `- ${l}: <test, command or manual check, and its result>`).join('\n')}`;
+}
+
 const flat = (s: string): string => s.replace(/[`*_>]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
 /** The acceptance lines `comment` does not quote, compared without markdown emphasis, case or line breaks. */
@@ -209,7 +219,7 @@ async function takenOverSince(i: HandoffGuardInput, ticketRow: string): Promise<
 }
 
 /** The acceptance lines the hand-off check found unquoted, and the time of the comment it judged (`null`: the seat had none). */
-export interface AcceptanceGap { missing: string[]; judged: string | null }
+export interface AcceptanceGap { missing: string[]; judged: string | null; all: string[] }
 
 /**
  * CREW-2600: the acceptance lines the seat's hand-off comment does not quote, or
@@ -235,17 +245,17 @@ async function missingAcceptance(i: HandoffGuardInput, t: Ticket): Promise<Accep
   const from = i.since ? Date.parse(i.since) : NaN;
   const recent = Number.isNaN(from) ? [] : mine.filter((r) => Date.parse(String(r[cc.createdAt] ?? '')) >= from);
   const candidates = recent.length > 0 ? recent : mine.slice(-1);
-  if (candidates.length === 0) return { missing: lines, judged: null };
+  if (candidates.length === 0) return { missing: lines, judged: null, all: lines };
   let best: AcceptanceGap | null = null;
   for (const c of candidates) {
     const missing = unquotedAcceptance(lines, String(c[cc.body] ?? ''));
     if (missing.length === 0) return null;
-    if (!best || missing.length <= best.missing.length) best = { missing, judged: String(c[cc.createdAt] ?? '') || null };
+    if (!best || missing.length <= best.missing.length) best = { missing, judged: String(c[cc.createdAt] ?? '') || null, all: lines };
   }
   return best;
 }
 
-export function acceptanceBounceComment(missing: string[], shipName: string | undefined, judged?: string | null): string {
+export function acceptanceBounceComment(missing: string[], shipName: string | undefined, judged?: string | null, all: string[] = []): string {
   return `${ACCEPTANCE_BOUNCED_MARKER}
 
 **Hand-off bounced: the hand-off comment does not quote every line of the ticket's Acceptance section.**
@@ -253,7 +263,7 @@ export function acceptanceBounceComment(missing: string[], shipName: string | un
 ${shipName ? `Ship: ${shipName}\n\n` : ''}${judged ? `Judged the comment posted at ${judged}; no comment this run quoted every line.\n\n` : 'This seat has no comment on the ticket.\n\n'}Not quoted verbatim:
 ${missing.map((l) => `- ${l}`).join('\n')}
 
-Set back to \`in_progress\`. Post a comment that lists every Acceptance line verbatim, each followed by the test, command or manual check that exercised it in this run and its result (a line you could not exercise is listed with the reason, never omitted), then set \`fixed\` again. The branch is already pushed.`;
+Set back to \`in_progress\`. Post a comment that lists every Acceptance line verbatim, each followed by the test, command or manual check that exercised it in this run and its result (a line you could not exercise is listed with the reason, never omitted), then set \`fixed\` again. The branch is already pushed.${all.length > 0 ? `\n\nCopy this block into the comment and fill in each result:\n\n\`\`\`\n${acceptanceChecklistBlock(all)}\n\`\`\`` : ''}`;
 }
 
 /**
@@ -294,7 +304,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
           assignee_id: i.seatId,
           ...(i.hold && !heldNow ? { [i.hold.column]: i.hold.shipId } : {}),
         });
-        await i.writer.postEvent(t.id, acceptanceBounceComment(gap.missing, i.shipName, gap.judged), i.seatId, 'bounced').catch(() => {
+        await i.writer.postEvent(t.id, acceptanceBounceComment(gap.missing, i.shipName, gap.judged, gap.all), i.seatId, 'bounced').catch(() => {
           i.log.warn('bounced, but the note failed to post', log);
         });
         i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: hand-off comment lacks the acceptance checklist`, log);

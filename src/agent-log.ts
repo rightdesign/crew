@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import type { BeforeFirstEdit } from './tool-classify.ts';
 import { sleepBackoff } from './pending-backoff.ts';
+import { ACCEPTANCE_BOUNCED_MARKER } from './handoff-guard.ts';
 
 export interface AgentLogTarget {
   baseUrl: string;
@@ -250,6 +251,37 @@ async function writeBeforeFirstEdit(target: AgentLogTarget, rowId: string, b: Be
   } catch { /* the columns are optional */ }
 }
 
+/** Agent Log column counting the acceptance bounces a run's ticket had taken before this run (CREW-2970). */
+export const HANDOFF_BOUNCES_COLUMN = 'handoff_bounces';
+
+/**
+ * How many times the hand-off guard bounced the ticket for a missing acceptance
+ * checklist before this run ended: for the retry that finally passes, that is the
+ * number of attempts it took. The guard runs after the run's own report is written,
+ * so a run's own bounce shows up on the next run's row. `null` when the event log
+ * cannot be read.
+ */
+export async function countAcceptanceBounces(target: AgentLogTarget, issuesModelId: string, ticketRecordId: string): Promise<number | null> {
+  try {
+    const filters = encodeURIComponent(JSON.stringify([{ columnName: 'event_type', operator: 'EQ', value: 'bounced' }]));
+    const rows = await request<Array<{ record_id?: string; message?: string | null }>>(
+      target, 'GET', `/data-models/${issuesModelId}/events?limit=500&filters=${filters}`,
+    );
+    return rows.filter((e) => e.record_id === ticketRecordId && (e.message ?? '').includes(ACCEPTANCE_BOUNCED_MARKER)).length;
+  } catch { return null; }
+}
+
+/** Sets `handoff_bounces` on the new Agent Log row when the workspace's table has the column. Best effort and silent. */
+async function writeHandoffBounces(target: AgentLogTarget, rowId: string, count: number): Promise<void> {
+  try {
+    const model = await request<{ id: string }>(
+      target, 'GET', `/data-models/agent_log?workspaceId=${encodeURIComponent(target.workspaceId)}`,
+    );
+    if (!(await columnsOf(target, model.id)).has(HANDOFF_BOUNCES_COLUMN)) return;
+    await request(target, 'PATCH', `/data-models/${model.id}/records/${rowId}`, { [HANDOFF_BOUNCES_COLUMN]: count });
+  } catch { /* the column is optional */ }
+}
+
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
   const url = `${target.baseUrl.replace(/\/+$/, '')}/api/workspaces/${target.workspaceId}${path}`;
   const res = await fetch(url, {
@@ -328,6 +360,10 @@ export async function reportAgentRun(
     });
   }
   if (run.beforeFirstEdit) await writeBeforeFirstEdit(target, entry.id, run.beforeFirstEdit);
+  if (target.tickets && ticketRecordId) {
+    const bounces = await countAcceptanceBounces(target, target.tickets.issuesModelId, ticketRecordId);
+    if (bounces !== null) await writeHandoffBounces(target, entry.id, bounces);
+  }
   const counters = target.tickets && ticketRecordId
     ? await addRunToTicket(target, target.tickets, ticketRecordId, run)
     : undefined;

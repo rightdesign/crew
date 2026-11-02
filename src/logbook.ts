@@ -40,6 +40,7 @@ export interface AgentLogEntry {
   calls_before_edit_other?: number | null;
   seconds_to_first_edit?: number | null;
   edited?: boolean | null;
+  handoff_bounces?: number | null;
   [column: string]: unknown;
 }
 
@@ -64,6 +65,8 @@ export interface ListLogEntriesOptions {
   limit?: number;
   /** Sort by text searches before the first edit, most first, so the worst searches surface (CREW-2879). */
   beforeEdit?: boolean;
+  /** Sort by acceptance bounces taken before the run's hand-off, most first (CREW-2970). */
+  bounces?: boolean;
 }
 
 /** Recent Agent Log entries, newest first — filterable by role (via the linked Agents row's `name`) and by ticket. */
@@ -87,6 +90,10 @@ export async function listLogEntries(route: Route, opts: ListLogEntriesOptions =
   // The records API has no documented default sort — sort newest-first
   // explicitly rather than relying on insertion order.
   const newestFirst = [...entries].sort((a, b) => String(b.started_at ?? '').localeCompare(String(a.started_at ?? '')));
+  if (opts.bounces) {
+    const n = (e: AgentLogEntry): number => e.handoff_bounces ?? -1;
+    return newestFirst.sort((a, b) => n(b) - n(a));
+  }
   if (!opts.beforeEdit) return newestFirst;
   // Entries that recorded no figure sort last; the stable sort keeps newest-first within a tie.
   const searches = (e: AgentLogEntry): number => e.calls_before_edit_search ?? -1;

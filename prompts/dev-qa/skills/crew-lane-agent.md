@@ -412,9 +412,10 @@ before going further, and never change a ticket's `report_type` yourself.
    pushed is gone.
 
    **When the ticket has an Acceptance section, your last progress comment
-   quotes it.** List every line of that section verbatim, each followed by the
-   test, command or manual check that exercised it in this run and its result.
-   A line you could not exercise is listed with the reason, never omitted. The
+   quotes it.** Your brief ends its ticket banner with an "Acceptance
+   checklist" block: copy that block into your last comment and fill in each
+   result (the test, command or manual check that exercised the line in this
+   run). A line you could not exercise gets the reason, never omitted. The
    runner checks your newest comment for every line and, if one is missing,
    sets the ticket back to `in_progress` instead of passing it to QA. A ticket
    with no Acceptance section is unaffected.
