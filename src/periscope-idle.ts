@@ -118,6 +118,12 @@ export interface IdleDeps {
   /** Newest activity under the worktree, ms; null when unreadable. */
   mtimeOf(worktree: string): number | null;
   update(rowId: string, fields: Record<string, unknown>): Promise<void>;
+  /**
+   * Mirrors a refresh into the local sidecar `crew status` reads (CREW-2952),
+   * which lives on the file system and so is injected like everything else.
+   * Called only after `update` succeeded, so the two never disagree.
+   */
+  recordActivity?(row: PeriscopeRow, lastActivityAt: string, expiresAt: string): void;
   ticketOf(row: PeriscopeRow): Promise<IdleTicket>;
   /** Stops whatever listens on the worktree's ports. Must be safe to call when nothing does. */
   stopServer(worktree: string, number: string): Promise<void>;
@@ -147,6 +153,7 @@ export async function runPeriscopeIdlePass(d: IdleDeps): Promise<IdleResult> {
       if (decision.action === 'none') continue;
       if (decision.action === 'refresh') {
         await d.update(row.id, { last_activity_at: decision.lastActivityAt, expires_at: decision.expiresAt });
+        d.recordActivity?.(row, decision.lastActivityAt, decision.expiresAt);
         // Activity resumed: the item clears, the server is not restarted (`up --resume` does that).
         d.clear(periscopeIdleKey(t.tag));
         result.refreshed++;

@@ -115,3 +115,16 @@ test('an item whose periscope is no longer live is cleared; a failing row is war
   assert.ok(bad.log.some((l) => l.startsWith('warn periscope idle check failed')));
   assert.deepEqual(bad.items().map((i) => i.key), [periscopeIdleKey('CREW-9')]);
 });
+
+test('a refresh reaches the sidecar writer with the same times the tracker got; expire does not', async () => {
+  const edited = T0 + 90 * MIN;
+  const seen: string[] = [];
+  const h = harness([row()], { recordActivity: (r, a, e) => { seen.push(`${r.issue_id} ${a} ${e}`); } }, edited);
+  await runPeriscopeIdlePass(h.deps);
+  assert.deepEqual(seen, [`rec1 ${iso(edited)} ${iso(edited + 120 * MIN)}`]);
+  assert.match(h.log[0] ?? '', new RegExp(`"expires_at":"${iso(edited + 120 * MIN)}"`));
+  const gone: string[] = [];
+  const x = harness([row()], { recordActivity: () => { gone.push('x'); } }, null);
+  await runPeriscopeIdlePass(x.deps);
+  assert.deepEqual(gone, []);
+});

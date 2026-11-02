@@ -106,6 +106,7 @@ import { fetchSkillOverrides } from './skills.ts';
 import { isForbiddenError, forbiddenDetail, seatCannotWriteKey, seatCannotWriteItem, seatWriteStillRefused } from './seat-read-probe.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention, workspaceAuthKey, workspaceAllowanceKey, workspaceAllowanceItem, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
+import { readPeriscopeSidecars, writePeriscopeSidecar } from './periscope-state.ts';
 import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
 import { periscopeCaps, type PeriscopeLimits } from './periscope-cmd.ts';
 import { killGently, pidsInWorktree } from './ports.ts';
@@ -717,6 +718,10 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
         listLive: () => tracker.liveShipPeriscopes(),
         mtimeOf: newestWorktreeMtime,
         update: (id, fields) => tracker.updatePeriscope(id, fields),
+        recordActivity: (row, lastActivityAt, expiresAt) => {
+          const sc = readPeriscopeSidecars(o.ship.stateDir).find((s) => s.ticketRecordId === row.issue_id);
+          if (sc) writePeriscopeSidecar(o.ship.stateDir, { ...sc, lastActivityAt, expiresAt });
+        },
         ticketOf: async (row) => {
           const t = await tracker.ticket(row.issue_id);
           return {
