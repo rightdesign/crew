@@ -24,7 +24,7 @@ import {
   type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
-import { hookLabel, DEFAULT_ISOLATE_MAX_CANDIDATES, REPO_CONFIG_FILENAMES } from './repo-config.ts';
+import { hookLabel, versionFileProblem, DEFAULT_ISOLATE_MAX_CANDIDATES, REPO_CONFIG_FILENAMES } from './repo-config.ts';
 import { failingPaths, culpritByFiles, type BuildCulprit } from './build-failure.ts';
 import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
 import { movedPastVerified } from './verified-tip.ts';
@@ -714,7 +714,10 @@ async function bump(o: ReleaseRunOptions, size: string): Promise<string | null> 
   const files = o.repo.release.versionFiles.map((f) => join(o.cwd, f));
   const first = files[0]!;
   if (!existsSync(first)) { o.emit.error(`no ${o.repo.release.versionFiles[0]} to read a version from`); return null; }
-  const current = (JSON.parse(readFileSync(first, 'utf8')) as { version?: string }).version;
+  const firstText = readFileSync(first, 'utf8');
+  const problem = versionFileProblem(o.repo.release.versionFiles[0]!, firstText);
+  if (problem) { o.emit.error(problem); return null; }
+  const current = (JSON.parse(firstText) as { version: string }).version;
   if (!current) { o.emit.error(`no version field in ${o.repo.release.versionFiles[0]}`); return null; }
   const [maj, min, pat] = current.split('.').map(Number) as [number, number, number];
   const next = size === 'major' ? [maj + 1, 0, 0] : size === 'minor' ? [maj, min + 1, 0] : [maj, min, pat + 1];

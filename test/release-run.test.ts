@@ -1661,6 +1661,18 @@ test('a verified branch still at the verified sha releases normally (CREW-1637)'
   assert.equal(out.merged.length, 1);
 });
 
+test('the version step names a version file it cannot parse, and the remedy (CREW-2927)', async () => {
+  const { dir, repo, g } = project(LOCAL);
+  writeFileSync(join(dir, 'package.json'), '0.1.0\n');
+  g('commit', '-qam', 'plain-text version');
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, undefined);
+  assert.ok(lines.some((l) => /"package\.json" is not a JSON document.*hooks\.bump/.test(l)), lines.join('\n'));
+  assert.ok(!lines.some((l) => /Unexpected non-whitespace/.test(l)));
+});
+
 test('an untagged base with a verified ticket already squashed onto it releases (CREW-2925)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'crew-untagged-merged-'));
   const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });

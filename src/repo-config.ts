@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { parse } from 'yaml';
 import { parseSandboxNetwork } from './sandbox-policy.ts';
 import { isPlatformRequirement, type PlatformRequirement } from './platform.ts';
@@ -440,6 +440,27 @@ export interface RepoConfig {
 
 export class RepoConfigError extends Error {}
 
+/**
+ * Why `text` cannot serve as a built-in version file, or null when it can.
+ * The built-in bump path reads and rewrites a JSON object with a string
+ * `version`; anything else (a plain `VERSION` file, say) needs `hooks.bump`.
+ * Shared by the config loader and the release version step so both name the
+ * file and the remedy instead of surfacing a raw JSON parse error.
+ */
+export function versionFileProblem(name: string, text: string): string | null {
+  const remedy = `a version file that is not a JSON object with a string "version" needs hooks.bump instead of release.versionFiles (docs/REPO_SPEC.md)`;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return `release.versionFiles entry "${name}" is not a JSON document — ${remedy}`;
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || typeof (doc as { version?: unknown }).version !== 'string') {
+    return `release.versionFiles entry "${name}" has no string "version" field — ${remedy}`;
+  }
+  return null;
+}
+
 const HOOK_NAMES: Array<keyof RepoHooks> = [
   'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'intel', 'map', 'ci_status',
   'version', 'bump', 'pr', 'merged', 'released',
@@ -820,6 +841,24 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   const versionFiles = versionFilesGiven ? raw.release.versionFiles.map(String) : ['package.json'];
   if (versionFiles.length === 0) {
     throw new RepoConfigError(`${file}: release.versionFiles cannot be empty`);
+  }
+  // Only files that already exist are judged; one the release will create is
+  // left alone. (hooks.bump together with versionFiles was refused above.)
+  if (versionFilesGiven) {
+    for (const name of versionFiles) {
+      const path = join(dirname(file), name);
+      if (!existsSync(path)) continue;
+      let text: string;
+      try {
+        text = readFileSync(path, 'utf8');
+      } catch (e) {
+        throw new RepoConfigError(
+          `${file}: release.versionFiles entry "${name}" cannot be read (${(e as NodeJS.ErrnoException).code ?? 'read error'})`,
+        );
+      }
+      const problem = versionFileProblem(name, text);
+      if (problem) throw new RepoConfigError(`${file}: ${problem}`);
+    }
   }
 
   const inspectorRaw = raw.periscope?.inspector;

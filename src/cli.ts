@@ -3470,7 +3470,7 @@ switch (command) {
             text, route: routeName!, base, resolved: resolvedRemotes, originOf,
             exists: (d) => existsSync(d), isCheckout,
             repoHasHooks: (d) => REPO_CONFIG_FILENAMES.some((f) => {
-              try { return Object.keys(parseRepoConfig(readFileSync(resolvePath(d, f), 'utf8'), f).hooks).length > 0; } catch { return false; }
+              try { const path = resolvePath(d, f); return Object.keys(parseRepoConfig(readFileSync(path, 'utf8'), path).hooks).length > 0; } catch { return false; }
             }),
           });
           process.stdout.write(`${JSON.stringify({ route: routeName, repos: rows, cloneBase: cloneBaseOf(text, routeName!, base, isCheckout) })}\n`);

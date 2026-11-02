@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -529,4 +529,32 @@ test('periscope.inspector defaults to absent (proxy) and accepts proxy or repo o
   assert.deepEqual(parseRepoConfig(`${base}periscope:\n  inspector: proxy\n`, 'f').periscope, { inspector: 'proxy' });
   assert.throws(() => parseRepoConfig(`${base}periscope:\n  inspector: both\n`, 'f'), /periscope\.inspector must be/);
   assert.throws(() => parseRepoConfig(`${base}periscope:\n  other: 1\n`, 'f'), /unknown periscope key/);
+});
+
+test('versionFiles naming a non-JSON file is refused at load, naming the file and hooks.bump', () => {
+  const d = dirWith('VERSION', '0.1.0\n');
+  const yaml = `${MIN}release:\n  versionFiles: [VERSION]\n`;
+  writeFileSync(join(d, '.crew.yaml'), yaml);
+  assert.throws(() => loadRepoConfig(d), (e: Error) =>
+    e instanceof RepoConfigError && /VERSION/.test(e.message) && /hooks\.bump/.test(e.message));
+});
+
+test('versionFiles naming JSON with a string version passes; a missing file is left alone', () => {
+  const d = dirWith('package.json', '{"version":"1.2.3"}');
+  writeFileSync(join(d, '.crew.yaml'), `${MIN}release:\n  versionFiles: [package.json, not-yet.json]\n`);
+  assert.deepEqual(loadRepoConfig(d)?.release.versionFiles, ['package.json', 'not-yet.json']);
+});
+
+test('versionFiles naming JSON without a string version is refused', () => {
+  const d = dirWith('package.json', '{"version":3}');
+  writeFileSync(join(d, '.crew.yaml'), `${MIN}release:\n  versionFiles: [package.json]\n`);
+  assert.throws(() => loadRepoConfig(d), /no string "version"/);
+});
+
+test('a versionFiles entry that exists but cannot be read is a RepoConfigError naming it (CREW-2927)', () => {
+  const d = dirWith('keep', 'x');
+  mkdirSync(join(d, 'VERSION'));
+  writeFileSync(join(d, '.crew.yaml'), `${MIN}release:\n  versionFiles: [VERSION]\n`);
+  assert.throws(() => loadRepoConfig(d), (e: Error) =>
+    e instanceof RepoConfigError && /VERSION/.test(e.message) && /cannot be read/.test(e.message));
 });
