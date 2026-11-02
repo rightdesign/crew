@@ -12,7 +12,7 @@ import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscop
 import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { registerCodeServer } from './intel-register.ts';
 import { dropSerenaFolder, missingPrerequisites, realSerenaDeps, startSerena } from './intel-serena.ts';
-import { intelFlavor, lspFlavor, lspBinaryFound, ensureLspPlugin, LSP_SERVERS } from './intel.ts';
+import { intelFlavor, wantsCodeBridge, lspFlavor, lspBinaryFound, ensureLspPlugin, LSP_SERVERS } from './intel.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
@@ -4997,7 +4997,7 @@ switch (command) {
     emit.emit(describeRunWorktreePlan(planWt));
     // CREW-2912: start the repository's symbol service and hand its URL to the session's `code` bridge.
     // The path stays alone on stdout (callers `cd "$(crew worktree N)"`), so the paragraph goes to the log.
-    if (pathWt && planIsUsable(planWt) && repoWt.config.hooks.intel) {
+    if (pathWt && planIsUsable(planWt) && wantsCodeBridge(repoWt.config.hooks.intel)) {
       const shellWt = resolveShell(repoWt.config.shell ?? cfg.ship.shell);
       const paragraph = await startWorktreeIntel({
         worktree: pathWt, route: routeWt.route, number: String(nWt), stateDir: cfg.ship.stateDir,
@@ -5015,6 +5015,13 @@ switch (command) {
         },
         runHook: async (name, cwd, env) => {
           const script = repoWt.config.hooks[name];
+          // CREW-2921: the `serena` flavor is crew's own managed service (CREW-2914), not a command to run.
+          if (name === 'intel' && intelFlavor(script) === 'serena') {
+            return startSerena(realSerenaDeps((bin) => !!findOnPath(bin, pathFor(cfg.ship)), { ...process.env, PATH: pathFor(cfg.ship) }), {
+              stateDir: cfg.ship.stateDir, route: routeWt.route, ticket: Number(nWt),
+              worktree: cwd, mainCheckout: repoWt.dir,
+            });
+          }
           return script ? runScript(script, { cwd, env, shell: shellWt, timeoutMs: name === 'intel' ? 60_000 : undefined }) : null;
         },
       });
