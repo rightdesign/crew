@@ -168,6 +168,11 @@ export function sshArgsFor(
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
+    // Offer only the ship key. Without this OpenSSH offers every ssh-agent key
+    // before the `-i` one, the relay hashes whichever it sees first, and a
+    // slug owned by the ship key's fingerprint is rejected as a conflict
+    // (CREW-2932).
+    '-o', 'IdentitiesOnly=yes',
     '-i', o.privateKeyPath,
     '-p', String(o.relayPort),
     ...forwards,
@@ -241,6 +246,13 @@ export interface PersistedTunnel {
   liveSlug?: string;
   /** The control socket the live `ssh` forwards (CREW-2803); a change respawns it. */
   controlSocket?: string;
+  /**
+   * Consecutive cycles that found this tunnel's ssh child dead before it was
+   * ever promoted to `connected` (CREW-2932). The relay closes a rejected claim
+   * (slug owned by another key) straight away, so a child that keeps dying this
+   * fast is the signature `crew doctor` reports as `tunnel_rejected`.
+   */
+  quickExits?: number;
   /** The relay URL last written to the Ships row, so an unchanged cycle makes no call. */
   relayUrl?: string;
   /** The workspace MCP endpoint row registered for this tunnel, if any. */
@@ -345,6 +357,9 @@ export interface SyncTunnelsDeps {
  * case and `crew doctor` says so; this function itself has no opinion on
  * that, it just needs a host to dial when called.
  */
+/** Consecutive quick exits after which `crew doctor` reports the tunnel as rejected. */
+export const TUNNEL_REJECTED_AFTER = 2;
+
 export function syncPassengerTunnels(
   plans: TunnelPlan[],
   relayHost: string,
@@ -387,6 +402,12 @@ export function syncPassengerTunnels(
       deps.onStatus?.(plan.workspaceId, 'disconnected', existing);
       continue;
     }
+    // A tunnel is promoted to 'connected' only by a cycle that finds its pid
+    // alive. One still 'connecting' whose pid is gone, with the plan unchanged,
+    // never survived a whole cycle: it was refused rather than interrupted.
+    const diedQuickly = existing !== undefined && existing.status === 'connecting' && !alive(existing.pid)
+      && controlUnchanged && secretUnchanged && slugUnchanged && existing.mountsHash === mountsHash;
+    const quickExits = diedQuickly ? (existing.quickExits ?? 0) + 1 : 0;
     let settledStatus: TunnelStatus = 'connecting';
     const tunnel = startTunnel({
       relayHost, relayPort, workspaceId: plan.workspaceId, slug, apiKey, localPort: plan.port,
@@ -405,6 +426,7 @@ export function syncPassengerTunnels(
       mcpSecret: currentSecret,
       slug,
       liveSlug: slug,
+      quickExits,
       endpointId: existing?.endpointId,
       registeredKey: existing?.registeredKey,
     };
@@ -433,4 +455,21 @@ function readAllPersistedWorkspaceIds(stateDir: string): string[] {
   return readdirSync(dir)
     .filter((f) => f.endsWith('.json') && !f.endsWith('-sync.json'))
     .map((f) => f.slice(0, -'.json'.length));
+}
+
+/** The `crew doctor` / ship-attention key and wording for a relay-rejected tunnel (CREW-2932). */
+export const TUNNEL_REJECTED_KEY = 'tunnel_rejected';
+
+export function tunnelRejectedMessage(workspaceId: string, quickExits: number): string {
+  return `the relay tunnel for workspace ${workspaceId} exited before settling on ${quickExits} consecutive cycles, which is how a refused claim looks (the relay logs "slug already owned by another workspace/ssh key") — rotate the slug with \`crew rotate-passenger-url\` or check the relay journal`;
+}
+
+/** Workspaces whose persisted tunnel has been refused often enough to report. */
+export function rejectedTunnels(stateDir: string): Array<{ workspaceId: string; quickExits: number }> {
+  const out: Array<{ workspaceId: string; quickExits: number }> = [];
+  for (const workspaceId of readAllPersistedWorkspaceIds(stateDir)) {
+    const q = readPersistedTunnel(stateDir, workspaceId)?.quickExits ?? 0;
+    if (q >= TUNNEL_REJECTED_AFTER) out.push({ workspaceId, quickExits: q });
+  }
+  return out;
 }

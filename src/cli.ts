@@ -158,6 +158,7 @@ import {
 } from './passenger-containers.ts';
 import {
   syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
+  TUNNEL_REJECTED_KEY, TUNNEL_REJECTED_AFTER, tunnelRejectedMessage, rejectedTunnels,
 } from './tunnel.ts';
 import {
   reconcileEndpoint, unregisterEndpoint, probeEndpointAccess, REGISTER_MCP_ENDPOINTS_HINT,
@@ -1091,6 +1092,13 @@ async function syncShipTunnels(
             .catch((e) => { emit.warn(`could not write tunnel_status: ${(e as Error).message}`, { step: 'passengers' }); }),
         );
         if (status === 'disconnected') pending.push(unregisterEndpoint(workspaceId, info, reconcile));
+        // CREW-2932: a tunnel that keeps dying before it settles was refused.
+        const rejectedKey = `${TUNNEL_REJECTED_KEY}:${workspaceId}`;
+        if ((info?.quickExits ?? 0) >= TUNNEL_REJECTED_AFTER) {
+          pending.push(raiseShipAttention({ state, emit, route: owningRoute, ship: cfg.ship }, {
+            kind: TUNNEL_REJECTED_KEY, key: rejectedKey, message: tunnelRejectedMessage(workspaceId, info!.quickExits!), since: new Date().toISOString(),
+          }).then(() => undefined).catch(() => undefined));
+        } else if (status === 'connected') clearShipAttention(state, rejectedKey);
       },
     });
     // Every cycle, not just on the connected transition: a 403 or a
@@ -6363,6 +6371,9 @@ switch (command) {
       if (!flag('offline')) {
         for (const message of managedRuntimeWarnings(await doctorShipKind(route, cfg.ship), cfg.ship)) problems.push({ severity: 'attention', kind: 'managed_runtime_default', message });
       }
+      for (const t of rejectedTunnels(cfg.ship.stateDir)) {
+        problems.push({ severity: 'attention', kind: TUNNEL_REJECTED_KEY, message: tunnelRejectedMessage(t.workspaceId, t.quickExits), remedy: 'rotate the slug with `crew rotate-passenger-url`' });
+      }
       const previewProblem = await previewHostProblem(cfg);
       if (previewProblem) problems.push(previewHostFinding(previewProblem));
       if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
@@ -6382,6 +6393,8 @@ switch (command) {
     );
 
     for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
+
+    for (const t of rejectedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${tunnelRejectedMessage(t.workspaceId, t.quickExits)}\n`);
 
     // EPIC-077: periscopes need a host to send a Passenger to.
     process.stdout.write(`periscopes:        ${periscopeSummary(cfg)}\n`);

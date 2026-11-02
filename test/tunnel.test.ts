@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS,
+  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels,
   type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
@@ -57,6 +57,7 @@ test('sshArgsFor() builds the exact -R remote-forward argv the relay expects', (
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=3',
     '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'IdentitiesOnly=yes',
     '-i', '/keys/id_ed25519',
     '-p', '2222',
     '-R', `workspace-ws-1-slug-${SLUG}-key-${KEY}:0:127.0.0.1:28800`,
@@ -463,4 +464,27 @@ test('syncPassengerTunnels() respawns when the control socket forwarded by the l
 test('relayBaseUrlFor() is the tunnel URL without /mcp (CREW-2803)', () => {
   assert.equal(relayBaseUrlFor(SLUG, 'crewd@ships.example.com', 443), `https://${SLUG}.ships.example.com`);
   assert.equal(relayBaseUrlFor(SLUG, 'crewd@x.com', 8443, 'pub.example.com'), `https://${SLUG}.pub.example.com:8443`);
+});
+
+test('sshArgsFor() offers only the ship key, never the ssh-agent keys (CREW-2932)', () => {
+  const args = sshArgsFor({ relayHost: 'crewd@ships.tablation.dev', relayPort: 2222, workspaceId: 'ws-1', slug: SLUG, apiKey: KEY, localPort: 28800, privateKeyPath: '/keys/id_ed25519' });
+  const i = args.indexOf('IdentitiesOnly=yes');
+  assert.ok(i > 0 && args[i - 1] === '-o');
+});
+
+test('a tunnel whose child dies before ever settling counts quick exits, and rejectedTunnels() reports it after two (CREW-2932)', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-tunnel-'));
+  const run = (alivePids: boolean) => syncPassengerTunnels(
+    [makePlan('ws-1')], 'crewd@ships.tablation.dev', 2222, '/keys/id_ed25519', stateDir, new Map(),
+    { apiKeys: KEYS, spawnFn: fakeSpawn(new FakeChild()).spawnFn, isPidAlive: () => alivePids },
+  );
+  run(false); // first spawn
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.quickExits, 0);
+  run(false); // found dead while still connecting
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.quickExits, 1);
+  assert.deepEqual(rejectedTunnels(stateDir), []);
+  run(false);
+  assert.deepEqual(rejectedTunnels(stateDir), [{ workspaceId: 'ws-1', quickExits: 2 }]);
+  run(true); // survives a cycle: promoted, no longer counted
+  assert.equal(readPersistedTunnel(stateDir, 'ws-1')!.status, 'connected');
 });
