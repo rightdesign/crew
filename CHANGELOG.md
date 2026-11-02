@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.5] — 2026-11-02
+
+- CREW-2932 The relay tunnel offers only the ship's own key, so a ship with an ssh-agent no longer loses its slug to a conflict; crew doctor and ship attention report a tunnel the relay keeps refusing.
+
 ## [0.126.3] — 2026-11-02
 
 - CREW-2928 A repository with a refused .crew.yaml is skipped at daemon start instead of crash-looping every lane on the ship.
