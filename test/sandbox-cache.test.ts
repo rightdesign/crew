@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
-  SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, cacheSettingsOf, makeCachePass, sandboxCacheKey, unmirroredRepos,
+  SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, describe as describeExec, cacheSettingsOf, makeCachePass, sandboxCacheKey, unmirroredRepos,
   CACHE_REFRESH_INTERVAL_MS, OPENSHELL_ATTACHABLE_LABEL, type CacheExec, type CacheSettings,
 } from '../src/sandbox-cache.ts';
 import { parseShipSandbox } from '../src/config.ts';
+
+// cloneScript writes `safe.directory` to the global git config; keep that off the developer's real one.
+process.env.GIT_CONFIG_GLOBAL = join(mkdtempSync(join(tmpdir(), 'crew-gitcfg-')), 'gitconfig');
 
 const SETTINGS: CacheSettings = { engine: 'docker', volume: 'crew-cache', workspace: 'ws', helperImage: 'alpine/git', depsLockfile: 'pnpm-lock.yaml' };
 const REPO = { host: 'forge.test', path: 'acme/widgets' };
@@ -334,4 +337,25 @@ test('a refresh with no token names the missing token rather than git\'s prompt 
   assert.match(out!.detail ?? '', /no readable forge token for forge\.test/);
   const [withTok] = await r.cache.refresh([{ ...REPO, token: 't' }]);
   assert.doesNotMatch(withTok!.detail ?? '', /no readable forge token/);
+});
+
+test('the clone script reads a mirror git considers owned by someone else (root-written volume)', async () => {
+  const r = rig();
+  await r.cache.refresh([REPO]);
+  const clone = join(r.root, 'run');
+  const script = cloneScript({ mirrorDir: r.volume, repo: REPO, workDir: clone, origin: 'o', branch: 'b', lockfile: 'x' });
+  // git's test hook for "the repository belongs to another user"; HOME is a fresh dir so only the script's own config counts.
+  const home = join(r.root, 'clone-home');
+  mkdirSync(home);
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' };
+  execFileSync('sh', ['-c', script], { env, stdio: 'ignore' });
+  assert.equal(sh(clone, 'log', '-1', '--format=%s'), 'one');
+});
+
+test('describe keeps git\'s first fatal line when the tail is only boilerplate', () => {
+  const stderr = 'fatal: detected dubious ownership in repository at \'/m\'\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.';
+  const out = describeExec({ stderr });
+  assert.ok(out.startsWith('fatal: detected dubious ownership'), out);
+  assert.ok(out.endsWith('and the repository exists.'));
+  assert.equal(describeExec({ stderr: 'a\nb' }), 'a / b');
 });

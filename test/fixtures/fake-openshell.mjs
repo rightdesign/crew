@@ -40,7 +40,7 @@ if (group === 'sandbox' && verb === 'exec') {
   const cmd = argv.slice(dash + 1);
   // The uploaded prompt file only exists inside a real sandbox.
   if (cmd[0] === 'sh' && cmd[2]) cmd[2] = cmd[2].replace('/sandbox/prompt.txt', '/dev/null');
-  if (cmd[0] === 'sh' && cmd[2]?.startsWith('git clone')) process.exit(0);   // the clone/checkout prep step
+  if (cmd[0] === 'sh' && /^git (clone|config --global --add safe\.directory)/.test(cmd[2] ?? '')) process.exit(0);   // the clone/checkout prep step
   // FAKE_OS_STDIN_LOG: swallow the client's stdin and record how many bytes arrived.
   const log = process.env.FAKE_OS_STDIN_LOG;
   const child = spawn(cmd[0], cmd.slice(1), { stdio: [log ? 'ignore' : 'inherit', 'inherit', 'inherit'], env: process.env });

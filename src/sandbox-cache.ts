@@ -115,6 +115,10 @@ export function cloneScript(o: { mirrorDir: string; repo: CacheRepo; workDir: st
   const mirror = `${o.mirrorDir}/${mirrorRelPath(o.repo)}`;
   const depsRoot = `${o.mirrorDir}/${depsRelDir(o.repo)}`;
   return [
+    // The mirror is written by the helper container as root and mounted read-only,
+    // so git sees it as owned by someone else and refuses it. Global (not `-c`) so
+    // it holds for every later git call in the run that reads through the alternates.
+    `git config --global --add safe.directory '*'`,
     `git clone --quiet --shared ${q(mirror)} ${q(o.workDir)}`,
     `cd ${q(o.workDir)}`,
     `git remote set-url origin ${q(o.origin)}`,
@@ -375,9 +379,18 @@ export class SandboxCache {
   }
 }
 
-function describe(e: unknown): string {
+/**
+ * An exec failure as one line: the last three lines of its output, led by git's
+ * first `fatal:`/`error:` line when that has scrolled out of them (the cause
+ * comes first, the "Please make sure you have the correct access rights"
+ * boilerplate after it).
+ */
+export function describe(e: unknown): string {
   const err = e as { stderr?: string; message?: string };
-  return (err.stderr?.trim() || err.message || String(e)).split('\n').slice(-3).join(' / ');
+  const lines = (err.stderr?.trim() || err.message || String(e)).split('\n');
+  const tail = lines.slice(-3);
+  const first = lines.find((l) => /^(fatal|error):/.test(l.trim()));
+  return (first && !tail.includes(first) ? [first, ...tail] : tail).join(' / ');
 }
 
 /** The cache settings a `ship.sandbox` block implies; null when it names no cache volume. */

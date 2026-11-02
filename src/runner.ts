@@ -29,7 +29,7 @@ import type { AgentPlan } from './agent.ts';
 import type { Emitter } from './events.ts';
 import { killRunGroup } from './run-limit.ts';
 import { generateSandboxPolicy, parseDeniedRequests, policyPathFor, type SandboxPolicy } from './sandbox-policy.ts';
-import { cloneScript, parseRemote, DEFAULT_CACHE_SETTINGS } from './sandbox-cache.ts';
+import { cloneScript, describe as describeSandboxError, parseRemote, DEFAULT_CACHE_SETTINGS } from './sandbox-cache.ts';
 
 const execFileP = promisify(execFile);
 
@@ -317,10 +317,7 @@ export class SandboxRunner implements Runner {
   }
 }
 
-function describeExecError(e: unknown): string {
-  const err = e as { stderr?: string; message?: string };
-  return (err.stderr?.trim() || err.message || String(e)).split('\n').slice(-3).join(' / ');
-}
+const describeExecError = describeSandboxError;
 
 function gitOrigin(cwd: string): string | null {
   try {
