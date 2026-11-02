@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.129.0] — 2026-11-02
+
+- CREW-2940 A managed ship releases integrate and ci_* repositories from a sandbox over a shallow mirror-fed clone, with the gate hooks run inside it, and doctor/status read hooks from the mirror.
+
 ## [0.128.3] — 2026-11-02
 
 - CREW-2942 `crew provision` sets `ship.cloneScheme: https` on a managed ship, so its first checkout is cloned over HTTPS instead of timing out on SSH.
