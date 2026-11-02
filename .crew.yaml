@@ -10,9 +10,41 @@ worktrees:
   # client, no build step. `setup` below is the whole bootstrap.
   copy: []
 
+# What a sandboxed run (ship.runner: sandbox) needs baked into its image:
+# nothing installs inside a sandbox at run time and the default network
+# policy blocks every download (docs/REPO_SPEC.md "Sandbox images"). The
+# crew layer already brings git and curl; this repository adds its Node and
+# pnpm and warms the pnpm store, so `setup` runs offline. Caches live at
+# absolute paths under /opt/crew (the crew layer exports PNPM_HOME and
+# XDG_CACHE_HOME there), never under ~, because a sandbox's HOME is its
+# workdir.
+sandbox:
+  # The files `pnpm fetch` reads: the lockfile and the one manifest. A change
+  # to either rebuilds the image.
+  warm: [pnpm-lock.yaml, package.json]
+  setup:
+    # Node at the version .nvmrc pins, picked by CPU so the image builds on
+    # an arm64 or x64 ship alike. A .tar.gz, not .tar.xz: the image has no xz
+    # and a setup step runs as uid 1000, so it cannot install one.
+    - |
+      set -e
+      arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64;; x86_64) arch=x64;; esac
+      curl -fsSL "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-${arch}.tar.gz" | tar -xz -C /opt/crew
+      mv "/opt/crew/node-v24.19.0-linux-${arch}" /opt/crew/node
+      for b in node npm npx corepack; do ln -sf "/opt/crew/node/bin/$b" "/opt/crew/bin/$b"; done
+    # pnpm at the version package.json's `packageManager` pins, through npm
+    # rather than a corepack shim that would fetch per user at run time.
+    - npm install -g pnpm@11.22.0 && ln -sf /opt/crew/node/bin/pnpm /opt/crew/bin/pnpm
+    # Warm the store from the lockfile in `warm`, so the `setup` hook's
+    # `pnpm install` in a sandbox resolves everything offline.
+    - pnpm fetch
+    # Fail the build if the toolchain did not land on PATH.
+    - node --version && pnpm --version && git --version
+
 hooks:
   intel: typescript-lsp
 
+  # In a sandbox this runs offline from the store `sandbox.setup` warmed.
   setup: pnpm install
 
   # Runs directly, not through `pnpm test`: type stripping means there is no
