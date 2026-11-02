@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.10] — 2026-11-02
+
+- CREW-2965 Sandbox cache refresh authenticates through an inline git credential helper instead of http.extraHeader, so GitHub accepts it and the token stays out of git's argument list.
+
 ## [0.127.9] — 2026-11-02
 
 - CREW-2968 Sandbox runs now see the crew layer's environment (PNPM_HOME, npm_config_store_dir, XDG_CACHE_HOME), so `pnpm install --offline` finds the warmed store.
