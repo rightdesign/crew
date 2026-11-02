@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.7] — 2026-11-02
+
+- CREW-2938 A managed ship with no primary checkouts no longer fails the release phase on a missing directory every pass; it reads each repository's release mode from the mirror, logs one line per repository, and its connect mints the release seat's key.
+
 ## [0.126.6] — 2026-11-02
 
 - CREW-2930 A periscope listening only on the IPv6 loopback is now reported as serving, and crew periscope list and crew status use the same probe.
