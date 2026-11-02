@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.117.0] — 2026-11-02
+
+- CREW-2872 A repository's `intel` hook can start a symbol service that crew probes and registers as the `code` MCP server in a periscope worktree; a service that never answers now fails by `ship.intelStartupSeconds`.
+
 ## [0.116.0] — 2026-11-02
 
 - CREW-2873 A repository's optional `map` hook feeds a budgeted "Repository map" section into the brief (stdout only, re-run for each brief).
