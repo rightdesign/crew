@@ -74,6 +74,15 @@ test('the clone step installs container-engine stubs and the harness runs with t
   assert.match(execs[1]!.argv.join(' '), /PATH='\/sandbox\/\.crew-bin':"\$PATH"/);
 });
 
+test('the harness exec exports the crew layer environment (CREW-2968)', async () => {
+  const r = rig();
+  await spawnAgent(r.plan(STREAM), r.emitter());
+  const exec = r.calls().filter((c) => c.argv[1] === 'exec').at(-1)!.argv.join(' ');
+  assert.match(exec, /PNPM_HOME=\/opt\/crew\/pnpm; export PNPM_HOME;/);
+  assert.match(exec, /npm_config_store_dir=\/opt\/crew\/pnpm-store; export npm_config_store_dir;/);
+  assert.match(exec, /XDG_CACHE_HOME=\/opt\/crew\/cache; export XDG_CACHE_HOME;/);
+});
+
 test('secrets reach the sandbox through --env-from, never argv', async () => {
   const r = rig();
   await spawnAgent(r.plan(STREAM), r.emitter());

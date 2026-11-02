@@ -143,6 +143,19 @@ export const CREW_ENV: Record<string, string> = {
   DISABLE_AUTOUPDATER: '1',
 };
 
+/**
+ * A shell prelude exporting the crew layer's variables (CREW_ENV and the Serena ones). The image
+ * sets them with `ENV`, but `openshell sandbox exec` starts the process without them (CREW-2968).
+ */
+export function sandboxEnvExports(): string {
+  const vars: Record<string, string> = {
+    ...CREW_ENV,
+    [SERENA_LANGUAGE_SERVERS_ENV]: `${SERENA_IMAGE_HOME}/language_servers`,
+    UV_PYTHON_INSTALL_DIR: `${CREW_PREFIX}/uv/python`,
+  };
+  return Object.entries(vars).map(([k, v]) => `${k}=${v}; export ${k}; `).join('');
+}
+
 /** Build-time install of the pinned Claude Code binary, checksum-verified, refusing any unknown architecture. */
 export function claudeInstallCommand(): string {
   const cases = Object.entries(SANDBOX_CLAUDE_SHA256)

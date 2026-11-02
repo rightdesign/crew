@@ -18,6 +18,7 @@
  * a restarted daemon can delete it when it finishes the run.
  */
 
+import { sandboxEnvExports } from './sandbox-image.ts';
 import { containerEngineStubScript, SANDBOX_STUB_DIR, DEFAULT_SANDBOX_WORKDIR, writeFilesScript } from './sandbox-brief.ts';
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -261,7 +262,9 @@ export class SandboxRunner implements Runner {
       }
       // CREW-2800: the stub container-engine CLIs come first on PATH, so a hook that reaches for
       // docker fails with the message naming the in-sandbox services pattern.
-      const withStubs = `PATH=${shQuote(SANDBOX_STUB_DIR)}:"$PATH"; export PATH; `;
+      // CREW-2968: `sandbox exec` does not carry the image's `ENV` (only PATH arrives), so the crew
+      // layer's variables are exported here for the harness and every hook it runs.
+      const withStubs = `${sandboxEnvExports()}PATH=${shQuote(SANDBOX_STUB_DIR)}:"$PATH"; export PATH; `;
       const command = viaUpload
         ? ['sh', '-c', `${withStubs}exec ${[harness, ...plan.args].map(shQuote).join(' ')} < ${SANDBOX_PROMPT_PATH}`]
         : ['sh', '-c', `${withStubs}exec "$@"`, 'sh', harness, ...plan.args];
