@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.0] — 2026-11-02
+
+- CREW-2956 A sandbox ship builds the crew layer itself and runs every repository in it, so a repository with no `sandbox:` section still has git and Claude Code inside its sandbox.
+
 ## [0.126.12] — 2026-11-02
 
 - CREW-2954 The release phase no longer reports a failed squash-merge or commit that is not a conflict as a merge conflict; the ticket stays verified, the ship shows an attention item (cleared by the next clean merge), and a checkout with no git identity gets a ship-local one.
