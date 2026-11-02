@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.8] — 2026-11-02
+
+- CREW-2966 The sandbox cache volume is labeled for the OpenShell `default` workspace, so a fresh sandbox ship mounts it; `crew doctor` reports a volume labeled for another workspace.
+
 ## [0.127.7] — 2026-11-02
 
 - CREW-2964 Sandboxed runs clone from the cache volume's root-owned mirror instead of failing with "dubious ownership", and sandbox preparation errors now carry git's first fatal line.
