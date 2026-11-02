@@ -82,7 +82,7 @@ import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
 import { renderEnvironment } from './environment.ts';
-import { withRepoMaps } from './repo-map.ts';
+import { withRepoMaps, mapFilePath, inspectMapFile } from './repo-map.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
@@ -3306,6 +3306,7 @@ switch (command) {
           release: mergeRouteRelease(found.release, o?.release),
           branch: { ...found.branch, ...o?.branch },
           worktrees: { prefix: shipWorktreePrefixFor(found), nameOverride: o?.worktreeName },
+          mapTokenBudget: cfg.ship.mapTokenBudget,
         });
       } catch (e) {
         if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
@@ -6258,6 +6259,7 @@ switch (command) {
             route: c.route, repo: r.name, dir: r.dir, notes: validateEffective(r.config),
             base: doctorBaseReport(r, r.config.branch.base, baseHealth), hooks: r.config.hooks,
             onPath: (cmd) => !!findOnPath(cmd, doctorSchedulerPath),
+            mapFile: mapFilePath(r.config.hooks.map) ? inspectMapFile(r.dir, mapFilePath(r.config.hooks.map)!) : undefined,
             intelSyntax: r.config.hooks.intel && !intelFlavor(r.config.hooks.intel) ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
             intelFlavor: intelFlavor(r.config.hooks.intel) ? { name: intelFlavor(r.config.hooks.intel)!, missing: [
               ...missingPrerequisites(intelFlavor(r.config.hooks.intel)!, (bin) => !!findOnPath(bin, doctorSchedulerPath)),

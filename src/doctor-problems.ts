@@ -21,7 +21,7 @@ export interface DoctorProblem {
   message: string;
   remedy?: string;
   /** `hook_missing` only: which hook, and the binary it runs. */
-  hook?: 'setup' | 'test' | 'build' | 'deploy' | 'intel';
+  hook?: 'setup' | 'test' | 'build' | 'deploy' | 'intel' | 'map';
   command?: string;
 }
 
@@ -42,6 +42,8 @@ export function repoFindings(o: {
   base: { message: string; failed: boolean; skipRest: boolean };
   hooks: Partial<Record<(typeof HOOK_NAMES)[number], string | undefined>>;
   onPath: (command: string) => boolean;
+  /** A file-form `map` (CREW-2919): what `hooks.map` names and whether it exists in the checkout. */
+  mapFile?: { path: string; exists: boolean; lines: number; tokens: number };
   /** The `intel` hook's syntax check, when the repository declares one. */
   intelSyntax?: { status: 'ok' | 'error' | 'unchecked'; message?: string };
   /** A built-in `intel` flavor and the prerequisites it is missing from PATH (CREW-2914), each with its install line. */
@@ -73,6 +75,15 @@ export function repoFindings(o: {
       message: `${o.route}/${o.repo}: the ${hook} hook runs \`${command}\`, which is not on the scheduler PATH — add its directory to ship.extraPath in crew.yaml`,
       remedy: 'add the directory holding it to ship.extraPath in crew.yaml',
     });
+  }
+  if (o.mapFile) {
+    if (!o.mapFile.exists) {
+      problems.push({
+        severity: 'attention', kind: 'map_file_missing', ...at, hook: 'map',
+        message: `${o.route}/${o.repo}: hooks.map names ${o.mapFile.path}, which is not in the checkout, so briefs carry no repository map`,
+        remedy: `commit ${o.mapFile.path}, or correct hooks.map in the repository's .crew.yaml`,
+      });
+    } else passed++;
   }
   if (o.intelSyntax) {
     if (o.intelSyntax.status === 'error') {

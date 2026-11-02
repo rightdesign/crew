@@ -6,6 +6,8 @@
  * knows what a good map looks like.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { runScript, resolveShell } from './shell.ts';
 import type { EnvironmentRepo } from './environment.ts';
 
@@ -37,17 +39,55 @@ export function budgetMap(text: string, tokenBudget: number): string {
   return [...lines.slice(0, kept), noteFor(kept)].join('\n');
 }
 
+/**
+ * The repo-relative path a `map` value names when it is a file rather than a
+ * command (CREW-2919): a single relative path ending in `.md`, made only of
+ * path characters, with no `..` segment. The extension is the whole rule; any
+ * other value (spaces, quotes, `$`, `|`, `;`, an absolute path) stays a
+ * command for the shell. Null when the value is a command.
+ */
+export function mapFilePath(value: string | undefined): string | null {
+  if (!value) return null;
+  const v = value.trim();
+  if (!/^[A-Za-z0-9_.+@-]+(?:\/[A-Za-z0-9_.+@-]+)*\.md$/i.test(v)) return null;
+  if (v.split('/').some((seg) => seg === '..' || seg === '.')) return null;
+  return v;
+}
+
+/** What `crew repos check` and `crew doctor` say about a file-form `map`. */
+export interface MapFileReport { path: string; exists: boolean; lines: number; tokens: number }
+
+/** Reads the file-form map under `dir` without budgeting it. */
+export function inspectMapFile(dir: string, path: string): MapFileReport {
+  try {
+    const text = readFileSync(join(dir, path), 'utf8').replace(/\s+$/, '');
+    return { path, exists: true, lines: text ? text.split('\n').length : 0, tokens: Math.ceil(text.length / CHARS_PER_TOKEN) };
+  } catch {
+    return { path, exists: false, lines: 0, tokens: 0 };
+  }
+}
+
 /** What a repository's `map` hook came to: text for the brief, or one line saying why there is none. */
 export type MapOutcome = { text: string } | { skipped: string };
 
 /**
- * Runs the repository's `map` hook from `dir` and budgets its output. Never
+ * Runs the repository's `map` hook (or reads its `.md` file) from `dir` and budgets its output. Never
  * throws: a hook that exits non-zero or prints nothing is `skipped` with the
  * reason, and the brief simply has no map.
  */
 export function loadRepoMap(repo: EnvironmentRepo, tokenBudget: number, shellFallback?: string): Promise<MapOutcome> {
   const script = repo.config.hooks.map;
   if (!script) return Promise.resolve({ skipped: '' });
+  // CREW-2919: a `.md` path is the map itself, read from the checkout; never run.
+  const file = mapFilePath(script);
+  if (file) {
+    const m = inspectMapFile(repo.dir, file);
+    if (!m.exists) return Promise.resolve({ skipped: `the \`map\` file ${file} for ${repo.name} is missing or unreadable, so the brief has no repository map` });
+    let text = '';
+    try { text = readFileSync(join(repo.dir, file), 'utf8'); } catch { /* raced away: treated as empty */ }
+    if (!text.trim()) return Promise.resolve({ skipped: `the \`map\` file ${file} for ${repo.name} is empty, so the brief has no repository map` });
+    return Promise.resolve({ text: budgetMap(text, tokenBudget) });
+  }
   // Not cached: the daemon is long-lived, so a cache here would pin a stale
   // map (or a transient failure) until restart. One run per brief assembly.
   return runScript(script, {

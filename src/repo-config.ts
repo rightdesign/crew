@@ -128,6 +128,10 @@ export interface RepoHooks {
    */
   intel?: string;
   /**
+   * A file or a command (CREW-2919). A single relative `.md` path (no spaces
+   * or shell syntax, no `..`) is read from the checkout and used as the map,
+   * never run; anything else is a command that prints the outline:
+   *
    * Prints a plain-text or Markdown outline of the repository on stdout: the
    * top-level areas, the registries where labels and routes live, the
    * directories that matter and the ones to ignore. How it is produced is the
@@ -928,6 +932,8 @@ export function renderWorktreeName(template: string, ctx: BranchContext & { dir:
  * silently disagreeing with it.
  */
 export interface ShipRepoSettings {
+  /** `ship.mapTokenBudget`, so `crew repos check` can say how a file-form `map` fits (CREW-2919). */
+  mapTokenBudget?: number;
   branch?: Partial<BranchNaming>;
   /** The route's `worktreePrefix`, if it declares one (ISSUE-350). */
   worktrees?: {

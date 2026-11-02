@@ -108,3 +108,26 @@ routes:
   const named = run(['test/proj', 'proj'], cfg);
   assert.match(named.stderr, /no repo named "proj"/);
 });
+
+// CREW-2919
+test('a file-form map prints its line and token counts and the ship budget', () => {
+  const dir = checkout('version: 1\nhooks:\n  test: pnpm test\n  deploy: ./ship.sh\n  map: docs/REPO_MAP.md\n');
+  mkdirSync(join(dir, 'docs'));
+  writeFileSync(join(dir, 'docs/REPO_MAP.md'), 'abcd\nefgh\n');
+  const r = run([dir]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /map: file docs\/REPO_MAP\.md \(2 lines, about 3 tokens; ship budget 1000\)/);
+  assert.doesNotMatch(r.stdout, /\n\s+map: syntax/);
+});
+
+test('a file-form map that does not exist fails the check', () => {
+  const r = run([checkout('version: 1\nhooks:\n  test: pnpm test\n  deploy: ./ship.sh\n  map: docs/REPO_MAP.md\n')]);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /map: file docs\/REPO_MAP\.md NOT FOUND/);
+});
+
+test('a command-form map is still syntax-checked', () => {
+  const r = run([checkout('version: 1\nhooks:\n  test: pnpm test\n  deploy: ./ship.sh\n  map: cat docs/MAP.md\n')]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /map: syntax ok/);
+});

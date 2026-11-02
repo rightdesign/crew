@@ -1,9 +1,9 @@
 import { test } from 'node:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { budgetMap, withRepoMaps } from '../src/repo-map.ts';
+import { budgetMap, withRepoMaps, mapFilePath, inspectMapFile } from '../src/repo-map.ts';
 import { resolveRepoConfig, parseRepoConfig } from '../src/repo-config.ts';
 import type { EnvironmentRepo } from '../src/environment.ts';
 
@@ -62,4 +62,45 @@ test('each assembly re-runs the hook, so a changed map and a recovered failure s
   assert.equal((await withRepoMaps([r], 1000))[0]!.map, 'v1');
   writeFileSync(file, 'v2\n');
   assert.equal((await withRepoMaps([r], 1000))[0]!.map, 'v2');
+});
+
+// CREW-2919
+test('mapFilePath accepts only a single relative .md path', () => {
+  for (const ok of ['docs/REPO_MAP.md', 'MAP.md', 'a/b-c_d.1/map.MD']) assert.equal(mapFilePath(ok), ok, ok);
+  for (const no of ['scripts/repo-map.sh', 'cat docs/MAP.md', 'docs/MAP.md; rm x', '$X/MAP.md', '/etc/MAP.md', '../MAP.md', 'a/../MAP.md', './MAP.md', 'docs/MAP.md | cat', '"docs/MAP.md"', 'docs/my map.md', '', 'docs/MAP.md.sh']) {
+    assert.equal(mapFilePath(no), null, no);
+  }
+  assert.equal(mapFilePath(undefined), null);
+});
+
+const fileRepo = (dir: string, hook: string): EnvironmentRepo => ({ ...repo(hook), dir });
+
+test('a .md map is read from the checkout and budgeted, never run', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-mapfile-'));
+  mkdirSync(join(dir, 'docs'));
+  writeFileSync(join(dir, 'docs/REPO_MAP.md'), '# Map\n- apps/a\n');
+  const [r] = await withRepoMaps([fileRepo(dir, 'docs/REPO_MAP.md')], 1000);
+  assert.equal(r!.map, '# Map\n- apps/a');
+  const long = Array.from({ length: 50 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n');
+  writeFileSync(join(dir, 'docs/REPO_MAP.md'), long);
+  const [cut] = await withRepoMaps([fileRepo(dir, 'docs/REPO_MAP.md')], 100);
+  assert.ok(cut!.map!.length <= 400);
+  assert.match(cut!.map!, /lines cut to fit ship\.mapTokenBudget/);
+});
+
+test('a .md map that is missing or empty gives the absence note and does not fail', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-mapfile-'));
+  const [gone] = await withRepoMaps([fileRepo(dir, 'docs/NOPE.md')], 1000);
+  assert.equal(gone!.map, undefined);
+  assert.match(gone!.mapSkipped!, /docs\/NOPE\.md.*missing/);
+  writeFileSync(join(dir, 'E.md'), '  \n');
+  const [empty] = await withRepoMaps([fileRepo(dir, 'E.md')], 1000);
+  assert.match(empty!.mapSkipped!, /E\.md.*empty/);
+});
+
+test('inspectMapFile counts lines and tokens', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-mapfile-'));
+  writeFileSync(join(dir, 'M.md'), 'abcd\nefgh\n');
+  assert.deepEqual(inspectMapFile(dir, 'M.md'), { path: 'M.md', exists: true, lines: 2, tokens: 3 });
+  assert.equal(inspectMapFile(dir, 'X.md').exists, false);
 });

@@ -50,3 +50,11 @@ test('an intel hook that fails its syntax check is an attention finding (CREW-28
   assert.equal(repoFindings({ ...base, intelSyntax: { status: 'ok' } }).problems.length, 0);
   assert.equal(repoFindings(base).problems.length, 0);
 });
+
+test('a file-form map that is not in the checkout is an attention finding (CREW-2919)', () => {
+  const base = { route: 'r', repo: 'x', dir: '/x', notes: [], base: { message: '', failed: false, skipRest: false }, hooks: {}, onPath: () => true };
+  const gone = repoFindings({ ...base, mapFile: { path: 'docs/REPO_MAP.md', exists: false, lines: 0, tokens: 0 } });
+  assert.equal(gone.problems.length, 1);
+  assert.equal(gone.problems[0]!.kind, 'map_file_missing');
+  assert.equal(repoFindings({ ...base, mapFile: { path: 'docs/REPO_MAP.md', exists: true, lines: 4, tokens: 20 } }).problems.length, 0);
+});

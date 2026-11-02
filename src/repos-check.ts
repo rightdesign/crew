@@ -20,6 +20,8 @@ import {
 } from './repo-config.ts';
 import { containerEngineUse } from './sandbox-brief.ts';
 import { resolveShell } from './shell.ts';
+import { DEFAULT_MAP_TOKEN_BUDGET } from './config.ts';
+import { inspectMapFile, mapFilePath, type MapFileReport } from './repo-map.ts';
 import { intelFlavor } from './intel.ts';
 
 export type SyntaxResult = { status: 'ok' | 'error' | 'unchecked'; message?: string };
@@ -42,6 +44,8 @@ export interface RepoCheckReport {
   readiness: string[];
   hooks: HookCheck[];
   shadowed: string[];
+  /** The file-form `map` (CREW-2919), when `hooks.map` names a `.md` path. */
+  mapFile: (MapFileReport & { budget?: number }) | null;
   samples: RenderedSample[];
   /** Why the file did not load: no file, or the loader's own wording. */
   error: string | null;
@@ -100,7 +104,7 @@ export interface RepoCheckOptions {
 }
 
 export function checkRepoSpec(dir: string, opts: RepoCheckOptions = {}): RepoCheckReport {
-  const empty = { parsed: null, effective: null, readiness: [], hooks: [], shadowed: [], samples: [] };
+  const empty = { parsed: null, effective: null, readiness: [], hooks: [], shadowed: [], mapFile: null, samples: [] };
   const file = findRepoConfig(dir);
   if (!file) {
     return { ...empty, file: null, error: `no .crew.yaml, .crew.yml or .crew.json in ${dir}`, exitCode: 1 };
@@ -119,7 +123,10 @@ export function checkRepoSpec(dir: string, opts: RepoCheckOptions = {}): RepoChe
     const engine = effective.hooks.setup ? containerEngineUse(effective.hooks.setup) : null;
     if (engine) readiness.push(`hooks.setup runs \`${engine}\`, and a sandbox has no container engine — start the service as a process instead (REPO_SPEC.md, "Services inside the sandbox")`);
   }
-  const hooks = (Object.keys(effective.hooks) as Array<keyof RepoHooks>).map((name) => ({
+  const mapPath = mapFilePath(effective.hooks.map);
+  const mapFile = mapPath ? { ...inspectMapFile(dir, mapPath), budget: opts.ship?.mapTokenBudget ?? DEFAULT_MAP_TOKEN_BUDGET } : null;
+  // A file-form map is not a command, so there is no syntax to check.
+  const hooks = (Object.keys(effective.hooks) as Array<keyof RepoHooks>).filter((name) => !(name === 'map' && mapPath)).map((name) => ({
     name,
     label: hookLabel(effective, name),
     // CREW-2914: a flavor name is not shell, so it is not syntax-checked.
@@ -128,9 +135,9 @@ export function checkRepoSpec(dir: string, opts: RepoCheckOptions = {}): RepoChe
       : checkHookSyntax(effective.hooks[name] as string, effective.shell),
     ...(name === 'intel' && intelFlavor(effective.hooks.intel) ? { flavor: intelFlavor(effective.hooks.intel) } : {}),
   }));
-  const failed = hooks.some((h) => h.syntax.status === 'error');
+  const failed = hooks.some((h) => h.syntax.status === 'error') || (mapFile !== null && !mapFile.exists);
   return {
-    file, parsed, effective, readiness, hooks, shadowed: effective.shadowed, samples: renderSamples(effective, dir),
+    file, parsed, effective, readiness, hooks, shadowed: effective.shadowed, mapFile, samples: renderSamples(effective, dir),
     error: null, exitCode: failed || (opts.strict && readiness.length > 0) ? 1 : 0,
   };
 }
@@ -149,6 +156,12 @@ export function renderRepoCheck(r: RepoCheckReport): string {
     `  branch.push        ${e.branch.push}`,
   ];
   for (const s of r.samples) lines.push(`  ${s.case}: branch ${s.branch}, worktree ../${s.worktree}`);
+  if (r.mapFile) {
+    const m = r.mapFile;
+    lines.push(m.exists
+      ? `  map: file ${m.path} (${m.lines} lines, about ${m.tokens} tokens; ship budget ${m.budget})`
+      : `  map: file ${m.path} NOT FOUND — the brief will carry an absence note`);
+  }
   lines.push(r.hooks.length ? '  hooks' : '  hooks              none');
   for (const h of r.hooks) {
     const named = h.label !== e.hooks[h.name as keyof RepoHooks] ? ` (${h.label})` : '';
