@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.5] — 2026-11-02
+
+- CREW-2962 The hand-off guard checks the Acceptance checklist against every comment the seat posted during the run and hands a bounced ticket back to the building seat, so a hybrid ticket is no longer stranded on QA's seat.
+
 ## [0.127.4] — 2026-11-02
 
 - CREW-2960 Sandbox image builds rewrite every Ubuntu apt source (including arm64's ports.ubuntu.com) to https, so 443-only hosts can build on arm64 too.
