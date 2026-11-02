@@ -115,7 +115,7 @@ import { checkCapabilities, describeCapability, missLine } from './capability-ch
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
-import { listLogEntries, showLogEntry, LogbookError } from './logbook.ts';
+import { listLogEntries, showLogEntry, formatBeforeEdit, LogbookError } from './logbook.ts';
 import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.ts';
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
@@ -448,7 +448,7 @@ function usage(problem?: string, requested = false): never {
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches (--json: every Repos row too)
-  crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket
+  crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket; --before-edit sorts by searches before the first edit
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
   crew passengers [route]       sync Host Passengers containers/tunnels once; what the passengers unit invokes
   crew install                  write and load this platform's scheduler unit
@@ -3556,7 +3556,7 @@ switch (command) {
     const sub = positional[1];
     if (sub !== 'list' && sub !== 'show') {
       process.stderr.write(
-        'crew logbook list [route] [--role R] [--ticket T] [--limit N]\n' +
+        'crew logbook list [route] [--role R] [--ticket T] [--limit N] [--before-edit]\n' +
         'crew logbook show [route] <entryId> [--prompt]\n',
       );
       process.exit(2);
@@ -3581,13 +3581,15 @@ switch (command) {
           role: value('role'),
           ticket: value('ticket'),
           limit: value('limit') ? Number(value('limit')) : undefined,
+          beforeEdit: flag('before-edit'),
         });
         if (entries.length === 0) { process.stdout.write('(no Agent Log entries match)\n'); break; }
         for (const e of entries) {
           process.stdout.write(
             `${e.id}  ${e.started_at ?? '?'}  ${e.outcome ?? '?'}` +
               `${e.ticket_reference ? `  ${e.ticket_reference}` : ''}${e.model ? `  ${e.model}` : ''}${e.harness || e.provider ? `  (${[e.harness, e.provider].filter(Boolean).join(' · ')})` : ''}` +
-              `${e.num_turns != null ? `  turns ${e.num_turns}` : ''}${e.prefix_tokens != null ? `  prefix ${e.prefix_tokens}` : ''}\n`,
+              `${e.num_turns != null ? `  turns ${e.num_turns}` : ''}${e.prefix_tokens != null ? `  prefix ${e.prefix_tokens}` : ''}` +
+              `${formatBeforeEdit(e) ? `  before edit: ${formatBeforeEdit(e)}` : ''}\n`,
           );
         }
       } else {
@@ -3605,7 +3607,8 @@ switch (command) {
           `harness:    ${entry.harness ?? '?'}\n` +
           `provider:   ${entry.provider ?? '?'}\n` +
           (entry.num_turns != null ? `turns:      ${entry.num_turns}\n` : '') +
-          (entry.prefix_tokens != null ? `prefix:     ${entry.prefix_tokens} tokens\n` : ''),
+          (entry.prefix_tokens != null ? `prefix:     ${entry.prefix_tokens} tokens\n` : '') +
+          (formatBeforeEdit(entry) ? `before edit: ${formatBeforeEdit(entry)}\n` : ''),
         );
         if (flag('prompt')) {
           process.stdout.write(`\nprompt reconstruction: ${reconstruction.status}` +

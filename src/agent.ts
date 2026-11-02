@@ -26,6 +26,7 @@ import type { Emitter } from './events.ts';
 import { inferenceBaseUrl } from './adapters/claude.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type PersonaChoice, type ToolchainSpec } from './toolchain.ts';
 import { resolveContract } from './contract.ts';
+import { BeforeFirstEditTracker } from './tool-classify.ts';
 import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
@@ -751,6 +752,8 @@ class RunObserver {
   result: ReturnType<ReturnType<typeof adapterFor>['extractResult']>;
   /** Prefix tokens of the first assistant call that carried usage; kept once. */
   prefixTokens: number | undefined;
+  /** Tool calls before the run's first edit (CREW-2879). */
+  readonly beforeFirstEdit = new BeforeFirstEditTracker();
   /** Set once the stream carries the harness's final result (turn count or cost). */
   sawResult = false;
   muted = false;
@@ -762,6 +765,7 @@ class RunObserver {
   /** Called after `liveTicket` changes, so the sidecar can be rewritten. */
   onClaim?: () => void;
   private buf = '';
+  private readonly startMs = Date.now();
   private readonly mapper: { map(p: unknown): StreamKindEvent[]; flush(): StreamKindEvent[] };
   private readonly id: RunIdentity;
   private readonly adapter: ReturnType<typeof adapterFor>;
@@ -824,6 +828,8 @@ class RunObserver {
     for (const ev of events) if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) this.attribution.note(ev.text);
     for (const ev of events) {
       if (ev.kind === 'tool') this.attribution.noteWrite(ev.tool, ev.input);
+      // A replayed (muted) stream has lost the real timing, so it counts without a time.
+      if (ev.kind === 'tool') this.beforeFirstEdit.note(ev.tool, ev.target, this.muted ? undefined : Date.now() - this.startMs);
       if (ev.kind === 'tool' && isClaimWrite(ev.tool, ev.input)) {
         const claimed = this.attribution.current;
         if (claimed && claimed !== this.liveTicket) {
@@ -968,6 +974,7 @@ async function finishRun(
       emit.warn(`could not save the pending hand-off: ${(e as Error).message}`, { step: 'agent' });
     }
   }
+  const before = obs.beforeFirstEdit.result();
   try {
     writeRunMeta(id, startedAt, obs.liveTicket, {
       attributedTicket: attributedTicket ?? null,
@@ -977,6 +984,7 @@ async function finishRun(
       ...(end.interrupted ? { interrupted: end.interrupted } : {}),
       ...(pending ? { handoff: 'pending' } : {}),
       sessionId: result?.sessionId ?? null, numTurns: result?.numTurns ?? null, prefixTokens: obs.prefixTokens ?? null,
+      beforeFirstEdit: before,
       totalCostUsd: result?.costUsd ?? null,
     });
   } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
@@ -989,6 +997,8 @@ async function finishRun(
       ...identity,
       attributedTicket: attributedTicket ?? null, attributedBy,
       ...(result?.sessionId ? { sessionId: result.sessionId } : {}),
+      callsBeforeFirstEdit: before.calls, edited: before.edited,
+      ...(before.secondsToFirstEdit !== undefined ? { secondsToFirstEdit: before.secondsToFirstEdit } : {}),
       ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
       ...(result?.costUsd !== undefined ? { totalCostUsd: result.costUsd } : {}),
     },
@@ -1009,6 +1019,7 @@ async function finishRun(
         // Both come from a finished run: without the result line (interrupted) neither is trustworthy.
         ...(result?.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
         ...(result?.numTurns !== undefined && obs.prefixTokens !== undefined ? { prefixTokens: obs.prefixTokens } : {}),
+        beforeFirstEdit: before,
         harness: identity.harness,
         provider: identity.provider,
         promptVersion: id.promptVersion,

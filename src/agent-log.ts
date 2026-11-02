@@ -16,6 +16,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { BeforeFirstEdit } from './tool-classify.ts';
 import { sleepBackoff } from './pending-backoff.ts';
 
 export interface AgentLogTarget {
@@ -89,6 +90,11 @@ export interface AgentRunReport {
    */
   numTurns?: number;
   prefixTokens?: number;
+  /**
+   * Tool calls before the run's first edit (CREW-2879). Written to the row
+   * only for the columns the workspace's Agent Log has (`writeBeforeFirstEdit`).
+   */
+  beforeFirstEdit?: BeforeFirstEdit;
   /**
    * Who ran and who served the model (CREW-1516, EPIC-035 §13; the server's
    * DTO fields from TABL-1513). Dropped and retried once when the server
@@ -206,6 +212,44 @@ export function counterIncrements(
   return out;
 }
 
+/** Agent Log columns for the before-first-edit figures; each is written only when the workspace's table has it. */
+export const BEFORE_EDIT_COLUMNS = {
+  search: 'calls_before_edit_search',
+  symbol: 'calls_before_edit_symbol',
+  other: 'calls_before_edit_other',
+  seconds: 'seconds_to_first_edit',
+  edited: 'edited',
+} as const;
+
+/** The columns of the Agent Log row a before-first-edit write would set, before filtering to the table's own. */
+export function beforeFirstEditBody(b: BeforeFirstEdit): Record<string, number | boolean> {
+  return {
+    [BEFORE_EDIT_COLUMNS.search]: b.calls.search,
+    [BEFORE_EDIT_COLUMNS.symbol]: b.calls.symbol,
+    [BEFORE_EDIT_COLUMNS.other]: b.calls.other,
+    [BEFORE_EDIT_COLUMNS.edited]: b.edited,
+    ...(b.secondsToFirstEdit !== undefined ? { [BEFORE_EDIT_COLUMNS.seconds]: b.secondsToFirstEdit } : {}),
+  };
+}
+
+/**
+ * Sets the before-first-edit figures on a new Agent Log row, for the columns
+ * the workspace has. Best effort and silent: a workspace without the columns,
+ * a key that may not edit the table, or any failure leaves the run's report
+ * exactly as it was (CREW-2879).
+ */
+async function writeBeforeFirstEdit(target: AgentLogTarget, rowId: string, b: BeforeFirstEdit): Promise<void> {
+  try {
+    const model = await request<{ id: string }>(
+      target, 'GET', `/data-models/agent_log?workspaceId=${encodeURIComponent(target.workspaceId)}`,
+    );
+    const have = await columnsOf(target, model.id);
+    const body = Object.fromEntries(Object.entries(beforeFirstEditBody(b)).filter(([column]) => have.has(column)));
+    if (Object.keys(body).length === 0) return;
+    await request(target, 'PATCH', `/data-models/${model.id}/records/${rowId}`, body);
+  } catch { /* the columns are optional */ }
+}
+
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
   const url = `${target.baseUrl.replace(/\/+$/, '')}/api/workspaces/${target.workspaceId}${path}`;
   const res = await fetch(url, {
@@ -283,6 +327,7 @@ export async function reportAgentRun(
       ...(cycle.role ? { role: cycle.role } : {}),
     });
   }
+  if (run.beforeFirstEdit) await writeBeforeFirstEdit(target, entry.id, run.beforeFirstEdit);
   const counters = target.tickets && ticketRecordId
     ? await addRunToTicket(target, target.tickets, ticketRecordId, run)
     : undefined;

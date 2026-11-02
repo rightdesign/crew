@@ -35,6 +35,11 @@ export interface AgentLogEntry {
   prefix_tokens?: number | null;
   prompt_version?: string | null;
   prompt_sha?: string | null;
+  calls_before_edit_search?: number | null;
+  calls_before_edit_symbol?: number | null;
+  calls_before_edit_other?: number | null;
+  seconds_to_first_edit?: number | null;
+  edited?: boolean | null;
   [column: string]: unknown;
 }
 
@@ -57,6 +62,8 @@ export interface ListLogEntriesOptions {
   role?: string;
   ticket?: string;
   limit?: number;
+  /** Sort by text searches before the first edit, most first, so the worst searches surface (CREW-2879). */
+  beforeEdit?: boolean;
 }
 
 /** Recent Agent Log entries, newest first — filterable by role (via the linked Agents row's `name`) and by ticket. */
@@ -79,7 +86,26 @@ export async function listLogEntries(route: Route, opts: ListLogEntriesOptions =
   });
   // The records API has no documented default sort — sort newest-first
   // explicitly rather than relying on insertion order.
-  return [...entries].sort((a, b) => String(b.started_at ?? '').localeCompare(String(a.started_at ?? '')));
+  const newestFirst = [...entries].sort((a, b) => String(b.started_at ?? '').localeCompare(String(a.started_at ?? '')));
+  if (!opts.beforeEdit) return newestFirst;
+  // Entries that recorded no figure sort last; the stable sort keeps newest-first within a tie.
+  const searches = (e: AgentLogEntry): number => e.calls_before_edit_search ?? -1;
+  return newestFirst.sort((a, b) => searches(b) - searches(a));
+}
+
+/**
+ * The before-first-edit figures of an entry as one line, or undefined when the
+ * run recorded none (a workspace without the columns, or an older entry).
+ */
+export function formatBeforeEdit(e: AgentLogEntry): string | undefined {
+  if (e.calls_before_edit_search == null && e.calls_before_edit_symbol == null && e.calls_before_edit_other == null) return undefined;
+  const parts = [
+    `search ${e.calls_before_edit_search ?? 0}`,
+    `symbol ${e.calls_before_edit_symbol ?? 0}`,
+    `other ${e.calls_before_edit_other ?? 0}`,
+  ];
+  const when = e.edited === false ? 'no edit' : e.seconds_to_first_edit != null ? `${e.seconds_to_first_edit}s to first edit` : undefined;
+  return `${parts.join(', ')}${when ? ` (${when})` : ''}`;
 }
 
 export type ReconstructionStatus = 'exact' | 'approximate' | 'not_recorded';

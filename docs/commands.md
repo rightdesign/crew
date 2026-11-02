@@ -37,8 +37,8 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 | `crew run [route] [--role R]` | Run the winning role's session (`--role` forces one and disables fall-through; `--max-roles N` sets how many to try). |
 | `crew watch [route]` | Live view (`--role`, `--ticket`, `--level warn`, `--tail N`); space pauses, `q` quits. |
 | `crew log [route]` | Tail the log. |
-| `crew logbook list [route]` | Recent Agent Log entries, filterable by `--role` / `--ticket`. |
-| `crew logbook show [route] ID [--prompt]` | One entry; `--prompt` reconstructs and verifies its prompt. |
+| `crew logbook list [route]` | Recent Agent Log entries, filterable by `--role` / `--ticket`. `--before-edit` sorts by text searches made before the run's first edit, most first. |
+| `crew logbook show [route] ID [--prompt]` | One entry; `--prompt` reconstructs and verifies its prompt. Also prints the run's tool calls before its first edit (search, symbol, other) and the seconds to that edit, when the workspace's Agent Log has the columns `calls_before_edit_search`, `calls_before_edit_symbol`, `calls_before_edit_other`, `seconds_to_first_edit` and `edited`; a workspace without them logs nothing extra. |
 
 ## Releasing
 

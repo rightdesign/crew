@@ -452,7 +452,8 @@ function mockFetch(routes: Record<string, unknown>) {
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const key = `${init?.method ?? 'GET'} ${url.pathname}`;
-    calls.push({ key, body: init?.body ? JSON.parse(init.body as string) : undefined });
+    // The optional before-first-edit column lookup (CREW-2879) is not part of what these tests assert on.
+    if (!key.startsWith('GET /api/data-models/')) calls.push({ key, body: init?.body ? JSON.parse(init.body as string) : undefined });
     if (!(key in routes)) return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
     return new Response(JSON.stringify(routes[key]), { status: 200 });
   }) as typeof fetch;
