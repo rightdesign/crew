@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.116.0] — 2026-11-02
+
+- CREW-2873 A repository's optional `map` hook feeds a budgeted "Repository map" section into the brief (stdout only, re-run for each brief).
+
 ## [0.115.0] — 2026-11-02
 
 - CREW-2874 Periscopes get a `.crew/pointed-at.jsonl` drop file: the preview hook receives `CREW_POINTED_AT_FILE`, a new line counts as activity, and `periscope list --json` shows the newest line as `pointedAt`.
