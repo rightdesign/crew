@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.127.7] — 2026-11-02
+
+- CREW-2964 Sandboxed runs clone from the cache volume's root-owned mirror instead of failing with "dubious ownership", and sandbox preparation errors now carry git's first fatal line.
+
 ## [0.127.6] — 2026-11-02
 
 - CREW-2963 A seat whose role cannot write the hand-off fields is now a doctor blocker, and a refused hand-off holds that role with an attention item instead of re-running the ticket every cycle.
