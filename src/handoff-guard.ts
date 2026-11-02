@@ -208,12 +208,23 @@ async function takenOverSince(i: HandoffGuardInput, ticketRow: string): Promise<
   });
 }
 
+/** The acceptance lines the hand-off check found unquoted, and the time of the comment it judged (`null`: the seat had none). */
+export interface AcceptanceGap { missing: string[]; judged: string | null }
+
 /**
- * CREW-2600: the acceptance lines the seat's newest comment on this ticket does
- * not quote, or `null` when the check does not apply (no Acceptance section, or
- * a writer that cannot read comments). A seat with no comment at all misses all.
+ * CREW-2600: the acceptance lines the seat's hand-off comment does not quote, or
+ * `null` when the check does not apply (no Acceptance section, or a writer that
+ * cannot read comments) or the hand-off passes.
+ *
+ * CREW-2962: the hand-off may be followed by a short note in a later run ("the
+ * hand-off above stands"), so judging only the newest comment bounced a complete
+ * hand-off. The candidates are the seat's comments posted since the run began
+ * (`since`), or the newest one when there are none; the check passes when any
+ * one of them quotes every line. When none does, the gap reported is the
+ * candidate's with the fewest lines missing (newest on a tie), and `judged`
+ * names its time. A seat with no comment at all misses every line.
  */
-async function missingAcceptance(i: HandoffGuardInput, t: Ticket): Promise<string[] | null> {
+async function missingAcceptance(i: HandoffGuardInput, t: Ticket): Promise<AcceptanceGap | null> {
   const lines = acceptanceLines(t.description);
   if (lines.length === 0 || !i.writer.comments) return null;
   const cc = i.contract.comments;
@@ -221,17 +232,25 @@ async function missingAcceptance(i: HandoffGuardInput, t: Ticket): Promise<strin
     .map((c) => c as unknown as Record<string, unknown>)
     .filter((r) => r[cc.parent] === t.id && r[cc.author] === i.seatId)
     .sort((a, b) => String(a[cc.createdAt] ?? '').localeCompare(String(b[cc.createdAt] ?? '')));
-  const last = mine.at(-1);
-  const missing = unquotedAcceptance(lines, last ? String(last[cc.body] ?? '') : '');
-  return missing.length > 0 ? missing : null;
+  const from = i.since ? Date.parse(i.since) : NaN;
+  const recent = Number.isNaN(from) ? [] : mine.filter((r) => Date.parse(String(r[cc.createdAt] ?? '')) >= from);
+  const candidates = recent.length > 0 ? recent : mine.slice(-1);
+  if (candidates.length === 0) return { missing: lines, judged: null };
+  let best: AcceptanceGap | null = null;
+  for (const c of candidates) {
+    const missing = unquotedAcceptance(lines, String(c[cc.body] ?? ''));
+    if (missing.length === 0) return null;
+    if (!best || missing.length <= best.missing.length) best = { missing, judged: String(c[cc.createdAt] ?? '') || null };
+  }
+  return best;
 }
 
-export function acceptanceBounceComment(missing: string[], shipName: string | undefined): string {
+export function acceptanceBounceComment(missing: string[], shipName: string | undefined, judged?: string | null): string {
   return `${ACCEPTANCE_BOUNCED_MARKER}
 
 **Hand-off bounced: the hand-off comment does not quote every line of the ticket's Acceptance section.**
 
-${shipName ? `Ship: ${shipName}\n\n` : ''}Not quoted verbatim:
+${shipName ? `Ship: ${shipName}\n\n` : ''}${judged ? `Judged the comment posted at ${judged}; no comment this run quoted every line.\n\n` : 'This seat has no comment on the ticket.\n\n'}Not quoted verbatim:
 ${missing.map((l) => `- ${l}`).join('\n')}
 
 Set back to \`in_progress\`. Post a comment that lists every Acceptance line verbatim, each followed by the test, command or manual check that exercised it in this run and its result (a line you could not exercise is listed with the reason, never omitted), then set \`fixed\` again. The branch is already pushed.`;
@@ -262,8 +281,8 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       return { kind: 'unverified', why: v.why };
     }
     if (v.kind === 'pushed' && !claimed) {
-      const missing = await missingAcceptance(i, t);
-      if (missing) {
+      const gap = await missingAcceptance(i, t);
+      if (gap) {
         const heldNow = i.hold ? t[i.hold.column] : undefined;
         if ((i.hold && heldNow && heldNow !== i.hold.shipId) || await takenOverSince(i, t.id)) {
           i.log.warn(`${t.issue_id} is held by another ship now — the acceptance check is stale, left alone`, log);
@@ -271,10 +290,11 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
         }
         await i.writer.updateTicket(t.id, {
           status: i.contract.statuses.building,
-          ...(t.assignee_id ? {} : { assignee_id: i.seatId }),
+          // CREW-2962: the hand-off may have assigned QA's seat; a bounce is the building seat's again.
+          assignee_id: i.seatId,
           ...(i.hold && !heldNow ? { [i.hold.column]: i.hold.shipId } : {}),
         });
-        await i.writer.postEvent(t.id, acceptanceBounceComment(missing, i.shipName), i.seatId, 'bounced').catch(() => {
+        await i.writer.postEvent(t.id, acceptanceBounceComment(gap.missing, i.shipName, gap.judged), i.seatId, 'bounced').catch(() => {
           i.log.warn('bounced, but the note failed to post', log);
         });
         i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: hand-off comment lacks the acceptance checklist`, log);
@@ -333,7 +353,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     }
     await i.writer.updateTicket(t.id, {
       status: i.contract.statuses.building,
-      ...(t.assignee_id ? {} : { assignee_id: i.seatId }),
+      assignee_id: i.seatId,
       ...(i.hold && !heldBy ? { [i.hold.column]: i.hold.shipId } : {}),
     });
     await i.writer.postEvent(t.id, bounceComment(v, i.shipName, pushError), i.seatId, 'bounced').catch(() => {
@@ -523,7 +543,7 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
           i.log.warn(`${t.issue_id}: \`${v.remote}/${v.branch}\` is at ${v.origin.slice(0, 7)}, not a tip this checkout built — left alone`, at);
           continue;
         }
-        await i.writer.updateTicket(t.id, { status: st.building, ...(t.assignee_id ? {} : { assignee_id: i.seatId }) });
+        await i.writer.updateTicket(t.id, { status: st.building, assignee_id: i.seatId });
         await i.writer.postEvent(t.id, bounceComment(v, i.shipName), i.seatId, 'bounced').catch(() => {});
       }
     } catch (e) {

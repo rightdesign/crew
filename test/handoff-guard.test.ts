@@ -135,12 +135,12 @@ test('enforce: an unpushed fixed ticket whose push is refused goes back to in_pr
   assert.match(h.notes[0]!, /brief authorizes this push/);
 });
 
-test('enforce: assignee and hold the session left in place are not overwritten', async () => {
+test('enforce: a hold the session left in place is kept, and the assignee the hand-off set (QA seat) goes back to the running seat (CREW-2962)', async () => {
   const f = fixture();
   rejectPushes(f.bare);
-  const h = harness(ticket({ assignee_id: 'other', held_by_ship_id: 'ship-A' }));
+  const h = harness(ticket({ assignee_id: 'seat-qa', held_by_ship_id: 'ship-A' }));
   await enforceHandoff(input(f, h));
-  assert.deepEqual(h.patches, [{ status: 'in_progress' }]);
+  assert.deepEqual(h.patches, [{ status: 'in_progress', assignee_id: 'seat-dev' }]);
 });
 
 test('enforce: a missing remote branch is pushed by the runner, recorded as pushed, ticket stays fixed (CREW-2579)', async () => {
@@ -326,6 +326,13 @@ test('stray: an unheld fixed ticket whose local branch is stale (origin ahead) i
   assert.ok(h.warns.some((w) => /left alone/.test(w)));
 });
 
+test('stray: an unheld bounce restores the assignee the hand-off set to the running seat (CREW-2962)', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  await guardStrayHandoffs(stray(f, h, ticket({ held_by_ship_id: null, assignee_id: 'seat-qa' })));
+  assert.deepEqual(h.patches, [{ status: 'in_progress', assignee_id: 'seat-dev' }]);
+});
+
 test('stray: a local branch strictly ahead of origin is bounced', async () => {
   const f = fixture();
   sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
@@ -399,4 +406,51 @@ test('enforce: no comment at all is bounced; a ticket with no Acceptance section
   const h = harness(ticket({ description: '## What\n\nno acceptance here' }));
   h.w.comments = async () => [];
   assert.equal((await enforceHandoff(input(f, h))).kind, 'pushed');
+});
+
+// CREW-2962: judge every comment since the run began; restore the building seat on a bounce.
+const FULL = '- A hand-off with four lines passes. — ok\n- A comment with no checklist is bounced. — ok\n- No section is unaffected. — ok';
+const seatComments = (h: ReturnType<typeof harness>, ...cs: Array<[string, string]>) => {
+  h.w.comments = async () => cs.map(([at, body], n) => (
+    { id: `c${n}`, ticket_id: 'row-9', team_member_id: 'seat-dev', body, created_at: at }));
+};
+const SINCE = '2026-01-01T10:00:00Z';
+
+test('enforce: a complete hand-off comment followed by a short note is not bounced (CREW-2962)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket({ description: ACCEPT, assignee_id: 'seat-qa' }));
+  seatComments(h, ['2026-01-01T10:05:00Z', FULL], ['2026-01-01T10:20:00Z', 'The hand-off above stands.']);
+  const out = await enforceHandoff({ ...input(f, h), since: SINCE });
+  assert.equal(out.kind, 'pushed');
+  assert.deepEqual(h.patches, []);
+});
+
+test('enforce: an earlier run\'s complete comment does not cover this run; the bounce names the judged comment and restores the seat (CREW-2962)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket({ description: ACCEPT, assignee_id: 'seat-qa', held_by_ship_id: null }));
+  seatComments(h, ['2026-01-01T09:00:00Z', FULL], ['2026-01-01T10:20:00Z', 'Done, tests pass.']);
+  const out = await enforceHandoff({ ...input(f, h), since: SINCE });
+  assert.equal(out.kind, 'bounced');
+  assert.deepEqual(h.patches, [{ status: 'in_progress', assignee_id: 'seat-dev', held_by_ship_id: 'ship-A' }]);
+  assert.match(h.notes[0]!, /posted at 2026-01-01T10:20:00Z/);
+});
+
+test('enforce: with no comment since the run began, the newest comment is judged (CREW-2962)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket({ description: ACCEPT }));
+  seatComments(h, ['2026-01-01T09:00:00Z', FULL]);
+  assert.equal((await enforceHandoff({ ...input(f, h), since: SINCE })).kind, 'pushed');
+});
+
+test('enforce: a seat with no comments is bounced and the note says so (CREW-2962)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket({ description: ACCEPT, assignee_id: 'seat-qa' }));
+  seatComments(h);
+  assert.equal((await enforceHandoff({ ...input(f, h), since: SINCE })).kind, 'bounced');
+  assert.equal(h.patches[0]!.assignee_id, 'seat-dev');
+  assert.match(h.notes[0]!, /no comment on the ticket/);
 });
