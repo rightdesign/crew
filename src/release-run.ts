@@ -24,7 +24,7 @@ import {
   type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
-import { hookLabel, DEFAULT_ISOLATE_MAX_CANDIDATES } from './repo-config.ts';
+import { hookLabel, DEFAULT_ISOLATE_MAX_CANDIDATES, REPO_CONFIG_FILENAMES } from './repo-config.ts';
 import { failingPaths, culpritByFiles, type BuildCulprit } from './build-failure.ts';
 import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
 import { movedPastVerified } from './verified-tip.ts';
@@ -85,6 +85,13 @@ export interface ReleaseRunOptions {
   onBasePushed?: (merged: MergeCandidate[]) => Promise<void>;
   cwd: string;
   repo: EffectiveRepoConfig;
+  /**
+   * Re-resolves the repository's effective config from a checkout (CREW-2925).
+   * Called after the squash merges when they changed `.crew.yaml`, so the
+   * release runs under the contract the merge produced rather than the one
+   * the base carried before it. Absent: the config read at the start stands.
+   */
+  reloadRepo?: (dir: string) => EffectiveRepoConfig | null;
   contract: Contract;
   tickets: Ticket[];
   /** Status of every blocker `tickets` name; a verified ticket one still gates is held, not merged (CREW-1506). */
@@ -1385,6 +1392,24 @@ async function mergeAndRelease(
     merged.push(c);
   }
 
+  // The first ticket of a new repository adds `.crew.yaml` itself, so the
+  // config read before the merge is the defaults (local mode, no gate, no
+  // versioning). Re-read it from the merged tree (CREW-2925).
+  if (applied > 0 && !o.dryRun && !o.mergeOnly && o.reloadRepo) {
+    const changed = gitOk(o.cwd, ['diff', '--name-only', preMerge, 'HEAD', '--', ...REPO_CONFIG_FILENAMES]);
+    if (changed) {
+      try {
+        const next = o.reloadRepo(o.cwd);
+        if (next) {
+          o = { ...o, repo: next };
+          o.emit.emit(`${changed.split('\n')[0]} changed in this release — continuing under the merged contract`);
+        }
+      } catch (e) {
+        o.emit.warn(`could not re-read the merged repo config: ${(e as Error).message}; releasing under the earlier one`);
+      }
+    }
+  }
+
   if (o.mergeOnly) {
     o.emit.emit(`merge only: ${merged.length} branch(es) merged, not releasing`);
     return { merged, conflicts, unbuildable, deployed: false, stopped: 'merge only', decision };
@@ -1417,7 +1442,11 @@ async function mergeAndRelease(
   // A repo that will legitimately never tag (`versioning: none`) therefore
   // releases exactly when something merges, which is the only moment it can
   // have anything to do.
-  if (merged.length === 0 && decision.unseeded && !o.force) {
+  //
+  // Except a verified ticket already squashed onto that untagged base: it is
+  // work waiting for its first release, not nothing (CREW-2925).
+  const waiting = decision.merges.some((c) => c.skipReason === 'already-merged' && c.mergedSha);
+  if (merged.length === 0 && decision.unseeded && !waiting && !o.force) {
     o.emit.emit(
       `nothing merged, and ${o.repo.branch.base} carries no release tag to compare against — ` +
         'nothing to release',

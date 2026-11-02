@@ -1660,3 +1660,43 @@ test('a verified branch still at the verified sha releases normally (CREW-1637)'
   assert.equal(out.movedPast, undefined);
   assert.equal(out.merged.length, 1);
 });
+
+test('an untagged base with a verified ticket already squashed onto it releases (CREW-2925)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-untagged-merged-'));
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
+  g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+  writeFileSync(join(dir, 'a'), '1'); g('add', '.'); g('commit', '-qm', 'base');
+  writeFileSync(join(dir, 'b'), '2'); g('add', '.'); g('commit', '-qm', 'Add b (ISSUE-9)');
+  const repo = resolveRepoConfig(parseRepoConfig([
+    'version: 1', 'hooks:', '  test: exit 0', '  bump: echo 0.2.0 > VERSION && echo 0.2.0',
+    'release:', '  mode: integrate', '  changelog: false', '  tag: "v{version}"',
+  ].join('\n'), '.crew.yaml'), undefined, dir);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-9')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.merged.length, 0);
+  assert.equal(out.integrated, true);
+  assert.equal(out.version, '0.2.0');
+  assert.ok(execFileSync('git', ['tag', '--list'], { cwd: dir, encoding: 'utf8' }).includes('v0.2.0'));
+});
+
+test('a release whose merge adds .crew.yaml runs under the merged contract (CREW-2925)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-first-'));
+  const g = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' });
+  g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 'T');
+  writeFileSync(join(dir, 'README'), 'x'); g('add', '.'); g('commit', '-qm', 'base');
+  g('checkout', '-qb', 'issue-7');
+  const yaml = ['version: 1', 'hooks:', '  test: touch gate-ran', 'release:', '  mode: integrate', '  versioning: none', '  changelog: false'].join('\n');
+  writeFileSync(join(dir, '.crew.yaml'), yaml); g('add', '.');
+  g('commit', '-qm', 'contract\n\nChangelog: first');
+  g('checkout', '-q', 'main');
+  // Before the merge the repo reads as defaults: no test hook.
+  const early = resolveRepoConfig(null, undefined, dir);
+  const out = await runRelease({
+    cwd: dir, repo: early, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    reloadRepo: (d) => resolveRepoConfig(parseRepoConfig(readFileSync(join(d, '.crew.yaml'), 'utf8'), '.crew.yaml'), undefined, d),
+  });
+  assert.equal(out.merged.length, 1);
+  assert.equal(out.integrated, true);
+  assert.ok(lines.some((l) => /continuing under the merged contract/.test(l)));
+});

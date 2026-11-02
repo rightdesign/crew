@@ -1967,7 +1967,14 @@ async function releasePhase(
     }
 
     const outcome = await runRelease({
-      cwd: target.dir, repo, contract: tracker.contract, tickets, blockerInfo, emit: remit, scope, verifiedShas,
+      cwd: target.dir, repo,
+      reloadRepo: (dir) => resolveRepoConfig(loadRepoConfig(dir), {
+        hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
+        release: mergeRouteRelease(c.release, o?.release),
+        branch: { ...c.branch, ...o?.branch },
+        worktrees: { prefix: shipWorktreePrefixFor(c), nameOverride: o?.worktreeName },
+      }, dir),
+      contract: tracker.contract, tickets, blockerInfo, emit: remit, scope, verifiedShas,
       state: state.release(scope),
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
@@ -2002,7 +2009,13 @@ async function releasePhase(
       const plan = planStamp(
         target.dir, tickets, tracker.contract,
         outcome.stampFrom ?? outcome.decision.lastReleased, outcome.decision.head,
-        new Map(outcome.merged.map((m) => [m.ticket.issue_id, m.sha])),
+        new Map([
+          // Squashed onto an untagged base by an earlier cycle: no release range
+          // names it, so the first release carries it out here (CREW-2925).
+          ...outcome.decision.merges.filter((m) => m.skipReason === 'already-merged' && m.mergedSha)
+            .map((m): [string, string | undefined] => [m.ticket.issue_id, m.mergedSha]),
+          ...outcome.merged.map((m): [string, string | undefined] => [m.ticket.issue_id, m.sha]),
+        ]),
       );
       if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun, target.dir);
     } else if (outcome.stopped) {
