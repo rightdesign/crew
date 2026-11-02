@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.130.2] — 2026-11-02
+
+- CREW-2991 Managed ships no longer report a missing forge token for a host whose token was delivered at provision or rotation; a git lookup that finds no token still records the miss.
+
 ## [0.130.1] — 2026-11-02
 
 - CREW-2984 `crew deprovision` revokes live seat keys named for the ship even when the state directory lost them, and removes every `crew-sandbox/*` image.
