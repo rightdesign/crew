@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parse } from 'yaml';
 import {
-  generateSandboxPolicy, parseEndpoint, parseDeniedRequests, parseSandboxNetwork, policyPathFor, SandboxPolicyError, type SandboxPolicyInput,
+  CREW_BIN, generateSandboxPolicy, parseEndpoint, parseDeniedRequests, parseSandboxNetwork, policyPathFor, SandboxPolicyError, type SandboxPolicyInput,
 } from '../src/sandbox-policy.ts';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
+import { CREW_PREFIX } from '../src/sandbox-image.ts';
 
 const base: SandboxPolicyInput = {
   forgeHosts: ['github.com'], tablationUrl: 'https://app.tablation.com', authMode: 'workspace', provider: 'anthropic', harnessBin: 'claude',
@@ -33,7 +34,13 @@ test('every rule names the binaries it applies to, and the model rule is the har
   for (const g of Object.values<{ binaries: Array<{ path: string }> }>(doc.network_policies)) assert.ok(g.binaries.length > 0);
   const model = doc.network_policies.model.binaries.map((b: { path: string }) => b.path);
   assert.ok(model.includes('/usr/local/bin/claude'));
+  assert.ok(model.includes('/opt/crew/bin/claude'), 'the crew layer installs Claude Code under /opt/crew/bin');
+  assert.ok(model.includes('/opt/crew/bin/node'));
   assert.ok(!model.includes('/usr/bin/curl'), 'curl cannot reach the provider');
+});
+
+test('the policy names the directory the crew layer installs into', () => {
+  assert.equal(CREW_BIN, `${CREW_PREFIX}/bin`);
 });
 
 test('package registries are denied unless a toolchain or the repository declares them', () => {

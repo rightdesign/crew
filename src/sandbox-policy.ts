@@ -151,13 +151,17 @@ function tablationEndpoint(url: string): PolicyEndpoint {
   return { host, port };
 }
 
-const TOOL_BINARIES = ['/usr/bin/curl', '/usr/bin/node', '/usr/local/bin/node', '/usr/bin/npm', '/usr/local/bin/npm', '/usr/local/bin/pnpm', '/usr/bin/corepack', '/usr/local/bin/corepack'];
+/** Where the crew layer (sandbox-image.ts) puts Claude Code, and where a repository's `sandbox.setup` may put its own node. */
+// Not imported from sandbox-image.ts (CREW_PREFIX): that module reaches seat-keys, and the import cycle breaks module load. A test pins the two together.
+export const CREW_BIN = '/opt/crew/bin';
+
+const TOOL_BINARIES = ['/usr/bin/curl', `${CREW_BIN}/node`, '/usr/bin/node', '/usr/local/bin/node', '/usr/bin/npm', '/usr/local/bin/npm', '/usr/local/bin/pnpm', '/usr/bin/corepack', '/usr/local/bin/corepack'];
 const GIT_BINARIES = ['/usr/bin/git', '/usr/lib/git-core/git-remote-http', '/usr/lib/git-core/git-remote-https'];
 
 /** The rule groups for a run, before rendering. */
 export function policyGroups(input: SandboxPolicyInput): PolicyGroup[] {
   const harness = `/usr/local/bin/${basename(input.harnessBin)}`;
-  const harnessBins = [...new Set([harness, `/usr/bin/${basename(input.harnessBin)}`, '/usr/bin/node', '/usr/local/bin/node'])];
+  const harnessBins = [...new Set([`${CREW_BIN}/${basename(input.harnessBin)}`, harness, `/usr/bin/${basename(input.harnessBin)}`, `${CREW_BIN}/node`, '/usr/bin/node', '/usr/local/bin/node'])];
   const groups: PolicyGroup[] = [];
 
   const tablation = tablationEndpoint(input.tablationUrl);
