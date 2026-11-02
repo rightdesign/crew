@@ -22,12 +22,21 @@ export interface RealPoolMemberOptions {
   crewHome: string;
   api: PoolApi;
   store: MemberStore;
-  /** The platform base URL; a lease's routes are connected against it (`crew provision --base-url`). */
+  /** The pool URL (the platform's API prefix, e.g. `https://host/api`); a lease's routes are connected against `platformBaseUrl` of it. */
   platformUrl: string;
   env?: NodeJS.ProcessEnv;
   /** Raised by SIGTERM/SIGINT. */
   stopping(): boolean;
   log(line: string): void;
+}
+
+/**
+ * The Tablation base URL for `crew provision --base-url`, from the pool URL. The pool URL is the API prefix
+ * (`CREW_POOL_URL=https://host/api`); the tracker client appends `/api/...` itself, so a trailing `/api` is
+ * stripped here or every connect would hit `/api/api/...`.
+ */
+export function platformBaseUrl(poolUrl: string): string {
+  return poolUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '');
 }
 
 function loadShip(crewHome: string) {
@@ -62,7 +71,7 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
         instanceClass,
         relayHost: lease.relayHost,
         maxConcurrentAgents: lease.maxConcurrentAgents,
-        baseUrl: o.platformUrl,
+        baseUrl: platformBaseUrl(o.platformUrl),
         forgeHosts: hosts,
         tokens: Object.fromEntries(lease.forges.map((f) => [f.host.toLowerCase(), f.token])),
         json: false, dryRun: false, choices: [],

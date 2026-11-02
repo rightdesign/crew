@@ -407,3 +407,11 @@ test('a host that does not track forge misses sends no field', async () => {
   await runPoolMember(w.deps);
   assert.equal(w.statuses.some((s) => 'missingForgeHosts' in s), false);
 });
+
+test('platformBaseUrl strips the API prefix from the pool URL', async () => {
+  const { platformBaseUrl } = await import('../src/pool-member-host.ts');
+  assert.equal(platformBaseUrl('https://app.tablation.com/api'), 'https://app.tablation.com');
+  assert.equal(platformBaseUrl('https://app.tablation.com/api/'), 'https://app.tablation.com');
+  assert.equal(platformBaseUrl('https://app.tablation.com'), 'https://app.tablation.com');
+  assert.equal(platformBaseUrl('http://127.0.0.1:3000/x/api'), 'http://127.0.0.1:3000/x');
+});

@@ -13,7 +13,7 @@ to both.
 
 | Name | Meaning |
 | --- | --- |
-| `CREW_POOL_URL` or `--url` | The platform base URL, the value `crew provision --base-url` takes. |
+| `CREW_POOL_URL` or `--url` | The pool URL: the platform's API prefix, for example `https://app.tablation.com/api`. The pool endpoints below are joined onto it as given; the member connects routes against the same URL with a trailing `/api` removed (`https://app.tablation.com`), which is what it passes to `crew provision --base-url`. |
 | `CREW_POOL_TOKEN` or `--token-stdin` | The pool credential. Opaque to crew; sent as `Authorization: Bearer <credential>`. Flags win over the environment. |
 | `CREW_POOL_INSTANCE_ID` | The cloud instance id reported at registration. The host name is used when it is unset. |
 | `CREW_POOL_DIR` | Where the member keeps its identity. |
