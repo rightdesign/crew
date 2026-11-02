@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.2] — 2026-11-02
+
+- CREW-2927 A release.versionFiles entry that is not a JSON document is refused at config load and in crew doctor, naming the file and hooks.bump.
+
 ## [0.126.1] — 2026-11-02
 
 - CREW-2925 The first release of a new repository runs under the .crew.yaml its first ticket adds, and a verified ticket already merged onto an untagged base is released and stamped instead of waiting forever.
