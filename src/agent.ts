@@ -27,7 +27,7 @@ import type { Emitter } from './events.ts';
 import { inferenceBaseUrl } from './adapters/claude.ts';
 import { adapterFor, resolveSeat, toolchainProvider, type CodeBridge, type PersonaChoice, type SandboxFile, type ToolchainSpec } from './toolchain.ts';
 import { INTEL_SERVER_NAME, intelFlavor, wantsCodeBridge } from './intel.ts';
-import { originUrlOf } from './git.ts';
+import { originUrlOf, cloneUrlFor } from './git.ts';
 import { intelRelDir, parseRemote } from './sandbox-cache.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
@@ -133,6 +133,12 @@ export interface AgentPlan {
   sandboxConfig?: Partial<import('./runner.ts').SandboxConfig>;
   /** CREW-2801: what the generated sandbox policy is derived from. Set with `runner: sandbox`. */
   sandboxPolicy?: SandboxPolicyInput;
+  /**
+   * CREW-2946: the origin URL of the ticket's repository, which the sandbox
+   * runner clones (from the mirror). Absent for a run with no ticket
+   * repository, where the runner falls back to the route directory's origin.
+   */
+  sandboxOrigin?: string;
   /** CREW-2922: files the runner writes into the sandbox before launching the harness (the symbol bridge's Gemini settings, the `typescript-lsp` plugin). */
   sandboxFiles?: SandboxFile[];
   /** Passed on stdin, never as argv — see `spawnAgent`. */
@@ -287,6 +293,20 @@ export class AgentError extends Error {}
  * Nothing ran, so there is no run to log, and the daemon treats it as a
  * failed start rather than a started role (ISSUE-1365).
  */
+/**
+ * CREW-2946: the origin URL a sandboxed run for `repo` clones. The checkout's
+ * own origin when it has one, else the URL derived from the board's
+ * `owner/repo` and forge host. Undefined when the run has no ticket repository
+ * or the route cannot place it.
+ */
+export function sandboxOriginFor(route: Route, repo: string | null | undefined): string | undefined {
+  if (!repo) return undefined;
+  const repos = reposOf(route);
+  const target = repos.find((r) => r.name === repo) ?? (repos.length === 1 ? repos[0] : undefined);
+  if (!target) return undefined;
+  return originUrlOf(target.dir, 'origin') ?? (target.remote ? cloneUrlFor(target.remote, { host: target.forgeHost }) : undefined);
+}
+
 /**
  * What a sandboxed run's policy is derived from (CREW-2801): the forge hosts
  * of the route's repositories, the route's Tablation host, the auth mode and
@@ -516,6 +536,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const adapter = adapterFor(toolchain.harness);
   const code = codeBridgeFor(o, adapter.harness);
   const sandboxLsp = o.ship.runner === 'sandbox' && adapter.harness === 'claude' ? sandboxLspPluginFor(o.route, o.repo) : undefined;
+  const sandboxOrigin = o.ship.runner === 'sandbox' ? sandboxOriginFor(o.route, o.repo) : undefined;
   const sandboxFiles = [...(code?.files ?? []), ...(sandboxLsp?.files ?? [])];
   const invocation = adapter.invocation(toolchain, {
     code,
@@ -576,6 +597,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
       ? {
           runner: 'sandbox' as const,
           ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}),
+          ...(sandboxOrigin ? { sandboxOrigin } : {}),
           sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox }),
           ...(sandboxFiles.length ? { sandboxFiles } : {}),
         }

@@ -161,8 +161,13 @@ export class SandboxRunner implements Runner {
   }
 
   async start(plan: AgentPlan, o: { env: NodeJS.ProcessEnv; streamFd: number; emit: Emitter }): Promise<StartedRun> {
-    const origin = this.originOf(plan.cwd);
-    if (!origin) throw new Error(`cannot find the origin remote of ${plan.cwd}, so there is nothing to clone into the sandbox`);
+    // CREW-2946: the ticket's own repository; the route directory's origin only serves a run with none.
+    const origin = plan.sandboxOrigin ?? (plan.repo ? null : this.originOf(plan.cwd));
+    if (!origin) {
+      throw new Error(plan.repo
+        ? `cannot place the repository ${plan.repo} of ${plan.ticket ?? 'this run'} on route ${plan.route}, so there is nothing to clone into the sandbox`
+        : `cannot find the origin remote of ${plan.cwd}, so there is nothing to clone into the sandbox`);
+    }
     const repo = parseRemote(origin);
     if (!repo) throw new Error(`cannot read a forge host and path from the origin remote ${origin}`);
     const name = sandboxName(plan);

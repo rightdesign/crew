@@ -257,3 +257,21 @@ test('CREW-2801: denied requests in the sandbox log are folded into the run even
   const verbs = r.calls().map((c) => c.argv[0]);
   assert.ok(verbs.indexOf('logs') < verbs.lastIndexOf('sandbox'), 'the log is read before the sandbox is deleted');
 });
+
+test('a run with a ticket repository clones that repository, not the route directory\'s origin (CREW-2946)', async () => {
+  const r = rig();
+  // The rig's route directory has the widgets origin; the ticket is on gadgets.
+  await spawnAgent(r.plan(STREAM, { repo: 'gadgets', sandboxOrigin: 'https://github.com/acme/gadgets.git' }), r.emitter());
+  const clone = r.calls().filter((c) => c.argv[1] === 'exec')[0]!.argv.join(' ');
+  assert.match(clone, /mirrors\/github\.com\/acme\/gadgets\.git/);
+  assert.doesNotMatch(clone, /widgets/);
+});
+
+test('a ticket repository the route cannot place fails naming the ticket and route, never the directory (CREW-2946)', async () => {
+  const r = rig();
+  const runner = new SandboxRunner({ bin: r.bin }, () => 'git@github.com:acme/widgets.git');
+  await assert.rejects(
+    runner.start(r.plan(STREAM, { repo: 'gadgets' }), { env: process.env, streamFd: 1, emit: r.emitter() }),
+    /repository gadgets of ISSUE-7 on route proj/,
+  );
+});
