@@ -14,6 +14,7 @@
 import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
+import { dropFileMtime } from './periscope-pointed.ts';
 import type { PeriscopeRow } from './tracker.ts';
 import type { ShipAttentionItem } from './ship-attention.ts';
 
@@ -27,6 +28,13 @@ const MAX_SCANNED_FILES = 20_000;
  * readable checkout or has no such file.
  */
 export function newestWorktreeMtime(root: string): number | null {
+  // `.crew/` is git-excluded, so the drop file never shows in the listing below; a new line there is activity too.
+  const a = newestTrackedMtime(root);
+  const b = dropFileMtime(root);
+  return a === null ? b : b === null ? a : Math.max(a, b);
+}
+
+function newestTrackedMtime(root: string): number | null {
   let listing: string;
   try {
     listing = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {

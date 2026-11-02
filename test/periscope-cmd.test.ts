@@ -71,6 +71,7 @@ function harness(over: Partial<PeriscopeDeps> = {}, hooks: Partial<Record<string
       if (name === 'handoff') return { code: 0, output: 'Sign in as a@b' };
       return { code: 0, output: 'booting\nhttp://localhost:40900\n' };
     },
+    prepareDropFile: (wt) => { calls.push(`drop:${wt}`); },
     createRow: async (f) => { rows.push(f); return { id: 'per1' }; },
     comment: async (_id, body) => { comments.push(body); },
     teardown: async () => { calls.push('teardown'); },
@@ -86,13 +87,16 @@ function harness(over: Partial<PeriscopeDeps> = {}, hooks: Partial<Record<string
 test('runPeriscopeUp: files, cuts, prepares, runs hooks in order and records a live row', async () => {
   const h = harness();
   const res = await runPeriscopeUp(h.deps, ARGS);
-  assert.deepEqual(h.calls, ['file:Periscope: navigation spacing', 'cut', 'prepare', 'hook:ports', 'hook:handoff', 'hook:preview']);
+  assert.deepEqual(h.calls, ['file:Periscope: navigation spacing', 'cut', 'prepare', 'hook:ports', 'hook:handoff', 'drop:/w/tablation-tabl-900', 'hook:preview']);
   assert.deepEqual(res, { ticket: 'TABL-900', ticketRecordId: 'rec1', worktree: '/w/tablation-tabl-900', branch: 'tabl-900', url: 'http://localhost:40900', periscopeRecordId: 'per1' });
   assert.equal(h.rows[0]!.state, 'live');
   assert.equal(h.rows[0]!.isolated, false);
   assert.equal(h.rows[0]!.expires_at, '2026-11-01T14:00:00.000Z');
   assert.equal(h.envs.preview!.CREW_PREVIEW_HOST, 'localhost');
   assert.equal(h.envs.preview!.BACKEND_PORT, '30900');
+  assert.equal(h.envs.preview!.CREW_PERISCOPE, '1');
+  assert.equal(h.envs.preview!.CREW_POINTED_AT_FILE, '/w/tablation-tabl-900/.crew/pointed-at.jsonl');
+  assert.equal(h.envs.handoff!.CREW_POINTED_AT_FILE, undefined);
   assert.equal(h.envs.handoff!.CREW_TICKET, 'TABL-900');
   assert.match(h.comments[0]!, /http:\/\/localhost:40900/);
   assert.match(h.comments[0]!, /Sign in as a@b/);

@@ -9,6 +9,7 @@
 
 import { doctorBaseReport } from './doctor-repo.ts';
 import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems, duplicateLivePeriscopes, type PeriscopeProblem } from './periscopes.ts';
+import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { periscopesForStatus, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
@@ -5014,7 +5015,7 @@ switch (command) {
         };
         if (subP === 'list') {
           const entries = periscopeListEntries(
-            (await Promise.all(routesP.map(gather))).flat(), new Date(),
+            (await Promise.all(routesP.map(gather))).flat().map((r) => ({ ...r, pointedAt: readPointedAt(r.worktree) })), new Date(),
             (r) => pidsInWorktree(r.worktree, Number(r.number)).length > 0,
           );
           process.stdout.write(jsonP ? `${JSON.stringify(entries)}\n` : `${formatPeriscopeList(entries)}\n`);
@@ -5145,6 +5146,7 @@ switch (command) {
         const resumed = await runPeriscopeResume({
           find: async () => hit && { row: hit.row, tag: hit.tag },
           worktreeExists: (p) => existsSync(p),
+          prepareDropFile,
           caps: periscopeCaps(cfg.ship as typeof cfg.ship & PeriscopeLimits),
           runHook: async (name, cwd, env) => {
             const script = hit?.repo.config.hooks[name];
@@ -5246,6 +5248,7 @@ switch (command) {
           return script ? runScript(script, { cwd, env, shell: shellP, timeoutMs: name === 'preview' ? 180_000 : undefined }) : null;
         },
         createRow: (fields) => trackerP.createPeriscope(fields),
+        prepareDropFile,
         recordLocal: (sc) => {
           writePeriscopeSidecar(cfg.ship.stateDir, { ...sc, route: routeP.route });
           // CREW-2862: the daemon serves an MCP endpoint for this worktree only when asked (the control API asks).

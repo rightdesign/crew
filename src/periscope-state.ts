@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
+import { readPointedAt, type PointedAt } from './periscope-pointed.ts';
 
 export interface PeriscopeSidecar {
   ticket: string;
@@ -33,6 +34,8 @@ export interface PeriscopeSidecar {
 export interface PeriscopeStatus extends PeriscopeSidecar {
   /** Whether something is listening on the preview URL's port right now. */
   serving: boolean;
+  /** The newest line of the worktree's drop file (CREW-2874), read at report time; null when nothing was pointed at. */
+  pointedAt: PointedAt | null;
 }
 
 const dirOf = (stateDir: string) => join(stateDir, 'periscopes');
@@ -90,6 +93,6 @@ export async function periscopesForStatus(
 ): Promise<PeriscopeStatus[]> {
   return Promise.all(readPeriscopeSidecars(stateDir).map(async (sc) => {
     const port = urlPort(sc.url);
-    return { ...sc, serving: port === undefined ? false : await probe(port) };
+    return { ...sc, serving: port === undefined ? false : await probe(port), pointedAt: readPointedAt(sc.worktree) };
   }));
 }

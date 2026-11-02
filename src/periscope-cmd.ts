@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PeriscopeSidecar } from './periscope-state.ts';
+import { pointedAtEnv, type PointedAt } from './periscope-pointed.ts';
 
 export class PeriscopeError extends Error {}
 
@@ -237,6 +238,8 @@ export interface PeriscopeDeps {
   createRow(fields: Record<string, unknown>): Promise<{ id: string }>;
   /** Keeps the local record `crew status` reads (CREW-2857); a failure is a warning, not an abandon. */
   recordLocal?(sc: PeriscopeSidecar): void;
+  /** Creates `.crew/pointed-at.jsonl` in the worktree and excludes `.crew/` from git (CREW-2874). */
+  prepareDropFile(worktree: string): void;
   comment(ticketId: string, body: string): Promise<void>;
   /** Stops anything listening for the worktree, removes it and its branch. */
   teardown(path: string, branch: string): Promise<void>;
@@ -359,7 +362,12 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   const handoff = await d.runHook('handoff', wt.path, env);
   if (handoff && handoff.code !== 0) return abandon(`handoff failed (exit ${handoff.code})\n${tail(handoff.output)}`);
 
-  const preview = await d.runHook('preview', wt.path, { ...env, CREW_PREVIEW_HOST: d.host });
+  try {
+    d.prepareDropFile(wt.path);
+  } catch (e) {
+    return abandon(`preparing the drop file failed: ${(e as Error).message}`);
+  }
+  const preview = await d.runHook('preview', wt.path, { ...env, CREW_PREVIEW_HOST: d.host, ...pointedAtEnv(wt.path) });
   if (!preview || preview.code !== 0) {
     return abandon(`preview exited ${preview?.code ?? 'without running'}\n${tail(preview?.output ?? '')}`);
   }
@@ -459,6 +467,8 @@ export interface PeriscopeRowInfo {
   worktree: string;
   branch: string;
   lastActivityAt: string | null;
+  /** The newest line of the worktree's drop file, when `list` read one. */
+  pointedAt?: PointedAt | null;
 }
 
 /**

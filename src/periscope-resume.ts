@@ -7,11 +7,14 @@
  */
 import { PeriscopeError, parseEnvLines, previewUrlFrom, type HookResult } from './periscope-cmd.ts';
 import type { PeriscopeRow } from './tracker.ts';
+import { pointedAtEnv } from './periscope-pointed.ts';
 
 export interface ResumeDeps {
   /** The live row for this ticket number on this ship, with its ticket tag; undefined when there is none. */
   find(number: string): Promise<{ row: PeriscopeRow; tag: string } | undefined>;
   worktreeExists(path: string): boolean;
+  /** Creates the drop file in a worktree opened before CREW-2874 (CREW-2874). */
+  prepareDropFile?(worktree: string): void;
   caps: { idleMinutes: number };
   runHook(name: 'ports' | 'isolate' | 'preview', cwd: string, env: Record<string, string>): Promise<HookResult | null>;
   update(rowId: string, fields: Record<string, unknown>): Promise<void>;
@@ -40,7 +43,8 @@ export async function runPeriscopeResume(d: ResumeDeps, number: string): Promise
     if (iso && iso.code !== 0) throw new PeriscopeError(`isolate failed (exit ${iso.code})\n${tail(iso.output)}`);
     if (iso) Object.assign(env, parseEnvLines(iso.output));
   }
-  const preview = await d.runHook('preview', row.worktree, { ...env, CREW_PREVIEW_HOST: row.host || 'localhost' });
+  d.prepareDropFile?.(row.worktree); // a worktree from before CREW-2874 has no drop file yet
+  const preview = await d.runHook('preview', row.worktree, { ...env, CREW_PREVIEW_HOST: row.host || 'localhost', ...pointedAtEnv(row.worktree) });
   if (!preview || preview.code !== 0) {
     throw new PeriscopeError(`preview exited ${preview?.code ?? 'without running'}\n${tail(preview?.output ?? '')}`);
   }

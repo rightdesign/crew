@@ -96,7 +96,9 @@ A repository opts in by declaring `hooks.preview` in its
 [`.crew.yaml`](/repo-spec). The hook starts this worktree's dev server and
 prints its URL as the **last line of stdout**. It runs from the worktree
 after `setup` and `ports`, with the `ports` output exported plus
-`CREW_PREVIEW_HOST`, `CREW_TICKET` and `CREW_BRANCH`.
+`CREW_PREVIEW_HOST`, `CREW_TICKET`, `CREW_BRANCH`, and, for a periscope,
+`CREW_PERISCOPE=1` and `CREW_POINTED_AT_FILE` (see
+[Pointing at something](#pointing-at-something)).
 
 Two rules follow from there being no stop hook:
 
@@ -117,6 +119,31 @@ hooks:
       --port "$APP_PORT" --hmr-port "$HMR_PORT" >/dev/null 2>&1 &
     echo "http://${CREW_PREVIEW_HOST:-localhost}:$APP_PORT"
 ```
+
+## Pointing at something
+
+Every periscope's worktree has a drop file, `.crew/pointed-at.jsonl`, created
+empty by `periscope up` (and by `--resume` for a periscope opened before it
+existed). It is how a viewer says "this one" without describing it: the
+repository's own dev server, when it has an inspector, appends a line each time
+the viewer clicks something. The preview hook receives the absolute path as
+`CREW_POINTED_AT_FILE`, together with `CREW_PERISCOPE=1`, and should enable
+the inspector only when both are set.
+
+Each line is one JSON object: `path` (the source file, relative to the
+worktree), `line` (1-based), `at` (an ISO timestamp), and optionally `column`,
+`component` (a display name) and `url` (the page the click happened on). Lines
+are appended, never rewritten.
+
+- **Not part of the work.** `.crew/` is excluded from git through the
+  repository's `info/exclude`, so `down --keep` never commits it.
+- **Counts as activity.** A new line moves the file's modification time, which
+  the idle check reads like an edit: the periscope's expiry moves forward.
+- **Reading it.** `crew periscope list --json` and `crew status --json` carry
+  `pointedAt`, the newest well-formed line, or `null` when nothing has been
+  pointed at.
+- **Clipboard fallback.** A repository with no inspector writes nothing; the
+  viewer pastes a file and line (or a description) into the chat instead.
 
 ## Periscopes for Passengers
 

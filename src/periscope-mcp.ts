@@ -41,6 +41,7 @@ import { secretsMatch } from './secret-compare.ts';
 import { readPeriscopeSecret } from './periscope-endpoints.ts';
 import { parseEnvLines, type HookResult } from './periscope-cmd.ts';
 import type { PeriscopeSidecar } from './periscope-state.ts';
+import { pointedAtEnv } from './periscope-pointed.ts';
 
 /** The hooks a caller may name. `setup` and `release` are the ship's, not a session's. */
 export const PERISCOPE_HOOKS = ['test', 'build', 'ports', 'handoff', 'preview', 'isolate'] as const;
@@ -164,7 +165,7 @@ async function hookEnv(d: PeriscopeMcpDeps, sc: PeriscopeSidecar, name: Periscop
       if (iso && iso.code === 0) Object.assign(env, parseEnvLines(iso.output));
     }
   }
-  if (name === 'preview') env.CREW_PREVIEW_HOST = sc.host || 'localhost';
+  if (name === 'preview') Object.assign(env, { CREW_PREVIEW_HOST: sc.host || 'localhost' }, pointedAtEnv(sc.worktree));
   return env;
 }
 
