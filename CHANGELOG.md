@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.120.0] — 2026-11-02
+
+- CREW-2914 `hooks.intel` accepts the flavor names `serena` and `typescript-lsp`; `serena` runs a crew-managed Serena symbol service per worktree, seeded from an index of the main checkout.
+
 ## [0.119.0] — 2026-11-02
 
 - CREW-2880 A periscope is now served through a crew proxy that injects the point-at-it inspector and writes the drop file itself, so a repository only needs the source-attribute transform; `periscope.inspector: repo` opts out.
