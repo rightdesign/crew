@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.126.10] — 2026-11-02
+
+- CREW-2946 A sandboxed run clones the ticket's own repository, so a provisioned ship can start runs and a multi-repository route no longer clones the wrong repository.
+- CREW-2948 The sandbox policy's model route now covers Claude Code and node under /opt/crew/bin, where the crew layer installs them, so a sandboxed run's model calls are no longer denied.
+
 ## [0.126.9] — 2026-11-02
 
 - CREW-2944 crew provision now links the personas and mints any missing seat keys before it starts the daemon, and reports 'seat keys: N minted' (and fails if one cannot be minted), so a host wiped and provisioned again from a lease starts its first run without a hand 'crew agents sync'.
