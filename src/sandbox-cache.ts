@@ -224,6 +224,17 @@ printf '%s\n' "$tip" > "$out/$name.tip"
 echo "updated $tip"
 `;
 
+/** Prints one file at the tip of a branch in a mirror; exit 3 when the branch is absent, 4 when the file is. */
+const SHOW_SCRIPT = `
+set -e
+export GIT_TERMINAL_PROMPT=0
+m=${VOLUME_ROOT}/"$1"; base="$2"; path="$3"
+git config --global --add safe.directory '*'
+git -C "$m" rev-parse --verify --quiet "refs/heads/$base^{commit}" >/dev/null || { echo "the mirror has no branch $base" >&2; exit 3; }
+git -C "$m" cat-file -e "refs/heads/$base:$path" 2>/dev/null || exit 4
+git -C "$m" show "refs/heads/$base:$path"
+`;
+
 export interface MaterializeOutcome { tip: string; changed: boolean }
 
 export interface MirrorInfo {
@@ -315,6 +326,21 @@ export class SandboxCache {
     const m = /^(updated|unchanged) (\S+)/m.exec(stdout);
     if (!m) throw new Error(`unexpected output materializing ${repo.host}/${repo.path}: ${stdout.trim().slice(0, 200)}`);
     return { tip: m[2]!, changed: m[1] === 'updated' };
+  }
+
+  /**
+   * The text of `path` at the tip of `base` in the repository's mirror, or
+   * null when the mirror has no such file. Throws when the mirror or the
+   * branch is missing, so the caller can tell "no contract" from "no mirror".
+   */
+  async showFile(repo: CacheRepo, base: string, path: string): Promise<string | null> {
+    try {
+      const { stdout } = await this.helper(this.s.helperImage, SHOW_SCRIPT, [mirrorRelPath(repo), base, path]);
+      return stdout;
+    } catch (e) {
+      if ((e as { code?: number }).code === 4) return null;
+      throw e;
+    }
   }
 
   /** Mirrors in the volume with their last refresh; empty when the volume does not exist. */

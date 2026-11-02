@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { getSessionStore } from '@tablation/client';
 import type { SessionStore, StoredSession } from '@tablation/client';
 import type { Route } from '../src/config.ts';
-import { canMintAgentKeys, describeMintOutcome, mintMissingSeatKeys, revokeSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug } from '../src/seat-keys.ts';
+import { canMintAgentKeys, describeMintOutcome, mintMissingSeatKeys, revokeSeatKeys, resolveReleaseKey, resolveSeatKey, seatKeySlug, withFoundSeats } from '../src/seat-keys.ts';
 
 delete process.env.CREW_API_KEY;
 
@@ -296,4 +296,13 @@ if (args[0] === 'add-generic-password') {
   } finally {
     process.env.PATH = oldPath;
   }
+});
+
+test('withFoundSeats puts the release seat in the mint targets of a route resolved before it existed (CREW-2938)', async () => {
+  const stale = route();
+  const found = { seats: { dev: 'crew-dev', qa: 'crew-qa' }, releaseSeat: 'crew-release' };
+  const before = await mintMissingSeatKeys({ ...stale, resolved: { ...stale.resolved!, seats: found.seats as never } } as Route, { dryRun: true, getStore: () => memoryStore() });
+  assert.equal(before.some((o) => o.role === 'release'), false);
+  const after = await mintMissingSeatKeys(withFoundSeats(stale, found, 'agent-release'), { dryRun: true, getStore: () => memoryStore() });
+  assert.deepEqual(after.find((o) => o.role === 'release'), { role: 'release', action: 'minted', detail: 'dry run' });
 });

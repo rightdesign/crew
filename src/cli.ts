@@ -90,6 +90,7 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor } from './forges.ts';
+import { lacksCheckout, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, firstReport } from './mirror-contract.ts';
 import { SandboxCache, cacheSettingsOf, makeCachePass, parseRemote, type PassRepo } from './sandbox-cache.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
@@ -112,7 +113,7 @@ import {
   type SessionStore,
 } from '@tablation/client';
 import { getSessionStore, describeKeyStore } from './secret-store.ts';
-import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
+import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, withFoundSeats, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { checkCapabilities, describeCapability, missLine } from './capability-check.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
@@ -1827,6 +1828,7 @@ async function sweepClosedTickets(
 
 /** One open-ticket read per route per release cycle, for the lock-free pre-check. */
 const precheckTickets = new Map<string, Promise<Ticket[]>>();
+const scope0 = (c: { route: string }, t: { name: string }): string => releaseLockScope(c.route, t.name);
 
 async function releasePhase(
   c: typeof route, target: RepoTarget,
@@ -1839,6 +1841,20 @@ async function releasePhase(
   // phase reports needs ITS OWN route, not whichever one happened to be
   // first (CREW-979).
   const remit = emit.forRoute(c.route);
+  // CREW-2938: a sandbox-runner ship with no primary checkouts has no directory to run git in and no
+  // `.crew.yaml` to read; the contract comes from the mirror, and one line says what happens instead.
+  if (lacksCheckout(cfg.ship, target.dir)) {
+    let mode: string | null = null;
+    const settings = cacheSettingsOf(cfg.ship.sandbox);
+    const mirror = mirrorRepoOfTarget(target);
+    if (settings && mirror) {
+      try { mode = (await readMirrorContract(new SandboxCache(settings), mirror, c.branch?.base ?? 'main'))?.release.mode ?? null; }
+      catch (e) { if (firstReport(`${scope0(c, target)}:contract`)) remit.warn(`${target.name}: could not read the contract from the mirror: ${(e as Error).message}`, { step: 'release' }); }
+    }
+    const note = noCheckoutReleaseNote(target.name, mode);
+    if (firstReport(`${scope0(c, target)}:release`)) remit.emit(note, { step: 'release' });
+    return { scope: releaseLockScope(c.route, target.name), tests: 'skipped', outcome: 'skipped', detail: note };
+  }
   // Per REPOSITORY, not per route. A board's area spans several repos and
   // each releases on its own: they have separate versions, separate tags and
   // separate deploy targets, and a long release of one must not hold up
@@ -4301,7 +4317,7 @@ switch (command) {
       let mintOutcomes: MintOutcome[] = [];
       if (!dryRun && previous?.agentPersonas && existingRoute?.resolved) {
         try {
-          mintOutcomes = await mintMissingSeatKeys({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
+          mintOutcomes = await mintMissingSeatKeys(withFoundSeats(existingRoute, found, previous.releaseAgentId), { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
           for (const o of mintOutcomes) process.stderr.write(`${describeMintOutcome(o)}\n`);
           for (const p of await probeSeatReads({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent })) {
             if (p.state === 'forbidden') process.stderr.write(`${describeSeatForbidden(p.role, p.tables)}\n`);

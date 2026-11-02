@@ -58,6 +58,28 @@ function slugFor(route: Route, agentId: string): string {
   return seatKeySlug(workspaceSlug, agentId);
 }
 
+/**
+ * `route` with the seats a connect just found (CREW-2938). Minting reads the
+ * release seat and its Agents row from `resolved`, so a route resolved before
+ * the release seat existed minted keys for the five role seats and none for
+ * release.
+ */
+export function withFoundSeats(
+  route: Route, found: { seats: Record<string, string>; releaseSeat?: string }, previousReleaseAgentId?: string,
+): Route {
+  const resolved = route.resolved;
+  if (!resolved) return route;
+  const releaseSeat = found.releaseSeat ?? resolved.releaseSeat;
+  const releaseAgentId = resolved.releaseAgentId ?? previousReleaseAgentId;
+  return {
+    ...route,
+    resolved: {
+      ...resolved, seats: found.seats as typeof resolved.seats,
+      ...(releaseSeat ? { releaseSeat } : {}), ...(releaseAgentId ? { releaseAgentId } : {}),
+    },
+  };
+}
+
 /** The Agents row backing `role`'s seat, as `crew agents sync` last linked it. */
 export function seatAgentId(route: Route, role: RoleName): string | undefined {
   return route.resolved?.agentPersonas?.[role]?.agentId;
