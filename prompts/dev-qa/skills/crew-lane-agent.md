@@ -419,6 +419,26 @@ before going further, and never change a ticket's `report_type` yourself.
    sets the ticket back to `in_progress` instead of passing it to QA. A ticket
    with no Acceptance section is unaffected.
 
+### Finding where something lives
+
+Before you read or edit, locate the code once, in this order:
+
+1. **The map.** Read the "Repository map" section of this brief (when the
+   repository has one) and the repository's own instructions file, which may
+   also say where things live.
+2. **The symbol tools.** When the Environment section lists code tools, use
+   them for code questions before searching text: find a symbol by name, list
+   its references, read its definition, outline a file. Text search is for
+   strings that are not symbols.
+3. **One broad search.** To find a visible string, search for it once across
+   the whole relevant tree, excluding tests, and prefer registries over
+   components. A search that found only a test file is widened, not
+   narrowed.
+
+Count the calls: if more than three searches have not found the location, say
+so in your progress comment and ask for the map or the person's pointer
+rather than continuing to search.
+
 ## Step 4 — you never merge, and you never deploy
 
 **Nothing you do touches the base branch.** The release phase takes every

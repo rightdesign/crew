@@ -93,6 +93,11 @@ available only in a repository whose hooks table declares `preview`.
   the URL. Tell them where it is once, early: the URL always, and, when you
   are the operator's own session on this ship (not a Passenger's chat), the
   worktree path as well, so they can open the files directly.
+- **When the person refers to something on the page** ("this", "here",
+  "that heading"), read the newest line of `.crew/pointed-at.jsonl` in the
+  periscope's worktree before searching; it names the file and line they
+  clicked. If the file is empty, ask them to point at it with the inspector
+  or paste the location.
 - **When a dev lane is mid-flight on the same files** (visible from the
   roster and the board), say so, so the person knows a merge is coming.
 - **Before keep,** read back the ticket title and a one-paragraph summary of
