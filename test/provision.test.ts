@@ -56,7 +56,7 @@ test('a fully provisioned host reports "already provisioned" and changes nothing
   assert.equal(r.code, 0);
   assert.equal(r.summary.state, 'already provisioned');
   assert.equal(r.summary.changed, false);
-  assert.deepEqual(f.calls.map((c) => c.args[0]), ['connect']);
+  assert.deepEqual(f.calls.map((c) => c.args[0]), ['connect', 'agents']);
 });
 
 test('a first run connects, enables the route, installs and reports provisioned (CREW-2792)', async () => {
@@ -64,7 +64,7 @@ test('a first run connects, enables the route, installs and reports provisioned 
   const r = await run(base(), f);
   assert.equal(r.code, 0);
   assert.equal(r.summary.state, 'provisioned');
-  assert.deepEqual(f.calls.map((c) => c.args[0]), ['connect', 'install']);
+  assert.deepEqual(f.calls.map((c) => c.args[0]), ['connect', 'agents', 'install']);
   assert.ok(f.enabled.has('acme/issues'));
   assert.deepEqual(r.summary.daemon, { mechanism: 'systemd', running: true, lingering: true });
   const last = parseEvents(r.out.join('')).at(-1)!;
@@ -270,4 +270,26 @@ test('a provisioned managed ship yaml loads, and doctor is quiet about it; runne
   const host = loadConfig('/nonexistent', 'crew.yaml', { text: render((d) => d.setIn(['ship', 'runner'], 'host')) });
   assert.equal(host.ship.runner, 'host');
   assert.equal(managedRuntimeWarnings('managed_instance', host.ship).length, 1);
+});
+
+test('a re-provision whose Ships row exists mints and lists the missing seat keys (CREW-2944)', async () => {
+  const f = fake({
+    crew: (a) => (a[0] === 'agents' ? ok('route: acme/issues\ndev: agent key minted\nqa: agent key minted\ndesign: agent key already stored\n') : undefined),
+  });
+  const r = await run(base(), f);
+  assert.equal(r.code, 0);
+  assert.deepEqual(f.calls.find((c) => c.args[0] === 'agents')?.args, ['agents', 'sync', 'acme/issues']);
+  assert.deepEqual(r.summary.seatKeys, [{ route: 'acme/issues', minted: ['dev', 'qa'] }]);
+  assert.equal(r.summary.changed, true);
+  assert.match(r.out.join(''), /seat keys: 2 minted \(dev, qa\)/);
+});
+
+test('a seat key that cannot be minted fails the run instead of leaving a ship that runs nothing (CREW-2944)', async () => {
+  const f = fake({
+    crew: (a) => (a[0] === 'agents' ? ok('dev: could not mint an agent key (500 Internal Server Error) — writes as the ship\n') : undefined),
+  });
+  const r = await run(base(), f);
+  assert.equal(r.code, 1);
+  assert.match(r.out.join(''), /seat keys for acme\/issues: dev: could not mint/);
+  assert.equal(f.calls.some((c) => c.args[0] === 'install'), false);
 });

@@ -99,7 +99,7 @@ export interface ProvisionDeps {
 }
 
 export type ProvisionEvent =
-  | 'connect' | 'route_enabled' | 'forge' | 'install' | 'daemon' | 'choice' | 'problem' | 'done';
+  | 'connect' | 'route_enabled' | 'seat_keys' | 'forge' | 'install' | 'daemon' | 'choice' | 'problem' | 'done';
 
 export interface ProvisionSummary {
   ok: boolean;
@@ -110,6 +110,8 @@ export interface ProvisionSummary {
   routes: string[];
   forges: Array<{ host: string; action: 'stored' | 'rotated' | 'unchanged' }>;
   daemon?: { mechanism: string; running: boolean; lingering: boolean };
+  /** CREW-2944: the seats whose agent key this run minted, per route (a re-provision of an existing Ships row lists what a wiped host was missing). */
+  seatKeys?: Array<{ route: string; minted: string[] }>;
   configPath?: string;
 }
 
@@ -248,6 +250,25 @@ export async function runProvision(
     if (deps.enableRoute(route)) {
       summary.changed = true;
       emit('route_enabled', `enabled route ${route}`, { route });
+    }
+  }
+
+  // 3b. CREW-2944: every seat of every route holds its own agent key before the daemon starts. `crew connect` mints them only as the last
+  // step of its own run, and skips that when the route is not in crew.yaml yet or an earlier step stopped; a host wiped and provisioned
+  // again from a lease (the Ships row already exists) then came up `running` with the ship key only, and every run was refused under
+  // `auth: workspace`. `crew agents sync` links the personas and mints whatever is missing, and is a no-op when nothing is.
+  summary.seatKeys = [];
+  for (const route of routeNames) {
+    const res = deps.crew(['agents', 'sync', route]);
+    const lines = res.stdout.split('\n').map((l) => l.trim());
+    const minted = lines.flatMap((l) => /^(\w+): agent key minted/.exec(l)?.[1] ?? []);
+    const refused = lines.filter((l) => /could not mint an agent key|^seat keys: not minted/.test(l));
+    summary.seatKeys.push({ route, minted });
+    if (minted.length > 0) summary.changed = true;
+    emit('seat_keys', `seat keys: ${minted.length} minted${minted.length > 0 ? ` (${minted.join(', ')})` : ''} for ${route}`, { route, minted });
+    if (res.status >= 2 || refused.length > 0) {
+      const why = refused[0] ?? (res.stderr.trim().split('\n').pop() || `crew agents sync exited ${res.status}`);
+      return fail(PROVISION_EXIT.failed, `seat keys for ${route}: ${why}`, { stage: 'seat_keys', route });
     }
   }
 
