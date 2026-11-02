@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
-  SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, cacheSettingsOf, makeCachePass, sandboxCacheKey,
+  SandboxCache, parseRemote, mirrorRelPath, intelRelDir, cloneScript, cacheSettingsOf, makeCachePass, sandboxCacheKey, unmirroredRepos,
   CACHE_REFRESH_INTERVAL_MS, OPENSHELL_ATTACHABLE_LABEL, type CacheExec, type CacheSettings,
 } from '../src/sandbox-cache.ts';
 import { parseShipSandbox } from '../src/config.ts';
@@ -161,7 +161,7 @@ test('the pass refreshes under the checkout lock, throttles, raises on failure a
     cache: r.cache, volume: 'crew-cache', now: () => t,
     repos: () => [{ ...bad, dir: '/d/bad' }, { ...REPO, dir: '/d/widgets' }],
     lock: (dir) => { events.push(`lock ${dir}`); return () => events.push(`unlock ${dir}`); },
-    fail: (key, msg) => { events.push(`fail ${key}`); assert.match(msg, /previous mirror/); },
+    fail: (key, msg, at) => { events.push(`fail ${key}`); assert.match(msg, /previous mirror/); assert.equal(at, new Date(t).toISOString()); },
     ok: (key) => events.push(`ok ${key}`),
   });
   await pass();
@@ -317,4 +317,21 @@ test('a failing index reports it, keeps the previous index and leaves the mirror
     assert.equal(readFileSync(join(r.volume, intelRelDir(REPO), 'indexed-commit'), 'utf8'), before);
     assert.equal(sh(r.mirror, 'rev-parse', 'HEAD'), sh(r.root + '/work', 'rev-parse', 'HEAD'));
   } finally { fake.restore(); }
+});
+
+test('unmirroredRepos lists served repositories missing from the volume, once each (CREW-2961)', () => {
+  const other = { host: 'forge.test', path: 'acme/other' };
+  const mirrors = [{ repo: REPO, lastRefresh: 'x' }];
+  assert.deepEqual(unmirroredRepos([REPO, other, other], mirrors), ['forge.test/acme/other']);
+  assert.deepEqual(unmirroredRepos([REPO], mirrors), []);
+});
+
+test('a refresh with no token names the missing token rather than git\'s prompt error (CREW-2961)', async () => {
+  const r = rig();
+  r.failRun.add(mirrorRelPath(REPO));
+  const [out] = await r.cache.refresh([{ ...REPO, token: null }]);
+  assert.equal(out!.ok, false);
+  assert.match(out!.detail ?? '', /no readable forge token for forge\.test/);
+  const [withTok] = await r.cache.refresh([{ ...REPO, token: 't' }]);
+  assert.doesNotMatch(withTok!.detail ?? '', /no readable forge token/);
 });

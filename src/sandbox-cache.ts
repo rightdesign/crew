@@ -287,7 +287,8 @@ export class SandboxCache {
       try {
         await this.helper(this.s.helperImage, REFRESH_SCRIPT, [mirrorRelPath(r), forgeDescriptorFor(r.host).httpsUrl(r.host, r.path)], env);
       } catch (e) {
-        out.push({ repo: r, ok: false, detail: describe(e) });
+        // CREW-2961: with no token the helper has nothing to authenticate with and git's own message ("could not read Username") hides why.
+        out.push({ repo: r, ok: false, detail: r.token ? describe(e) : `no readable forge token for ${r.host} (see \`crew forge list\`); ${describe(e)}` });
         continue;
       }
       if (this.s.depsCommand && this.s.depsImage) {
@@ -397,6 +398,12 @@ export type PassRepo = CacheRepo & { dir: string; token?: string | null; usernam
 
 export const sandboxCacheKey = (volume: string, r: CacheRepo): string => `sandbox_cache:${volume}:${r.host}/${r.path}`;
 
+/** Served repositories with no mirror in the volume (CREW-2961), as `host/path`. */
+export function unmirroredRepos(served: CacheRepo[], mirrors: MirrorInfo[]): string[] {
+  const have = new Set(mirrors.map((m) => `${m.repo.host}/${m.repo.path}`));
+  return served.map((r) => `${r.host}/${r.path}`).filter((k, i, a) => !have.has(k) && a.indexOf(k) === i);
+}
+
 /** Passes closer together than this reuse the last refresh; the poll cadence is far shorter than a forge needs. */
 export const CACHE_REFRESH_INTERVAL_MS = 60_000;
 
@@ -411,7 +418,7 @@ export function makeCachePass(o: {
   volume: string;
   repos: () => PassRepo[];
   lock: (dir: string) => () => void;
-  fail: (key: string, message: string) => Promise<void> | void;
+  fail: (key: string, message: string, failedAt: string) => Promise<void> | void;
   ok: (key: string) => void;
   now?: () => number;
 }): () => Promise<RefreshOutcome[]> {
@@ -433,7 +440,7 @@ export function makeCachePass(o: {
     for (const out of all) {
       const key = sandboxCacheKey(o.volume, out.repo);
       if (out.ok) o.ok(key);
-      else await o.fail(key, `sandbox cache: ${out.repo.host}/${out.repo.path} did not refresh (${out.detail}); runs use the previous mirror. Resumes automatically when a later pass refreshes it`);
+      else await o.fail(key, `sandbox cache: ${out.repo.host}/${out.repo.path} did not refresh (${out.detail}); runs use the previous mirror. Resumes automatically when a later pass refreshes it`, new Date(now()).toISOString());
     }
     return all;
   };

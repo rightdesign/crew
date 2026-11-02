@@ -34,6 +34,8 @@ export interface ShipAttentionItem {
   message: string;
   /** ISO time the condition was first raised; kept across re-raises of the same key. */
   since: string;
+  /** Present on `sandbox_cache` items (CREW-2961): when the refresh last failed, which moves on every failing pass while `since` stays. */
+  lastFailedAt?: string;
   /** Present on `worktree_held` items: the refused worktree, for `crew status --json`. */
   held?: HeldWorktree;
 }
@@ -436,7 +438,9 @@ export async function raiseShipAttention(o: RaiseOptions, item: ShipAttentionIte
   const previous = store.previous();
   const next = upsert(previous, item);
   store.persist(next);
-  if (transitions(previous, next).length === 0) return false;
+  // CREW-2961: a cache refresh that keeps failing for a different reason is a new fact, not the same report; announce when its detail changes.
+  const changed = item.kind === 'sandbox_cache' && previous.some((i) => i.key === item.key && i.message !== item.message);
+  if (transitions(previous, next).length === 0 && !changed) return false;
   announce(o.emit, item);
   if (o.route && o.ship) {
     await notify(o.route, o.ship, { level: 'warn', headline: item.message }, o.emit);

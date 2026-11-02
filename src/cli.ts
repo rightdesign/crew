@@ -89,9 +89,9 @@ import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
-import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor } from './forges.ts';
+import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
 import { lacksCheckout, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, firstReport } from './mirror-contract.ts';
-import { SandboxCache, cacheSettingsOf, makeCachePass, parseRemote, type PassRepo } from './sandbox-cache.ts';
+import { SandboxCache, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo } from './sandbox-cache.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
@@ -1604,7 +1604,7 @@ function sandboxCacheRepos(c: typeof route, ship: Ship): PassRepo[] {
     try {
       if (intelFlavor(loadRepoConfig(t.dir)?.hooks.intel) === 'serena') intelImage = sandboxImageFor(images ??= readSandboxState(ship.stateDir), t.name);
     } catch { /* a malformed .crew.yaml is reported where it is read */ }
-    out.push({ ...repo, dir: t.dir, token, username: forgeFor(ship.forges, repo.host)?.entry.username, intelImage });
+    out.push({ ...repo, dir: t.dir, token, username: forgeFor(ship.forges, repo.host)?.entry.username || forgeDescriptorFor(repo.host).credentialUsername, intelImage });
   }
   return out;
 }
@@ -1616,7 +1616,7 @@ function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: 
     cache: new SandboxCache(settings), volume: settings.volume,
     repos: () => sandboxCacheRepos(c, ship),
     lock: (dir) => acquireCheckoutLock(dir),
-    fail: (key, message) => raiseShipAttention({ state, emit, route: c, ship }, { kind: 'sandbox_cache', key, message, since: new Date().toISOString() }).then(() => undefined),
+    fail: (key, message, failedAt) => raiseShipAttention({ state, emit, route: c, ship }, { kind: 'sandbox_cache', key, message, since: failedAt, lastFailedAt: failedAt }).then(() => undefined),
     ok: (key) => clearShipAttention(state, key),
   });
   // CREW-2807: right after a mirror refresh, passengers get the same tip.
@@ -4782,14 +4782,21 @@ switch (command) {
           }
           const dropped = flag('prune') ? await cache.prune(served) : [];
           const mirrors = await cache.list();
+          const open = openShipAttention(new State(cfg.ship.stateDir));
+          const failures = served.flatMap((r) => {
+            const item = open.find((i) => i.kind === 'sandbox_cache' && i.key === sandboxCacheKey(settings.volume, r));
+            return item ? [{ repo: `${r.host}/${r.path}`, lastFailedAt: item.lastFailedAt ?? item.since, message: item.message }] : [];
+          });
           if (flag('json')) {
-            process.stdout.write(`${JSON.stringify({ volume: settings.volume, mirrors, dropped }, null, 2)}\n`);
+            process.stdout.write(`${JSON.stringify({ volume: settings.volume, mirrors, failures, dropped }, null, 2)}\n`);
           } else {
             for (const d of dropped) process.stdout.write(`dropped ${d.host}/${d.path}\n`);
             if (mirrors.length === 0) process.stdout.write(`volume ${settings.volume}: no mirrors yet\n`);
             for (const m of mirrors) {
               process.stdout.write(`${m.repo.host}/${m.repo.path}  last refresh ${m.lastRefresh ?? 'never'}${m.intel ? `  intel ${m.intel.commit.slice(0, 12)} (${m.intel.indexedAt ?? 'age unknown'})` : ''}\n`);
             }
+            // CREW-2961: a failing refresh is shown next to its repository, mirrored or not.
+            for (const f of failures) process.stdout.write(`${f.repo}  REFRESH FAILING (last failed ${f.lastFailedAt}): ${f.message}\n`);
           }
         } catch (e) {
           process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -6404,6 +6411,14 @@ switch (command) {
         const shipKind = await doctorShipKind(route, cfg.ship);
         for (const message of managedRuntimeWarnings(shipKind, cfg.ship)) problems.push({ severity: 'attention', kind: 'managed_runtime_default', message });
         for (const message of managedGitIdentityWarnings(shipKind, readGlobalGitIdentity())) problems.push({ severity: 'attention', kind: 'managed_git_identity', message });
+      }
+      // CREW-2961: on a sandbox ship, a served repository with no mirror cannot be cloned by any run.
+      const cacheSettings = cfg.ship.runner === 'sandbox' ? cacheSettingsOf(cfg.ship.sandbox) : null;
+      if (cacheSettings && !flag('offline')) {
+        try {
+          const missing = unmirroredRepos(sandboxCacheRepos(route, cfg.ship), await new SandboxCache(cacheSettings).list());
+          for (const r of missing) problems.push({ severity: 'attention', kind: 'sandbox_cache_unmirrored', route: route.route, message: `${r} has no mirror in the cache volume ${cacheSettings.volume}, so sandboxed runs cannot clone it`, remedy: 'see `crew sandbox cache` for the last refresh failure' });
+        } catch { /* the container engine being down is reported by its own check */ }
       }
       for (const t of rejectedTunnels(cfg.ship.stateDir)) {
         problems.push({ severity: 'attention', kind: TUNNEL_REJECTED_KEY, message: tunnelRejectedMessage(t.workspaceId, t.quickExits), remedy: 'rotate the slug with `crew rotate-passenger-url`' });

@@ -96,6 +96,19 @@ test('raise announces once as a sweep event with attention ship:<kind> and no ti
   assert.equal(events[0].data.url, undefined);
 });
 
+test('a failing sandbox_cache item is re-announced when its detail changes, not when it repeats (CREW-2961)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-shipatt-'));
+  const state = new State(dir);
+  const emit = new Emitter({ route: 'r', eventFile: eventFileFor(dir), console: () => {} });
+  const c = (message: string, at: string) => item('sandbox_cache:v:h/a/b', { kind: 'sandbox_cache', message, lastFailedAt: at });
+  assert.equal(await raiseShipAttention({ state, emit }, c('one', '2026-11-02T01:00:00Z')), true);
+  assert.equal(await raiseShipAttention({ state, emit }, c('one', '2026-11-02T01:05:00Z')), false);
+  assert.equal(await raiseShipAttention({ state, emit }, c('two', '2026-11-02T01:10:00Z')), true);
+  const [kept] = state.shipAttention().previous();
+  assert.equal(kept!.lastFailedAt, '2026-11-02T01:10:00Z');
+  assert.equal(kept!.since, '2026-10-05T00:00:00.000Z');
+});
+
 test('hookCommand: first plain command word, skipping comments and assignments', () => {
   assert.equal(hookCommand('pnpm install --frozen-lockfile'), 'pnpm');
   assert.equal(hookCommand('# c\n\nFOO=1\nnpx tsc --noEmit'), 'npx');

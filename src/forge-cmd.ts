@@ -85,6 +85,8 @@ export function runForge(a: ForgeArgs, io: ForgeIo): CmdResult {
     const tok = sourceFromArgs(a);
     if (typeof tok === 'string') return fail(tok);
     const doc = parseDocument(io.readFile(io.configFile));
+    // CREW-2961: the username is written with the token, so no reader depends on a default being applied.
+    doc.setIn(['ship', 'forges', host, 'username'], forgeDescriptorFor(host).credentialUsername);
     doc.setIn(['ship', 'forges', host, 'token'], tok);
     io.writeFile(io.configFile, doc.toString());
     io.forges = { ...(io.forges ?? {}), [host]: { username: forgeDescriptorFor(host).credentialUsername, token: tok } };
