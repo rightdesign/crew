@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.130.3] — 2026-11-03
+
+- CREW-2995 Sandbox image builds no longer fail on a 443-only host whose base image has no CA bundle.
+
 ## [0.130.2] — 2026-11-02
 
 - CREW-2991 Managed ships no longer report a missing forge token for a host whose token was delivered at provision or rotation; a git lookup that finds no token still records the miss.
