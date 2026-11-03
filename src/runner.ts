@@ -233,7 +233,8 @@ export class SandboxRunner implements Runner {
       await this.deleteQuietly(name);
       throw new Error(`openshell could not create the sandbox: ${describeExecError(e)}`);
     }
-    o.emit.emit(`sandbox_created: ${name}`, { role: plan.role, data: { event: 'sandbox_created', sandbox: name, ms: Date.now() - t0 } });
+    const imageNote = plan.sandboxImageReason ? ` (image ${image ?? 'default'}: ${plan.sandboxImageReason})` : '';
+    o.emit.emit(`sandbox_created: ${name}${imageNote}`, { role: plan.role, data: { event: 'sandbox_created', sandbox: name, ms: Date.now() - t0, ...(plan.sandboxImageReason ? { image: image ?? null, imageReason: plan.sandboxImageReason } : {}) } });
     const handle: RunHandle = { runner: 'sandbox', sandbox: name, sandboxBin: cfg.bin };
     if (generated) {
       // The run log records what the policy let through, and any host the repository added.

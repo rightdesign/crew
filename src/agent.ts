@@ -21,7 +21,7 @@ import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRe
 import { seatCannotWriteItem, seatCannotWriteKey } from './seat-read-probe.ts';
 import type { Route, RoleName, Ship } from './config.ts';
 import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
-import { loadRepoConfig } from './repo-config.ts';
+import { loadRepoConfig, type RepoConfig } from './repo-config.ts';
 import { SANDBOX_INTEL_DIR, ensureLspPlugin, lspFlavor, sandboxLspPlugin } from './intel.ts';
 import type { SandboxPolicyInput } from './sandbox-policy.ts';
 import { API_KEY_VAR } from './environment.ts';
@@ -38,7 +38,7 @@ import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachable
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
-import { SANDBOX_BRIDGE_PATH, readSandboxState, sandboxImageForRun } from './sandbox-image.ts';
+import { SANDBOX_BRIDGE_PATH, readSandboxState, sandboxImageForRun, sandboxImageMissing } from './sandbox-image.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
 import { listLocalSkills } from './skills.ts';
 import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKind } from './runner.ts';
@@ -145,6 +145,8 @@ export interface AgentPlan {
   sandboxOrigin?: string;
   /** CREW-2956: the built image the sandbox is created from (`--from`), unless `sandboxConfig.image` overrides it. Absent while nothing has built yet. */
   sandboxImage?: string;
+  /** CREW-3032: why that image (or none) was chosen, for the `sandbox_created` line. */
+  sandboxImageReason?: string;
   /** CREW-2922: files the runner writes into the sandbox before launching the harness (the symbol bridge's Gemini settings, the `typescript-lsp` plugin). */
   sandboxFiles?: SandboxFile[];
   /** Passed on stdin, never as argv — see `spawnAgent`. */
@@ -207,6 +209,11 @@ export interface AgentPlan {
 }
 
 export interface PlanOptions {
+  /**
+   * CREW-3032: the ticket repository's contract, resolved by the caller with `repoContractFor` (the mirror's on a
+   * sandbox ship, which has no checkout). Undefined reads the host checkout, as before; null means no contract.
+   */
+  repoContract?: RepoConfig | null;
   role: RoleName;
   route: Route;
   ship: Ship;
@@ -328,13 +335,14 @@ export function sandboxOriginFor(route: Route, repo: string | null | undefined):
 export function sandboxPolicyInputFor(
   route: Route,
   toolchain: ToolchainSpec,
-  o: { harnessBin: string; repo?: string | null; sandbox?: { agentBin?: string; mirrorDir?: string; workDir?: string } },
+  o: { harnessBin: string; repo?: string | null; sandbox?: { agentBin?: string; mirrorDir?: string; workDir?: string }; contract?: RepoConfig | null },
 ): SandboxPolicyInput {
   const repos = reposOf(route);
   const forgeHosts = [...new Set(repos.map((r) => r.forgeHost ?? 'github.com'))];
   const dir = repos.find((r) => r.name === o.repo)?.dir ?? route.dir;
-  let declared: ReturnType<typeof loadRepoConfig> = null;
-  try { declared = loadRepoConfig(dir); } catch { /* a malformed .crew.yaml is reported where it is read; the policy then carries no extras */ }
+  // CREW-3032: a caller on a sandbox ship passes the contract it read from the mirror; undefined reads the checkout.
+  let declared: RepoConfig | null = o.contract ?? null;
+  if (o.contract === undefined) try { declared = loadRepoConfig(dir); } catch { /* a malformed .crew.yaml is reported where it is read; the policy then carries no extras */ }
   return {
     forgeHosts,
     tablationUrl: route.baseUrl,
@@ -378,13 +386,22 @@ export function sandboxLspPluginFor(route: Route, repo: string | null | undefine
  * `sandbox:`, else the ship's crew layer, so a repository with no declaration still has git and
  * the harness inside its sandbox.
  */
-export function sandboxImageOf(route: Route, repo: string | null | undefined, stateDir: string): string | undefined {
+export function sandboxImageOf(route: Route, repo: string | null | undefined, stateDir: string, contract?: RepoConfig | null): { image?: string; reason: string } {
   let declares = false;
-  try {
-    const dir = reposOf(route).find((r) => r.name === repo)?.dir ?? route.dir;
-    declares = Boolean(loadRepoConfig(dir)?.sandbox);
-  } catch { /* an unreadable contract declares nothing */ }
-  return sandboxImageForRun(readSandboxState(stateDir), repo, declares) ?? undefined;
+  // CREW-3032: `contract` is the repository's contract as `repoContractFor` resolved it (the mirror's on a sandbox
+  // ship). Undefined means the caller did not resolve one, and the host checkout is read as before.
+  if (contract !== undefined) declares = Boolean(contract?.sandbox);
+  else {
+    try {
+      const dir = reposOf(route).find((r) => r.name === repo)?.dir ?? route.dir;
+      declares = Boolean(loadRepoConfig(dir)?.sandbox);
+    } catch { /* an unreadable contract declares nothing */ }
+  }
+  const state = readSandboxState(stateDir);
+  if (sandboxImageMissing(state, repo, declares)) return { reason: 'refused: image missing' };
+  const image = sandboxImageForRun(state, repo, declares) ?? undefined;
+  const reason = !declares ? 'ship layer: repository declares no sandbox' : 'repository image';
+  return { image, reason };
 }
 
 export class AgentSpawnError extends AgentError {}
@@ -566,7 +583,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const code = codeBridgeFor(o, adapter.harness);
   const sandboxLsp = o.ship.runner === 'sandbox' && adapter.harness === 'claude' ? sandboxLspPluginFor(o.route, o.repo) : undefined;
   const sandboxOrigin = o.ship.runner === 'sandbox' ? sandboxOriginFor(o.route, o.repo) : undefined;
-  const sandboxImage = o.ship.runner === 'sandbox' ? sandboxImageOf(o.route, o.repo, o.stateDir) : undefined;
+  const sandboxChoice = o.ship.runner === 'sandbox' ? sandboxImageOf(o.route, o.repo, o.stateDir, o.repoContract) : undefined;
+  const sandboxImage = sandboxChoice?.image;
   const sandboxFiles = [...(code?.files ?? []), ...(sandboxLsp?.files ?? [])];
   const invocation = adapter.invocation(toolchain, {
     code,
@@ -630,7 +648,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
           ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}),
           ...(sandboxOrigin ? { sandboxOrigin } : {}),
           ...(sandboxImage ? { sandboxImage } : {}),
-          sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox }),
+          ...(sandboxChoice ? { sandboxImageReason: sandboxChoice.reason } : {}),
+          sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox, contract: o.repoContract }),
           ...(sandboxFiles.length ? { sandboxFiles } : {}),
         }
       : {}),

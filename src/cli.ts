@@ -93,7 +93,7 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
-import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, readMirrorWarmFiles, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport } from './mirror-contract.ts';
+import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, readMirrorWarmFiles, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport, repoContractFor } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
 import { sandboxImageForRun } from './sandbox-image.ts';
 import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo, type RefreshOutcome } from './sandbox-cache.ts';
@@ -1717,6 +1717,12 @@ async function loadContractOf(c: typeof route, t: RepoTarget): Promise<RepoConfi
   return readMirrorContract(new SandboxCache(settings), mirror, c.branch?.base ?? 'main');
 }
 
+/** CREW-3032: the contract of the repository a run is planned for, resolved where a sandbox ship has no checkout. Undefined when no repository is named. */
+async function planContractOf(c: typeof route, repo: string | null | undefined): Promise<RepoConfig | null | undefined> {
+  const t = repo ? reposOf(c).find((r) => r.name === repo) : undefined;
+  return t && cfg.ship.runner === 'sandbox' ? repoContractFor(cfg.ship, c, t) : undefined;
+}
+
 /** One repo of a route, resolved on its own so a caller can survive a bad contract in a sibling. */
 async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[number]) {
   {
@@ -2663,6 +2669,7 @@ switch (command) {
       }
       if (dryRun) {
         const fleetPlan = planAgentRun({
+          repoContract: await planContractOf(w.route, repoTargetFor(w.route, w.decision.actionable.top?.repo_id)?.name),
           role: w.role, route: w.route, ship: cfg.ship,
           stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
           environment: await environmentFor(w.route, w.decision.actionable.top?.issue_id),
@@ -2771,6 +2778,7 @@ switch (command) {
       }
 
       const fleetPlan = planAgentRun({
+        repoContract: await planContractOf(w.route, fleetTicketRepo),
         role: w.role, route: w.route, ship: cfg.ship,
         stateDir: cfg.ship.stateDir, roster: rosterFor(w.decision, w.route, w.role),
         environment: await environmentFor(w.route, fleetTicketHint),
@@ -3006,6 +3014,7 @@ switch (command) {
       }
 
       const plan = planAgentRun({
+        repoContract: await planContractOf(route, ticketRepo),
         role: current, route, ship: cfg.ship,
         stateDir: cfg.ship.stateDir, roster: rosterFor(decision, route, current),
         environment: await environmentFor(route, ticketHint),
@@ -4864,7 +4873,7 @@ switch (command) {
         const r = wanted[0]!;
         const repoName = value('repo');
         const seat = resolveSeat(cfg.ship, r, role, {}, repoName);
-        const input = sandboxPolicyInputFor(r, seat.toolchain, { harnessBin: seat.toolchain.bin, repo: repoName, sandbox: cfg.ship.sandbox });
+        const input = sandboxPolicyInputFor(r, seat.toolchain, { harnessBin: seat.toolchain.bin, repo: repoName, sandbox: cfg.ship.sandbox, contract: await planContractOf(r, repoName) });
         try {
           const policy = generateSandboxPolicy({ mirrorDir: cfg.ship.sandbox?.mirrorDir, workDir: cfg.ship.sandbox?.workDir, ...input });
           process.stdout.write(flag('json') ? `${JSON.stringify({ route: r.route, role, input, groups: policy.groups, yaml: policy.yaml }, null, 2)}\n` : policy.yaml);

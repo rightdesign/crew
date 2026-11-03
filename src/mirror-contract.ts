@@ -13,11 +13,11 @@
 
 import { existsSync } from 'node:fs';
 import { remoteOf } from './remote-dir.ts';
-import { REPO_CONFIG_FILENAMES, parseRepoConfig, type RepoConfig } from './repo-config.ts';
+import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfigTolerant, type RepoConfig } from './repo-config.ts';
 import { mirrorRepoOf } from './passenger-mirror.ts';
-import { parseRemote, type SandboxCache, type CacheRepo } from './sandbox-cache.ts';
+import { parseRemote, SandboxCache, cacheSettingsOf, type CacheRepo } from './sandbox-cache.ts';
 import { globToRegExp, WARM_MAX_BYTES, type WarmFiles } from './sandbox-image.ts';
-import type { RepoTarget } from './config.ts';
+import type { RepoTarget, Route, Ship } from './config.ts';
 
 /** Whether this repository has to be served from its mirror: a sandbox-runner ship whose checkout directory is absent. */
 export function lacksCheckout(ship: { runner?: string }, dir: string): boolean {
@@ -58,6 +58,26 @@ export async function readMirrorContract(cache: Pick<SandboxCache, 'showFile'>, 
     if (text !== null) return parseRepoConfig(text, `${repo.host}/${repo.path}:${base}:${name}`);
   }
   return null;
+}
+
+/**
+ * CREW-3032: the one resolver for a ticket repository's contract at run time. A host-runner ship
+ * reads the checkout's `.crew.yaml`; a sandbox-runner ship reads the one committed on the base
+ * branch in its mirror, because it has no checkout (and one it happens to have is not what runs).
+ * The planner, the policy generator, the image lookup and the daemon's image guard all use it, so
+ * none of them can decide "declares no `sandbox:`" from a directory that is not there. A sandbox
+ * ship with no mirror settings or no mirror for the repository falls back to the checkout, and an
+ * unreadable or malformed contract reads as none, as it did for every caller before.
+ */
+export async function repoContractFor(ship: Pick<Ship, 'runner' | 'sandbox'>, route: Pick<Route, 'branch'>, t: RepoTarget): Promise<RepoConfig | null> {
+  if (ship.runner === 'sandbox') {
+    const settings = cacheSettingsOf(ship.sandbox);
+    const mirror = mirrorRepoOfTarget(t);
+    if (settings && mirror) {
+      try { return await readMirrorContract(new SandboxCache(settings), mirror, route.branch?.base ?? 'main'); } catch { return null; }
+    }
+  }
+  try { return loadRepoConfigTolerant(t.dir); } catch { return null; }
 }
 
 /**

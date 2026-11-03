@@ -101,7 +101,7 @@ import { Tracker, type Ticket } from './tracker.ts';
 import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { countCommits, ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
-import { skipsHostCheckout } from './mirror-contract.ts';
+import { skipsHostCheckout, repoContractFor } from './mirror-contract.ts';
 import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { runKilledComment } from './run-limit.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
@@ -983,11 +983,6 @@ async function postRunKilled(
   }
 }
 
-/** Whether a repository's contract declares `sandbox:`; an unreadable contract declares nothing. */
-function declaresSandbox(dir: string): boolean {
-  try { return Boolean(loadRepoConfigTolerant(dir)?.sandbox); } catch { return false; }
-}
-
 /**
  * CREW-3014: drops the candidates this ship must not start a run on right now. A ticket inside its
  * no-op back-off window is skipped; so is one whose repository declares `sandbox:` on a sandbox ship
@@ -1000,16 +995,23 @@ async function skipUnrunnable(candidates: Ticket[], ctx: RoleAgentContext): Prom
   const noImage = new Set<string>();
   const imageSkipped: string[] = [];
   const state = ship.runner === 'sandbox' ? readSandboxState(ship.stateDir) : null;
-  const out = candidates.filter((t) => {
-    if (noopBackedOff(ship.stateDir, t.id)) { backedOff.push(t.issue_id); return false; }
+  // CREW-3032: whether the repository declares `sandbox:` is read the way the run reads it (the mirror's
+  // contract on a sandbox ship), once per repository.
+  const declares = new Map<string, boolean>();
+  const out: Ticket[] = [];
+  for (const t of candidates) {
+    if (noopBackedOff(ship.stateDir, t.id)) { backedOff.push(t.issue_id); continue; }
     const target = repoTargetFor(route, t.repo_id);
-    if (state && target && sandboxImageMissing(state, target.name, declaresSandbox(target.dir))) {
-      noImage.add(target.name);
-      imageSkipped.push(t.issue_id);
-      return false;
+    if (state && target) {
+      if (!declares.has(target.name)) declares.set(target.name, Boolean((await repoContractFor(ship, route, target))?.sandbox));
+      if (sandboxImageMissing(state, target.name, declares.get(target.name)!)) {
+        noImage.add(target.name);
+        imageSkipped.push(t.issue_id);
+        continue;
+      }
     }
-    return true;
-  });
+    out.push(t);
+  }
   if (backedOff.length) emit.emit(`skipped ${backedOff.join(', ')} — recent runs changed nothing, backing off`, { step: 'select' });
   if (imageSkipped.length) emit.emit(`skipped ${imageSkipped.join(', ')} — the sandbox image for their repo is not built yet`, { step: 'select' });
   for (const repo of noImage) {
@@ -1161,7 +1163,9 @@ async function runRoleAgentLocked(
     }
   }
 
+  const ticketTarget = ship.runner === 'sandbox' ? reposOf(route).find((r) => r.name === ticketRepo) : undefined;
   const plan = planAgentRun({
+    repoContract: ticketTarget ? await repoContractFor(ship, route, ticketTarget) : undefined,
     role, route, ship, stateDir: ship.stateDir, roster: rosterFor(decision, route, role),
     environment: await buildEnvironment(route, ship, ticketHint),
     apiKey: identity.apiKey, seatKind: identity.kind,
