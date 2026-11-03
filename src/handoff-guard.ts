@@ -34,8 +34,9 @@
  */
 
 import type { Contract } from './contract.ts';
-import { gitOk, headSha, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
-import { existingBranchForTicket, type BranchLookupTicket } from './ticket-branch.ts';
+import { existsSync } from 'node:fs';
+import { gitOk, headSha, lsRemoteHeads, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
+import { existingBranchForTicket, branchCandidatesForTicket, type BranchLookupTicket } from './ticket-branch.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, routeSlug, type Route, type Ship, type RoleName } from './config.ts';
 import { replayPendingHandoffs } from './pending-handoff.ts';
@@ -44,6 +45,7 @@ import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import type { Comment, RunnerEvent, Ticket, Tracker } from './tracker.ts';
 import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
+import { sandboxOriginFor } from './agent.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
 export const HANDOFF_BOUNCED_MARKER = calloutHeader('WARNING', 'Hand-off Bounced');
@@ -103,6 +105,34 @@ function remoteTip(dir: string, remote: string, branch: string): string | null {
   const out = gitOk(dir, ['ls-remote', '--heads', remote, `refs/heads/${branch}`]);
   if (out === null) return null;
   return out.split('\n').find((l) => l.endsWith(`\trefs/heads/${branch}`))?.split('\t')[0] ?? '';
+}
+
+/**
+ * CREW-3033: the same verdict for a run whose clone lived in a sandbox that is
+ * already deleted. There is no local HEAD to compare, so the branch being on
+ * the remote at all is the hand-off; nothing can be pushed for the seat either.
+ */
+export function inspectRemoteHandoff(
+  origin: string, cfg: EffectiveRepoConfig, ticket: BranchLookupTicket, role?: string,
+): HandoffVerdict {
+  const remote = cfg.branch.remote;
+  const heads = lsRemoteHeads(origin);
+  if (!heads) return { kind: 'unverified', why: `could not reach \`${remote}\` (${origin}) to check the pushed branch` };
+  for (const c of branchCandidatesForTicket(cfg, ticket, role)) {
+    const hit = c.endsWith('*') ? [...heads.keys()].find((b) => b.startsWith(c.slice(0, -1))) : heads.has(c) ? c : undefined;
+    if (hit) return { kind: 'pushed', branch: hit, sha: heads.get(hit)!, remote };
+  }
+  return {
+    kind: 'bounce', branch: null, remote, local: null, origin: null,
+    reason: `no branch for this ticket is on \`${remote}\`; the run's clone was deleted with its sandbox, so nothing it did not push can be recovered`,
+  };
+}
+
+/** A failed guard check in plain words: a missing working directory is not a missing git. */
+export function describeGuardError(e: unknown, dir?: string): string {
+  const msg = (e as Error).message;
+  if (!/ENOENT/.test(msg)) return msg;
+  return dir && !existsSync(dir) ? `the run's clone at ${dir} is gone` : 'git is not installed on this machine';
 }
 
 export function inspectHandoff(
@@ -202,6 +232,8 @@ export interface HandoffGuardInput {
   hold?: { column: string; shipId: string };
   /** ISO time this run started: a `taken_over` event newer than it, naming another ship, means this run no longer owns the ticket. */
   since?: string;
+  /** CREW-3033: the remote URL to ask instead of `dir`, for a run whose clone lived in a sandbox that is already deleted. */
+  origin?: string;
   log: HandoffLog;
 }
 
@@ -285,7 +317,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       return { kind: 'not-handed-off' };
     }
 
-    const v = inspectHandoff(i.dir, i.cfg, t, i.role);
+    const v = i.origin ? inspectRemoteHandoff(i.origin, i.cfg, t, i.role) : inspectHandoff(i.dir, i.cfg, t, i.role);
     if (v.kind === 'unverified') {
       i.log.warn(`${t.issue_id} is at ${t.status} but the push was not checked: ${v.why}`, log);
       return { kind: 'unverified', why: v.why };
@@ -337,7 +369,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       i.log.warn(`${t.issue_id} was taken over by another ship during this run — left alone`, log);
       return { kind: 'unverified', why: 'ticket was taken over during this run' };
     }
-    if (!v.local) {
+    if (!v.local && !i.origin) {
       i.log.warn(`${t.issue_id} has no local branch on this ship, so it is not this ship's hand-off to bounce: ${v.reason}`, log);
       return { kind: 'unverified', why: 'no local branch on this ship' };
     }
@@ -372,8 +404,9 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: ${v.reason}`, log);
     return { kind: 'bounced' };
   } catch (e) {
-    i.log.warn(`could not check the hand-off: ${(e as Error).message}`, { step: 'handoff' });
-    return { kind: 'failed', why: (e as Error).message };
+    const why = describeGuardError(e, i.dir);
+    i.log.warn(`could not check the hand-off: ${why}`, { step: 'handoff' });
+    return { kind: 'failed', why };
   }
 }
 
@@ -392,11 +425,13 @@ export async function guardRunHandoff(
   if (!workingId || (role !== 'dev' && role !== 'design' && role !== 'qa')) return null;
   const seatId = route.resolved?.seats[role];
   if (!seatId) return null;
+  let checkoutDir: string | undefined;
   try {
     const t = await tracker.ticket(workingId);
     const resolved = repoConfigFor(route, t);
     if (!resolved) return null;
     const { target, cfg } = resolved;
+    checkoutDir = target.dir;
     // CREW-1405: QA hands nothing on (it verifies or bounces), and its hard
     // limits forbid `crew drop`, so the runner retires the worktree a QA run cut
     // with `crew worktree NNN` once the run ends. Same rules as a hand-off:
@@ -406,12 +441,21 @@ export async function guardRunHandoff(
       return null;
     }
     const affinity = await tracker.claimAffinity();
+    // CREW-3033: a sandboxed run's clone went with the sandbox, so its push is asked of the remote.
+    const origin = ship.runner === 'sandbox' ? sandboxOriginFor(route, target.name) : undefined;
+    if (ship.runner === 'sandbox' && !origin) {
+      log.warn(`${t.issue_id}: the push was not checked: this ship cannot place the remote of ${target.name}`, { ticket: t.issue_id, step: 'handoff' });
+      return null;
+    }
     // The replay just handed this very ticket on and posted its `pushed` event.
     const outcome: HandoffOutcome = replayed.includes(workingId) ? { kind: 'pushed', sha: '' } : await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
       seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
+      ...(origin ? { origin } : {}),
     });
-    if (outcome.kind === 'pushed') await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
+    if (origin) {
+      // The run's worktree and branch were in the deleted sandbox: nothing here to retire or drop.
+    } else if (outcome.kind === 'pushed') await retireRunWorktree(tracker, target.dir, cfg, t, role, seatId, ship.name, log);
     else {
       // CREW-2528: a run that cut a branch from the base and committed nothing leaves no branch behind.
       const branch = existingBranchForTicket(target.dir, cfg, t, role);
@@ -419,10 +463,10 @@ export async function guardRunHandoff(
         log.emit(`${t.issue_id}: dropped ${branch} — the run made no commits beyond ${cfg.branch.base}`, { ticket: t.issue_id, step: 'handoff' });
       }
     }
-    if (since) await guardRunStrays(route, ship, tracker, role, workingId, since, log);
+    if (since && !origin) await guardRunStrays(route, ship, tracker, role, workingId, since, log);
     return outcome;
   } catch (e) {
-    log.warn(`could not check the hand-off: ${(e as Error).message}`, { step: 'handoff' });
+    log.warn(`could not check the hand-off: ${describeGuardError(e, checkoutDir)}`, { step: 'handoff' });
     return null;
   }
 }

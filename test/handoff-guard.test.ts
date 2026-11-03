@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
 import {
-  inspectHandoff, enforceHandoff, acceptanceLines, describeHandoffPush, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
+  inspectHandoff, inspectRemoteHandoff, describeGuardError, enforceHandoff, acceptanceLines, describeHandoffPush, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
   type HandoffWriter, type HandoffLog,
 } from '../src/handoff-guard.ts';
 import type { Ticket } from '../src/tracker.ts';
@@ -453,4 +453,46 @@ test('enforce: a seat with no comments is bounced and the note says so (CREW-296
   assert.equal((await enforceHandoff({ ...input(f, h), since: SINCE })).kind, 'bounced');
   assert.equal(h.patches[0]!.assignee_id, 'seat-dev');
   assert.match(h.notes[0]!, /no comment on the ticket/);
+});
+
+test('CREW-3033 remote-only: a run whose clone is gone is verified against the remote, not a local directory', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket());
+  const gone = join(tmpdir(), 'handoff-no-such-clone');
+  const out = await enforceHandoff({ ...input(f, h), dir: gone, origin: f.bare });
+  assert.equal(out.kind, 'pushed');
+  assert.deepEqual(h.warns, []);
+  assert.deepEqual(h.notes, [pushedEventBody(sh(f.wt, 'rev-parse', 'HEAD'), 'origin', 'crew-9')]);
+});
+
+test('CREW-3033 remote-only: a branch that is not on the remote bounces, with no local branch to push', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  const out = await enforceHandoff({ ...input(f, h), dir: join(tmpdir(), 'handoff-no-such-clone'), origin: f.bare });
+  assert.equal(out.kind, 'bounced');
+  assert.equal(h.patches[0]!.status, 'in_progress');
+  assert.match(h.notes[0]!, /clone was deleted with its sandbox/);
+});
+
+test('CREW-3033 remote-only: an unreachable remote is unverified', () => {
+  const f = fixture();
+  const v = inspectRemoteHandoff(join(tmpdir(), 'handoff-no-such-remote.git'), cfg(f.dir), ticket(), 'dev');
+  assert.equal(v.kind, 'unverified');
+});
+
+test('CREW-3033 remote-only: a not-handed-off ticket logs nothing to check and no warning', async () => {
+  const f = fixture();
+  const h = harness(ticket({ status: 'in_progress' }));
+  const out = await enforceHandoff({ ...input(f, h), dir: join(tmpdir(), 'handoff-no-such-clone'), origin: f.bare });
+  assert.equal(out.kind, 'not-handed-off');
+  assert.deepEqual(h.warns, []);
+});
+
+test('CREW-3033: a missing working directory is reported as the clone being gone, not as a missing git', () => {
+  const gone = join(tmpdir(), 'handoff-no-such-clone');
+  const e = new Error("ENOENT: no such file or directory, posix_spawn 'git'");
+  assert.match(describeGuardError(e, gone), /clone at .* is gone/);
+  assert.match(describeGuardError(e, tmpdir()), /git is not installed/);
+  assert.equal(describeGuardError(new Error('boom'), gone), 'boom');
 });

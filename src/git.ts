@@ -11,6 +11,7 @@ import {
   existsSync, mkdirSync, openSync, closeSync, writeSync, statSync, unlinkSync, readFileSync, writeFileSync,
   readdirSync, rmSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, basename, join } from 'node:path';
 import { forgeDescriptorFor, normalizeForgeHost } from './forges.ts';
 import { remoteOf, execRemoteSync } from './remote-dir.ts';
@@ -147,7 +148,7 @@ export function branchForIssue(
  * one that names them `<tag>-N` must resolve to the same remote branch
  * (CREW-1364).
  */
-function branchCandidates(
+export function branchCandidates(
   issueKey: string,
   templates: { name: string; push?: string },
   render: (t: string) => string,
@@ -426,6 +427,22 @@ export function fetchRemote(cwd: string, remote = 'origin'): boolean {
  * fail the same way a real network/auth problem does, and the two are not
  * the same thing to a person reading the log.
  */
+/**
+ * Every branch head on `url`, short name to sha, asked of the remote itself
+ * from a directory that is always there (CREW-3033: the run's clone may be
+ * gone). `null` is "could not ask".
+ */
+export function lsRemoteHeads(url: string): Map<string, string> | null {
+  const out = gitOk(tmpdir(), ['ls-remote', '--heads', url]);
+  if (out === null) return null;
+  const heads = new Map<string, string>();
+  for (const line of out.split('\n')) {
+    const [sha, ref] = line.split('\t');
+    if (sha && ref?.startsWith('refs/heads/')) heads.set(ref.slice('refs/heads/'.length), sha);
+  }
+  return heads;
+}
+
 export function remoteConfigured(cwd: string, remote = 'origin'): boolean {
   return gitOk(cwd, ['remote', 'get-url', remote]) !== null;
 }

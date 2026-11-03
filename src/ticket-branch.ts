@@ -12,7 +12,7 @@
  */
 import { basename } from 'node:path';
 import {
-  branchForIssue, remoteBranchForIssue, remoteConfigured, fetchRemote, levelRemoteBranch,
+  branchForIssue, branchCandidates, remoteBranchForIssue, remoteConfigured, fetchRemote, levelRemoteBranch,
 } from './git.ts';
 import {
   effectiveBranchTemplate, effectiveWorktreeDirName, renderBranchName, renderWorktreeName, type EffectiveRepoConfig,
@@ -60,6 +60,11 @@ function branchTemplates(cfg: EffectiveRepoConfig, t: BranchLookupTicket) {
  */
 export function pushedBranchForTicket(cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string {
   return branchRenderer(t, role, cfg.branch.lowercase)(branchTemplates(cfg, t).push);
+}
+
+/** The names (or `*` prefix globs) this ticket's branch may carry, best first. */
+export function branchCandidatesForTicket(cfg: EffectiveRepoConfig, t: BranchLookupTicket, role?: string): string[] {
+  return branchCandidates(t.issue_id, branchTemplates(cfg, t), branchRenderer(t, role, cfg.branch.lowercase));
 }
 
 /** The ticket's branch on THIS ship only. What a lane resuming its own worktree wants. */
