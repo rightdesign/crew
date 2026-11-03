@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.134.0] — 2026-11-03
+
+- CREW-3038 A sandboxed run's Agent Log row is posted when the run starts and updated when it ends, so its per-call rows fold under it while it runs.
+
 ## [0.133.2] — 2026-11-03
 
 - CREW-3037 A second ship no longer starts a ticket another ship is engaged on, and a run whose ticket was closed or re-claimed ends without a push.
