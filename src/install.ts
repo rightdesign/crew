@@ -451,7 +451,11 @@ ${userLine}ExecStart=${[...crewInvocation(crewHome), ...subcommandFor(job, 'syst
 WorkingDirectory=${crewHome}
 ${systemdEnvLines(ship)}
 StandardOutput=append:${schedulerLog}
-StandardError=append:${schedulerLog}
+StandardError=append:${schedulerLog}${job === 'passengers' ? `
+# CREW-2994: the sync spawns the relay tunnel (a detached ssh) and exits. The
+# default KillMode=control-group would kill that ssh with the rest of this
+# one-shot unit's cgroup, so no tunnel would ever survive to "connected".
+KillMode=process` : ''}
 `;
 
   // OnActiveSec (not OnBootSec) + no Persistent=true: the first fire is a

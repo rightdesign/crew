@@ -365,6 +365,17 @@ test('unitAbandonsAgents tells a current unit from one installed before CREW-177
   assert.equal(unitAbandonsAgents(planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', false, 'run'), () => 'x'), null);
 });
 
+test('the Linux passengers unit carries KillMode=process so the tunnel it spawns outlives the sync; release does not (CREW-2994)', () => {
+  const pass = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'passengers');
+  const svc = pass.unitContent[pass.unitPaths[0]!]!;
+  assert.match(svc, /^KillMode=process$/m);
+  assert.equal(unitAbandonsAgents(pass, () => svc), true);
+  // A unit written before the change is flagged, which is what doctor reports.
+  assert.equal(unitAbandonsAgents(pass, () => svc.replace('KillMode=process', '')), false);
+  const rel = planInstall(ship({ platform: 'linux' }), '/opt/crew', 'linux', true, 'release');
+  assert.ok(!rel.unitContent[rel.unitPaths[0]!]!.includes('KillMode'));
+});
+
 // --- CREW-2792: headless Linux ------------------------------------------------
 
 test('a non-root systemd user unit enables lingering for its user and says what to do when it cannot (CREW-2792)', () => {

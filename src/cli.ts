@@ -6600,6 +6600,19 @@ switch (command) {
       }
     }
 
+    // CREW-2994: the passengers sync spawns the relay tunnel and exits; without
+    // KillMode=process systemd kills the tunnel with the rest of the unit.
+    if (host === 'linux' && detectSystemd() && cfg.ship.relayHost) {
+      const pPlan = planInstall(cfg.ship, CREW_HOME, host, true, 'passengers', installContext());
+      const keeps = unitAbandonsAgents(pPlan, (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } });
+      if (keeps === false) {
+        process.stdout.write(
+          'passengers unit:  WARN the installed unit lacks KillMode=process, so systemd kills the relay tunnel each time the sync exits ' +
+            '(tunnel never reaches connected); run `crew install`\n',
+        );
+      }
+    }
+
     // CREW-2943: a Linux ship whose daemon unit is installed but inactive
     // (a clean exit under an older Restart=on-failure unit) sits idle.
     if (host === 'linux' && detectSystemd()) {

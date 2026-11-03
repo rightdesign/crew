@@ -501,7 +501,7 @@ function readAllPersistedWorkspaceIds(stateDir: string): string[] {
 export const TUNNEL_REJECTED_KEY = 'tunnel_rejected';
 
 export function tunnelRejectedMessage(workspaceId: string, quickExits: number): string {
-  return `the relay tunnel for workspace ${workspaceId} exited before settling on ${quickExits} consecutive cycles, which is how a refused claim looks (the relay logs "slug already owned by another workspace/ssh key") — rotate the slug with \`crew rotate-passenger-url\` or check the relay journal`;
+  return `the relay tunnel for workspace ${workspaceId} exited before settling on ${quickExits} consecutive cycles, which is how a refused claim looks (the relay logs "slug already owned by another workspace/ssh key") — rotate the slug with \`crew rotate-passenger-url\` or check the relay journal. If the relay logged no rejection, a Linux passengers unit without KillMode=process kills the tunnel when the sync exits (CREW-2994): run \`crew install\`, and see \`crew doctor\``;
 }
 
 /** Workspaces whose persisted tunnel has been refused often enough to report. */
