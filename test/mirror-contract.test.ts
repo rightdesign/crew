@@ -13,6 +13,8 @@ const repo = { host: 'github.com', path: 'o/r' };
 function cacheWith(files: Record<string, string>): { cache: SandboxCache; asked: string[] } {
   const asked: string[] = [];
   const exec: CacheExec = async (_bin, args) => {
+    // The volume is already there and labeled (CREW-3013's ensureVolume reads both labels).
+    if (args[0] === 'volume') return { stdout: 'true|w\n', stderr: '' };
     const path = args[args.length - 1]!;
     asked.push(path);
     if (path in files) return { stdout: files[path]!, stderr: '' };

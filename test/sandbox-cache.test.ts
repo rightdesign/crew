@@ -41,13 +41,21 @@ function rig() {
   commit('one');
   const calls: string[][] = [];
   let volumeExists = false;
+  let volumeLabels: Record<string, string> = {};
   const failRun = new Set<string>();
   const exec: CacheExec = async (_bin, args, o) => {
     calls.push(args);
     if (args[0] === 'volume') {
       if (args[1] === 'inspect' && !volumeExists) throw new Error('no such volume');
-      if (args[1] === 'create') volumeExists = true;
-      if (args[1] === 'rm') volumeExists = false;
+      if (args[1] === 'inspect' && args.includes('--format')) {
+        const keys = [...args[args.indexOf('--format') + 1]!.matchAll(/index \.Labels "([^"]+)"/g)].map((m) => m[1]!);
+        return { stdout: keys.map((k) => volumeLabels[k] ?? '<no value>').join('|') + '\n', stderr: '' };
+      }
+      if (args[1] === 'create') {
+        volumeExists = true;
+        volumeLabels = Object.fromEntries(args.flatMap((a, j) => (args[j - 1] === '--label' ? [a.split('=') as [string, string]] : [])));
+      }
+      if (args[1] === 'rm') { volumeExists = false; volumeLabels = {}; }
       return { stdout: '', stderr: '' };
     }
     const i = args.indexOf('-c');
@@ -67,7 +75,9 @@ function rig() {
     });
     return { stdout: out, stderr: '' };
   };
-  return { root, volume, remote, commit, calls, exec, failRun, cache: new SandboxCache(SETTINGS, exec), mirror: join(volume, mirrorRelPath(REPO)) };
+  // Docker's implicit create on first `-v` use: the volume exists, with no labels.
+  const implicitCreate = () => { volumeExists = true; volumeLabels = {}; };
+  return { root, volume, remote, commit, calls, exec, failRun, implicitCreate, cache: new SandboxCache(SETTINGS, exec), mirror: join(volume, mirrorRelPath(REPO)) };
 }
 
 test('parseRemote reads https, ssh:// and scp-style origins; mirrors are keyed by host and path', () => {
@@ -444,4 +454,27 @@ test('describe keeps git\'s first fatal line when the tail is only boilerplate',
   assert.ok(out.startsWith('fatal: detected dubious ownership'), out);
   assert.ok(out.endsWith('and the repository exists.'));
   assert.equal(describeExec({ stderr: 'a\nb' }), 'a / b');
+});
+
+test('CREW-3013: a contract read on a fresh ship leaves a labeled volume behind, not docker\'s implicit unlabeled one', async () => {
+  const fresh = rig();
+  await assert.rejects(fresh.cache.showFile(REPO, 'main', 'crew.yaml'));
+  const create = fresh.calls.findIndex((a) => a[0] === 'volume' && a[1] === 'create');
+  const firstRun = fresh.calls.findIndex((a) => a[0] === 'run');
+  assert.ok(create >= 0 && create < firstRun, 'the labeled create comes before the first mount');
+  assert.ok(fresh.calls[create]!.join(' ').includes(OPENSHELL_ATTACHABLE_LABEL));
+  assert.deepEqual(await fresh.cache.volumeLabels(), { attachable: 'true', workspace: 'ws' });
+});
+
+test('CREW-3013: an empty unlabeled volume is recreated with labels; one holding data is refused with the reset remedy', async () => {
+  const empty = rig();
+  empty.implicitCreate();
+  assert.equal(await empty.cache.ensureVolume(), true);
+  assert.equal(empty.cache.labelsOk((await empty.cache.volumeLabels())!), true);
+
+  const full = rig();
+  full.implicitCreate();
+  writeFileSync(join(full.volume, 'something'), 'x');
+  await assert.rejects(full.cache.ensureVolume(), /carries no OpenShell labels.*crew sandbox cache --reset/);
+  assert.equal(full.calls.some((a) => a[0] === 'volume' && a[1] === 'rm'), false, 'data is never wiped');
 });

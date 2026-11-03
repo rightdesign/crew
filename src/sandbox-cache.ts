@@ -43,6 +43,7 @@ export type CacheExec = (bin: string, args: string[], o?: { env?: NodeJS.Process
 const realExec: CacheExec = (bin, args, o) => execFileP(bin, args, { env: o?.env ?? process.env, maxBuffer: 16 * 1024 * 1024 });
 
 export const OPENSHELL_ATTACHABLE_LABEL = 'openshell.ai/sandbox-attachable=true';
+const OPENSHELL_ATTACHABLE_KEY = 'openshell.ai/sandbox-attachable';
 export const OPENSHELL_WORKSPACE_LABEL = 'openshell.ai/sandbox-attachable-workspace';
 
 /** Where the volume is mounted in a helper container (the sandbox mount point is `SandboxConfig.mirrorDir`). */
@@ -279,14 +280,53 @@ export class SandboxCache {
 
   private engine(args: string[], env?: NodeJS.ProcessEnv) { return this.exec(this.s.engine, args, { env }); }
 
-  /** Creates the volume with the labels OpenShell and `crew deprovision` look for, if it is not there. */
+  /**
+   * Makes sure the volume exists WITH the labels OpenShell and `crew deprovision` look for (CREW-3013).
+   * Every mount of the volume by name goes through here first (`helper`): docker creates a named volume
+   * unlabeled on first `-v` use, and the gateway then refuses to attach it to any sandbox for the life
+   * of the host. A volume that exists without the required labels cannot be relabeled in place, so it is
+   * recreated when it holds nothing, and otherwise refused with the reset remedy (never silently wiped).
+   * Returns true when it created the volume.
+   */
   async ensureVolume(): Promise<boolean> {
-    try { await this.engine(['volume', 'inspect', this.s.volume]); return false; } catch { /* not there yet */ }
+    const labels = await this.volumeLabels();
+    if (labels) {
+      if (this.labelsOk(labels)) return false;
+      if (!(await this.volumeEmpty())) throw new Error(`${this.labelProblem(labels)}; run \`crew sandbox cache --reset\` to recreate it`);
+      await this.engine(['volume', 'rm', '--force', this.s.volume]);
+    }
     await this.engine([
       'volume', 'create', '--label', OPENSHELL_ATTACHABLE_LABEL, '--label', `${OPENSHELL_WORKSPACE_LABEL}=${this.s.workspace}`,
       '--label', DOCKER_LABEL_OWNER, '--label', DOCKER_LABEL_CACHE, this.s.volume,
     ]);
     return true;
+  }
+
+  /** Both OpenShell labels as the existing volume carries them (null when unset), or null when the volume is absent. */
+  async volumeLabels(): Promise<{ attachable: string | null; workspace: string | null } | null> {
+    let stdout: string;
+    try {
+      ({ stdout } = await this.engine(['volume', 'inspect', '--format', `{{index .Labels "${OPENSHELL_ATTACHABLE_KEY}"}}|{{index .Labels "${OPENSHELL_WORKSPACE_LABEL}"}}`, this.s.volume]));
+    } catch { return null; }
+    const [a, w] = stdout.trim().split('|');
+    const val = (v: string | undefined) => (v && v !== '<no value>' ? v : null);
+    return { attachable: val(a), workspace: val(w) };
+  }
+
+  /** True when the labels are what the gateway needs: attachable, and for the workspace sandboxes are created in. */
+  labelsOk(l: { attachable: string | null; workspace: string | null }): boolean {
+    return l.attachable === 'true' && l.workspace === this.s.workspace;
+  }
+
+  /** Why the gateway would refuse this volume (CREW-3013). */
+  labelProblem(l: { attachable: string | null; workspace: string | null }): string {
+    const what = l.attachable === null && l.workspace === null ? 'carries no OpenShell labels' : l.attachable !== 'true' ? 'is not labeled sandbox-attachable' : `is labeled for OpenShell workspace "${l.workspace}" but sandboxes are created in "${this.s.workspace}"`;
+    return `the cache volume ${this.s.volume} ${what}, so the gateway refuses to mount it`;
+  }
+
+  private async volumeEmpty(): Promise<boolean> {
+    const { stdout } = await this.engine(['run', '--rm', '--label', DOCKER_LABEL_OWNER, '-v', `${this.s.volume}:${VOLUME_ROOT}`, '--entrypoint', 'sh', this.s.helperImage, '-c', `ls -A ${VOLUME_ROOT} | head -n 1`]);
+    return stdout.trim() === '';
   }
 
   /** The workspace label the existing volume carries, or null when the volume is absent or unlabeled. A volume's labels cannot be changed in place. */
@@ -298,9 +338,10 @@ export class SandboxCache {
     } catch { return null; }
   }
 
-  private helper(
+  private async helper(
     image: string, script: string, args: string[], env: Record<string, string> = {}, extra: string[] = [],
   ): Promise<{ stdout: string; stderr: string }> {
+    await this.ensureVolume();
     // `-e NAME` takes the value from the child's environment, so a token never reaches argv.
     const flags = Object.keys(env).flatMap((k) => ['-e', k]);
     return this.engine(['run', '--rm', '--label', DOCKER_LABEL_OWNER, '-v', `${this.s.volume}:${VOLUME_ROOT}`, ...extra, ...flags, '--entrypoint', 'sh', image, '-c', script, 'sh', ...args], { ...process.env, ...env });
