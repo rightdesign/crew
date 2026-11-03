@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.135.0] — 2026-11-03
+
+- CREW-3019 Skill files can declare a trigger phrase and a persona, which skill sync writes to the Agent Skills row.
+- CREW-3020 The Grill-Me skill handles group threads: only the person who started the interview decides promotion, and the Map link is offered with the activation question.
+
 ## [0.134.0] — 2026-11-03
 
 - CREW-3038 A sandboxed run's Agent Log row is posted when the run starts and updated when it ends, so its per-call rows fold under it while it runs.
