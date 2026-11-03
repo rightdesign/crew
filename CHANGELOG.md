@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.133.0] — 2026-11-03
+
+- CREW-3021 A sandbox build cut short by a daemon reload restarts on the next pass, a failure with an empty log is retried at once, and doctor tells a stale image from a missing one.
+- CREW-3034 Sandbox ships remove docker containers that belong to no live run and count them in attention, report disk use at 85% and stop starting runs and image builds at 95%, and label every sandbox with its role, ticket and run.
+
 ## [0.132.2] — 2026-11-03
 
 - CREW-3033 The hand-off guard on a sandbox ship verifies the pushed branch against the remote, and no longer warns "could not check the hand-off" after a run whose clone was deleted with its sandbox.
