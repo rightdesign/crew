@@ -34,7 +34,7 @@ import { intelRelDir, parseRemote } from './sandbox-cache.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
 import { BeforeFirstEditTracker } from './tool-classify.ts';
-import { reportAgentRun, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { reportAgentRun, startAgentRunRow, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
@@ -765,6 +765,8 @@ export interface RunSidecar {
   promptVersion?: string;
   promptSha: string;
   workspaceRunId?: string;
+  /** CREW-3038: the Agent Log row posted at run start; the finish path updates it rather than posting another. */
+  agentLogRowId?: string;
 }
 
 /** The sidecar path for a stream. */
@@ -801,7 +803,7 @@ export function runIsAlive(sc: Pick<RunSidecar, 'pid' | 'spawnedAt'>): boolean {
 }
 
 /** Everything the finish path needs from a plan, so a reattached run can be reported without one. */
-type RunIdentity = Pick<RunSidecar, 'role' | 'route' | 'ticket' | 'model' | 'toolchain' | 'harness' | 'provider' | 'eventsPath' | 'agentLog' | 'promptVersion' | 'promptSha' | 'workspaceRunId'> & {
+type RunIdentity = Pick<RunSidecar, 'role' | 'route' | 'ticket' | 'model' | 'toolchain' | 'harness' | 'provider' | 'eventsPath' | 'agentLog' | 'promptVersion' | 'promptSha' | 'workspaceRunId' | 'agentLogRowId'> & {
   streamPath: string;
 };
 
@@ -1189,6 +1191,7 @@ async function finishRun(
         model: id.model,
         // CREW-2980: under `auth: workspace` the endpoint's rows are the accounting; the run row
         // keeps turns only, and `reportAgentRun` sums those rows into the ticket counters.
+        ...(id.agentLogRowId ? { rowId: id.agentLogRowId } : {}),
         ...(id.workspaceRunId ? { runId: id.workspaceRunId } : {
           tokensIn: result?.inputTokens,
           tokensOut: result?.outputTokens,
@@ -1332,6 +1335,23 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
       try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify(sidecar)); } catch { /* a run nobody can find again is no worse than before */ }
     }
 
+    // CREW-3038: the run's Agent Log row goes up now, not at the end, so the run's per-call
+    // inference rows fold under it while it is still going. Only a workspace-auth run has
+    // such rows (they join on its run id). The sidecar is rewritten with the row id so a
+    // daemon that restarts mid-run updates this row rather than posting a second.
+    const startedRow: Promise<void> = plan.workspaceRunId && plan.agentLog
+      ? startAgentRunRow(plan.agentLog, {
+          runId: plan.workspaceRunId, ticketReference: plan.ticket ?? undefined, startedAt,
+          model: plan.model, harness: id.harness, provider: id.provider,
+          promptVersion: plan.promptVersion, promptSha: plan.promptSha,
+        }).then((rowId) => {
+          if (!rowId) return;
+          id.agentLogRowId = rowId;
+          const sc = readRunSidecar(plan.streamPath);
+          if (sc) { try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify({ ...sc, agentLogRowId: rowId })); } catch { /* the row still gets its update from this process */ } }
+        })
+      : Promise.resolve();
+
     const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
     // Written at spawn and rewritten on claim and on close, so an interrupted
     // run (no `close`) still leaves a sidecar naming the ticket it was on (CREW-1776).
@@ -1374,6 +1394,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
       if (limitTimer && !killed && !obs.sawResult && msUntilDeadline(deadline)! <= 0) {
         killed = { limitMinutes: plan.maxRunMinutes ?? 0, elapsedMs: Date.now() - Date.parse(spawnedAt) };
       }
+      await startedRow;
       const { ms, handoffPending } = await finishRun(
         id, obs, emit, startedAt, { code: code ?? 1, ...(killed ? { interrupted: WALL_CLOCK_REASON } : {}) },
         plan.agentLog?.apiKey, hintMoved,

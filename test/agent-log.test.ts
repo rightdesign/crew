@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reportAgentRun, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
+import { reportAgentRun, startAgentRunRow, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
 
 /** Wires a fetch mock keyed by exact pathname+method, ignoring host/baseUrl — same shape as connect.test.ts's mockFetch. */
 function mockFetch(routes: Record<string, unknown>) {
@@ -399,4 +399,60 @@ test('a workspace run with no inference rows falls back to the harness totals fo
 test('sumInferenceRows adds each figure once and tolerates missing values', () => {
   assert.deepEqual(sumInferenceRows([{ output_tokens: 5, cost_usd: 0.5 }, { output_tokens: null }, {}]),
     { calls: 3, tokensIn: 0, tokensOut: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 });
+});
+
+test('startAgentRunRow posts the run row as running, with its run id and no finish time (CREW-3038)', async (t) => {
+  const { restore, calls } = mockFetch({ 'POST /api/workspaces/ws-1/agents/log': { id: 'log-s' } });
+  t.after(restore);
+  const id = await startAgentRunRow(target, {
+    runId: 'run-1', ticketReference: 'CREW-3038', startedAt: '2026-11-03T08:00:00.000Z', model: 'm', harness: 'claude', provider: 'anthropic',
+  });
+  assert.equal(id, 'log-s');
+  const body = calls[0]!.body as Record<string, unknown>;
+  assert.equal(body.outcome, 'running');
+  assert.equal(body.runId, 'run-1');
+  assert.equal(body.client, 'crew');
+  assert.equal('finishedAt' in body, false);
+});
+
+test('startAgentRunRow returns undefined when the tracker will not take the row, never throwing', async (t) => {
+  const { restore } = mockFetch({});
+  t.after(restore);
+  assert.equal(await startAgentRunRow(target, { runId: 'run-1', startedAt: '2026-11-03T08:00:00.000Z' }), undefined);
+});
+
+test('a run that started its row updates that row at the end instead of posting a second (CREW-3038)', async (t) => {
+  resetCounterColumnCache();
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agent_log': { id: 'al-1' },
+    'GET /api/data-models/al-1': { fields: ['outcome', 'finished_at', 'num_turns', 'ticket_reference'].map((columnName) => ({ columnName })) },
+    'PATCH /api/data-models/al-1/records/log-s': {},
+    'POST /api/workspaces/ws-1/agents/log/log-s/cycles': { id: 'c' },
+  });
+  t.after(restore);
+  const out = await reportAgentRun(target, {
+    outcome: 'success', startedAt: '2026-11-03T08:00:00.000Z', finishedAt: '2026-11-03T08:05:00.000Z', numTurns: 12,
+    ticketReference: 'CREW-3038', runId: 'run-1', rowId: 'log-s',
+    cycles: [{ cycleIndex: 0, occurredAt: '2026-11-03T08:01:00.000Z', thinking: 'x' }],
+  });
+  assert.equal(out.agentLogId, 'log-s');
+  assert.equal(calls.some((c) => c.key === 'POST /api/workspaces/ws-1/agents/log'), false);
+  const patch = calls.find((c) => c.key.startsWith('PATCH'))!;
+  assert.deepEqual(patch.body, { ticket_reference: 'CREW-3038', outcome: 'success', finished_at: '2026-11-03T08:05:00.000Z', num_turns: 12 });
+  assert.ok(calls.some((c) => c.key === 'POST /api/workspaces/ws-1/agents/log/log-s/cycles'));
+});
+
+test('when the started row is gone (404) the end of the run posts the row whole', async (t) => {
+  resetCounterColumnCache();
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agent_log': { id: 'al-1' },
+    'GET /api/data-models/al-1': { fields: [{ columnName: 'outcome' }] },
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-new' },
+  });
+  t.after(restore);
+  const out = await reportAgentRun(target, {
+    outcome: 'success', startedAt: '2026-11-03T08:00:00.000Z', finishedAt: '2026-11-03T08:05:00.000Z', rowId: 'log-gone', cycles: [],
+  });
+  assert.equal(out.agentLogId, 'log-new');
+  assert.ok(calls.some((c) => c.key === 'PATCH /api/data-models/al-1/records/log-gone'));
 });

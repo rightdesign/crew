@@ -125,6 +125,11 @@ export interface AgentRunReport {
    */
   runId?: string;
   /**
+   * CREW-3038: the Agent Log row `startAgentRunRow` posted when the run began. When set, the end of
+   * the run updates that row (outcome, finish time, turns, ticket) instead of posting a second one.
+   */
+  rowId?: string;
+  /**
    * The harness's own totals for that run. Used for the ticket counters only when the endpoint
    * wrote no inference row for the run (an older server that predates the Run Id column), so a
    * run's spend is never lost; never written to the run row.
@@ -378,6 +383,97 @@ async function post<T>(target: AgentLogTarget, path: string, body: unknown): Pro
   return (await res.json()) as T;
 }
 
+/** What `startAgentRunRow` writes: the run row as it reads while the run is still going. */
+export interface AgentRunStart {
+  runId: string;
+  ticketReference?: string;
+  startedAt: string;
+  model?: string;
+  harness?: string;
+  provider?: string;
+  promptVersion?: string;
+  promptSha?: string;
+}
+
+/** The outcome of a run row that has started and not yet been updated (CREW-3038). */
+export const RUNNING_OUTCOME = 'running';
+
+/**
+ * Posts the run's Agent Log row when the run begins (CREW-3038), outcome `running` and no finish
+ * time, so the per-call inference rows (joined by `run_id`, and rolled into the row's totals by the
+ * platform as they arrive) fold under it from the first call rather than standing alone until the
+ * run ends. Returns the row id, or undefined when it could not be posted: best effort, because the
+ * end-of-run report still posts the whole row when there is no id to update.
+ */
+export async function startAgentRunRow(target: AgentLogTarget, s: AgentRunStart): Promise<string | undefined> {
+  try {
+    const entry = await post<{ id: string }>(target, '/agents/log', {
+      agentId: target.agentId,
+      ticketReference: s.ticketReference,
+      outcome: RUNNING_OUTCOME,
+      startedAt: s.startedAt,
+      source: 'client',
+      client: 'crew',
+      model: s.model,
+      promptVersion: s.promptVersion,
+      promptSha: s.promptSha,
+      runId: s.runId,
+      harness: s.harness,
+      provider: s.provider,
+    });
+    return entry.id;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Agent Log columns the end-of-run update of a started row writes (the rest were set at the start). */
+function finishedRowBody(run: AgentRunReport, workItem: { workItemTable?: string; workItemRecordId?: string }): Record<string, unknown> {
+  const values: Record<string, unknown> = {
+    ticket_reference: run.ticketReference,
+    outcome: run.outcome,
+    finished_at: run.finishedAt,
+    model: run.model,
+    input_tokens: run.tokensIn,
+    output_tokens: run.tokensOut,
+    cache_read_tokens: run.cacheReadTokens,
+    cache_write_tokens: run.cacheWriteTokens,
+    cost_usd: run.costUsd,
+    num_turns: run.numTurns,
+    prefix_tokens: run.prefixTokens,
+    prompt_version: run.promptVersion,
+    prompt_sha: run.promptSha,
+    harness: run.harness,
+    provider: run.provider,
+    work_item_table: workItem.workItemTable,
+    work_item_record_id: workItem.workItemRecordId,
+  };
+  return Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined));
+}
+
+/**
+ * Updates the row `startAgentRunRow` posted. Only columns the table has are sent. A 404 (the row
+ * was deleted) returns false so the caller posts the row whole; an unanswered request is the same
+ * "nothing written, safe to send again" failure as a failed post.
+ */
+async function updateStartedRow(target: AgentLogTarget, rowId: string, body: Record<string, unknown>): Promise<boolean> {
+  try {
+    const model = await request<{ id: string }>(
+      target, 'GET', `/data-models/agent_log?workspaceId=${encodeURIComponent(target.workspaceId)}`,
+    );
+    const have = await columnsOf(target, model.id);
+    const values = Object.fromEntries(Object.entries(body).filter(([column]) => have.has(column)));
+    await request(target, 'PATCH', `/data-models/${model.id}/records/${rowId}`, values);
+    return true;
+  } catch (e) {
+    if (!(e instanceof AgentLogHttpError)) throw new AgentLogUnreachableError((e as Error).message);
+    if (e.status === 404) return false;
+    if (e.status >= 500) throw new AgentLogUnreachableError(e.message);
+    e.row = true;
+    throw e;
+  }
+}
+
 /**
  * Creates the Agent Log row for this run, then flushes its buffered cycles
  * against the new row's id, in order. Cycles are posted sequentially rather
@@ -418,24 +514,27 @@ export async function reportAgentRun(
   const workItem = target.tickets && ticketRecordId
     ? { workItemTable: target.tickets.issuesModelId, workItemRecordId: ticketRecordId }
     : {};
-  let entry: { id: string };
-  try {
-    entry = await post<{ id: string }>(target, '/agents/log', { ...body, ...(runId ? { runId } : {}), ...workItem, harness: run.harness, provider: run.provider });
-  } catch (e) {
-    if (!(e instanceof AgentLogHttpError)) throw new AgentLogUnreachableError((e as Error).message);
-    if (e.status >= 500) throw new AgentLogUnreachableError(e.message);
-    // A server that predates the identity or work-item fields validates them
-    // away as unknown properties with a 400; the run still deserves its row.
-    if (e.status !== 400 || (!run.harness && !run.provider && !ticketRecordId && !runId)) { e.row = true; throw e; }
+  let entry: { id: string } | undefined;
+  if (run.rowId && (await updateStartedRow(target, run.rowId, finishedRowBody(run, workItem)))) entry = { id: run.rowId };
+  if (!entry) {
     try {
-      entry = await post<{ id: string }>(target, '/agents/log', legacyBody);
-    } catch (e2) {
-      if (e2 instanceof AgentLogHttpError && e2.status < 500) e2.row = true;
-      throw e2;
+      entry = await post<{ id: string }>(target, '/agents/log', { ...body, ...(runId ? { runId } : {}), ...workItem, harness: run.harness, provider: run.provider });
+    } catch (e) {
+      if (!(e instanceof AgentLogHttpError)) throw new AgentLogUnreachableError((e as Error).message);
+      if (e.status >= 500) throw new AgentLogUnreachableError(e.message);
+      // A server that predates the identity or work-item fields validates them
+      // away as unknown properties with a 400; the run still deserves its row.
+      if (e.status !== 400 || (!run.harness && !run.provider && !ticketRecordId && !runId)) { e.row = true; throw e; }
+      try {
+        entry = await post<{ id: string }>(target, '/agents/log', legacyBody);
+      } catch (e2) {
+        if (e2 instanceof AgentLogHttpError && e2.status < 500) e2.row = true;
+        throw e2;
+      }
     }
   }
   for (const cycle of run.cycles) {
-    await post(target, `/agents/log/${entry.id}/cycles`, {
+    await post(target, `/agents/log/${entry!.id}/cycles`, {
       cycleIndex: cycle.cycleIndex,
       occurredAt: cycle.occurredAt,
       thinking: cycle.thinking,
