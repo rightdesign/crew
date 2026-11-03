@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.130.6] — 2026-11-03
+
+- CREW-2994 Fix Linux ships never keeping a relay tunnel: the passengers systemd unit now sets KillMode=process (run `crew install` to update), and `crew doctor` warns when it does not.
+- CREW-3006 The daemon's select step also skips the host checkout on a sandbox ship.
+
 ## [0.130.5] — 2026-11-03
 
 - CREW-2998 Sandboxed runs under workspace auth start again: the ticket and run headers travel in the settings payload instead of a multi-line environment variable.
