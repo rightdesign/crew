@@ -25,7 +25,7 @@ import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefre
 import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -36,6 +36,9 @@ export interface ShipAttentionItem {
   since: string;
   /** Present on `sandbox_cache` items (CREW-2961): when the refresh last failed, which moves on every failing pass while `since` stays. */
   lastFailedAt?: string;
+  /** Present on `sandbox_leak` items (CREW-3034): containers removed so far, and when the latest was. */
+  count?: number;
+  lastReapedAt?: string;
   /** Present on `worktree_held` items: the refused worktree, for `crew status --json`. */
   held?: HeldWorktree;
 }

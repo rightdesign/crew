@@ -158,6 +158,24 @@ export function sandboxName(plan: Pick<AgentPlan, 'route' | 'ticket'> & { role: 
   return `crew-${tag}${now.toString(36).slice(-8).padStart(8, '0')}`;
 }
 
+/** Characters an OpenShell label value accepts; anything else becomes `_`, and the value is capped at 63. */
+function labelValue(v: string): string {
+  return v.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 63);
+}
+
+/**
+ * Labels naming who a sandbox was created for (CREW-3034), so a leaked one can
+ * be attributed from `docker inspect` alone. A role with no ticket (release)
+ * carries no ticket label.
+ */
+export function sandboxLabels(o: { role: string; ticket?: string | null; run: string }): string[] {
+  return [
+    `crew.role=${labelValue(o.role)}`,
+    ...(o.ticket ? [`crew.ticket=${labelValue(o.ticket)}`] : []),
+    `crew.run=${labelValue(o.run)}`,
+  ];
+}
+
 export class SandboxRunner implements Runner {
   readonly kind = 'sandbox' as const;
   private readonly cfg: SandboxConfig;
@@ -215,6 +233,7 @@ export class SandboxRunner implements Runner {
 
     const create = ['sandbox', 'create', '--name', name, '--detach'];
     if (policyFile) create.push('--policy', policyFile);
+    for (const l of sandboxLabels({ role: plan.role, ticket: plan.ticket, run: basename(plan.streamPath).replace(/\.jsonl$/, '') })) create.push('--label', l);
     const image = cfg.image ?? plan.sandboxImage;
     if (image) create.push('--from', image);
     if (cfg.cacheVolume) {

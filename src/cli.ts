@@ -96,6 +96,7 @@ import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readFo
 import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, readMirrorWarmFiles, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport, repoContractFor } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
 import { sandboxImageForRun } from './sandbox-image.ts';
+import { makeSandboxHygiene, diskFullStop } from './sandbox-hygiene.ts';
 import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo, type RefreshOutcome } from './sandbox-cache.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
@@ -3263,6 +3264,7 @@ switch (command) {
     });
     if (controlServer) emit.emit(`control API listening on ${controlServer.path}`);
     const inFlight = new Set<Promise<void>>();
+    const sandboxHygienePass = cfg.ship.runner === 'sandbox' ? makeSandboxHygiene({ state, emit, ship: cfg.ship }) : undefined;
     // CREW-2794: sandbox images build in the background between passes, one at
     // a time, never on the cycle path. A build still running skips the tick.
     let sandboxBuilding = false;
@@ -3274,6 +3276,7 @@ switch (command) {
       runPass: () => runOnePass({
         inFlight,
         sandboxCache: sandboxCachePass,
+        sandboxHygiene: sandboxHygienePass,
         route, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
         roleConcurrency: cfg.ship.roleConcurrency,
@@ -3306,7 +3309,8 @@ switch (command) {
       ),
       checkStale: makeStaleChecker(watchPaths, { reloadSentinel: reloadSentinelFor(cfg.ship.stateDir) }),
       onPass: (result) => {
-        if (!sandboxBuilding) {
+        // CREW-3034: a full docker host builds nothing.
+        if (!sandboxBuilding && !diskFullStop(state)) {
           sandboxBuilding = true;
           void sandboxReposOf(cfg.routes.filter((r) => r.enabled))
             .then(withShipSandbox)

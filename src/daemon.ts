@@ -595,6 +595,8 @@ export interface RunOnePassOptions {
    * previous mirror state.
    */
   sandboxCache?: () => Promise<unknown>;
+  /** CREW-3034: reaps sandbox containers no live run owns and checks the docker host's disk; run before the poll so a disk stop is read this pass. */
+  sandboxHygiene?: () => Promise<void>;
 }
 
 /**
@@ -663,6 +665,10 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
     await (o.reconcile ?? reconcileForRoute)(ctx, o);
   } catch (e) {
     emit.warn(`could not reconcile earlier agent runs: ${(e as Error).message}`, { step: 'agent' });
+  }
+
+  if (o.sandboxHygiene) {
+    try { await o.sandboxHygiene(); } catch (e) { emit.warn(`sandbox hygiene failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
   const decision = await decide(ctx);

@@ -131,3 +131,11 @@ verifies it against the checksum pinned beside the version, and sets
 rebuilds the crew layer and so every route's image; an unchanged pin reuses the
 tags. `crew doctor` and `crew sandbox images` show the Claude Code version baked
 into each image.
+
+## Leaked containers and a full disk
+
+On a sandbox ship the daemon checks the docker host on every pass (at most every 30 seconds).
+
+- **Reaper.** Containers named `openshell-<workspace>--…crew-<14 characters>` that no live run sidecar and no `openshell sandbox list` entry names, and that are more than five minutes old, are removed with `docker rm -f`. Each removal is logged as `sandbox_reaped` with the container name and age, and the Ships row's attention shows a `sandbox_leak` item with the running count; it clears after an hour with nothing reaped. If the gateway cannot be listed, nothing is removed.
+- **Disk watermark.** Used space on the root filesystem and the docker data root is read each pass. At 85% a `disk_pressure` item is raised. At 95% crew first runs the reaper and `docker builder prune -f`; if the disk is still at 95% it raises `disk_full`, and no agent run or sandbox image build starts until usage is below 90%.
+- **Labels.** Every sandbox is created with `crew.role`, `crew.ticket` (absent for a release) and `crew.run` labels, so a leaked one can be attributed from the OpenShell sandbox record or `docker inspect`.

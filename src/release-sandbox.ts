@@ -27,7 +27,7 @@ import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import type { Emitter } from './events.ts';
 import { registerRemoteDir, unregisterRemoteDir } from './remote-dir.ts';
-import { DEFAULT_SANDBOX_CONFIG, sandboxName, shQuote, type SandboxConfig } from './runner.ts';
+import { DEFAULT_SANDBOX_CONFIG, sandboxLabels, sandboxName, shQuote, type SandboxConfig } from './runner.ts';
 import { containerEngineStubScript, SANDBOX_STUB_DIR } from './sandbox-brief.ts';
 import { sandboxEnvExports } from './sandbox-image.ts';
 import { describe as describeError, mirrorRelPath, type CacheRepo } from './sandbox-cache.ts';
@@ -159,6 +159,7 @@ export async function openReleaseSandbox(o: ReleaseSandboxOptions): Promise<Rele
   }
   const create = ['sandbox', 'create', '--name', name, '--detach'];
   if (policyFile) create.push('--policy', policyFile);
+  for (const l of sandboxLabels({ role: 'release', run: name })) create.push('--label', l);
   const image = cfg.image ?? o.image;
   if (image) create.push('--from', image);
   if (cfg.cacheVolume) {

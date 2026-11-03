@@ -28,6 +28,7 @@ import { buildingDigest, DIRECTION_EVENT_TYPES, STATUS_EVENT_TYPES, qaDigest, ty
 import { loadRepoConfigTolerant, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
 import { checkCrewFloor } from './crew-floor.ts';
+import { diskFullStop } from './sandbox-hygiene.ts';
 import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
@@ -294,8 +295,10 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // heartbeat and sweeps still run, and the item clears the cycle it is met.
   const floorStop = await checkCrewFloor({ state, emit, route, ship });
   const itemStop = repoStopFor(openShipAttention(state), route);
+  // CREW-3034: a full docker host stops every repo, not one.
+  const diskStop = diskFullStop(state);
   const selectionInput = {
-    repoStop: floorStop ? () => floorStop : itemStop,
+    repoStop: floorStop ? () => floorStop : diskStop ? () => diskStop : itemStop,
     workModes,
     tickets, comments, watermark, blocked,
     holds,
