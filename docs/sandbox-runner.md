@@ -105,7 +105,10 @@ intel/<forge host>/<remote path>/                        symbol cache (`cache/`)
   cache. This is what turns minutes into seconds on a small instance class.
 - **`crew sandbox cache`** lists the mirrors with their last refresh. `--prune` drops mirrors (and their
   dependency trees) for repositories the ship no longer serves; `--reset` recreates the volume, and the next
-  pass refreshes every mirror again. `--json` prints the list.
+  pass refreshes every mirror again. `--refresh` runs the daemon's cache pass once in the foreground, creating
+  every served repository's missing mirror and printing each outcome (exit 1 if any failed). `--json` prints the list.
+  A fresh ship's daemon does the same at start, before it reads any contract from a mirror, and does not exit
+  over a repository whose mirror is merely absent.
 
 ## The ship's image (CREW-2956)
 

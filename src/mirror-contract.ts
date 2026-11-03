@@ -92,3 +92,27 @@ export function firstReport(key: string): boolean {
 export function resetReported(): void {
   reported.clear();
 }
+
+/**
+ * Whether a route is servable on this ship (CREW-2993). `platforms` are the platform requirements of the
+ * repositories whose contract could be read; `unreadable` names the ones that could not. With
+ * `tolerateUnmirrored`, an unreadable repository that merely has no mirror yet counts as servable: its
+ * contract cannot be read until the cache pass creates the mirror, and it says nothing about its platform.
+ */
+export function judgeServable<P>(o: {
+  platforms: P[]; satisfied: (platform: P) => boolean;
+  unreadable: string[]; unmirrored: ReadonlySet<string>; tolerateUnmirrored: boolean;
+}): boolean {
+  if (o.platforms.some(o.satisfied)) return true;
+  return o.tolerateUnmirrored && o.unreadable.some((n) => o.unmirrored.has(n));
+}
+
+/** Why a route was refused: each readable repository's requirement, then each unreadable one, never an empty clause. */
+export function explainRefusal(readable: Array<{ name: string; platform: string }>, unreadable: Array<{ repo: string; detail: string }>): string {
+  const parts = [
+    ...readable.map((r) => `${r.name} requires ${r.platform}`),
+    ...unreadable.map((e) => `${e.repo}'s contract could not be read (${e.detail.split('\n')[0]})`),
+  ];
+  if (readable.length === 0) parts.unshift('no repository contract could be read');
+  return parts.join(', ');
+}

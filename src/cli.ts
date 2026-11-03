@@ -92,10 +92,10 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
-import { lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport } from './mirror-contract.ts';
+import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
 import { sandboxImageForRun } from './sandbox-image.ts';
-import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo } from './sandbox-cache.ts';
+import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo, type RefreshOutcome } from './sandbox-cache.ts';
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
@@ -442,7 +442,7 @@ function usage(problem?: string, requested = false): never {
   crew shell-init [--shell zsh|bash|fish]   print the periscope shell function (install: eval "\$(crew shell-init)")
   crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
-  crew sandbox cache [--prune|--reset] [--json]   list the sandbox cache volume's mirrors; --prune drops unserved repositories, --reset recreates the volume
+  crew sandbox cache [--refresh|--prune|--reset] [--json]   list the sandbox cache volume's mirrors; --refresh runs the daemon's cache pass once (creates missing mirrors), --prune drops unserved repositories, --reset recreates the volume
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [route] [R|release]  pause everything, one role, or releases only (merge/deploy/release; passengers keeps running).
                                  resume with no argument clears only the whole-crew pause; a role or release pause needs its own resume
@@ -1614,7 +1614,7 @@ function sandboxCacheRepos(c: typeof route, ship: Ship): PassRepo[] {
   return out;
 }
 
-function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: Emitter): (() => Promise<unknown>) | undefined {
+function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: Emitter): (() => Promise<RefreshOutcome[]>) | undefined {
   const settings = cacheSettingsOf(ship.sandbox);
   if (!settings) return undefined;
   const pass = makeCachePass({
@@ -1639,13 +1639,18 @@ function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: 
  * bad file must not take down every lane on the ship.
  */
 async function resolvedRepos(c: typeof route) {
+  return (await resolveRoute(c)).settled;
+}
+
+/** `resolvedRepos` plus the repositories whose contract could not be read, each with why. */
+async function resolveRoute(c: typeof route) {
   const { settled, errors } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
   for (const e of errors) {
     try { await raiseShipAttention({ state, emit }, repoContractRefusedItem(e.repo, e.detail)); } catch { /* the skip below still holds */ }
   }
   const refused = new Set(errors.map((e) => e.repo));
   for (const t of reposOf(c)) if (!refused.has(t.name)) clearShipAttention(state, repoContractRefusedKey(t.name));
-  return settled;
+  return { settled, errors };
 }
 
 /** Every repo of `routes` that declares a `sandbox:` section, once per repo name (CREW-2794). */
@@ -1747,15 +1752,42 @@ const worktreeLocations = async (c: typeof route) =>
  * place that already checks the actual repo (`releasePhase`), because it
  * only ever runs one repo at a time.
  */
-async function anyRepoServable(c: typeof route): Promise<boolean> {
-  return (await resolvedRepos(c)).some((r) => satisfies(cfg.ship.platform, r.config.platform));
+async function anyRepoServable(c: typeof route, tolerateUnmirrored = false): Promise<boolean> {
+  const { settled, errors } = await resolveRoute(c);
+  return judgeServable({
+    platforms: settled.map((r) => r.config.platform), satisfied: (p) => satisfies(cfg.ship.platform, p),
+    unreadable: errors.map((e) => e.repo), tolerateUnmirrored,
+    unmirrored: tolerateUnmirrored && errors.length > 0 ? await unmirroredTargets(c) : new Set(),
+  });
 }
 
-/** Why `anyRepoServable` refused a route, naming each repo's own requirement. */
+/**
+ * CREW-2993: the names of this route's repositories that are served from a mirror
+ * (no checkout on a sandbox-runner ship) and have none in the cache volume yet.
+ * Empty when the cache cannot be listed; the caller then judges as it always did.
+ */
+async function unmirroredTargets(c: typeof route): Promise<Set<string>> {
+  const settings = cfg.ship.runner === 'sandbox' ? cacheSettingsOf(cfg.ship.sandbox) : null;
+  if (!settings) return new Set();
+  try {
+    const have = new Set((await new SandboxCache(settings).list()).map((m) => `${m.repo.host}/${m.repo.path}`));
+    const out = new Set<string>();
+    for (const t of reposOf(c)) {
+      if (!lacksCheckout(cfg.ship, t.dir)) continue;
+      const m = mirrorRepoOfTarget(t);
+      if (m && !have.has(`${m.host}/${m.path}`)) out.add(t.name);
+    }
+    return out;
+  } catch { return new Set(); }
+}
+
+/**
+ * Why `anyRepoServable` refused a route: each readable repo's own requirement, and each
+ * repo whose contract could not be read, so the line is never left dangling (CREW-2993).
+ */
 async function explainUnservable(c: typeof route): Promise<string> {
-  return (await resolvedRepos(c))
-    .map((r) => `${r.name} requires ${r.config.platform}`)
-    .join(', ');
+  const { settled, errors } = await resolveRoute(c);
+  return explainRefusal(settled.map((r) => ({ name: r.name, platform: String(r.config.platform) })), errors);
 }
 
 async function environmentFor(c: typeof route, ticket?: string | null): Promise<string> {
@@ -3113,13 +3145,21 @@ switch (command) {
       process.stderr.write('crew: daemon does not support --dry-run — it only ever performs real cycles.\n');
       process.exit(2);
     }
-    if (!(await anyRepoServable(route))) {
+    requireArmed('run the daemon loop');
+    // CREW-2993: on a fresh sandbox ship the mirrors the contracts are read from do not exist yet and
+    // only the cache pass creates them, so run it before judging servability, and do not exit over
+    // a repository that is merely unmirrored (the loop's own pass repairs it on a later tick).
+    const sandboxCachePass = cfg.ship.runner === 'sandbox' ? buildSandboxCachePass(route, cfg.ship, state, emit) : undefined;
+    if (sandboxCachePass && (await unmirroredTargets(route)).size > 0) {
+      emit.emit('sandbox cache: some served repositories have no mirror yet; refreshing before reading their contracts');
+      try { await sandboxCachePass(); } catch (e) { emit.warn(`sandbox cache refresh failed: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+    if (!(await anyRepoServable(route, true))) {
       emit.error(
         `refusing this route — this ship is ${cfg.ship.platform}, but ${await explainUnservable(route)}`,
       );
       process.exit(1);
     }
-    requireArmed('run the daemon loop');
 
     // Self-update detection (ISSUE-764): watch whichever paths actually
     // determine this process's own code. `bin/crew` prefers `dist/cli.js`
@@ -3190,7 +3230,6 @@ switch (command) {
     });
     if (controlServer) emit.emit(`control API listening on ${controlServer.path}`);
     const inFlight = new Set<Promise<void>>();
-    const sandboxCachePass = cfg.ship.runner === 'sandbox' ? buildSandboxCachePass(route, cfg.ship, state, emit) : undefined;
     // CREW-2794: sandbox images build in the background between passes, one at
     // a time, never on the cycle path. A build still running skips the tick.
     let sandboxBuilding = false;
@@ -4878,6 +4917,17 @@ switch (command) {
             process.stdout.write(`recreated volume ${settings.volume}; the next daemon pass refreshes every mirror\n`);
             break;
           }
+          // CREW-2993: the daemon's cache pass, once, in the foreground: how a fresh ship gets its mirrors by hand.
+          let refreshFailed = false;
+          if (flag('refresh')) {
+            for (const r of cfg.routes) {
+              const pass = buildSandboxCachePass(r, cfg.ship, state, emit);
+              for (const out of (await pass?.()) ?? []) {
+                if (!out.ok) refreshFailed = true;
+                process.stdout.write(`${out.ok ? 'refreshed' : 'FAILED   '} ${out.repo.host}/${out.repo.path}${out.ok ? '' : ` (${out.detail})`}\n`);
+              }
+            }
+          }
           const dropped = flag('prune') ? await cache.prune(served) : [];
           const mirrors = await cache.list();
           const open = openShipAttention(new State(cfg.ship.stateDir));
@@ -4896,6 +4946,7 @@ switch (command) {
             // CREW-2961: a failing refresh is shown next to its repository, mirrored or not.
             for (const f of failures) process.stdout.write(`${f.repo}  REFRESH FAILING (last failed ${f.lastFailedAt}): ${f.message}\n`);
           }
+          if (refreshFailed) process.exitCode = 1;
         } catch (e) {
           process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);
           process.exitCode = 1;
@@ -4908,7 +4959,7 @@ switch (command) {
           'crew sandbox policy --route ROUTE --role ROLE [--repo NAME] [--json]',
           'crew sandbox build [REPO] [--route ROUTE] [--json]',
           'crew sandbox images [--route ROUTE] [--json]',
-          'crew sandbox cache [--prune|--reset] [--json]',
+          'crew sandbox cache [--refresh|--prune|--reset] [--json]',
           '',
         ].join('\n'));
         process.exit(2);
