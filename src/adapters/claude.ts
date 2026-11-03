@@ -126,9 +126,14 @@ export function inferenceHeaders(inf: { ticket?: string; runId?: string }): stri
  * user settings file could set, and pins the endpoint. The token is not here — a settings payload
  * is argv, which `ps` shows — so it travels in the environment.
  */
-export function workspaceSettings(baseUrl: string): string {
+export function workspaceSettings(baseUrl: string, headers?: string): string {
   const blank = BILLING_VARS_TO_UNSET.filter((v) => v !== 'ANTHROPIC_AUTH_TOKEN');
-  return JSON.stringify({ env: { ...Object.fromEntries(blank.map((v) => [v, ''])), ANTHROPIC_BASE_URL: baseUrl } });
+  // CREW-2998: the header block is multi-line, which a sandbox's environment spec refuses, so it
+  // travels here (JSON escapes the newline); the values are ticket and run ids, not secrets.
+  return JSON.stringify({ env: {
+    ...Object.fromEntries(blank.map((v) => [v, ''])), ANTHROPIC_BASE_URL: baseUrl,
+    ...(headers ? { ANTHROPIC_CUSTOM_HEADERS: headers } : {}),
+  } });
 }
 
 /**
@@ -232,7 +237,7 @@ export const claudeAdapter: HarnessAdapter = {
       // which denies the LSP tool above.
       ...(isOmlxLauncher(spec) ? [] : (o.pluginDirs ?? []).flatMap((d) => ['--plugin-dir', d])),
       ...(spec.auth === 'subscription' ? ['--settings', subscriptionSettings()] : []),
-      ...(spec.auth === 'workspace' && spec.inference ? ['--settings', workspaceSettings(spec.inference.baseUrl)] : []),
+      ...(spec.auth === 'workspace' && spec.inference ? ['--settings', workspaceSettings(spec.inference.baseUrl, inferenceHeaders(spec.inference))] : []),
       ...spec.args,
     ];
     return wrapInvocation(spec, { model: o.model, args });
@@ -253,7 +258,6 @@ export const claudeAdapter: HarnessAdapter = {
       ...(spec.auth === 'workspace' && spec.inference
         ? {
             ANTHROPIC_BASE_URL: spec.inference.baseUrl, ANTHROPIC_AUTH_TOKEN: spec.inference.token,
-            ...(inferenceHeaders(spec.inference) ? { ANTHROPIC_CUSTOM_HEADERS: inferenceHeaders(spec.inference)! } : {}),
           }
         : {}),
     };

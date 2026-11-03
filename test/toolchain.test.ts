@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { loadConfig, ConfigError } from '../src/config.ts';
 import { planAgentRun, describePlan, WorkspaceAuthRefused, streamShowsAllowanceRefusal } from '../src/agent.ts';
 import { profileFor } from '../src/capability.ts';
-import { claudeToolsFor, describeClaudeAuth, inferenceHeaders, BILLING_VARS_TO_UNSET, inferenceBaseUrl } from '../src/adapters/claude.ts';
+import { claudeToolsFor, describeClaudeAuth, inferenceHeaders, workspaceSettings, BILLING_VARS_TO_UNSET, inferenceBaseUrl } from '../src/adapters/claude.ts';
 import { resolveToolchain, shipToolchains, adapterFor, resolveSeat, toolchainVendor } from '../src/toolchain.ts';
 
 function cfgFrom(yaml: string) {
@@ -491,9 +491,10 @@ test('auth: workspace adds X-Crew-Ticket and X-Crew-Run through ANTHROPIC_CUSTOM
   const t = { ...resolveToolchain(cfgFrom(AUTH_YAML('      auth: workspace')).ship),
     inference: { baseUrl: 'https://h/api/workspaces/w/inference', token: 'sk_seat', ticket: 'CREW-2980', runId: 'run-1' } };
   const env = adapterFor('claude').runEnv(t);
-  assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'X-Crew-Ticket: CREW-2980\nX-Crew-Run: run-1');
-  const noTicket = adapterFor('claude').runEnv({ ...t, inference: { ...t.inference, ticket: undefined } });
-  assert.equal(noTicket.ANTHROPIC_CUSTOM_HEADERS, 'X-Crew-Run: run-1');
+  // CREW-2998: not in the environment (a sandbox refuses a newline there); in the settings payload.
+  assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, undefined);
+  assert.equal(JSON.parse(workspaceSettings('https://h', inferenceHeaders(t.inference))).env.ANTHROPIC_CUSTOM_HEADERS, 'X-Crew-Ticket: CREW-2980\nX-Crew-Run: run-1');
+  assert.equal(JSON.parse(workspaceSettings('https://h')).env.ANTHROPIC_CUSTOM_HEADERS, undefined);
   assert.equal(inferenceHeaders({ ticket: 'A-1\nX-Evil: 1' }), 'X-Crew-Ticket: A-1 X-Evil: 1');
   assert.equal(inferenceHeaders({}), undefined);
 });

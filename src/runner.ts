@@ -190,6 +190,11 @@ export class SandboxRunner implements Runner {
     // environment; `--env` and argv are for non-secrets only (OpenShell's rule).
     const secretKeys = Object.keys(plan.setEnv);
     if (cfg.forgeTokenVar && o.env[cfg.forgeTokenVar] !== undefined && !secretKeys.includes(cfg.forgeTokenVar)) secretKeys.push(cfg.forgeTokenVar);
+    // CREW-2998: the gateway refuses a newline in any environment value, and its message does not
+    // say which; name the variable here instead.
+    for (const [k, v] of Object.entries(plan.setEnv)) {
+      if (/[\r\n]/.test(v)) throw new Error(`the sandbox environment variable ${k} contains a newline, which the sandbox gateway refuses`);
+    }
     const createEnv: NodeJS.ProcessEnv = { ...process.env, ...plan.setEnv };
     if (cfg.forgeTokenVar && o.env[cfg.forgeTokenVar] !== undefined) createEnv[cfg.forgeTokenVar] = o.env[cfg.forgeTokenVar];
 

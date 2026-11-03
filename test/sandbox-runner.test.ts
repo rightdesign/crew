@@ -50,6 +50,12 @@ function rig() {
 // The runner reads the checkout's origin; tests have no git remote.
 const withOrigin = (cfg: ConstructorParameters<typeof SandboxRunner>[0]) => new SandboxRunner(cfg, () => 'git@github.com:acme/widgets.git');
 
+test('a newline in a sandbox environment value fails the run naming the variable (CREW-2998)', async () => {
+  const r = rig();
+  const plan = r.plan(STREAM, { setEnv: { CREW_API_KEY: 'k', ANTHROPIC_CUSTOM_HEADERS: 'A: 1\nB: 2' } });
+  await assert.rejects(spawnAgent(plan, r.emitter()), /ANTHROPIC_CUSTOM_HEADERS contains a newline/);
+});
+
 test('a sandbox run creates, clones from the mirror, execs, streams into the stream file and deletes', async () => {
   const r = rig();
   const plan = r.plan(STREAM);

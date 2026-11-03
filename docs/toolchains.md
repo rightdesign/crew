@@ -92,7 +92,8 @@ prints the endpoint host per route. Codex and Gemini reject `workspace` at load
 time.
 
 Every model call also carries `X-Crew-Ticket` (the ticket the run was planned
-against) and `X-Crew-Run` (the run's id) through `ANTHROPIC_CUSTOM_HEADERS`, so
+against) and `X-Crew-Run` (the run's id) through `ANTHROPIC_CUSTOM_HEADERS` (set in the
+`--settings` payload, since a sandbox refuses a newline in an environment value), so
 the endpoint's `inference` Agent Log rows name the ticket and run. Those rows
 are the accounting for the run: the run's own `crew` row (which carries the same
 `run_id`) reports turns but no tokens or cost, and after the run crew sums the
