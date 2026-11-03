@@ -682,6 +682,28 @@ export class Tracker {
     return true;
   }
 
+  /**
+   * `crew deprovision` on a retired `managed_instance` ship (CREW-3041): a replacement
+   * gets a new member id and name, so the ship's Crew seats and then its Ships row are
+   * trashed (recoverable; the event log and Agent Log keep the history) instead of
+   * lingering in every list and assignment picker. Any other kind, and a Ships table
+   * with no `kind` column, only clears the live fields as `clearForRelease` does, because an
+   * operator may re-connect under the same name. Returns what was done, for the summary.
+   */
+  async retireShip(shipName: string): Promise<{ found: boolean; removed: boolean; seats: number }> {
+    const row = await this.myShipRow(shipName);
+    if (!row) return { found: false, removed: false, seats: 0 };
+    if (row.kind !== 'managed_instance') {
+      await this.clearForRelease(shipName);
+      return { found: true, removed: false, seats: 0 };
+    }
+    // Seats first, then the ship they point at, so a failure part-way never leaves seats pointing at a missing row.
+    const seats = (await this.crewRows()).filter((c) => c.ship_id === row.id);
+    for (const seat of seats) await this.client.records.remove(this.models.crew, seat.id);
+    await this.client.records.remove(this.route.resolved!.shipsModelId!, row.id);
+    return { found: true, removed: true, seats: seats.length };
+  }
+
   /** The other half of `beatEngaged` — clears engagement back to idle. */
   async beatIdle(shipName: string): Promise<void> {
     const row = await this.myShipRow(shipName);

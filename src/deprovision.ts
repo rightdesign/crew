@@ -9,8 +9,9 @@
  *   2. every run in flight is killed, the kill is recorded on the event stream
  *      and the ticket is told, while the seat keys still exist;
  *   3. sandboxes are deleted, and this ship's Ships rows are cleared of
- *      `engaged`, `tunnel_status` and `relay_url` (the platform marks the rows
- *      retired afterwards; crew has no retired marker);
+ *      `engaged`, `tunnel_status` and `relay_url` (a `managed_instance` ship's
+ *      Crew seats and Ships row are trashed instead, CREW-3041; the platform
+ *      marks its own records retired afterwards);
  *   4. seat keys revoked, workspace credential, Pair/MCP entries and the
  *      checkouts removed (the reset order), then every forge token erased;
  *   5. the cache volumes and repository image layers crew labeled are removed,
@@ -51,7 +52,10 @@ export interface DeprovisionDeps {
   /** Sandbox containers to delete, by name. */
   sandboxes(): string[];
   removeSandbox(name: string): void;
-  /** Clears `engaged`, `tunnel_status` and `relay_url` on this ship's row in each served workspace; one line per route. */
+  /**
+   * Clears `engaged`, `tunnel_status` and `relay_url` on this ship's row in each served workspace; one line per route.
+   * A `managed_instance` ship's Crew seats and Ships row are trashed instead (CREW-3041).
+   */
   clearShipRows(): Promise<Array<{ route: string; ok: boolean; detail: string }>>;
   /** Forge hosts configured on this ship, and a way to erase each token. */
   forgeHosts(): string[];

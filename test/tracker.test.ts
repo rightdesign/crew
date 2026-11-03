@@ -577,3 +577,35 @@ test('periscopesStatus() names each column a present Periscopes table lacks (EPI
     present: true, modelId: 'periscopes-model-id', missing: ['issue_id', 'state'],
   });
 });
+
+test('retireShip() trashes a managed_instance ship\'s seats then its Ships row; any other kind is only cleared (CREW-3041)', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const run = async (kind: string) => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = init?.method ?? 'GET';
+      const [, , , modelId, , rowId] = url.pathname.split('/');
+      if (method === 'GET' && !rowId && modelId === 'ships-model-id') return new Response(JSON.stringify([{ id: 'ship-1', name: 'test-ship', kind, relay_url: 'x' }]), { status: 200 });
+      if (method === 'GET' && !rowId && modelId === 'crew-model-id') {
+        return new Response(JSON.stringify([
+          { id: 'seat-a', ship_id: 'ship-1' }, { id: 'seat-b', ship_id: 'ship-1' }, { id: 'seat-other', ship_id: 'ship-2' },
+        ]), { status: 200 });
+      }
+      calls.push(`${method} ${modelId}/${rowId}`);
+      return new Response(method === 'DELETE' ? null : '{}', { status: method === 'DELETE' ? 204 : 200 });
+    }) as typeof fetch;
+    const tracker = new Tracker(makeRoute({ shipsModelId: 'ships-model-id' }), { userAgent: 'crew-test', name: 'test-ship' });
+    return { res: await tracker.retireShip('test-ship'), calls };
+  };
+
+  const managed = await run('managed_instance');
+  assert.deepEqual(managed.res, { found: true, removed: true, seats: 2 });
+  assert.deepEqual(managed.calls, ['DELETE crew-model-id/seat-a', 'DELETE crew-model-id/seat-b', 'DELETE ships-model-id/ship-1']);
+
+  const operator = await run('developer_machine');
+  assert.deepEqual(operator.res, { found: true, removed: false, seats: 0 });
+  assert.equal(operator.calls.length, 1);
+  assert.ok(operator.calls[0]!.startsWith('PATCH ') || operator.calls[0]!.startsWith('PUT '), operator.calls[0]);
+});

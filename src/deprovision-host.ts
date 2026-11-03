@@ -106,8 +106,13 @@ export function realDeprovisionDeps(
       const out: Array<{ route: string; ok: boolean; detail: string }> = [];
       for (const r of cfg.routes.filter((x) => x.resolved?.shipsModelId)) {
         try {
-          const found = await new Tracker(r, cfg.ship).clearForRelease(cfg.ship.name);
-          out.push({ route: r.route, ok: true, detail: found ? 'cleared engaged, tunnel_status, relay_url' : 'no Ships row for this ship' });
+          const res = await new Tracker(r, cfg.ship).retireShip(cfg.ship.name);
+          out.push({
+            route: r.route, ok: true,
+            detail: !res.found ? 'no Ships row for this ship'
+              : res.removed ? `trashed ${res.seats} Crew seat${res.seats === 1 ? '' : 's'} and the Ships row`
+              : 'cleared engaged, tunnel_status, relay_url',
+          });
         } catch (e) {
           out.push({ route: r.route, ok: false, detail: (e as Error).message });
         }
