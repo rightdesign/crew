@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.135.1] — 2026-11-03
+
+- CREW-3022 docs: POST /periscopes issue field.
+- CREW-3023 `crew agents sync` turns on "Available in chat" for the Pair persona row on create, and on an existing row only while it was never set.
+- CREW-3041 `crew deprovision` on a retired managed ship now moves its Crew seats and Ships row to the trash instead of leaving them in the workspace.
+
 ## [0.135.0] — 2026-11-03
 
 - CREW-3019 Skill files can declare a trigger phrase and a persona, which skill sync writes to the Agent Skills row.
