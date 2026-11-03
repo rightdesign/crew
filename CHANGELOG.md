@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.130.5] — 2026-11-03
+
+- CREW-2998 Sandboxed runs under workspace auth start again: the ticket and run headers travel in the settings payload instead of a multi-line environment variable.
+- CREW-3005 A standalone (compiled) crew no longer registers a broken git credential helper, so host-side clones of private repositories on a managed ship authenticate again; `crew doctor` now runs the registered helper and reports one that fails.
+
 ## [0.130.4] — 2026-11-03
 
 - CREW-3001 `crew provision` now sets ship.relayHttpPort from the lease payload, so a managed ship reports a relay URL on the port the relay actually serves.
