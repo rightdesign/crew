@@ -442,3 +442,14 @@ test('a row whose trigger differs from the file is updated through the same base
   assert.equal(result.outcomes[0]!.action, 'updated');
   assert.equal(patched.trigger, 'grill');
 });
+
+test('the shipped Periscope skill parses with trigger periscope and persona Pair, in both prompt sets (CREW-3028)', () => {
+  for (const set of ['default', 'dev-qa']) {
+    const skill = parseSkillFile(join(import.meta.dirname, '..', 'prompts', set, 'skills', 'periscope.md'));
+    assert.equal(skill.name, 'Periscope');
+    assert.equal(skill.trigger, 'periscope');
+    assert.equal(skill.persona, 'Pair');
+    assert.match(skill.prompt, /periscope_up/);
+    assert.match(skill.prompt, /use_host/);
+  }
+});

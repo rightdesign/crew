@@ -35,6 +35,17 @@ what it started, removes the worktree and closes the draft.
 `crew periscope list` shows the live periscopes on the ship with the minutes
 since each was last active and whether its server is listening.
 
+## From the chat
+
+In an agent chat (the app or Slack), start a message with the word
+`periscope` and name an issue: "periscope for ISSUE-123 on my machine". The
+Periscope skill, which runs as Pair, looks the issue up, refuses one that is
+held or has a run in flight, pins the host if you named one, opens the preview
+on that issue and posts the URL. Anyone in the thread can ask for changes,
+which are applied in the preview's worktree only; whether to keep or discard
+it is up to the person who started the conversation. When no ship offers
+previews the agent says so and stops; it does not file a ticket instead.
+
 ## Ending a periscope
 
 ```sh
