@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.136.0] — 2026-11-03
+
+- CREW-3028 A new Periscope skill lets a chat message starting with "periscope" open a live preview of a named issue as Pair, pinning the host if one is named.
+
 ## [0.135.1] — 2026-11-03
 
 - CREW-3022 docs: POST /periscopes issue field.
