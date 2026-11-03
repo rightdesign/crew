@@ -16,6 +16,7 @@ import { intelFlavor, wantsCodeBridge, lspFlavor, lspBinaryFound, ensureLspPlugi
 import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
+import { sandboxHookGaps, imageHasBinary } from './sandbox-hooks.ts';
 import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
@@ -6496,6 +6497,12 @@ switch (command) {
             route: c.route, repo: r.name, dir: r.dir, notes: validateEffective(r.config),
             base: doctorBaseReport(r, r.config.branch.base, baseHealth), hooks: r.config.hooks,
             onPath: (cmd) => !!findOnPath(cmd, doctorSchedulerPath),
+            // CREW-3007: on a sandbox ship the hooks run in the image, so the host PATH is not asked.
+            sandboxGaps: cfg.ship.runner === 'sandbox' ? sandboxHookGaps({
+              route: c.route, repo: r.name, hooks: r.config.hooks, declares: Boolean(r.config.sandbox),
+              image: sandboxImageForRun(readSandboxState(cfg.ship.stateDir), r.name, Boolean(r.config.sandbox)),
+              hasBinary: imageHasBinary(),
+            }) : undefined,
             mapFile: mapFilePath(r.config.hooks.map) ? inspectMapFile(r.dir, mapFilePath(r.config.hooks.map)!) : undefined,
             intelSyntax: r.config.hooks.intel && !intelFlavor(r.config.hooks.intel) ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
             intelFlavor: intelFlavor(r.config.hooks.intel) ? { name: intelFlavor(r.config.hooks.intel)!, missing: [
@@ -7030,11 +7037,26 @@ switch (command) {
       let repos: Awaited<ReturnType<typeof resolvedRepos>>;
       try { repos = await resolvedRepos(c); } catch { continue; }
       for (const r of repos) {
+        // CREW-3007: on a sandbox ship the hooks run in the repository's image, so ask the
+        // image, not the host PATH. A binary found there (or an image not built yet) clears
+        // any item an earlier host-PATH sweep raised.
+        const gaps = cfg.ship.runner === 'sandbox' ? sandboxHookGaps({
+          route: c.route, repo: r.name, hooks: r.config.hooks, declares: Boolean(r.config.sandbox),
+          image: sandboxImageForRun(readSandboxState(cfg.ship.stateDir), r.name, Boolean(r.config.sandbox)),
+          hasBinary: imageHasBinary(),
+        }) : [];
         for (const name of ['setup', 'test', 'build', 'deploy'] as const) {
           const script = r.config.hooks[name];
           const cmd = script ? hookCommand(script) : null;
           if (!cmd) continue;
           const key = `hook_missing:${c.route}/${r.name}/${name}`;
+          if (cfg.ship.runner === 'sandbox') {
+            const gap = gaps.find((g) => g.hook === name);
+            if (!gap) { clearShipAttention(state, key); continue; }
+            process.stdout.write(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND in the sandbox image\n`);
+            await raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, { kind: 'hook_missing', key, message: gap.message, since: new Date().toISOString() });
+            continue;
+          }
           if (findOnPath(cmd, schedulerPath)) { clearShipAttention(state, key); continue; }
           process.stdout.write(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND on the scheduler PATH\n`);
           await raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, {

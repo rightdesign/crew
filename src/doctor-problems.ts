@@ -42,6 +42,8 @@ export function repoFindings(o: {
   base: { message: string; failed: boolean; skipRest: boolean };
   hooks: Partial<Record<(typeof HOOK_NAMES)[number], string | undefined>>;
   onPath: (command: string) => boolean;
+  /** Sandbox ship (CREW-3007): hooks run in the image, so these gaps replace the host PATH check. */
+  sandboxGaps?: Array<{ hook: string; command: string; message: string; remedy: string }>;
   /** A file-form `map` (CREW-2919): what `hooks.map` names and whether it exists in the checkout. */
   mapFile?: { path: string; exists: boolean; lines: number; tokens: number };
   /** The `intel` hook's syntax check, when the repository declares one. */
@@ -65,7 +67,10 @@ export function repoFindings(o: {
   if (o.base.failed) {
     problems.push({ severity: 'blocker', kind: 'base_unsafe', ...at, message: `${o.repo}: ${o.base.message}` });
   } else if (o.base.message) passed++;
-  for (const hook of HOOK_NAMES) {
+  for (const g of o.sandboxGaps ?? []) {
+    problems.push({ severity: 'attention', kind: 'hook_missing', ...at, hook: g.hook as (typeof HOOK_NAMES)[number], command: g.command, message: g.message, remedy: g.remedy });
+  }
+  for (const hook of o.sandboxGaps ? [] : HOOK_NAMES) {
     const script = o.hooks[hook];
     const command = script ? hookCommand(script) : null;
     if (!command) continue;
