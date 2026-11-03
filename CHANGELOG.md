@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.130.7] — 2026-11-03
+
+- CREW-3007 On a sandbox ship, crew doctor no longer raises hook_missing for hook binaries absent from the host PATH; it checks them inside the repository's sandbox image and names the image and the sandbox: declaration to fix.
+
 ## [0.130.6] — 2026-11-03
 
 - CREW-2994 Fix Linux ships never keeping a relay tunnel: the passengers systemd unit now sets KillMode=process (run `crew install` to update), and `crew doctor` warns when it does not.
