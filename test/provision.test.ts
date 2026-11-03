@@ -4,6 +4,7 @@ import { parseDocument } from 'yaml';
 import { loadConfig } from '../src/config.ts';
 import { renderShipBlock } from '../src/connect-wizard.ts';
 import { managedRuntimeWarnings } from '../src/doctor-checks.ts';
+import { relayBaseUrlFor } from '../src/tunnel.ts';
 import {
   runProvision, provisionOptionsFrom, applyManagedDefaultsToDoc, isManagedShipKind, tokensFromEnv, envKey, parseEvents,
   type ProvisionDeps, type ProvisionOptions, type InstallState, type RunResult,
@@ -174,6 +175,17 @@ test('--ship-kind and --instance-class reach connect, and relay host and agent c
   assert.deepEqual(c.args.slice(c.args.indexOf('--instance-class'), c.args.indexOf('--instance-class') + 2), ['--instance-class', 'c7.large']);
   assert.deepEqual(f.settings, { relayHost: 'crewd@relay.example', maxConcurrentAgents: 3 });
   assert.equal(r.summary.state, 'provisioned');
+});
+
+test('a lease relayHttpPort lands in crew.yaml and the ship reports a relay URL on that port (CREW-3001)', async () => {
+  const f = fake();
+  await run(base({ shipKind: 'pooled_instance', relayHost: 'crewd@relay.example', relayHttpPort: 8443 }), f);
+  assert.deepEqual(f.settings, { relayHost: 'crewd@relay.example', relayHttpPort: 8443 });
+  assert.equal(provisionOptionsFrom(['--relay-http-port', '8443'], {}).relayHttpPort, 8443);
+  assert.equal(relayBaseUrlFor('abc', 'crewd@relay.example', 8443, undefined).endsWith(':8443'), true);
+  const g = fake();
+  await run(base({ shipKind: 'pooled_instance', relayHost: 'crewd@relay.example' }), g);
+  assert.deepEqual(g.settings, { relayHost: 'crewd@relay.example' });
 });
 
 test('each route connects with its own workspace key, and no key reaches argv or the summary (CREW-2893)', async () => {

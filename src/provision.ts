@@ -51,6 +51,8 @@ export interface ProvisionOptions {
   instanceClass?: string;
   /** CREW-2882: `ship.relayHost` / `ship.maxConcurrentAgents` to write into crew.yaml before the daemon starts (a lease payload carries them). */
   relayHost?: string;
+  /** CREW-3001: `ship.relayHttpPort`, the port the relay serves its public HTTP on (a lease payload carries it; absent keeps the 443 default). */
+  relayHttpPort?: number;
   maxConcurrentAgents?: number;
   agentBin?: string;
   /**
@@ -217,7 +219,7 @@ export async function runProvision(
   summary.configPath = configPath;
 
   // 1b. ship settings the caller supplied (a pooled lease's relay host and agent cap).
-  for (const [key, value] of [['relayHost', o.relayHost], ['maxConcurrentAgents', o.maxConcurrentAgents]] as const) {
+  for (const [key, value] of [['relayHost', o.relayHost], ['relayHttpPort', o.relayHttpPort], ['maxConcurrentAgents', o.maxConcurrentAgents]] as const) {
     if (value === undefined || value === '') continue;
     if (deps.setShipSetting(key, value)) {
       summary.changed = true;
@@ -410,6 +412,7 @@ export function provisionOptionsFrom(argv: readonly string[], env: NodeJS.Proces
     shipKind: one('ship-kind'),
     instanceClass: one('instance-class'),
     relayHost: one('relay-host'),
+    relayHttpPort: Number.isInteger(Number(one('relay-http-port'))) && Number(one('relay-http-port')) > 0 ? Number(one('relay-http-port')) : undefined,
     maxConcurrentAgents: Number.isInteger(Number(one('max-concurrent-agents'))) && Number(one('max-concurrent-agents')) > 0 ? Number(one('max-concurrent-agents')) : undefined,
     agentBin: one('agent-bin'),
     runner: one('runner') === 'host' || one('runner') === 'sandbox' ? one('runner') as 'host' | 'sandbox' : undefined,

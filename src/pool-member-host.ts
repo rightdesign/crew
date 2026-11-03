@@ -70,6 +70,7 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
         shipKind,
         instanceClass,
         relayHost: lease.relayHost,
+        relayHttpPort: lease.relayHttpPort,
         maxConcurrentAgents: lease.maxConcurrentAgents,
         baseUrl: platformBaseUrl(o.platformUrl),
         forgeHosts: hosts,

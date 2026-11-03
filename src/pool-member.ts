@@ -46,6 +46,8 @@ export interface LeasePayload {
   connectKey?: string;
   forges: Array<{ host: string; token: string }>;
   relayHost?: string;
+  /** CREW-3001: the relay's public HTTP port (default 443 when absent, i.e. an older platform). */
+  relayHttpPort?: number;
   maxConcurrentAgents?: number;
 }
 
