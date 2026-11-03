@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.132.1] — 2026-11-03
+
+- CREW-3013 The sandbox cache volume is always created with its OpenShell labels before anything mounts it, and `crew doctor` flags an unlabeled volume as a blocker naming `crew sandbox cache --reset`.
+- CREW-3032 A sandbox ship now starts a run from the ticket repository's recorded sandbox image, and refuses a ticket whose repository declares sandbox: but has no image, instead of running it in the ship layer.
+
 ## [0.132.0] — 2026-11-03
 
 - CREW-3014 A sandbox ship no longer runs a declared repository in the bare crew layer before its image is built, recognizes an image from an interrupted build, and backs off, then bounces, a ticket whose runs keep ending with nothing pushed or handed off.
