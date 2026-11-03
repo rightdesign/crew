@@ -72,6 +72,7 @@ export async function runAgentsSync(target: Route, o: AgentsSyncRunOptions): Pro
     }
   }
   for (const s of skillResult?.outcomes ?? []) o.say(describeSkillSyncOutcome(s));
+  for (const w of skillResult?.warnings ?? []) o.warn(`warning: ${w}`);
   if (!dryRun) {
     // Persist `agentPersonas` and `agentSkills` into this route's resolved
     // state file — merge-not-clobber, since a hand-authored `contract` block

@@ -37,6 +37,10 @@ export interface LocalSkill {
   description: string;
   prompt: string;
   file: string;
+  /** The phrase that starts this skill; the platform matches it from the Agent Skills row's `trigger` column. */
+  trigger?: string;
+  /** The name of the persona the skill runs as (e.g. `Pair`), as `PERSONA_NAME` spells it; resolved to an Agents row at sync time. */
+  persona?: string;
 }
 
 /**
@@ -52,12 +56,23 @@ export function parseSkillFile(path: string): LocalSkill {
   if (!match) throw new SkillSyncError(`${path}: missing YAML frontmatter (expected a leading --- block)`);
   const frontmatter = match[1]!;
   const body = match[2]!;
-  const meta = parseYaml(frontmatter) as { name?: unknown; description?: unknown };
+  const meta = parseYaml(frontmatter) as { name?: unknown; description?: unknown; trigger?: unknown; persona?: unknown };
   if (typeof meta.name !== 'string' || !meta.name) throw new SkillSyncError(`${path}: frontmatter is missing "name"`);
   if (typeof meta.description !== 'string' || !meta.description) {
     throw new SkillSyncError(`${path}: frontmatter is missing "description"`);
   }
-  return { name: meta.name, description: meta.description, prompt: body, file: path };
+  // CREW-3019: optional keys; present-but-not-a-string is a typo worth refusing, not silently dropping.
+  for (const key of ['trigger', 'persona'] as const) {
+    if (meta[key] !== undefined && meta[key] !== null && typeof meta[key] !== 'string') {
+      throw new SkillSyncError(`${path}: frontmatter "${key}" must be a string`);
+    }
+  }
+  const trigger = typeof meta.trigger === 'string' && meta.trigger ? meta.trigger : undefined;
+  const persona = typeof meta.persona === 'string' && meta.persona ? meta.persona : undefined;
+  return {
+    name: meta.name, description: meta.description, prompt: body, file: path,
+    ...(trigger ? { trigger } : {}), ...(persona ? { persona } : {}),
+  };
 }
 
 /** Every `*.md` skill file under `${promptsDir}/skills/`. Empty array if the directory doesn't exist — a prompt set need not define any skills. */
@@ -82,6 +97,10 @@ interface SkillRow {
   prompt_baseline?: string | null;
   /** TABL-1716: workspace text appended after the prompt at run time. Absent on an older server. */
   prompt_additions?: string | null;
+  /** CREW-3019: absent on a workspace whose Agent Skills table predates the column. */
+  trigger?: string | null;
+  persona?: unknown;
+  persona_id?: unknown;
 }
 
 export type SkillSyncAction = 'created' | 'updated' | 'unchanged' | 'diverged' | 'overridden' | 'forced';
@@ -102,7 +121,17 @@ export interface SyncSkillsResult {
    * here touches disk itself.
    */
   agentSkills: Record<string, { skillId: string; lastSyncedUpdatedAt: string }>;
+  /** CREW-3019: one line each for a declared `trigger`/`persona` that could not be written (missing column, unknown persona); the caller prints them. */
+  warnings: string[];
 }
+
+/** The Agent Skills column that holds the persona reference: `persona_id` by the tracker's reference-column convention, `persona` as the plain spelling. */
+function personaColumn(model: { fields?: ReadonlyArray<{ columnName: string }> }): 'persona_id' | 'persona' | undefined {
+  for (const c of ['persona_id', 'persona'] as const) if (model.fields?.some((f) => f.columnName === c)) return c;
+  return undefined;
+}
+
+const refId = (v: unknown): string => (typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { id?: unknown }).id === 'string' ? (v as { id: string }).id : '');
 
 /**
  * `route.resolved.workspaceId` and `resolveApiKey(route)` are required —
@@ -141,14 +170,57 @@ export async function syncSkills(
   const cache = route.resolved.agentSkills ?? {};
   const outcomes: SkillSyncOutcome[] = [];
   const agentSkills: SyncSkillsResult['agentSkills'] = { ...cache };
+  const warnings: string[] = [];
+
+  // CREW-3019: `trigger`/`persona` arrive with a template update, so a table
+  // without the column skips the value with a note instead of failing. A
+  // persona name is matched against the Agents rows (personas sync first in
+  // `agents-sync-run.ts`); an unknown one leaves the column empty.
+  const hasTrigger = skillsModel.fields?.some((f) => f.columnName === 'trigger') === true;
+  const personaCol = personaColumn(skillsModel);
+  let agentRows: Array<{ id: string; name: string }> | undefined;
+  const classified = new Set<string>();
+  const declared = (skill: LocalSkill): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (skill.trigger) {
+      if (hasTrigger) out.trigger = skill.trigger;
+      else if (!classified.has('trigger')) { classified.add('trigger'); warnings.push('skill trigger not synced — the Agent Skills table has no trigger column yet (update the Issues template)'); }
+    }
+    return out;
+  };
+  const declaredPersona = async (skill: LocalSkill): Promise<Record<string, string>> => {
+    if (!skill.persona) return {};
+    if (!personaCol) {
+      if (!classified.has('persona')) { classified.add('persona'); warnings.push('skill persona not synced — the Agent Skills table has no persona column yet (update the Issues template)'); }
+      return {};
+    }
+    if (!agentRows) {
+      try {
+        const agentsModel = await client.dataModels.get('agents', workspaceId);
+        agentRows = await client.records.list<{ id: string; name: string }>(agentsModel.id, { limit: 200 });
+      } catch (e) {
+        if (!(e instanceof TablationApiError)) throw e;
+        agentRows = [];
+      }
+    }
+    const match = agentRows.find((a) => a.name === skill.persona);
+    if (!match) {
+      warnings.push(`skill "${skill.name}": persona "${skill.persona}" matches no Agents row — Persona left empty`);
+      return {};
+    }
+    return { [personaCol]: match.id };
+  };
 
   for (const skill of local) {
     const row = rows.find((r) => r.name === skill.name);
+    const extra = { ...declared(skill), ...(await declaredPersona(skill)) };
+    const rowDiffers = (r: SkillRow): boolean =>
+      Object.entries(extra).some(([col, v]) => (col === 'trigger' ? (r.trigger ?? '') : refId(r[col as 'persona' | 'persona_id'])) !== v);
 
     if (!row) {
       if (opts.dryRun) { outcomes.push({ name: skill.name, action: 'created', skillId: '(dry run)' }); continue; }
       const created = await client.records.create<SkillRow>(skillsModel.id, {
-        name: skill.name, description: skill.description, prompt: skill.prompt,
+        name: skill.name, description: skill.description, prompt: skill.prompt, ...extra,
         ...promptSourceFields(skillsModel, skill.prompt),
       });
       agentSkills[skill.name] = { skillId: created.id, lastSyncedUpdatedAt: created.updated_at };
@@ -156,7 +228,7 @@ export async function syncSkills(
       continue;
     }
 
-    if (row.description === skill.description && row.prompt === skill.prompt) {
+    if (row.description === skill.description && row.prompt === skill.prompt && !rowDiffers(row)) {
       // In sync content-wise regardless of who wrote it last — nothing to
       // push, just (re)anchor the cache to the row's current updated_at so
       // a later sync's compare-and-swap has the right baseline.
@@ -185,7 +257,7 @@ export async function syncSkills(
       continue;
     }
 
-    const body = { description: skill.description, prompt: skill.prompt, ...promptSourceFields(skillsModel, skill.prompt) };
+    const body = { description: skill.description, prompt: skill.prompt, ...extra, ...promptSourceFields(skillsModel, skill.prompt) };
 
     if (opts.force) {
       // Same as the persona `--force`: the operator has decided a local edit is meant to be discarded, so no CAS.
@@ -255,7 +327,7 @@ export async function syncSkills(
     }
   }
 
-  return { outcomes, agentSkills };
+  return { outcomes, agentSkills, warnings };
 }
 
 /** One human-readable line per skill, for `crew skills sync`'s own stdout. */

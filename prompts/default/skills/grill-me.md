@@ -1,5 +1,7 @@
 ---
 name: Grill-Me
+trigger: grill
+persona: Pair
 description: Interview mode for turning a rough Epic into a settled PRD (a Maps record) plus a proposed ticket breakdown. Use when asked to grill/interview about an Epic, or when invoked via an Epic's grill_link.
 ---
 # Grill-Me interview

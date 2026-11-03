@@ -3493,6 +3493,7 @@ switch (command) {
     }
     process.stdout.write(`route: ${target.route}\n`);
     for (const o of result.outcomes) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
+    for (const w of result.warnings) process.stderr.write(`warning: ${w}\n`);
     if (!dryRun) {
       // Same merge-not-clobber shape `case 'agents'` uses for its own
       // `agentPersonas` write — a hand-authored `contract` block or another

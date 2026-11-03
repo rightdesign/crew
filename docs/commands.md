@@ -102,6 +102,8 @@ The row is matched by `machine_id`. A workspace whose Ships table has no `machin
 | `crew agents prompt ROLE [route]` | Print one persona's current prompt (e.g. `pair`, for a SessionStart hook). |
 | `crew skills sync [route]` | Push only the skill files. |
 
+A skill file's front matter may also carry `trigger` (the phrase that starts the skill) and `persona` (the persona it runs as, by name, e.g. `Pair`). `crew agents sync` writes `trigger` to the Agent Skills row as text and `persona` as a reference to the Agents row of that name; the platform reads both columns to start the skill from its phrase under that persona. A persona name with no Agents row leaves the column empty and prints a warning; a workspace whose Agent Skills table lacks either column skips the value with a note. Either key that is not a string refuses the sync, naming the file.
+
 A row's "Additional instructions" (`prompt_additions`) are appended, after a fixed divider, to the persona brief and to each included skill at run time, with or without "Customize prompt". `crew agents prompt` and `crew logbook show --prompt` print that composed text.
 
 ## Host Passengers

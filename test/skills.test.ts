@@ -359,3 +359,86 @@ test('fetchSkillOverrides: an edited row with additions composes over its own pr
   t.after(second.restore);
   assert.deepEqual(await fetchSkillOverrides(makeRoute(undefined, NEW_DIR()), {}), {});
 });
+
+// CREW-3019: trigger / persona front matter.
+function grillDir(): string {
+  const prompts = mkdtempSync(join(tmpdir(), 'crew-skills-tp-'));
+  mkdirSync(join(prompts, 'skills'), { recursive: true });
+  writeFileSync(join(prompts, 'skills', 'grill-me.md'), '---\nname: Grill-Me\ntrigger: grill\npersona: Pair\ndescription: d\n---\nBODY\n');
+  return prompts;
+}
+const AGENTS_MODEL = { id: 'agents-model-1', workspaceId: 'ws-1', name: 'Agents', tableName: 'agents' };
+const withCols = (...cols: string[]) => ({ ...SKILLS_MODEL, fields: cols.map((columnName) => ({ columnName })) });
+
+test('parseSkillFile carries trigger and persona; a non-string value is a SkillSyncError naming the key', () => {
+  const dir = grillDir();
+  const parsed = parseSkillFile(join(dir, 'skills', 'grill-me.md'));
+  assert.equal(parsed.trigger, 'grill');
+  assert.equal(parsed.persona, 'Pair');
+  writeFileSync(join(dir, 'skills', 'bad.md'), '---\nname: Bad\ndescription: d\ntrigger: [a, b]\n---\nB\n');
+  assert.throws(() => parseSkillFile(join(dir, 'skills', 'bad.md')), (e: unknown) => e instanceof SkillSyncError && /trigger/.test((e as Error).message) && /bad\.md/.test((e as Error).message));
+});
+
+test('trigger is written as text and persona as a reference to the matching Agents row', async (t) => {
+  const created: any[] = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: withCols('trigger', 'persona_id') }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [{ id: 'agent-pair', name: 'Pair', prompt: 'p', updated_at: 'x' }] }),
+    'POST /api/data-models/skills-model-1/records': (b: any) => { created.push(b); return { status: 200, body: { id: 'r1', ...b, updated_at: '2026-01-01T00:00:00Z' } }; },
+  });
+  t.after(restore);
+  const result = await syncSkills(makeRoute(undefined, grillDir()), {});
+  assert.equal(created[0].trigger, 'grill');
+  assert.equal(created[0].persona_id, 'agent-pair');
+  assert.deepEqual(result.warnings, []);
+});
+
+test('an unknown persona leaves the column empty and warns once', async (t) => {
+  const created: any[] = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: withCols('trigger', 'persona_id') }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'POST /api/data-models/skills-model-1/records': (b: any) => { created.push(b); return { status: 200, body: { id: 'r1', ...b, updated_at: 'x' } }; },
+  });
+  t.after(restore);
+  const result = await syncSkills(makeRoute(undefined, grillDir()), {});
+  assert.equal(created[0].trigger, 'grill');
+  assert.ok(!('persona_id' in created[0]));
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0]!, /persona "Pair" matches no Agents row/);
+});
+
+test('a table that predates the columns syncs without them and says so', async (t) => {
+  const created: any[] = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: SKILLS_MODEL }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'POST /api/data-models/skills-model-1/records': (b: any) => { created.push(b); return { status: 200, body: { id: 'r1', ...b, updated_at: 'x' } }; },
+  });
+  t.after(restore);
+  const result = await syncSkills(makeRoute(undefined, grillDir()), {});
+  assert.deepEqual(Object.keys(created[0]).sort(), ['description', 'name', 'prompt']);
+  assert.equal(result.warnings.length, 2);
+  assert.match(result.warnings.join('\n'), /no trigger column/);
+  assert.match(result.warnings.join('\n'), /no persona column/);
+});
+
+test('a row whose trigger differs from the file is updated through the same baseline check as description', async (t) => {
+  let patched: any;
+  const { restore } = mockFetch({
+    'GET /api/data-models/agent_skills?workspaceId=ws-1': () => ({ status: 200, body: withCols('trigger') }),
+    'GET /api/data-models/skills-model-1/records?limit=200': () => ({
+      status: 200, body: [{ id: 'row', name: 'Grill-Me', description: 'd', prompt: 'BODY\n', trigger: 'old', updated_at: '2026-01-01T00:00:00Z' }],
+    }),
+    'PATCH /api/data-models/skills-model-1/records/row': (b) => { patched = b; return { status: 200, body: { id: 'row', updated_at: '2026-01-02T00:00:00Z' } }; },
+  });
+  t.after(restore);
+  const route = makeRoute({ 'Grill-Me': { skillId: 'row', lastSyncedUpdatedAt: '2026-01-01T00:00:00Z' } }, grillDir());
+  const result = await syncSkills(route, {});
+  assert.equal(result.outcomes[0]!.action, 'updated');
+  assert.equal(patched.trigger, 'grill');
+});
