@@ -248,6 +248,16 @@ git -C "$m" cat-file -e "refs/heads/$base:$path" 2>/dev/null || exit 4
 git -C "$m" show "refs/heads/$base:$path"
 `;
 
+/** Lists every file at the tip of a branch in a mirror; exit 3 when the branch is absent. */
+const LIST_SCRIPT = `
+set -e
+export GIT_TERMINAL_PROMPT=0
+m=${VOLUME_ROOT}/"$1"; base="$2"
+git config --global --add safe.directory '*'
+git -C "$m" rev-parse --verify --quiet "refs/heads/$base^{commit}" >/dev/null || { echo "the mirror has no branch $base" >&2; exit 3; }
+git -C "$m" ls-tree -r --name-only "refs/heads/$base"
+`;
+
 export interface MaterializeOutcome { tip: string; changed: boolean }
 
 export interface MirrorInfo {
@@ -364,6 +374,12 @@ export class SandboxCache {
       if ((e as { code?: number }).code === 4) return null;
       throw e;
     }
+  }
+
+  /** Every file path at the tip of `base` in the mirror (CREW-3010). Throws when the mirror or branch is absent. */
+  async listFiles(repo: CacheRepo, base: string): Promise<string[]> {
+    const { stdout } = await this.helper(this.s.helperImage, LIST_SCRIPT, [mirrorRelPath(repo), base]);
+    return stdout.split('\n').filter(Boolean);
   }
 
   /** Mirrors in the volume with their last refresh; empty when the volume does not exist. */

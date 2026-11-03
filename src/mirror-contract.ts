@@ -16,6 +16,7 @@ import { remoteOf } from './remote-dir.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, type RepoConfig } from './repo-config.ts';
 import { mirrorRepoOf } from './passenger-mirror.ts';
 import { parseRemote, type SandboxCache, type CacheRepo } from './sandbox-cache.ts';
+import { globToRegExp, WARM_MAX_BYTES, type WarmFiles } from './sandbox-image.ts';
 import type { RepoTarget } from './config.ts';
 
 /** Whether this repository has to be served from its mirror: a sandbox-runner ship whose checkout directory is absent. */
@@ -57,6 +58,26 @@ export async function readMirrorContract(cache: Pick<SandboxCache, 'showFile'>, 
     if (text !== null) return parseRepoConfig(text, `${repo.host}/${repo.path}:${base}:${name}`);
   }
   return null;
+}
+
+/**
+ * The `sandbox.warm` files as committed on `base` in the mirror, for a ship with no checkout to
+ * run `git show` in (CREW-3010). Same semantics as `readWarmFiles`: a pattern matching nothing is
+ * skipped, and an unreadable mirror or oversized set throws.
+ */
+export async function readMirrorWarmFiles(cache: Pick<SandboxCache, 'showFile' | 'listFiles'>, repo: CacheRepo, base: string, patterns: string[]): Promise<WarmFiles> {
+  if (patterns.length === 0) return {};
+  const res = patterns.map(globToRegExp);
+  const out: WarmFiles = {};
+  let total = 0;
+  for (const path of (await cache.listFiles(repo, base)).filter((f) => res.some((re) => re.test(f))).sort()) {
+    const content = await cache.showFile(repo, base, path);
+    if (content === null) continue;
+    total += content.length;
+    if (total > WARM_MAX_BYTES) throw new Error(`sandbox.warm files exceed ${WARM_MAX_BYTES} bytes`);
+    out[path] = content;
+  }
+  return out;
 }
 
 /**

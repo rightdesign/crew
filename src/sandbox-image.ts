@@ -263,9 +263,9 @@ function crewLayer(base: SandboxLayer, intel?: 'serena', bridge?: string): Sandb
 export const WARM_DIR = '/tmp/crew-warm';
 /** A repo's warm files, relative path to content. */
 export type WarmFiles = Record<string, string>;
-const WARM_MAX_BYTES = 64 * 1024 * 1024;
+export const WARM_MAX_BYTES = 64 * 1024 * 1024;
 
-const globToRegExp = (glob: string): RegExp =>
+export const globToRegExp = (glob: string): RegExp =>
   new RegExp(`^${glob.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
 
 /**

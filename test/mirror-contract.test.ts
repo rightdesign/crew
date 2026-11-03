@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SandboxCache, type CacheExec, type CacheSettings } from '../src/sandbox-cache.ts';
-import { cacheRepoOfTarget, firstReport, lacksCheckout, skipsHostCheckout, noCheckoutReleaseNote, releasesFromSandbox, readMirrorContract, resetReported } from '../src/mirror-contract.ts';
+import { cacheRepoOfTarget, firstReport, lacksCheckout, skipsHostCheckout, noCheckoutReleaseNote, releasesFromSandbox, readMirrorContract, readMirrorWarmFiles, resetReported } from '../src/mirror-contract.ts';
 
 const settings: CacheSettings = { engine: 'docker', volume: 'v', workspace: 'w', helperImage: 'img', depsLockfile: 'pnpm-lock.yaml' };
 const repo = { host: 'github.com', path: 'o/r' };
@@ -79,4 +79,17 @@ test('only a sandbox-runner ship leaves the ticket repository to the runner (CRE
   assert.equal(skipsHostCheckout({ runner: 'sandbox' }), true);
   assert.equal(skipsHostCheckout({ runner: 'host' }), false);
   assert.equal(skipsHostCheckout({}), false);
+});
+
+test('readMirrorWarmFiles reads the matching files from the mirror and skips unmatched patterns (CREW-3010)', async () => {
+  const files: Record<string, string> = { 'pnpm-lock.yaml': 'lock', 'apps/a/package.json': '{}', 'apps/a/other.txt': 'no' };
+  const cache = { listFiles: async () => Object.keys(files), showFile: async (_r: unknown, _b: string, p: string) => files[p] ?? null };
+  const got = await readMirrorWarmFiles(cache, { host: 'h', path: 'o/r' }, 'main', ['pnpm-lock.yaml', 'apps/*/package.json', 'missing.yaml']);
+  assert.deepEqual(got, { 'pnpm-lock.yaml': 'lock', 'apps/a/package.json': '{}' });
+  assert.deepEqual(await readMirrorWarmFiles(cache, { host: 'h', path: 'o/r' }, 'main', []), {});
+});
+
+test('readMirrorWarmFiles propagates an unreadable mirror so the caller can log it (CREW-3010)', async () => {
+  const cache = { listFiles: async () => { throw new Error('the mirror has no branch main'); }, showFile: async () => null };
+  await assert.rejects(readMirrorWarmFiles(cache, { host: 'h', path: 'o/r' }, 'main', ['pnpm-lock.yaml']), /no branch/);
 });

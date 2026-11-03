@@ -93,7 +93,7 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
-import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport } from './mirror-contract.ts';
+import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, readMirrorWarmFiles, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
 import { sandboxImageForRun } from './sandbox-image.ts';
 import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo, type RefreshOutcome } from './sandbox-cache.ts';
@@ -1660,11 +1660,26 @@ async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoR
   for (const c of routes) {
     const { settled } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
     for (const r of settled) if (r.config.sandbox && !out.has(r.name)) {
+      const patterns = r.config.sandbox.warm ?? [];
+      const base = r.config.branch.base;
       let warm: WarmFiles = {};
+      // CREW-3010: a ship with no checkout has no directory to run git in; read the mirror instead.
+      const target = reposOf(c).find((t) => t.name === r.name);
+      const noCheckout = lacksCheckout(cfg.ship, r.dir);
+      const mirror = target && noCheckout ? mirrorRepoOfTarget(target) : null;
+      const settings = cfg.ship.runner === 'sandbox' ? cacheSettingsOf(cfg.ship.sandbox) : null;
+      const source = mirror ? `the mirror of ${mirror.host}/${mirror.path} at ${base}` : `${r.dir} at ${r.config.branch.remote}/${base}`;
+      let failure = '';
       try {
-        warm = readWarmFiles(r.dir, `${r.config.branch.remote}/${r.config.branch.base}`, r.config.sandbox.warm ?? []);
-      } catch {
+        if (mirror && settings) warm = await readMirrorWarmFiles(new SandboxCache(settings), mirror, base, patterns);
+        else if (!noCheckout) warm = readWarmFiles(r.dir, `${r.config.branch.remote}/${base}`, patterns);
+        else failure = 'no checkout and no mirror to read';
+      } catch (e) {
         // An unreadable ref builds without warm files; the next tick retries with a different tag.
+        failure = e instanceof Error ? e.message.split('\n')[0]! : String(e);
+      }
+      if (patterns.length > 0 && Object.keys(warm).length === 0 && firstReport(`warm-empty:${r.name}:${failure}`)) {
+        emit.emit(`${r.name}: sandbox.warm declares ${patterns.join(', ')} but no file could be read from ${source}${failure ? ` (${failure})` : ''}; the image is built without warm files`);
       }
       out.set(r.name, { name: r.name, decl: intelFlavor(r.config.hooks.intel) === 'serena' ? { ...r.config.sandbox, intel: 'serena' } : r.config.sandbox, warm, ...(wantsCodeBridge(r.config.hooks.intel) ? { bridge: readBridgeBundle() } : {}) });
     }
