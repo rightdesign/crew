@@ -369,9 +369,25 @@ export function gitCredentialEnv(
 
 const shq = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
 
-/** How a shell (git runs helpers through one) re-invokes this crew: node, its flags, the entry script. */
-export function crewCommandLine(): string {
-  return [process.execPath, ...process.execArgv, process.argv[1] ?? 'crew'].map(shq).join(' ');
+/** The slice of `process` that decides how crew re-invokes itself. */
+export interface CrewProcess { execPath: string; execArgv: string[]; argv: string[] }
+
+/**
+ * A compiled (Bun standalone) crew has no script to pass: `argv[1]` is the
+ * embedded entry (`/$bunfs/root/crew`, `B:/~BUN/root/crew` on Windows) or the
+ * binary itself, and handing either back as an argument makes the CLI reject
+ * it as an unknown command (CREW-3005).
+ */
+export function isCompiledCrew(p: CrewProcess): boolean {
+  const entry = p.argv[1];
+  if (entry === undefined) return true;
+  return entry.startsWith('/$bunfs/') || entry.includes('/~BUN/') || entry === p.execPath;
+}
+
+/** How a shell (git runs helpers through one) re-invokes this crew: node, its flags, the entry script; the binary alone when compiled. */
+export function crewCommandLine(p: CrewProcess = process): string {
+  const parts = isCompiledCrew(p) ? [p.execPath] : [p.execPath, ...p.execArgv, p.argv[1]!];
+  return parts.map(shq).join(' ');
 }
 
 /** Environment variables a forge token is exported as for an agent run (`gh` and friends read these). */

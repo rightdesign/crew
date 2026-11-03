@@ -120,6 +120,24 @@ export function formatToolCheck(t: ToolCheck): string {
   return `${label}${t.need === 'required' ? 'NOT FOUND' : 'not found'} [${t.need}] — ${t.hint}\n`;
 }
 
+/**
+ * CREW-3005: run the credential helper command crew registers with git
+ * (`<command> credential get`) against a probe host. A miss is a clean exit
+ * with no answer; a helper that cannot even start, or that the CLI rejects,
+ * exits non-zero or says so on stderr, which is what a clone would hit.
+ */
+export function probeCredentialHelper(command: string, run: (cmd: string, input: string) => { status: number | null; stderr: string } = realHelperRun): PushAuthResult {
+  const r = run(`${command} credential get --no-miss`, 'protocol=https\nhost=crew-probe.invalid\n\n');
+  if (r.status === 0 && !/unknown command|usage:/i.test(r.stderr)) return { state: 'ok' };
+  const why = r.stderr.trim().split('\n')[0] || `exit ${r.status}`;
+  return { state: 'failed', detail: `the git credential helper command does not run: ${why}`, hint: 'reinstall crew; git cannot authenticate to a private repository until this works' };
+}
+
+const realHelperRun = (cmd: string, input: string) => {
+  const r = spawnSync('sh', ['-c', cmd], { input, encoding: 'utf8', timeout: 15_000 });
+  return { status: r.status, stderr: r.stderr ?? (r.error ? String(r.error) : '') };
+};
+
 export function formatPushAuth(repo: string, r: PushAuthResult): string {
   const label = `push auth ${repo}:`.padEnd(19);
   if (r.state === 'ok') return `${label}ok\n`;

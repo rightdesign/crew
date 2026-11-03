@@ -4,11 +4,11 @@ import { mkdtempSync, statSync, writeFileSync, chmodSync, readFileSync, existsSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  parseForges, parseCredentialInput, answerCredential, gitCredentialEnv, forgeRunEnv, readForgeToken,
+  parseForges, crewCommandLine, parseCredentialInput, answerCredential, gitCredentialEnv, forgeRunEnv, readForgeToken,
   storeForgeToken, readForgeMisses, hostOfRemote, forgeOfRemote, forgeDescriptorFor, ForgeError, defaultTokenFilePath, type ForgesConfig,
 } from '../src/forges.ts';
 import { runCredential, runForge } from '../src/forge-cmd.ts';
-import { probePushAuth } from '../src/doctor-checks.ts';
+import { probePushAuth, probeCredentialHelper } from '../src/doctor-checks.ts';
 import { cloneUrlFor, setForgeTokenHosts } from '../src/git.ts';
 
 const dir = () => mkdtempSync(join(tmpdir(), 'crew-forge-'));
@@ -219,4 +219,21 @@ test('credential get ignores other protocols, store and erase when recording mis
   runCredential('store', 'protocol=https\nhost=x.example.com\n\n', undefined, d);
   runCredential('erase', 'protocol=https\nhost=x.example.com\n\n', undefined, d);
   assert.deepEqual(readForgeMisses(d), []);
+});
+
+test('crewCommandLine: node form from source, the binary alone when compiled (CREW-3005)', () => {
+  assert.equal(
+    crewCommandLine({ execPath: '/usr/bin/node', execArgv: ['--experimental-strip-types'], argv: ['/usr/bin/node', '/src/cli.ts'] }),
+    "'/usr/bin/node' '--experimental-strip-types' '/src/cli.ts'",
+  );
+  assert.equal(crewCommandLine({ execPath: '/opt/crew/crew', execArgv: [], argv: ['/opt/crew/crew', '/$bunfs/root/crew'] }), "'/opt/crew/crew'");
+  assert.equal(crewCommandLine({ execPath: '/opt/crew/crew', execArgv: [], argv: ['/opt/crew/crew', '/opt/crew/crew'] }), "'/opt/crew/crew'");
+  assert.equal(crewCommandLine({ execPath: 'C:/crew.exe', execArgv: [], argv: ['C:/crew.exe', 'B:/~BUN/root/crew.exe'] }), "'C:/crew.exe'");
+});
+
+test('probeCredentialHelper: a miss is ok, a rejected command is reported (CREW-3005)', () => {
+  assert.equal(probeCredentialHelper('x', () => ({ status: 0, stderr: '' })).state, 'ok');
+  const bad = probeCredentialHelper('x', () => ({ status: 0, stderr: 'crew: unknown command "/$bunfs/root/crew"\n' }));
+  assert.equal(bad.state, 'failed');
+  assert.equal(probeCredentialHelper('x', () => ({ status: 127, stderr: '' })).state, 'failed');
 });

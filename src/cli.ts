@@ -20,7 +20,7 @@ import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
 } from './sandbox-image.ts';
-import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, managedGitIdentityWarnings, readGlobalGitIdentity, runtimeDirWarning, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
+import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, probeCredentialHelper, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, managedGitIdentityWarnings, readGlobalGitIdentity, runtimeDirWarning, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { resolve, dirname, join, basename } from 'node:path';
@@ -6948,6 +6948,8 @@ switch (command) {
     for (const [repoName, ov] of Object.entries(route.repoOverrides)) {
       if (ov.toolchain) process.stdout.write(`repo toolchain:    ${repoName} → ${ov.toolchain} (binary and MCP checked above, as for every ship toolchain)\n`);
     }
+    // CREW-3005: with forges configured, git calls crew back as its credential helper; prove that command runs.
+    if (cfg.ship.forges) process.stdout.write(formatPushAuth('credential helper', probeCredentialHelper(crewCommandLine())).replace('push auth credential helper:', 'credential helper:'.padEnd(19)));
     for (const p of pushAuth) process.stdout.write(formatPushAuth(`${p.repo}`, p.result));
     for (const t of toolRows) process.stdout.write(formatToolCheck(t));
     process.stdout.write(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
