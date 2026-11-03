@@ -56,6 +56,7 @@ export async function runAgentsSync(target: Route, o: AgentsSyncRunOptions): Pro
   for (const p of personaResult.outcomes) o.say(describeSyncOutcome(p));
   for (const l of personaResult.crewLinks) o.say(describeCrewLink(l));
   if (personaResult.releaseNote) o.say(personaResult.releaseNote);
+  if (personaResult.chatNote) o.say(personaResult.chatNote);
   // CREW-1534: a brief's `{{skill: Name}}` include of a skill this preset
   // does not ship would refuse every run of that seat, so say so here.
   const briefs = Object.fromEntries(ROLE_NAMES.map((r) => [r, personaDefaultPrompt(target.promptsDir, r)]));

@@ -28,6 +28,7 @@
  */
 
 import { appendAdditions } from './prompt-additions.ts';
+import { readPersonaFile } from './persona-file.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TablationClient, StaleWriteError, TablationApiError } from '@tablation/client';
@@ -70,14 +71,21 @@ export class AgentsSyncError extends Error {}
 export function personaDefaultPrompt(promptsDir: string, role: RoleName): string {
   const briefPath = join(promptsDir, 'personas', `lane-${role}.md`);
   if (!existsSync(briefPath)) throw new AgentsSyncError(`no brief at ${briefPath}`);
-  if (SELF_CONTAINED_ROLES.has(role)) return readFileSync(briefPath, 'utf8');
+  const brief = readPersonaFile(briefPath).body;
+  if (SELF_CONTAINED_ROLES.has(role)) return brief;
   // The shipped presets carry their shared policy as the `Crew Lane Agent`
   // skill, which the brief includes by marker (CREW-1534) and which is
   // deliberately NOT expanded here: the row keeps the marker. A preset forked
   // before that still ships `personas/common.md`, which keeps being prefixed.
   const commonPath = join(promptsDir, 'personas', 'common.md');
-  if (!existsSync(commonPath)) return readFileSync(briefPath, 'utf8');
-  return `${readFileSync(commonPath, 'utf8')}${readFileSync(briefPath, 'utf8')}`;
+  if (!existsSync(commonPath)) return brief;
+  return `${readFileSync(commonPath, 'utf8')}${brief}`;
+}
+
+/** CREW-3023: the `chat_enabled` value a role's brief declares in its front matter, if any. */
+export function personaChatEnabled(promptsDir: string, role: RoleName): boolean | undefined {
+  const briefPath = join(promptsDir, 'personas', `lane-${role}.md`);
+  return existsSync(briefPath) ? readPersonaFile(briefPath).chatEnabled : undefined;
 }
 
 interface AgentRow {
@@ -97,6 +105,8 @@ interface AgentRow {
   prompt_baseline?: string | null;
   /** TABL-1716: workspace text appended after the prompt at run time. Absent on an older server. */
   prompt_additions?: string | null;
+  /** TABL-1927: "Available in chat". Null = never set; absent on a workspace without the column. */
+  chat_enabled?: boolean | null;
 }
 
 /**
@@ -543,6 +553,8 @@ export interface SyncPersonasResult {
   releaseNote?: string;
   /** CREW-1797: true when this pass wrote nothing to Agents (a non-admin key). */
   readOnly?: boolean;
+  /** CREW-3023: a line when a brief declares `chat_enabled` and the Agents table has no such column, for `crew agents sync`'s stdout. */
+  chatNote?: string;
 }
 
 export const RELEASE_AGENT_NAME = 'Release agent';
@@ -586,6 +598,17 @@ export async function syncPersonas(
   const outcomes: PersonaSyncOutcome[] = [];
   const agentPersonas: SyncPersonasResult['agentPersonas'] = { ...cache };
 
+  // CREW-3023: a brief's declared `chat_enabled`; written on create, and on an existing row only while its value is null.
+  const hasChatColumn = agentsModel.fields?.some((f) => f.columnName === 'chat_enabled') === true;
+  const chatDeclared: Partial<Record<RoleName, boolean>> = {};
+  for (const role of ROLE_NAMES) {
+    const v = personaChatEnabled(route.promptsDir, role);
+    if (v !== undefined) chatDeclared[role] = v;
+  }
+  const chatNote = !hasChatColumn && Object.keys(chatDeclared).length > 0 && !opts.readOnly
+    ? 'chat_enabled not synced — the Agents table has no chat_enabled column yet (update the Issues template)'
+    : undefined;
+
   for (const role of ROLE_NAMES) {
     const name = PERSONA_NAME[role];
     const defaultPrompt = personaDefaultPrompt(route.promptsDir, role);
@@ -603,7 +626,10 @@ export async function syncPersonas(
 
     if (!row) {
       if (opts.dryRun) { outcomes.push({ role, action: 'created', agentId: '(dry run)' }); continue; }
-      const created = await client.records.create<AgentRow>(agentsModel.id, { name, prompt: defaultPrompt, ...promptSourceFields(agentsModel, defaultPrompt) });
+      const created = await client.records.create<AgentRow>(agentsModel.id, {
+        name, prompt: defaultPrompt, ...promptSourceFields(agentsModel, defaultPrompt),
+        ...(hasChatColumn && chatDeclared[role] !== undefined ? { chat_enabled: chatDeclared[role] } : {}),
+      });
       const historyId = await fetchLatestHistoryId(route, agentsModel.id, created.id, opts.userAgent);
       agentPersonas[role] = { agentId: created.id, lastSyncedUpdatedAt: created.updated_at, ...(historyId ? { historyId } : {}) };
       outcomes.push({ role, action: 'created', agentId: created.id });
@@ -738,6 +764,18 @@ export async function syncPersonas(
     }
   }
 
+  if (hasChatColumn && !opts.dryRun && !opts.readOnly) {
+    for (const role of ROLE_NAMES) {
+      const want = chatDeclared[role];
+      const row = rows.find((r) => r.name === PERSONA_NAME[role]);
+      const entry = agentPersonas[role];
+      // Only a row crew did not just create, and only while the flag was never set: an admin's choice, off included, stays.
+      if (want === undefined || !row || !entry || entry.agentId !== row.id || (row.chat_enabled ?? null) !== null) continue;
+      const updated = await client.records.update<AgentRow>(agentsModel.id, row.id, { chat_enabled: want });
+      agentPersonas[role] = { ...entry, lastSyncedUpdatedAt: updated.updated_at };
+    }
+  }
+
   const crewLinks = opts.dryRun
     ? []
     : await linkCrewSeats(route, client, agentsModel.id, agentPersonas, opts.userAgent, opts.readOnly === true);
@@ -750,6 +788,7 @@ export async function syncPersonas(
     outcomes, agentPersonas, crewLinks,
     ...(release.agentId ? { releaseAgentId: release.agentId } : {}),
     ...(release.note ? { releaseNote: release.note } : {}),
+    ...(chatNote ? { chatNote } : {}),
     ...(opts.readOnly ? { readOnly: true } : {}),
   };
 }

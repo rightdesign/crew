@@ -104,6 +104,8 @@ The row is matched by `machine_id`. A workspace whose Ships table has no `machin
 
 A skill file's front matter may also carry `trigger` (the phrase that starts the skill) and `persona` (the persona it runs as, by name, e.g. `Pair`). `crew agents sync` writes `trigger` to the Agent Skills row as text and `persona` as a reference to the Agents row of that name; the platform reads both columns to start the skill from its phrase under that persona. A persona name with no Agents row leaves the column empty and prints a warning; a workspace whose Agent Skills table lacks either column skips the value with a note. Either key that is not a string refuses the sync, naming the file.
 
+A persona brief may open with a front matter block declaring `chat_enabled: true` (the Pair briefs do), the Agents row's "Available in chat" flag. `crew agents sync` writes it when it creates the row, and on an existing row only while the flag was never set, so a workspace admin who turned it off keeps it off. A workspace whose Agents table lacks the column skips it with a note. The front matter is not part of the persona's prompt.
+
 A row's "Additional instructions" (`prompt_additions`) are appended, after a fixed divider, to the persona brief and to each included skill at run time, with or without "Customize prompt". `crew agents prompt` and `crew logbook show --prompt` print that composed text.
 
 ## Host Passengers

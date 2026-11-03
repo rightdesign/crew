@@ -950,3 +950,83 @@ test('CREW-1797: an admin sync whose Release-agent create 403s reports it rather
   const result = await syncPersonas(route, {});
   assert.match(result.releaseNote ?? '', /could not create the "Release agent" Agents row/);
 });
+
+// CREW-3023: a persona brief's front matter can declare chat_enabled for its Agents row.
+const PAIR_WITH_CHAT = '---\nchat_enabled: true\n---\nPAIR BRIEF\n';
+const AGENTS_MODEL_WITH_CHAT = { ...AGENTS_MODEL, fields: [{ columnName: 'chat_enabled' }] };
+
+function chatRows(promptsDir: string, pairChat: boolean | null | undefined) {
+  return ['Developer', 'Design', 'QA', 'Triage', 'Pair'].map((name) => ({
+    id: `row-${name}`, name,
+    prompt: personaDefaultPrompt(promptsDir, ({ Developer: 'dev', Design: 'design', QA: 'qa', Triage: 'triage', Pair: 'pair' } as const)[name as 'Pair']),
+    updated_at: '2026-01-01T00:00:00Z',
+    ...(name === 'Pair' ? { chat_enabled: pairChat } : { chat_enabled: null }),
+  }));
+}
+
+test('CREW-3023: front matter is not part of the persona prompt', () => {
+  const promptsDir = makePromptsDir({ pair: PAIR_WITH_CHAT });
+  assert.equal(personaDefaultPrompt(promptsDir, 'pair'), 'PAIR BRIEF\n');
+});
+
+test('CREW-3023: a created Pair row carries chat_enabled true and the lane rows send none', async (t) => {
+  const promptsDir = makePromptsDir({ pair: PAIR_WITH_CHAT });
+  const created: Array<Record<string, unknown>> = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL_WITH_CHAT }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: [] }),
+    'POST /api/data-models/agents-model-1/records': (body: any) => {
+      created.push(body);
+      return { status: 200, body: { id: `row-${body.name}`, name: body.name, prompt: body.prompt, updated_at: '2026-08-28T00:00:00Z' } };
+    },
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
+  assert.equal(created.find((c) => c.name === 'Pair')!.chat_enabled, true);
+  assert.ok(created.filter((c) => c.name !== 'Pair').every((c) => !('chat_enabled' in c)));
+  assert.equal(result.chatNote, undefined);
+});
+
+test('CREW-3023: an existing Pair row whose chat_enabled is null is set on; lane rows are untouched', async (t) => {
+  const promptsDir = makePromptsDir({ pair: PAIR_WITH_CHAT });
+  const patches: Array<{ key: string; body: unknown }> = [];
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL_WITH_CHAT }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: chatRows(promptsDir, null) }),
+    'PATCH /api/data-models/agents-model-1/records/row-Pair': (body) => {
+      patches.push({ key: 'row-Pair', body });
+      return { status: 200, body: { id: 'row-Pair', name: 'Pair', updated_at: '2026-02-01T00:00:00Z' } };
+    },
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
+  assert.deepEqual(patches.map((p) => p.body), [{ chat_enabled: true }]);
+  assert.equal(result.agentPersonas.pair?.lastSyncedUpdatedAt, '2026-02-01T00:00:00Z');
+});
+
+test('CREW-3023: an admin who turned Pair\'s chat_enabled off keeps it off after a resync', async (t) => {
+  const promptsDir = makePromptsDir({ pair: PAIR_WITH_CHAT });
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL_WITH_CHAT }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: chatRows(promptsDir, false) }),
+  });
+  t.after(restore);
+
+  await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
+  assert.equal(calls.filter((c) => c.key.startsWith('PATCH')).length, 0);
+});
+
+test('CREW-3023: a workspace without the chat_enabled column skips it with a note and writes nothing extra', async (t) => {
+  const promptsDir = makePromptsDir({ pair: PAIR_WITH_CHAT });
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': () => ({ status: 200, body: chatRows(promptsDir, undefined) }),
+  });
+  t.after(restore);
+
+  const result = await syncPersonas(makeRoute(undefined, {}, promptsDir), {});
+  assert.match(result.chatNote ?? '', /chat_enabled/);
+  assert.equal(calls.filter((c) => c.key.startsWith('PATCH')).length, 0);
+});

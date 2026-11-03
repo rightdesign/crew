@@ -44,6 +44,7 @@ import { listLocalSkills } from './skills.ts';
 import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKind } from './runner.ts';
 import { deadlineFor, msUntilDeadline, resolveMaxRunMinutes, WALL_CLOCK_REASON } from './run-limit.ts';
 import { appendAdditions } from './prompt-additions.ts';
+import { readPersonaFile } from './persona-file.ts';
 import { TicketAttributionTracker, isClaimWrite } from './ticket-attribution.ts';
 
 /**
@@ -527,7 +528,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   }
 
   const common = usesCommon ? readFileSync(commonPath, 'utf8') : '';
-  const brief = readFileSync(briefPath, 'utf8');
+  const brief = readPersonaFile(briefPath).body;
   // A diverged row's prompt is the full common+brief replacement (see
   // `divergedPrompt`'s own doc on `PlanOptions`), so it goes entirely into
   // `brief` with `common` left empty rather than splitting it back apart.
