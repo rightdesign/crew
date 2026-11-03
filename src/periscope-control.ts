@@ -22,6 +22,9 @@
  * (the control API's bearer check only proves membership of *some* workspace
  * this ship serves).
  *
+ * `up` takes `issue` (a ticket number, `123` or `CREW-123`) instead of `topic` to open a
+ * periscope on an existing ticket; the refusals are the CLI's own (CREW-2865).
+ *
  * Progress: `up` and `down` print one JSON event per step on stderr. A caller
  * that sends `Accept: application/x-ndjson` (or `?stream=1`) gets those lines
  * as they happen, then a final `{"event":"done",...}` or `{"event":"error",
@@ -110,7 +113,10 @@ export function cliMessage(r: CliResult): string {
 function failureStatus(r: CliResult): number {
   const m = cliMessage(r);
   if (/^no periscope for ticket /.test(m)) return 404;
+  if (/^no ticket numbered /.test(m)) return 404;
   if (/already hosts \d+ live periscope/.test(m)) return 409;
+  // `up --issue` refusals (CREW-2865): the ticket is taken, not malformed.
+  if (/ is held by | has a live periscope on | has a run in flight on /.test(m)) return 409;
   return r.code === 1 ? 422 : 500;
 }
 
@@ -243,7 +249,16 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
   }
 
   const repo = plainText(b.repo, 'repo', true);
-  const topic = plainText(b.topic, 'topic', true);
+  // `issue` periscopes a ticket that already exists (CREW-2865), so it replaces `topic`.
+  const hasIssue = b.issue !== undefined && b.issue !== null && b.issue !== '';
+  const topic = plainText(b.topic, 'topic', !hasIssue);
+  let issue: string | undefined;
+  if (hasIssue) {
+    const raw = typeof b.issue === 'number' ? String(b.issue) : typeof b.issue === 'string' ? b.issue.trim() : '';
+    if (!TICKET_RE.test(raw)) return err(400, 'issue must be a ticket number such as 123 or CREW-123');
+    if (topic !== undefined && !isErr(topic)) return err(400, 'issue and topic cannot be combined: issue periscopes a ticket that already exists');
+    issue = String(Number.parseInt(/(\d+)$/.exec(raw)![1]!, 10));
+  }
   const requestedBy = plainText(b.requestedBy, 'requestedBy', false);
   for (const v of [repo, topic, requestedBy]) if (isErr(v)) return err(400, v.error);
   if (b.isolate !== undefined && typeof b.isolate !== 'boolean') return err(400, 'isolate must be a boolean');
@@ -258,9 +273,10 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
     } catch { /* the command's own check still applies */ }
   }
   return execute(h, [
-    'periscope', 'up', picked.route, repo as string, '--topic', topic as string,
+    'periscope', 'up', picked.route, repo as string,
+    ...(issue ? ['--issue', issue] : ['--topic', topic as string]),
     '--host', h.previewHost,
-    ...(requestedBy ? ['--requested-by', requestedBy as string] : []),
+    ...(requestedBy && !issue ? ['--requested-by', requestedBy as string] : []),
     ...(b.isolate === true ? ['--isolate'] : []), ...(h.mcp ? ['--serve-mcp'] : []), '--no-open', '--json',
   ], q.wantsStream, h.mcp ? async (done) => ({ ...done, ...(await h.mcp!.onUp(picked, done)) }) : undefined);
 }

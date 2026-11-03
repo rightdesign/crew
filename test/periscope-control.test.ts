@@ -60,6 +60,23 @@ test('up: a member opens a periscope; the command carries the preview host, topi
   assert.deepEqual(up, ['periscope', 'up', 'ws/issues', 'app', '--topic', 'Compact rows', '--host', 'ship.lan', '--requested-by', 'mem-1', '--isolate', '--no-open', '--json']);
 });
 
+test('up: an issue replaces the topic, is normalized to digits, and the CLI refusal for a held ticket is 409', async () => {
+  const f = fake();
+  const r = await handlePeriscopes(f.h, req({ body: { route: 'ws/issues', repo: 'app', issue: 'CREW-0123' } }));
+  assert.equal(r.status, 200);
+  assert.deepEqual(f.runs.find((a) => a[1] === 'up'), ['periscope', 'up', 'ws/issues', 'app', '--issue', '123', '--host', 'ship.lan', '--no-open', '--json']);
+  const bad = async (issue: unknown, extra: Record<string, unknown> = {}) => handlePeriscopes(f.h, req({ body: { route: 'ws/issues', repo: 'app', issue, ...extra } }));
+  const abc = await bad('abc');
+  assert.equal(abc.status, 400);
+  assert.match(String((abc.body as { error: string }).error), /^issue /);
+  assert.equal((await bad('12', { topic: 'x' })).status, 400);
+  assert.equal((await handlePeriscopes(f.h, req({ body: { route: 'ws/issues', repo: 'app' } }))).status, 400, 'topic still required without issue');
+  const held = fake({ up: { code: 1, stdout: '', stderr: 'crew periscope: CREW-12 is held by Developer agent (Studio)\n' } });
+  const h = await handlePeriscopes(held.h, req({ body: { route: 'ws/issues', repo: 'app', issue: 12 } }));
+  assert.equal(h.status, 409);
+  assert.deepEqual(h.body, { error: 'CREW-12 is held by Developer agent (Studio)' });
+});
+
 test('up: a key outside the route workspace is refused 403 and nothing runs', async () => {
   const f = fake({ members: { member: ['ws1'], stranger: ['ws2'] } });
   const r = await handlePeriscopes(f.h, req({ token: 'stranger', body: upBody }));
