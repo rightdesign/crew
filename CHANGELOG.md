@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.133.1] — 2026-11-03
+
+- CREW-3036 The sandbox policy also lets runs write the /opt/crew/cache tool cache.
+
 ## [0.133.0] — 2026-11-03
 
 - CREW-3021 A sandbox build cut short by a daemon reload restarts on the next pass, a failure with an empty log is retried at once, and doctor tells a stale image from a missing one.
