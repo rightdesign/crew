@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sandboxHookGaps } from '../src/sandbox-hooks.ts';
+import { sandboxHookGaps, imageStoreProblem } from '../src/sandbox-hooks.ts';
 import { repoFindings } from '../src/doctor-problems.ts';
 
 const o = { route: 'w/p', repo: 'app', image: 'crew-sandbox-app:abc', declares: true, hooks: { setup: 'pnpm install', test: 'swift test', build: 'pnpm build' } };
@@ -30,4 +30,14 @@ test('repoFindings on a sandbox ship ignores the host PATH and reports the image
   assert.equal(repoFindings({ ...base, sandboxGaps: [] }).problems.length, 0);
   const f = repoFindings({ ...base, sandboxGaps: sandboxHookGaps({ ...o, hasBinary: () => false }) });
   assert.equal(f.problems.filter((p) => p.kind === 'hook_missing').length, 3);
+});
+
+test('doctor reports a pnpm store the sandbox user cannot write (CREW-3036)', () => {
+  const base = { route: 'w/p', repo: 'app', dir: '/x', notes: [], base: { message: '', failed: false, skipRest: false }, hooks: {}, onPath: () => true };
+  const bad = repoFindings({ ...base, sandboxStoreProblem: 'Permission denied' }).problems.find((p) => p.kind === 'sandbox_store_unwritable')!;
+  assert.equal(bad.severity, 'attention');
+  assert.match(bad.message, /Permission denied/);
+  assert.equal(repoFindings({ ...base, sandboxStoreProblem: null }).problems.length, 0);
+  assert.equal(imageStoreProblem('docker', () => { throw new Error('boom\nmore'); })('img'), 'boom');
+  assert.equal(imageStoreProblem('docker', () => '')('img'), null);
 });

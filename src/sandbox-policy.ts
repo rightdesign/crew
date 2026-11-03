@@ -155,6 +155,16 @@ function tablationEndpoint(url: string): PolicyEndpoint {
 // Not imported from sandbox-image.ts (CREW_PREFIX): that module reaches seat-keys, and the import cycle breaks module load. A test pins the two together.
 export const CREW_BIN = '/opt/crew/bin';
 
+/**
+ * The warmed pnpm store and pnpm's own state under the crew layer (CREW-3036). pnpm opens the store's
+ * SQLite index read-write even for `install --offline`, so a read-only store fails every install with
+ * "attempt to write a readonly database". Same duplication as CREW_BIN; the test pins it to sandbox-image.ts.
+ */
+export const CREW_PNPM_STORE = '/opt/crew/pnpm-store';
+export const CREW_PNPM_HOME = '/opt/crew/pnpm';
+/** The XDG cache (warmed prisma engines; tools cache here at run time). */
+export const CREW_CACHE = '/opt/crew/cache';
+
 const TOOL_BINARIES = ['/usr/bin/curl', `${CREW_BIN}/node`, '/usr/bin/node', '/usr/local/bin/node', '/usr/bin/npm', '/usr/local/bin/npm', '/usr/local/bin/pnpm', '/usr/bin/corepack', '/usr/local/bin/corepack'];
 const GIT_BINARIES = ['/usr/bin/git', '/usr/lib/git-core/git-remote-http', '/usr/lib/git-core/git-remote-https'];
 
@@ -210,7 +220,8 @@ export function generateSandboxPolicy(input: SandboxPolicyInput): SandboxPolicy 
     filesystem_policy: {
       include_workdir: true,
       read_only: ['/usr', '/lib', '/proc', '/dev/urandom', '/app', '/etc', '/var/log', '/opt/crew', mirror],
-      read_write: ['/sandbox', '/tmp', '/dev/null', work],
+      // The pnpm store is writable though /opt/crew is not; /opt/crew/bin (the binaries a run executes) stays read-only.
+      read_write: ['/sandbox', '/tmp', '/dev/null', work, CREW_PNPM_STORE, CREW_PNPM_HOME, CREW_CACHE],
     },
     // A host that cannot enforce fails the run instead of running unconfined.
     landlock: { compatibility: 'hard_requirement' },

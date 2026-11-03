@@ -77,6 +77,15 @@ test('landlock is hard_requirement and the cache mount is read-only', () => {
   assert.ok(!doc.filesystem_policy.read_write.includes('/cache'));
 });
 
+test('the pnpm store is writable while /opt/crew/bin stays read-only (CREW-3036)', () => {
+  const fs = parse(generateSandboxPolicy(base).yaml).filesystem_policy;
+  assert.ok(fs.read_only.includes('/opt/crew'));
+  assert.ok(fs.read_write.includes('/opt/crew/pnpm-store'));
+  assert.ok(fs.read_write.includes('/opt/crew/pnpm'));
+  assert.ok(fs.read_write.includes('/opt/crew/cache'));
+  assert.ok(!fs.read_write.some((p: string) => p === '/opt/crew' || p.startsWith('/opt/crew/bin')));
+});
+
 test('an unknown toolchain is an error naming the ones crew knows', () => {
   assert.throws(() => generateSandboxPolicy({ ...base, toolchains: ['frobnicate'] }), /not one crew knows.*pnpm/);
 });

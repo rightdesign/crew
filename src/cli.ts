@@ -16,7 +16,7 @@ import { intelFlavor, wantsCodeBridge, lspFlavor, lspBinaryFound, ensureLspPlugi
 import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
-import { sandboxHookGaps, imageHasBinary } from './sandbox-hooks.ts';
+import { sandboxHookGaps, imageHasBinary, imageStoreProblem } from './sandbox-hooks.ts';
 import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
   sandboxFailedKey, type SandboxRepoRef, type TickDeps,
@@ -6591,6 +6591,10 @@ switch (command) {
               image: sandboxImageForRun(readSandboxState(cfg.ship.stateDir), r.name, Boolean(r.config.sandbox)),
               hasBinary: imageHasBinary(),
             }) : undefined,
+            sandboxStoreProblem: cfg.ship.runner === 'sandbox' ? (() => {
+              const image = sandboxImageForRun(readSandboxState(cfg.ship.stateDir), r.name, Boolean(r.config.sandbox));
+              return image ? imageStoreProblem()(image) : undefined;
+            })() : undefined,
             mapFile: mapFilePath(r.config.hooks.map) ? inspectMapFile(r.dir, mapFilePath(r.config.hooks.map)!) : undefined,
             intelSyntax: r.config.hooks.intel && !intelFlavor(r.config.hooks.intel) ? checkHookSyntax(r.config.hooks.intel, r.config.shell) : undefined,
             intelFlavor: intelFlavor(r.config.hooks.intel) ? { name: intelFlavor(r.config.hooks.intel)!, missing: [

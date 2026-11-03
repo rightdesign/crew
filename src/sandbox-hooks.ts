@@ -52,3 +52,17 @@ export function sandboxHookGaps(o: {
   }
   return gaps;
 }
+
+/**
+ * Whether the crew layer's pnpm store can be written by the sandbox user (CREW-3036). An offline install
+ * writes the store's index, so a store the sandbox user cannot write fails every run's `pnpm install`.
+ * Returns the engine's complaint, or null when the store is writable.
+ */
+export const imageStoreProblem = (engine = 'docker', exec: Exec = realExec) => (image: string): string | null => {
+  try {
+    exec(engine, ['run', '--rm', '--entrypoint', 'sh', image, '-c', 'd=/opt/crew/pnpm-store; test -d $d && t=$(mktemp -p $d) && rm -f "$t"'], { timeoutMs: 60_000 });
+    return null;
+  } catch (e) {
+    return (e as Error).message.split('\n')[0] || 'write test failed';
+  }
+};

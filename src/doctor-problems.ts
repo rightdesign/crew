@@ -44,6 +44,8 @@ export function repoFindings(o: {
   onPath: (command: string) => boolean;
   /** Sandbox ship (CREW-3007): hooks run in the image, so these gaps replace the host PATH check. */
   sandboxGaps?: Array<{ hook: string; command: string; message: string; remedy: string }>;
+  /** Sandbox ship (CREW-3036): why the image's pnpm store cannot be written, when it cannot. */
+  sandboxStoreProblem?: string | null;
   /** A file-form `map` (CREW-2919): what `hooks.map` names and whether it exists in the checkout. */
   mapFile?: { path: string; exists: boolean; lines: number; tokens: number };
   /** The `intel` hook's syntax check, when the repository declares one. */
@@ -69,6 +71,14 @@ export function repoFindings(o: {
   } else if (o.base.message) passed++;
   for (const g of o.sandboxGaps ?? []) {
     problems.push({ severity: 'attention', kind: 'hook_missing', ...at, hook: g.hook as (typeof HOOK_NAMES)[number], command: g.command, message: g.message, remedy: g.remedy });
+  }
+  if (o.sandboxStoreProblem !== undefined) {
+    if (o.sandboxStoreProblem === null) passed++;
+    else problems.push({
+      severity: 'attention', kind: 'sandbox_store_unwritable', ...at,
+      message: `${o.route}/${o.repo}: the pnpm store in its sandbox image cannot be written, so every offline \`pnpm install\` in a run fails (${o.sandboxStoreProblem})`,
+      remedy: `rebuild the image with \`crew sandbox build ${o.repo}\`; the store at /opt/crew/pnpm-store must be owned by the sandbox user`,
+    });
   }
   for (const hook of o.sandboxGaps ? [] : HOOK_NAMES) {
     const script = o.hooks[hook];
