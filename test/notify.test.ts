@@ -105,3 +105,12 @@ test('setup/build/deploy failures carry the hook name and its output tail; the h
   assert.equal(describeRelease({ merged: [], stopped: 'deploy failed' }, 'r')?.detail?.split('\n')[0],
     'the version is merged to the base branch but not live — if the deploy target was the problem, run `crew deploy` to retry (do not re-release); if the merged code itself failed to build, fix forward on a ticket branch, and merging it clears the not-retrying guard');
 });
+
+test('a setup failure names the ship and that the host path was taken on a sandbox ship (CREW-3006)', () => {
+  const o = { merged: [], stopped: 'setup failed' };
+  const plain = describeRelease(o, 'proj');
+  assert.ok(!plain?.detail?.includes('Failed on ship'));
+  const n = describeRelease(o, 'proj', { ship: 'Issues Ship 1', runner: 'sandbox' });
+  assert.match(n!.detail ?? '', /Failed on ship Issues Ship 1 \(sandbox runner, released on the host/);
+  assert.equal(n!.headline, plain!.headline);
+});

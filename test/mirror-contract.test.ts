@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SandboxCache, type CacheExec, type CacheSettings } from '../src/sandbox-cache.ts';
-import { cacheRepoOfTarget, firstReport, lacksCheckout, noCheckoutReleaseNote, releasesFromSandbox, readMirrorContract, resetReported } from '../src/mirror-contract.ts';
+import { cacheRepoOfTarget, firstReport, lacksCheckout, skipsHostCheckout, noCheckoutReleaseNote, releasesFromSandbox, readMirrorContract, resetReported } from '../src/mirror-contract.ts';
 
 const settings: CacheSettings = { engine: 'docker', volume: 'v', workspace: 'w', helperImage: 'img', depsLockfile: 'pnpm-lock.yaml' };
 const repo = { host: 'github.com', path: 'o/r' };
@@ -73,4 +73,10 @@ test('a checkout\'s origin wins, and a host ship with no checkout is not mirrore
   const t = { name: 'r', dir: gone, remote: 'o/r' };
   assert.deepEqual(cacheRepoOfTarget({ runner: 'sandbox' }, t, 'git@github.com:a/b.git'), { host: 'github.com', path: 'a/b' });
   assert.equal(cacheRepoOfTarget({ runner: 'host' }, t, null), null);
+});
+
+test('only a sandbox-runner ship leaves the ticket repository to the runner (CREW-3006)', () => {
+  assert.equal(skipsHostCheckout({ runner: 'sandbox' }), true);
+  assert.equal(skipsHostCheckout({ runner: 'host' }), false);
+  assert.equal(skipsHostCheckout({}), false);
 });

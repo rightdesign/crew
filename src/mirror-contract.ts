@@ -23,6 +23,15 @@ export function lacksCheckout(ship: { runner?: string }, dir: string): boolean {
   return ship.runner === 'sandbox' && !existsSync(dir) && !remoteOf(dir);
 }
 
+/**
+ * Whether the select step leaves the ticket's repository to the runner (CREW-3006). A sandbox-runner
+ * ship clones inside the sandbox from the mirror, so a host clone serves nothing and, worse, makes
+ * the release phase believe the ship has a toolchain on the host.
+ */
+export function skipsHostCheckout(ship: { runner?: string }): boolean {
+  return ship.runner === 'sandbox';
+}
+
 /** The mirror a target lives in, from its `remote` and forge host; null when the board gave no remote. */
 export function mirrorRepoOfTarget(t: RepoTarget): CacheRepo | null {
   return mirrorRepoOf({ remote: t.remote, forgeHost: t.forgeHost } as Parameters<typeof mirrorRepoOf>[0]);

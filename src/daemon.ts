@@ -99,6 +99,7 @@ import { Tracker } from './tracker.ts';
 import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
+import { skipsHostCheckout } from './mirror-contract.ts';
 import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { runKilledComment } from './run-limit.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
@@ -1083,7 +1084,7 @@ async function runRoleAgentLocked(
       const target = repoTargetFor(route, result.ticket.repo_id);
       ticketRepo = target?.name;
       try {
-        if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: ship.cloneScheme, host: target.forgeHost })) {
+        if (target && !skipsHostCheckout(ship) && ensureRepoCheckout(target.dir, target.remote, { scheme: ship.cloneScheme, host: target.forgeHost })) {
           emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role });
         }
       } catch (e) {

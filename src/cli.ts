@@ -91,7 +91,7 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
-import { lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, releasesFromSandbox, firstReport } from './mirror-contract.ts';
+import { lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
 import { sandboxImageForRun } from './sandbox-image.ts';
 import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirroredRepos, sandboxCacheKey, parseRemote, type PassRepo } from './sandbox-cache.ts';
@@ -1935,7 +1935,9 @@ async function releasePhase(
   const remit = emit.forRoute(c.route);
   // CREW-2938: a sandbox-runner ship with no primary checkouts has no directory to run git in and no
   // `.crew.yaml` to read; the contract comes from the mirror, and one line says what happens instead.
-  if (lacksCheckout(cfg.ship, target.dir)) {
+  // CREW-3006: a sandbox ship decides on its runner, not on whether a host checkout happens to exist;
+  // a checkout there (an operator's, or left by an older version) must not send the phase down the host path.
+  if (cfg.ship.runner === 'sandbox') {
     let mode: string | null = null;
     let contract: RepoConfig | null = null;
     const settings = cacheSettingsOf(cfg.ship.sandbox);
@@ -1951,9 +1953,12 @@ async function releasePhase(
     if (releasesFromSandbox(mode) && settings && mirror && contract) {
       return releaseFromSandbox(c, target, contract, mirror, opts);
     }
-    const note = noCheckoutReleaseNote(target.name, mode);
-    if (firstReport(`${scope0(c, target)}:release`)) remit.emit(note, { step: 'release' });
-    return { scope: releaseLockScope(c.route, target.name), tests: 'skipped', outcome: 'skipped', detail: note };
+    if (lacksCheckout(cfg.ship, target.dir)) {
+      const note = noCheckoutReleaseNote(target.name, mode);
+      if (firstReport(`${scope0(c, target)}:release`)) remit.emit(note, { step: 'release' });
+      return { scope: releaseLockScope(c.route, target.name), tests: 'skipped', outcome: 'skipped', detail: note };
+    }
+    // `local`/`external` with a checkout present: the host path below is the one that owns it.
   }
   // Per REPOSITORY, not per route. A board's area spans several repos and
   // each releases on its own: they have separate versions, separate tags and
@@ -2307,7 +2312,7 @@ async function releasePhase(
 
     // Last, and non-fatal: whatever happened has happened, and telling someone
     // about it must not be able to change the outcome.
-    const news = describeRelease(outcome, scope);
+    const news = describeRelease(outcome, scope, { ship: cfg.ship.name, runner: cfg.ship.runner });
     if (news) {
       const notified = await notify(c, cfg.ship, news, remit, dryRun);
       // No `hooks.notify` configured on this route — the common case, since
@@ -2705,7 +2710,7 @@ switch (command) {
           const target = repoTargetFor(w.route, result.ticket.repo_id);
           fleetTicketRepo = target?.name;
           try {
-            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
+            if (target && !skipsHostCheckout(cfg.ship) && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
               wemit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
             }
           } catch (e) {
@@ -2937,7 +2942,7 @@ switch (command) {
           const target = repoTargetFor(route, result.ticket.repo_id);
           ticketRepo = target?.name;
           try {
-            if (target && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
+            if (target && !skipsHostCheckout(cfg.ship) && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
               emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
             }
           } catch (e) {

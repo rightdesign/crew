@@ -98,7 +98,11 @@ export function describeRelease(o: {
   hookFailure?: { hook: string; label: string; tail: string };
   composition?: GateComposition;
   isolation?: string;
-}, route: string): Notification | null {
+}, route: string, where?: { ship?: string; runner?: string }): Notification | null {
+  // CREW-3006: a failure on one ship's host path is not a repository-wide block; say which ship.
+  const shipNote = where?.ship
+    ? `\n\nFailed on ship ${where.ship}${where.runner === 'sandbox' ? ' (sandbox runner, released on the host rather than from a release sandbox)' : ''}; other ships' releases of this repository are unaffected.`
+    : '';
   if (o.integrated) {
     // Worth saying: something shipped, in the only sense this repo ships.
     return {
@@ -137,7 +141,7 @@ export function describeRelease(o: {
       level: 'fail',
       headline: `${route}: release blocked — setup failed`,
       detail: withHookTail(
-        'the setup hook failed in the release checkout; the target stays on the previous release',
+        `the setup hook failed in the release checkout; the target stays on the previous release${shipNote}`,
         o.hookFailure,
       ),
     };
