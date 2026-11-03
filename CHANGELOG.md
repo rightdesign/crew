@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.130.4] — 2026-11-03
+
+- CREW-3001 `crew provision` now sets ship.relayHttpPort from the lease payload, so a managed ship reports a relay URL on the port the relay actually serves.
+
 ## [0.130.3] — 2026-11-03
 
 - CREW-2995 Sandbox image builds no longer fail on a 443-only host whose base image has no CA bundle.
