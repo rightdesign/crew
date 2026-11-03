@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
   planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
-  sandboxFailedKey, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, readHostCaBundle, type BuildDeps, type TickDeps,
+  sandboxFailedKey, sandboxImageMissing, sandboxMissingItem, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, readHostCaBundle, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
 
@@ -274,4 +274,35 @@ test('readHostCaBundle takes the first readable location and is empty when none 
   writeFileSync(join(dir, 'b.crt'), 'PEM');
   assert.equal(readHostCaBundle([join(dir, 'missing'), join(dir, 'b.crt')]), 'PEM');
   assert.equal(readHostCaBundle([join(dir, 'missing')]), '');
+});
+
+test('CREW-3014: an image that landed but was never recorded is adopted on the next tick, not rebuilt', async () => {
+  const h = harness();
+  const decl = { packages: [], setup: ['ok'] };
+  const plan = planSandbox('r', decl);
+  // The build finished in the engine, but the state was never written (a daemon reload cut it short).
+  for (const l of plan.layers) h.present.add(l.tag);
+  assert.equal(sandboxImageFor(readSandboxState(h.stateDir), 'r'), null);
+  assert.equal(await sandboxBuildTick([{ name: 'r', decl }], h.deps), 'r');
+  assert.equal(h.builds.length, 0, 'nothing was rebuilt');
+  assert.equal(sandboxImageFor(readSandboxState(h.stateDir), 'r'), plan.tag);
+  assert.deepEqual(h.cleared, [sandboxFailedKey('r')]);
+});
+
+test('CREW-3014: an image the engine holds overrides a recorded failure for the same tag', async () => {
+  const bad = planSandbox('r', { packages: [], setup: ['boom'] });
+  const h = harness(bad.tag);
+  await sandboxBuildTick([{ name: 'r', decl: { packages: [], setup: ['boom'] } }], h.deps);
+  assert.equal(readSandboxState(h.stateDir).r!.failure?.tag, bad.tag);
+  for (const l of bad.layers) h.present.add(l.tag);
+  assert.equal(await sandboxBuildTick([{ name: 'r', decl: { packages: [], setup: ['boom'] } }], h.deps), 'r');
+  assert.equal(sandboxImageFor(readSandboxState(h.stateDir), 'r'), bad.tag);
+});
+
+test('CREW-3014: a declared repository with no recorded image blocks a run; an undeclared one does not', () => {
+  const ship = { tags: [{ tag: 'ship:1', builtAt: 'x' }] };
+  assert.equal(sandboxImageMissing({ [SHIP_SANDBOX_KEY]: ship }, 'synthesis', true), true, 'the crew layer is not a stand-in for a declared image');
+  assert.equal(sandboxImageMissing({ [SHIP_SANDBOX_KEY]: ship }, 'crew', false), false);
+  assert.equal(sandboxImageMissing({ synthesis: { tags: [{ tag: 'repo:1', builtAt: 'x' }] } }, 'synthesis', true), false);
+  assert.equal(sandboxMissingItem('synthesis').key, sandboxFailedKey('synthesis'));
 });

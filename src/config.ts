@@ -580,6 +580,8 @@ export interface Ship {
   intelStartupSeconds: number;
   /** Token budget (characters / 4) for a repository's `map` hook output in the brief. Default 1000. */
   mapTokenBudget: number;
+  /** Consecutive runs of one ticket that push and hand off nothing before the ticket is bounced to a person. Default 3 (CREW-3014). */
+  noopRunRepeats?: number;
   /**
    * Where keys live (CREW-2785): `auto` (the OS secret service when one is
    * reachable, else files under `<stateDir>/keys`), `os`, or `file`.
@@ -676,7 +678,7 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
-  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'intelStartupSeconds', 'mapTokenBudget', 'secretStore', 'env', 'runner', 'sandbox',
+  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'intelStartupSeconds', 'mapTokenBudget', 'noopRunRepeats', 'secretStore', 'env', 'runner', 'sandbox',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -1147,6 +1149,10 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(mapTokenBudget) || mapTokenBudget < 1) {
     missing.add(`ship.mapTokenBudget must be a positive integer (got "${shipRaw.mapTokenBudget}")`);
   }
+  const noopRunRepeats = shipRaw.noopRunRepeats === undefined ? undefined : Number(shipRaw.noopRunRepeats);
+  if (noopRunRepeats !== undefined && (!Number.isInteger(noopRunRepeats) || noopRunRepeats < 1)) {
+    missing.add(`ship.noopRunRepeats must be a positive integer (got "${shipRaw.noopRunRepeats}")`);
+  }
   const secretStoreRaw = shipRaw.secretStore === undefined ? 'auto' : shipRaw.secretStore;
   if (!isSecretStoreMode(secretStoreRaw)) {
     missing.add(`ship.secretStore must be one of ${SECRET_STORE_MODES.join(' | ')} (got "${String(shipRaw.secretStore)}")`);
@@ -1255,6 +1261,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       periscopeIdleMinutes,
       intelStartupSeconds,
       mapTokenBudget,
+      ...(noopRunRepeats !== undefined ? { noopRunRepeats } : {}),
       secretStore,
       env: parseShipEnv(shipRaw.env),
     },

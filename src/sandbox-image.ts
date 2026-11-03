@@ -396,6 +396,23 @@ export function sandboxImageForRun(state: SandboxImageState, repo: string | null
   return (declares && repo ? sandboxImageFor(state, repo) : null) ?? sandboxImageFor(state, SHIP_SANDBOX_KEY);
 }
 
+/**
+ * CREW-3014: true when a run for `repo` must not start. A repository that declares `sandbox:` runs in
+ * its own image; with none recorded, `sandboxImageForRun` would fall back to the bare crew layer, which
+ * has no toolchain, and the agent would stop on purpose having changed nothing. A repository without a
+ * declaration keeps the crew layer.
+ */
+export function sandboxImageMissing(state: SandboxImageState, repo: string | null | undefined, declares: boolean): boolean {
+  return declares && Boolean(repo) && sandboxImageFor(state, repo!) === null;
+}
+
+export function sandboxMissingItem(repo: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'sandbox_build_failed', key: sandboxFailedKey(repo), since: nowIso,
+    message: `${repo}: its sandbox image has not been built on this ship, so its tickets are skipped until it is (the build runs between passes; \`crew sandbox build\` forces it)`,
+  };
+}
+
 export type SandboxImageStatus = 'ok' | 'stale' | 'missing' | 'failed';
 
 /** What `crew doctor` reports for a repo that declares a sandbox. */
@@ -449,6 +466,8 @@ export const engineRemoveImage = (engine = 'docker', exec: Exec = realExec) => (
 
 export type BuildOutcome =
   | { kind: 'reused'; tag: string }
+  /** The engine already held every layer (a build finished but was never recorded, CREW-3014); only the state was written. */
+  | { kind: 'adopted'; tag: string }
   | { kind: 'built'; tag: string; builtLayers: string[] }
   | { kind: 'failed'; tag: string; logPath: string; layer: string };
 
@@ -501,7 +520,7 @@ export async function buildSandboxImage(plan: SandboxPlan, deps: BuildDeps): Pro
   state[plan.repo] = { tags: tags.slice(0, KEEP_TAGS) };
   writeSandboxState(deps.stateDir, state);
   for (const t of dropped) deps.removeImage(t.tag);
-  return { kind: 'built', tag: plan.tag, builtLayers };
+  return builtLayers.length === 0 ? { kind: 'adopted', tag: plan.tag } : { kind: 'built', tag: plan.tag, builtLayers };
 }
 
 // --- background tick ---------------------------------------------------------
@@ -537,15 +556,19 @@ export async function sandboxBuildTick(repos: SandboxRepoRef[], deps: TickDeps, 
     const state = readSandboxState(deps.stateDir)[r.name];
     const upToDate = state?.tags[0]?.tag === plan.tag && deps.hasImage(plan.tag);
     if (upToDate) { deps.clear(sandboxFailedKey(r.name)); continue; }
-    if (!force && state?.failure?.tag === plan.tag && nowMs - Date.parse(state.failure.at) < SANDBOX_RETRY_AFTER_MS) continue;
-    deps.log(`sandbox image for ${r.name}: building ${plan.tag}`);
+    // An image the engine holds for this exact tag is recorded whatever happened to the build that made it
+    // (CREW-3014: a daemon reload cut the build short after the image landed but before the state was written),
+    // and a failure recorded for the same tag no longer applies.
+    const present = !upToDate && deps.hasImage(plan.tag);
+    if (!force && !present && state?.failure?.tag === plan.tag && nowMs - Date.parse(state.failure.at) < SANDBOX_RETRY_AFTER_MS) continue;
+    deps.log(`sandbox image for ${r.name}: ${present ? `found ${plan.tag} in the engine, recording it` : `building ${plan.tag}`}`);
     const out = await buildSandboxImage(plan, deps);
     if (out.kind === 'failed') {
       deps.raise(sandboxFailedItem(r.name, out.tag, out.layer, out.logPath));
       deps.log(`sandbox image for ${r.name}: build failed at the ${out.layer} layer, log ${out.logPath}`);
     } else {
       deps.clear(sandboxFailedKey(r.name));
-      deps.log(`sandbox image for ${r.name}: ${out.kind === 'built' ? `built ${out.tag}` : `${out.tag} already built`}`);
+      deps.log(`sandbox image for ${r.name}: ${out.kind === 'built' ? `built ${out.tag}` : out.kind === 'adopted' ? `recorded ${out.tag}` : `${out.tag} already built`}`);
     }
     return r.name;
   }

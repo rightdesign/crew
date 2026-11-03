@@ -90,15 +90,17 @@ import { listPendingHandoffs } from './pending-handoff.ts';
 import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.ts';
 import { loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
+import { readSandboxState, sandboxImageMissing, sandboxMissingItem, sandboxFailedKey } from './sandbox-image.ts';
+import { DEFAULT_NOOP_REPEATS, noopBackedOff, settleNoopRun } from './noop-runs.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { withRepoMaps } from './repo-map.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { settleRunEnd } from './live-runs.ts';
 import { SignedOutError, SIGNED_OUT_PAUSE_MS, streamShowsSignedOut, streamShowsRealTurn, signedOutKey, signedOutItem } from './signed-out.ts';
-import { Tracker } from './tracker.ts';
+import { Tracker, type Ticket } from './tracker.ts';
 import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
-import { ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
+import { countCommits, ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
 import { skipsHostCheckout } from './mirror-contract.ts';
 import { interruptedComment, reconcileRuns } from './interrupted.ts';
 import { runKilledComment } from './run-limit.ts';
@@ -981,6 +983,64 @@ async function postRunKilled(
   }
 }
 
+/** Whether a repository's contract declares `sandbox:`; an unreadable contract declares nothing. */
+function declaresSandbox(dir: string): boolean {
+  try { return Boolean(loadRepoConfigTolerant(dir)?.sandbox); } catch { return false; }
+}
+
+/**
+ * CREW-3014: drops the candidates this ship must not start a run on right now. A ticket inside its
+ * no-op back-off window is skipped; so is one whose repository declares `sandbox:` on a sandbox ship
+ * with no image built yet, which would otherwise run in the bare crew layer with no toolchain. The
+ * second raises the build's attention item unless a build failure already holds that key.
+ */
+async function skipUnrunnable(candidates: Ticket[], ctx: RoleAgentContext): Promise<Ticket[]> {
+  const { route, ship, emit } = ctx;
+  const backedOff: string[] = [];
+  const noImage = new Set<string>();
+  const imageSkipped: string[] = [];
+  const state = ship.runner === 'sandbox' ? readSandboxState(ship.stateDir) : null;
+  const out = candidates.filter((t) => {
+    if (noopBackedOff(ship.stateDir, t.id)) { backedOff.push(t.issue_id); return false; }
+    const target = repoTargetFor(route, t.repo_id);
+    if (state && target && sandboxImageMissing(state, target.name, declaresSandbox(target.dir))) {
+      noImage.add(target.name);
+      imageSkipped.push(t.issue_id);
+      return false;
+    }
+    return true;
+  });
+  if (backedOff.length) emit.emit(`skipped ${backedOff.join(', ')} — recent runs changed nothing, backing off`, { step: 'select' });
+  if (imageSkipped.length) emit.emit(`skipped ${imageSkipped.join(', ')} — the sandbox image for their repo is not built yet`, { step: 'select' });
+  for (const repo of noImage) {
+    if (openShipAttention(ctx.state).some((i) => i.key === sandboxFailedKey(repo))) continue;
+    try { await raiseShipAttention({ state: ctx.state, emit, route, ship }, sandboxMissingItem(repo)); } catch { /* the emit line says it */ }
+  }
+  return out;
+}
+
+/**
+ * What a ticket's branch has to show for a run: the origin branch's sha, and the local worktree
+ * branch's tip when it has commits beyond the base. Equal before and after means nothing was
+ * committed or pushed (a worktree merely cut from the base does not count).
+ */
+function branchProgress(route: Route, t: Ticket): string {
+  try {
+    const target = repoTargetFor(route, t.repo_id as string | null | undefined);
+    if (!target) return '';
+    const num = String(t.issue_id).replace(/^\D+/, '');
+    const origin = originBranchSha(target.dir, t, gitResolve) ?? '';
+    const wt = worktreeForNumber(target.dir, num);
+    let local = '';
+    if (wt) {
+      const o = route.repoOverrides[target.name];
+      const base = resolveRepoConfig(loadRepoConfigTolerant(target.dir), { hooks: {}, labels: {}, branch: { ...route.branch, ...o?.branch }, worktrees: {} }, target.dir).branch.base;
+      if (countCommits(wt.path, `origin/${base}..HEAD`) > 0) local = (gitResolve(wt.path, 'HEAD') ?? '').slice(0, 7);
+    }
+    return `${origin}|${local}`;
+  } catch { return ''; }
+}
+
 async function runRoleAgent(
   role: RoleName, decision: CycleDecision, ctx: RoleAgentContext, hooks?: RunHooks,
 ): Promise<void> {
@@ -1034,8 +1094,9 @@ async function runRoleAgentLocked(
       const contract = decision.selectionInput.contract ?? DEFAULT_CONTRACT;
       // A Repos row made after `crew connect` is not in the resolved map yet (CREW-2885).
       await refreshUnknownRepos({ route, stateDir: ship.stateDir, fetchRows: () => tracker.repoRowsForMap(), tickets: candidates });
+      const runnable = await skipUnrunnable(candidates, ctx);
       const result = await resolveTopCandidate(
-        tracker, candidates, seat, claimStatuses(role, contract).approved, claimStatuses(role, contract).building,
+        tracker, runnable, seat, claimStatuses(role, contract).approved, claimStatuses(role, contract).building,
         (t) => dirForRepo(route, t.repo_id) !== null,
         withHoldCheck(await tracker.claimAffinity(), decision.selectionInput),
         (t) => {
@@ -1145,10 +1206,24 @@ async function runRoleAgentLocked(
     // moved (status/assignee) even when the hand-off went through MCP tools
     // crew cannot see as tracker writes (CREW-2598).
     let hintMoved: (() => Promise<boolean>) | undefined;
+    let settleNoop: (() => Promise<void>) | undefined;
     if (workingId) {
       try {
         const before = await tracker.ticket(workingId);
         const col = tracker.contract.columns;
+        const tipBefore = branchProgress(route, before);
+        if (role === 'dev' || role === 'design') {
+          settleNoop = async () => {
+            await settleNoopRun({
+              tracker, stateDir: ship.stateDir, role, ticketId: workingId!, before, tipBefore, tipAfter: branchProgress(route, before),
+              runStart, memberId, operatorId: route.resolved?.operator, columns: { status: col.status, assignee: col.assignee },
+              statuses: { building: tracker.contract.statuses.building, needsHuman: tracker.contract.statuses.needsHuman },
+              repeats: ship.noopRunRepeats ?? DEFAULT_NOOP_REPEATS,
+              raise: (item) => raiseShipAttention({ state: ctx.state, emit, route, ship }, item),
+              clear: (key) => clearShipAttention(ctx.state, key),
+            });
+          };
+        }
         hintMoved = async () => {
           const after = await tracker.ticket(workingId);
           return after[col.status] !== before[col.status] || after[col.assignee] !== before[col.assignee];
@@ -1167,6 +1242,10 @@ async function runRoleAgentLocked(
         throw new WorkspaceAllowanceExhausted('the inference endpoint refused the run: the workspace is past its AI allowance');
       }
       await settleSignOut(plan, tracker, ctx.state, workingId, emit);
+      // CREW-3014: a clean run that moved nothing must not be started again at once.
+      if (settleNoop) {
+        try { await settleNoop(); } catch (e) { emit.warn(`could not settle a no-op run: ${(e as Error).message}`, { step: 'agent' }); }
+      }
     }
   } finally {
     await settleRunEnd({
