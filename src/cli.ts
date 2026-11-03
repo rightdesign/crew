@@ -73,6 +73,7 @@ import {
   CHOICE_EXIT_CODE, choiceData, createEmitter, flagWizardAnswers, parseChoices, usesFlagAnswers, type ChoiceOption,
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
+import { collectDiagnostics } from './diagnostics.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
@@ -3225,6 +3226,14 @@ switch (command) {
         : undefined,
       status: () => crewJson(['status', route.route, '--json']),
       doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
+      diagnostics: () => collectDiagnostics({
+        stateDir: cfg.ship.stateDir,
+        workspaceIds: [...new Set(controlRoutes.map((r) => r.resolved!.workspaceId))],
+        runner: cfg.ship.runner ?? 'host',
+        unitStems: detectSystemd() ? (['run', 'release', 'passengers'] as const).map((j) => labelFor(CREW_HOME, j)) : [],
+        userScope: process.getuid?.() !== 0,
+        doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
+      }),
       scheduler: schedulerHandler(planDaemonControl(CREW_HOME, hostPlatform(), detectSystemd())),
       log: (m) => emit.warn(m),
     });

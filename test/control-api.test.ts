@@ -234,3 +234,25 @@ test('server: a socket path too long for a unix socket does not start and does n
   assert.equal(srv, null);
   assert.match(logs[0]!, /too long/);
 });
+
+test('GET /diagnostics: needs the bearer token and serves the bundle', async () => {
+  const dir = stateDir();
+  const st = new State(dir);
+  const mk = async (diagnostics?: ControlDeps['diagnostics']) => (await startControlServer({
+    stateDir: dir, state: st, auth: auth({}), status: async () => ({}), doctor: async () => ({}), diagnostics,
+    scheduler: () => ({ accepted: false, detail: '' }),
+  }))!;
+  const srv = await mk(async () => ({ sections: { tunnel: { ok: true, data: {} } } }));
+  try {
+    const call = (hdr: Record<string, string>) => new Promise<{ status: number; body: string }>((resolve) => {
+      const r = request({ socketPath: srv.path, path: '/diagnostics', headers: hdr }, (res) => {
+        let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+      });
+      r.end();
+    });
+    assert.equal((await call({})).status, 401);
+    const ok = await call({ Authorization: `Bearer ${SHIP_KEY}` });
+    assert.equal(ok.status, 200);
+    assert.ok(JSON.parse(ok.body).sections.tunnel.ok);
+  } finally { await srv.close(); }
+});

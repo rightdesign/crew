@@ -18,6 +18,7 @@
  *  - `POST /release/pause`, `/release/resume`.
  *  - `POST /scheduler/{start,stop,restart}`  wraps `planDaemonControl`; answers 202.
  *  - `GET /doctor`            `crew doctor --json`; read-only, never `--fix`.
+ *  - `GET /diagnostics`       redacted, allow-listed diagnostic bundle (CREW-3008, `diagnostics.ts`).
  *  - `POST /periscopes`, `POST /periscopes/<ticket>/down`, `GET /periscopes`
  *                             Passenger periscopes (CREW-2859, `periscope-control.ts`);
  *                             404 unless a route sets `hostPeriscopes: true`.
@@ -307,6 +308,8 @@ export interface ControlDeps {
   status: () => Promise<Record<string, unknown> | null>;
   /** `crew doctor --json` as an object, or null when it could not be produced. */
   doctor: () => Promise<unknown | null>;
+  /** The redacted diagnostic bundle (CREW-3008); absent: the path is a 404. */
+  diagnostics?: () => Promise<Record<string, unknown>>;
   /** Begins the action after the response is sent; false when the host has no service manager to drive. */
   scheduler: (a: SchedulerAction['action']) => { accepted: boolean; detail: string };
   startedAt?: number;
@@ -441,7 +444,8 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
     const doc = await deps.doctor();
     return doc ? reply(200, doc) : err(502, 'could not produce the doctor report');
   }
-  const known = ['/status', '/events', '/streams', '/pause', '/resume', '/release/pause', '/release/resume', '/doctor'];
+  if (p === '/diagnostics' && get && deps.diagnostics) return reply(200, await deps.diagnostics());
+  const known = ['/status', '/events', '/streams', '/pause', '/resume', '/release/pause', '/release/resume', '/doctor', ...(deps.diagnostics ? ['/diagnostics'] : [])];
   if (known.includes(p) || p.startsWith('/streams/') || sched) return err(405, 'method not allowed');
   return err(404, 'not found');
 }
