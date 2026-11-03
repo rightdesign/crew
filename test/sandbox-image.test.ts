@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
   planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
-  sandboxFailedKey, sandboxImageMissing, sandboxMissingItem, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, readHostCaBundle, type BuildDeps, type TickDeps,
+  sandboxFailedKey, BUILD_INTERRUPTED, sandboxImageMissing, sandboxMissingItem, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, readHostCaBundle, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
 
@@ -47,11 +47,11 @@ function harness(failTag?: string) {
   const cleared: string[] = [];
   const deps: TickDeps & BuildDeps = {
     stateDir,
-    run: async (args) => {
+    run: async (args, logPath) => {
       const tag = args[args.indexOf('--tag') + 1]!;
       assert.ok(existsSync(args[args.indexOf('--file') + 1]!), 'Dockerfile written before the build');
       builds.push(tag);
-      if (tag === failTag) return 1;
+      if (tag === failTag) { writeFileSync(logPath, '$ docker build\nstep failed\n'); return 1; }
       present.add(tag);
       return 0;
     },
@@ -274,6 +274,47 @@ test('readHostCaBundle takes the first readable location and is empty when none 
   writeFileSync(join(dir, 'b.crt'), 'PEM');
   assert.equal(readHostCaBundle([join(dir, 'missing'), join(dir, 'b.crt')]), 'PEM');
   assert.equal(readHostCaBundle([join(dir, 'missing')]), '');
+});
+
+test('a build killed from outside records nothing and restarts on the next pass (CREW-3021)', async () => {
+  const h = harness();
+  let interrupt = true;
+  const run = h.deps.run;
+  h.deps.run = async (args, logPath) => (interrupt ? BUILD_INTERRUPTED : run(args, logPath));
+  const ref = { name: 'r', decl: { packages: [], setup: ['ok'] } };
+  assert.equal(await sandboxBuildTick([ref], h.deps), 'r');
+  assert.equal(readSandboxState(h.stateDir).r, undefined);
+  assert.equal(h.attention.length, 0);
+  interrupt = false;
+  assert.equal(await sandboxBuildTick([ref], h.deps), 'r');
+  assert.equal(sandboxImageFor(readSandboxState(h.stateDir), 'r'), planSandbox('r', ref.decl).tag);
+});
+
+test('a failure whose log is empty is retried on the next pass, not after the hour (CREW-3021)', async () => {
+  const bad = planSandbox('r', { packages: [], setup: ['boom'] });
+  const h = harness(bad.tag);
+  const ref = { name: 'r', decl: { packages: [], setup: ['boom'] } };
+  await sandboxBuildTick([ref], h.deps);
+  const logPath = readSandboxState(h.stateDir).r!.failure!.logPath;
+  writeFileSync(logPath, '');
+  const before = h.builds.length;
+  assert.equal(await sandboxBuildTick([ref], h.deps), 'r');
+  assert.ok(h.builds.length > before);
+});
+
+test('a repo whose warm inputs could not be read is not built under a different tag (CREW-3021)', async () => {
+  const h = harness();
+  assert.equal(await sandboxBuildTick([{ name: 'r', decl: { packages: [], setup: [] }, unreadable: 'mirror not fetched' }], h.deps), null);
+  assert.equal(h.builds.length, 0);
+});
+
+test('doctor says stale, not missing, when the built tag differs from the planned one (CREW-3021)', async () => {
+  const h = harness();
+  await buildSandboxImage(planSandbox('r', { packages: [], setup: ['a'] }), h.deps);
+  const wanted = planSandbox('r', { packages: [], setup: ['a'] }, { 'pnpm-lock.yaml': 'x' });
+  const st = sandboxImageStatus(readSandboxState(h.stateDir), wanted);
+  assert.equal(st.status, 'stale');
+  assert.ok(st.detail.includes(wanted.tag));
 });
 
 test('CREW-3014: an image that landed but was never recorded is adopted on the next tick, not rebuilt', async () => {

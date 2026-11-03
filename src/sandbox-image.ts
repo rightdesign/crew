@@ -37,7 +37,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -432,6 +432,9 @@ export function sandboxImageStatus(state: SandboxImageState, plan: SandboxPlan):
 /** Runs a container-engine command, appending its output to `logPath`. Resolves the exit code. */
 export type BuildRunner = (args: string[], logPath: string) => Promise<number>;
 
+/** What a `BuildRunner` resolves when the engine process was killed by a signal (a daemon reload, a host upgrade): not a failed build. */
+export const BUILD_INTERRUPTED = -1;
+
 export const spawnBuildRunner = (engine = 'docker'): BuildRunner => (args, logPath) =>
   new Promise((resolve) => {
     const child = spawn(engine, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -443,7 +446,7 @@ export const spawnBuildRunner = (engine = 'docker'): BuildRunner => (args, logPa
       resolve(code);
     };
     child.on('error', (e) => done(127, `${e.message}\n`));
-    child.on('close', (code) => done(code ?? 1));
+    child.on('close', (code) => done(code ?? BUILD_INTERRUPTED));
   });
 
 export interface BuildDeps {
@@ -469,6 +472,7 @@ export type BuildOutcome =
   /** The engine already held every layer (a build finished but was never recorded, CREW-3014); only the state was written. */
   | { kind: 'adopted'; tag: string }
   | { kind: 'built'; tag: string; builtLayers: string[] }
+  | { kind: 'interrupted'; tag: string }
   | { kind: 'failed'; tag: string; logPath: string; layer: string };
 
 export const sandboxLogDir = (stateDir: string): string => join(stateDir, 'sandbox-logs');
@@ -504,6 +508,8 @@ export async function buildSandboxImage(plan: SandboxPlan, deps: BuildDeps): Pro
       }
       if (layer.caBundleFile) writeFileSync(join(ctx, layer.caBundleFile), (deps.caBundle ?? readHostCaBundle)());
       const code = await deps.run(['build', '--tag', layer.tag, '--file', join(ctx, 'Dockerfile'), ctx], logPath);
+      // Killed from outside: nothing is recorded, so the next pass starts it again rather than waiting out the retry window.
+      if (code === BUILD_INTERRUPTED) return { kind: 'interrupted', tag: plan.tag };
       if (code !== 0) {
         state[plan.repo] = { ...entry, failure: { tag: plan.tag, at: now().toISOString(), logPath } };
         writeSandboxState(deps.stateDir, state);
@@ -534,7 +540,15 @@ export function sandboxFailedItem(repo: string, tag: string, layer: string, logP
   };
 }
 
-export interface SandboxRepoRef { name: string; decl: RepoSandbox; /** Files read for `decl.warm`, at the base ref. */ warm?: WarmFiles; /** The bundled symbol bridge, set only when the repository declares `intel` (CREW-2922). */ bridge?: string }
+/**
+ * A recorded failure whose log holds nothing (missing or empty) says nothing about the
+ * declaration: the build never got to run. It is retried on the next pass, not after the hour.
+ */
+export function failureLogIsEmpty(failure: SandboxFailure): boolean {
+  try { return statSync(failure.logPath).size === 0; } catch { return true; }
+}
+
+export interface SandboxRepoRef { name: string; /** Why the inputs of this repo's tag could not be read (CREW-3021): building anyway would plan a tag no other entry point computes, so the tick waits for the next pass. */ unreadable?: string; decl: RepoSandbox; /** Files read for `decl.warm`, at the base ref. */ warm?: WarmFiles; /** The bundled symbol bridge, set only when the repository declares `intel` (CREW-2922). */ bridge?: string }
 
 export interface TickDeps extends BuildDeps {
   raise: (item: ShipAttentionItem) => void;
@@ -552,6 +566,7 @@ export interface TickDeps extends BuildDeps {
 export async function sandboxBuildTick(repos: SandboxRepoRef[], deps: TickDeps, force = false): Promise<string | null> {
   const nowMs = (deps.now ?? (() => new Date()))().getTime();
   for (const r of repos) {
+    if (r.unreadable) { deps.log(`sandbox image for ${r.name}: not building, ${r.unreadable}`); continue; }
     const plan = planSandbox(r.name, r.decl, r.warm, r.bridge);
     const state = readSandboxState(deps.stateDir)[r.name];
     const upToDate = state?.tags[0]?.tag === plan.tag && deps.hasImage(plan.tag);
@@ -560,10 +575,12 @@ export async function sandboxBuildTick(repos: SandboxRepoRef[], deps: TickDeps, 
     // (CREW-3014: a daemon reload cut the build short after the image landed but before the state was written),
     // and a failure recorded for the same tag no longer applies.
     const present = !upToDate && deps.hasImage(plan.tag);
-    if (!force && !present && state?.failure?.tag === plan.tag && nowMs - Date.parse(state.failure.at) < SANDBOX_RETRY_AFTER_MS) continue;
+    if (!force && !present && state?.failure?.tag === plan.tag && nowMs - Date.parse(state.failure.at) < SANDBOX_RETRY_AFTER_MS && !failureLogIsEmpty(state.failure)) continue;
     deps.log(`sandbox image for ${r.name}: ${present ? `found ${plan.tag} in the engine, recording it` : `building ${plan.tag}`}`);
     const out = await buildSandboxImage(plan, deps);
-    if (out.kind === 'failed') {
+    if (out.kind === 'interrupted') {
+      deps.log(`sandbox image for ${r.name}: build of ${out.tag} was interrupted; it restarts on the next pass`);
+    } else if (out.kind === 'failed') {
       deps.raise(sandboxFailedItem(r.name, out.tag, out.layer, out.logPath));
       deps.log(`sandbox image for ${r.name}: build failed at the ${out.layer} layer, log ${out.logPath}`);
     } else {

@@ -1681,7 +1681,7 @@ async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoR
       if (patterns.length > 0 && Object.keys(warm).length === 0 && firstReport(`warm-empty:${r.name}:${failure}`)) {
         emit.emit(`${r.name}: sandbox.warm declares ${patterns.join(', ')} but no file could be read from ${source}${failure ? ` (${failure})` : ''}; the image is built without warm files`);
       }
-      out.set(r.name, { name: r.name, decl: intelFlavor(r.config.hooks.intel) === 'serena' ? { ...r.config.sandbox, intel: 'serena' } : r.config.sandbox, warm, ...(wantsCodeBridge(r.config.hooks.intel) ? { bridge: readBridgeBundle() } : {}) });
+      out.set(r.name, { name: r.name, ...(patterns.length > 0 && failure ? { unreadable: `sandbox.warm files could not be read (${failure})` } : {}), decl: intelFlavor(r.config.hooks.intel) === 'serena' ? { ...r.config.sandbox, intel: 'serena' } : r.config.sandbox, warm, ...(wantsCodeBridge(r.config.hooks.intel) ? { bridge: readBridgeBundle() } : {}) });
     }
   }
   return [...out.values()];
