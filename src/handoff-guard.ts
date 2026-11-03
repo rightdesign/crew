@@ -33,7 +33,7 @@
  * deny on `git push --force*` is untouched.
  */
 
-import type { Contract } from './contract.ts';
+import { closedStatuses, type Contract } from './contract.ts';
 import { existsSync } from 'node:fs';
 import { gitOk, headSha, lsRemoteHeads, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
 import { existingBranchForTicket, branchCandidatesForTicket, type BranchLookupTicket } from './ticket-branch.ts';
@@ -411,6 +411,21 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
 }
 
 /**
+ * CREW-3037: why a building run's ticket is no longer this ship's, or null.
+ * Closed for good, or held by another ship while still in a building/approved
+ * status. A hold by another ship at `fixed` onward is normal (QA's claim).
+ */
+export function lostTicketReason(t: Ticket, contract: Contract, myShipId?: string | null): string | null {
+  if (closedStatuses(contract).includes(t.status)) return `the ticket is ${t.status}`;
+  const holder = ticketHolderShipId(t, contract);
+  const st = contract.statuses;
+  if (holder && myShipId && holder !== myShipId && [st.building, st.approved].includes(t.status)) {
+    return 'another ship holds the ticket now';
+  }
+  return null;
+}
+
+/**
  * The call every run site makes after `spawnAgent` returns. Only the building
  * seats hand work on, and only a run that actually claimed a ticket
  * (`workingId`) has one to check.
@@ -432,6 +447,13 @@ export async function guardRunHandoff(
     if (!resolved) return null;
     const { target, cfg } = resolved;
     checkoutDir = target.dir;
+    // CREW-3037: a run whose ticket closed, or was re-claimed by another ship, while it ran has
+    // nothing to hand on: say why once and touch neither the board nor the branch.
+    const lost = lostTicketReason(t, tracker.contract, (await tracker.claimAffinity())?.shipId);
+    if (lost && role !== 'qa') {
+      log.warn(`${t.issue_id}: run ended without a push — ${lost}`, { ticket: t.issue_id, step: 'handoff' });
+      return { kind: 'unverified', why: lost };
+    }
     // CREW-1405: QA hands nothing on (it verifies or bounces), and its hard
     // limits forbid `crew drop`, so the runner retires the worktree a QA run cut
     // with `crew worktree NNN` once the run ends. Same rules as a hand-off:

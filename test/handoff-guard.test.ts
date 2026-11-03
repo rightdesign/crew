@@ -496,3 +496,13 @@ test('CREW-3033: a missing working directory is reported as the clone being gone
   assert.match(describeGuardError(e, tmpdir()), /git is not installed/);
   assert.equal(describeGuardError(new Error('boom'), gone), 'boom');
 });
+
+test('CREW-3037: lostTicketReason names a closed or re-claimed ticket, not a QA claim', async () => {
+  const { lostTicketReason } = await import('../src/handoff-guard.ts');
+  const { DEFAULT_CONTRACT: C } = await import('../src/contract.ts');
+  const t = (o: Record<string, unknown>) => ({ id: 'a', issue_id: 'ISSUE-1', ...o }) as never;
+  assert.match(lostTicketReason(t({ status: 'closed_deployed' }), C, 'me')!, /closed_deployed/);
+  assert.match(lostTicketReason(t({ status: 'in_progress', held_by_ship_id: 'other' }), C, 'me')!, /another ship/);
+  assert.equal(lostTicketReason(t({ status: 'qa', held_by_ship_id: 'other' }), C, 'me'), null);
+  assert.equal(lostTicketReason(t({ status: 'in_progress', held_by_ship_id: 'me' }), C, 'me'), null);
+});

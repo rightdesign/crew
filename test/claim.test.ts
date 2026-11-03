@@ -166,3 +166,13 @@ test('a claim lost to another run releases that candidate\'s ticket lock and mov
   assert.deepEqual(r.contended, ['ISSUE-1']);
   assert.deepEqual([...held], ['b'], 'only the winner stays locked');
 });
+
+test('CREW-3037: claimStillHeld refuses a ticket another ship now holds, and one that left the building status', async () => {
+  const { claimStillHeld } = await import('../src/claim.ts');
+  const affinity = { column: 'held_by_ship_id', shipId: 'me' };
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress' });
+  const reread = (row: Ticket): ClaimableTracker => ({ updateTicket: async () => row, ticket: async () => row });
+  assert.equal(await claimStillHeld(reread(T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', held_by_ship_id: 'me' })), t, 'in_progress', affinity), null);
+  assert.match((await claimStillHeld(reread(T({ id: 'a', issue_id: 'ISSUE-1', status: 'in_progress', held_by_ship_id: 'other' })), t, 'in_progress', affinity))!, /held by another ship/);
+  assert.match((await claimStillHeld(reread(T({ id: 'a', issue_id: 'ISSUE-1', status: 'verified', held_by_ship_id: 'me' })), t, 'in_progress', affinity))!, /verified/);
+});

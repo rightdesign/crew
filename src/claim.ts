@@ -265,3 +265,33 @@ async function resolveOne(
     throw e;
   }
 }
+
+/**
+ * CREW-3037, second line of defence: after a claim and before any agent
+ * starts, re-read the ticket once. Returns why this run must not go ahead, or
+ * null when the row is still this ship's to build. A hold naming ANOTHER ship
+ * (live or not: a dead one's hold was displaced by our own stamp, so seeing it
+ * again means someone wrote after us) or a status other than the building one
+ * means the claim was lost or the ticket moved on. A failed re-read is not a
+ * refusal: the conditional claim already succeeded.
+ */
+export async function claimStillHeld(
+  tracker: ClaimableTracker,
+  t: Ticket,
+  buildingStatus: string,
+  affinity?: ClaimAffinity,
+): Promise<string | null> {
+  if (!tracker.ticket) return null;
+  let now: Ticket;
+  try {
+    now = await tracker.ticket(t.id);
+  } catch {
+    return null;
+  }
+  const holder = affinity ? now[affinity.column] : null;
+  if (affinity && typeof holder === 'string' && holder && holder !== affinity.shipId) {
+    return `${t.issue_id} is held by another ship now`;
+  }
+  if (now.status !== buildingStatus) return `${t.issue_id} is at ${now.status}, not ${buildingStatus}`;
+  return null;
+}

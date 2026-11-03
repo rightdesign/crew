@@ -80,7 +80,23 @@ export function heldByLiveOtherShip(t: Ticket, a: AffinityContext): boolean {
   const holder = ticketHolderShipId(t, a.contract);
   if (!holder || holder === a.myShipId) return false;
   const owner = a.ships.find((s) => s.id === holder);
-  return shipIsAlive(owner, a.now ?? Date.now());
+  const now = a.now ?? Date.now();
+  return shipIsAlive(owner, now) || shipEngagedOn(owner, t, now);
+}
+
+/** A run longer than this is not trusted to still be going on the strength of `engaged` alone. */
+const ENGAGED_TRUST_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * CREW-3037: a ship whose Ships row says it is engaged on THIS ticket is
+ * working it, whatever its heartbeat looks like. A managed ship's `last_seen`
+ * can lag its run, and reading it as dead let a second ship take over a
+ * ticket the first was mid-build on.
+ */
+function shipEngagedOn(ship: ShipRow | undefined, t: Ticket, now: number): boolean {
+  if (!ship?.engaged || ship.engaged_ticket_id !== t.id) return false;
+  const since = ship.engaged_since ? Date.parse(ship.engaged_since) : NaN;
+  return Number.isFinite(since) && now - since <= ENGAGED_TRUST_MS;
 }
 
 /** The ship's display name for a comment; never a bare uuid when a name is known. */

@@ -80,7 +80,7 @@ import { isUpgradeRequired, raiseFromUpgradeRequired } from './crew-floor.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
-import { resolveTopCandidate } from './claim.ts';
+import { claimStillHeld, resolveTopCandidate } from './claim.ts';
 import { refreshUnknownRepos, reportUnservable, repoLabelFor } from './repo-refresh.ts';
 import { applySweep } from './blocked.ts';
 import { runStalledSweep } from './stalled.ts';
@@ -1136,6 +1136,15 @@ async function runRoleAgentLocked(
       if (!result.ticket) {
         emit.emit(`${role} skipped this cycle — every candidate was already claimed elsewhere`);
         return;
+      }
+      // CREW-3037: the claim write is the arbiter, but re-read once before an agent is
+      // started on it: a run on a ticket another ship holds is a full duplicate.
+      if (role !== 'qa') {
+        const lost = await claimStillHeld(tracker, result.ticket, claimStatuses(role, contract).building, await tracker.claimAffinity());
+        if (lost) {
+          emit.warn(`${role} run refused: ${lost}`, { step: 'select', role });
+          return;
+        }
       }
       if (result.claimed) {
         const idx = decision.tickets.findIndex((t) => t.id === result.ticket!.id);

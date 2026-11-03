@@ -374,3 +374,11 @@ test('CREW-1394: a qa ticket whose hold names a DEAD ship is still stamped by th
   assert.deepEqual(calls[0]!.patch, { held_by_ship_id: 'ship-B' });
   assert.equal(r.ticket?.held_by_ship_id, 'ship-B');
 });
+
+test('CREW-3037: a ship engaged on the ticket holds it even when its heartbeat looks dead', () => {
+  const t = { id: 'T1', issue_id: 'ISSUE-1', status: 'in_progress', held_by_ship_id: 'other' } as unknown as Ticket;
+  const mk = (row: Record<string, unknown>) => ({ myShipId: 'me', ships: [{ id: 'other', last_seen: dead, ...row }] as never, contract: DEFAULT_CONTRACT, now: NOW });
+  assert.equal(heldByLiveOtherShip(t, mk({})), false);
+  assert.equal(heldByLiveOtherShip(t, mk({ engaged: true, engaged_ticket_id: 'T1', engaged_since: alive })), true);
+  assert.equal(heldByLiveOtherShip(t, mk({ engaged: true, engaged_ticket_id: 'T2', engaged_since: alive })), false);
+});
