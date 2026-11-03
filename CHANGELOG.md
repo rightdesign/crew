@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.131.1] — 2026-11-03
+
+- CREW-3010 Sandbox ships read sandbox.warm files from the repository mirror, so images are built with their lockfile; an unreadable warm declaration is logged.
+
 ## [0.131.0] — 2026-11-03
 
 - CREW-2993 Merge main into the branch (no further user-visible change).
