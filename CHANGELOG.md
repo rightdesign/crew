@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.132.2] — 2026-11-03
+
+- CREW-3033 The hand-off guard on a sandbox ship verifies the pushed branch against the remote, and no longer warns "could not check the hand-off" after a run whose clone was deleted with its sandbox.
+
 ## [0.132.1] — 2026-11-03
 
 - CREW-3013 The sandbox cache volume is always created with its OpenShell labels before anything mounts it, and `crew doctor` flags an unlabeled volume as a blocker naming `crew sandbox cache --reset`.
