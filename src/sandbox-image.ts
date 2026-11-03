@@ -116,6 +116,8 @@ export interface SandboxLayer {
   dockerfile: string;
   /** Build-context files, relative path to content. */
   files: Record<string, string>;
+  /** Build-context file name that receives the host's CA bundle at build time (CREW-2995). Kept out of `files` so the tag does not depend on the host. */
+  caBundleFile?: string;
 }
 
 export interface SandboxPlan {
@@ -215,12 +217,31 @@ function baseLayer(): SandboxLayer {
 // use http://ports.ubuntu.com.
 export const APT_HTTPS_COMMAND = "sed -i -E 's#http://([a-z0-9.-]*\\.)?ubuntu\\.com#https://\\1ubuntu.com#g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true";
 
+/** Build-context name of the host CA bundle the crew layer seeds its trust store with. */
+const CA_BUNDLE_FILE = 'ca-certificates.crt';
+const HOST_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
+
+/**
+ * The host's CA bundle, or '' when none is readable. The OpenShell base image
+ * ships no trust store, so apt cannot verify the https mirrors that
+ * APT_HTTPS_COMMAND switches to and never reaches `install ca-certificates`;
+ * on a 443-only host there is no http fallback. The public bundle seeds the
+ * layer, and the distribution's own `ca-certificates` package replaces it.
+ */
+export function readHostCaBundle(paths: string[] = HOST_CA_BUNDLES): string {
+  for (const path of paths) {
+    try { return readFileSync(path, 'utf8'); } catch { /* try the next location */ }
+  }
+  return '';
+}
+
 function crewLayer(base: SandboxLayer, intel?: 'serena', bridge?: string): SandboxLayer {
   const files: Record<string, string> = { 'credential-helper': CREDENTIAL_HELPER, 'mcp.json': MCP_CONFIG, ...(bridge ? { 'intel-bridge': bridge } : {}) };
   const env = Object.entries(CREW_ENV).map(([k, v]) => `${k}=${v}`).join(' ');
   const dockerfile = [
     `FROM ${base.tag}`,
     'USER root',
+    `COPY ${CA_BUNDLE_FILE} /etc/ssl/certs/ca-certificates.crt`,
     run(APT_HTTPS_COMMAND),
     run(`apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git${intel ? ' python3 python3-venv nodejs' : ''} && rm -rf /var/lib/apt/lists/*`),
     `COPY credential-helper ${CREW_PREFIX}/bin/credential-helper`,
@@ -235,7 +256,7 @@ function crewLayer(base: SandboxLayer, intel?: 'serena', bridge?: string): Sandb
     `LABEL io.crew.sandbox.layer="crew" io.crew.sandbox.claude="${SANDBOX_CLAUDE_VERSION}"`,
     '',
   ].join('\n');
-  return { name: 'crew', tag: `crew-sandbox-crew:${hash({ base: base.tag, dockerfile, files })}`, dockerfile, files };
+  return { name: 'crew', tag: `crew-sandbox-crew:${hash({ base: base.tag, dockerfile, files })}`, dockerfile, files, caBundleFile: CA_BUNDLE_FILE };
 }
 
 /** Where warm files are copied during the repo layer's setup steps; removed afterwards. */
@@ -414,6 +435,8 @@ export interface BuildDeps {
   /** Does the engine already hold this tag? */
   hasImage: (tag: string) => boolean;
   removeImage: (tag: string) => void;
+  /** The host CA bundle copied into a layer that asks for one; defaults to the host's own. */
+  caBundle?: () => string;
   now?: () => Date;
 }
 
@@ -460,6 +483,7 @@ export async function buildSandboxImage(plan: SandboxPlan, deps: BuildDeps): Pro
         mkdirSync(dirname(join(ctx, name)), { recursive: true });
         writeFileSync(join(ctx, name), content);
       }
+      if (layer.caBundleFile) writeFileSync(join(ctx, layer.caBundleFile), (deps.caBundle ?? readHostCaBundle)());
       const code = await deps.run(['build', '--tag', layer.tag, '--file', join(ctx, 'Dockerfile'), ctx], logPath);
       if (code !== 0) {
         state[plan.repo] = { ...entry, failure: { tag: plan.tag, at: now().toISOString(), logPath } };

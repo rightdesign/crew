@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { parseRepoConfig, RepoConfigError } from '../src/repo-config.ts';
 import {
   planSandbox, readWarmFiles, buildSandboxImage, sandboxBuildTick, readSandboxState, sandboxImageFor, sandboxImageStatus,
-  sandboxFailedKey, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, type BuildDeps, type TickDeps,
+  sandboxFailedKey, shipSandboxRef, sandboxImageForRun, SHIP_SANDBOX_KEY, SANDBOX_BASE_IMAGE, SANDBOX_CLAUDE_VERSION, SANDBOX_CLAUDE_SHA256, claudeInstallCommand, APT_HTTPS_COMMAND, readHostCaBundle, type BuildDeps, type TickDeps,
 } from '../src/sandbox-image.ts';
 import type { ShipAttentionItem } from '../src/ship-attention.ts';
 
@@ -243,4 +243,35 @@ test('the apt https rewrite leaves no http:// in the amd64 or arm64 ubuntu.sourc
     assert.doesNotMatch(out, /http:\/\//);
     assert.match(out, /^URIs: https:\/\/[a-z0-9.-]+\.ubuntu\.com\//m);
   }
+});
+
+test('the crew layer seeds a trust store before its first https apt-get update (CREW-2995)', () => {
+  const crew = planSandbox('r', { packages: [], setup: [] }).layers[1]!;
+  assert.ok(crew.dockerfile.includes('COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt'));
+  assert.ok(crew.dockerfile.indexOf('COPY ca-certificates.crt') < crew.dockerfile.indexOf('ubuntu.sources'));
+  assert.ok(crew.dockerfile.indexOf('COPY ca-certificates.crt') < crew.dockerfile.indexOf('apt-get update'));
+  assert.equal(crew.caBundleFile, 'ca-certificates.crt');
+  assert.equal(crew.files['ca-certificates.crt'], undefined, 'the host bundle stays out of the tag hash');
+});
+
+test('a build writes the host CA bundle into the crew layer context only', async () => {
+  const h = harness();
+  const seen: Record<string, string | null> = {};
+  const inner = h.deps.run;
+  h.deps.caBundle = () => 'PEM-BUNDLE';
+  h.deps.run = async (args, log) => {
+    const ctxFile = join(args[args.indexOf('--file') + 1]!, '..', 'ca-certificates.crt');
+    seen[args[args.indexOf('--tag') + 1]!.split(':')[0]!] = existsSync(ctxFile) ? readFileSync(ctxFile, 'utf8') : null;
+    return inner(args, log);
+  };
+  await buildSandboxImage(planSandbox('r', { packages: [], setup: [] }), h.deps);
+  assert.equal(seen['crew-sandbox-crew'], 'PEM-BUNDLE');
+  assert.equal(seen['crew-sandbox-base'], null);
+});
+
+test('readHostCaBundle takes the first readable location and is empty when none is', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ca-'));
+  writeFileSync(join(dir, 'b.crt'), 'PEM');
+  assert.equal(readHostCaBundle([join(dir, 'missing'), join(dir, 'b.crt')]), 'PEM');
+  assert.equal(readHostCaBundle([join(dir, 'missing')]), '');
 });
