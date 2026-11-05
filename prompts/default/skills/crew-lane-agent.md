@@ -569,6 +569,14 @@ existing worktree and note that the status change was not needed.
   clear.**
 - Never touch a worktree other than the one for the ticket you are working;
   a stray one may belong to a concurrent run.
+- **A refused command names the whole command, not the part that was refused.**
+  Recursive and forced deletes, forced pushes, piping a download into a shell
+  and `sudo` are denied wherever they appear in a command, including as one step
+  in a longer chain, and the refusal quotes the entire chain without saying
+  which part matched. Do not read it as "this check is forbidden": drop the
+  denied part (use a fresh per-run scratch directory that never needs clearing,
+  or delete named files individually) and run the rest. Park the ticket only if
+  the command still fails without the denied part.
 - **Never run a state-writing `crew` command (`connect`, `agents sync`,
   `skills sync`, `install`, `release`, `merge`, `deploy`, …) against this
   ship's real config**, and never delete anything under its real state

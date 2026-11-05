@@ -190,3 +190,7 @@ to rewrite a pushed branch.
 ## Adopting your own earlier run's commit (CREW-2363)
 
 A run that pushed its branch while the tracker was down could not write its hand-off. The next run on the same seat found its own pushed commit with no comment and parked it as foreign work. The lane policy now says a commit authored under this ship's identity while the seat held the ticket is the seat's earlier run to adopt, and the digest's "Your previous run" section carries that run's final text when crew still has a pending hand-off for the ticket.
+
+## A refused chain is not a forbidden check (CREW-3057)
+
+Claude Code checks each part of a compound Bash command against the adapter's `DISALLOWED_TOOLS` patterns, and one denied part refuses the whole command with a message that quotes the full chain and names no rule. Two seats wrote a browser check as one chain that began by clearing a scratch directory recursively; both read the refusal as "starting a server and headless Chrome is forbidden", and the QA seat parked the ticket for the operator over a check it was allowed to run. The lane policy's guardrails now say the refusal covers the denied part only, and the remedy is to drop that part and re-run the rest.
