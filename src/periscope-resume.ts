@@ -8,6 +8,8 @@
 import { PeriscopeError, parseEnvLines, previewUrlFrom, type HookResult } from './periscope-cmd.ts';
 import type { PeriscopeRow } from './tracker.ts';
 import { pointedAtEnv } from './periscope-pointed.ts';
+import type { PreviewRelay } from './periscope-relay.ts';
+import type { PeriscopeSidecar } from './periscope-state.ts';
 
 export interface ResumeDeps {
   /** The live row for this ticket number on this ship, with its ticket tag; undefined when there is none. */
@@ -17,6 +19,15 @@ export interface ResumeDeps {
   prepareDropFile?(worktree: string): void;
   /** Starts the periscope proxy in front of the preview URL and returns the viewer's URL (CREW-2880). */
   startProxy?(worktree: string, previewUrl: string, number: string): Promise<string>;
+  /**
+   * Relayed previews (CREW-3059). `slugFor` is the slug the periscope was opened under (from its
+   * local record); when there is one, the tunnel is restarted under it so the same link works
+   * again. `record` merges tunnel state into the local record.
+   */
+  relay?: PreviewRelay & {
+    slugFor(ticketRecordId: string): string | undefined;
+    record(ticketRecordId: string, patch: Partial<PeriscopeSidecar>): void;
+  };
   caps: { idleMinutes: number };
   runHook(name: 'ports' | 'isolate' | 'preview', cwd: string, env: Record<string, string>): Promise<HookResult | null>;
   update(rowId: string, fields: Record<string, unknown>): Promise<void>;
@@ -37,6 +48,8 @@ export async function runPeriscopeResume(d: ResumeDeps, number: string): Promise
     throw new PeriscopeError(`the worktree of ${tag} is gone (${row.worktree}); there is nothing to resume`);
   }
   const env: Record<string, string> = { CREW_TICKET: tag };
+  const relaySlug = d.relay && d.startProxy ? d.relay.slugFor(row.issue_id) : undefined;
+  if (relaySlug) env.CREW_PREVIEW_URL = d.relay!.publicUrl(relaySlug);
   if (row.branch) env.CREW_BRANCH = row.branch;
   const ports = await d.runHook('ports', row.worktree, env);
   if (ports) Object.assign(env, parseEnvLines(ports.output));
@@ -58,6 +71,23 @@ export async function runPeriscopeResume(d: ResumeDeps, number: string): Promise
       url = await d.startProxy(row.worktree, url, /(\d+)$/.exec(tag)?.[1] ?? '0');
     } catch (e) {
       throw new PeriscopeError(`starting the periscope proxy failed: ${(e as Error).message}`);
+    }
+  }
+
+  let localUrl: string | undefined;
+  if (relaySlug) {
+    const outcome = await d.relay!.open(relaySlug, url);
+    if (outcome.ok) {
+      localUrl = url;
+      url = d.relay!.publicUrl(relaySlug);
+      d.relay!.record(row.issue_id, {
+        url, localUrl, slug: relaySlug, tunnelPid: outcome.pid, tunnelStartedAt: d.now().toISOString(),
+        tunnelSettled: true, tunnelQuickExits: 0, tunnelStopped: undefined,
+      });
+    } else {
+      // The slug is kept so the next `--resume` can try again; the respawn step leaves it alone meanwhile.
+      d.relay!.record(row.issue_id, { url, localUrl: undefined, tunnelPid: undefined, tunnelStopped: true });
+      d.say('warning', `the preview is not relayed: ${outcome.reason}; it is reachable at ${url} on the ship's network only`, { url });
     }
   }
 

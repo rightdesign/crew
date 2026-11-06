@@ -125,6 +125,8 @@ export interface IdleDeps {
    */
   recordActivity?(row: PeriscopeRow, lastActivityAt: string, expiresAt: string): void;
   ticketOf(row: PeriscopeRow): Promise<IdleTicket>;
+  /** Stops the periscope's relay tunnel, if it has one (CREW-3059); resume brings it back under the same slug. */
+  stopTunnel?(row: PeriscopeRow): void;
   /** Stops whatever listens on the worktree's ports. Must be safe to call when nothing does. */
   stopServer(worktree: string, number: string): Promise<void>;
   raise(item: ShipAttentionItem): Promise<void>;
@@ -159,6 +161,7 @@ export async function runPeriscopeIdlePass(d: IdleDeps): Promise<IdleResult> {
         result.refreshed++;
         continue;
       }
+      d.stopTunnel?.(row);
       await d.stopServer(row.worktree, t.number);
       await d.raise(periscopeIdleItem(t.tag, t.repo, t.number, decision.idleMs, now.toISOString()));
       result.expired++;

@@ -108,8 +108,9 @@ A repository opts in by declaring `hooks.preview` in its
 prints its URL as the **last line of stdout**. It runs from the worktree
 after `setup` and `ports`, with the `ports` output exported plus
 `CREW_PREVIEW_HOST`, `CREW_TICKET`, `CREW_BRANCH`, and, for a periscope,
-`CREW_PERISCOPE=1` and `CREW_POINTED_AT_FILE` (see
-[Pointing at something](#pointing-at-something)).
+`CREW_PERISCOPE=1`, `CREW_POINTED_AT_FILE` (see
+[Pointing at something](#pointing-at-something)) and, when the preview is
+[relayed](#relayed-previews), `CREW_PREVIEW_URL`.
 
 Two rules follow from there being no stop hook:
 
@@ -120,7 +121,9 @@ Two rules follow from there being no stop hook:
 Bind to `CREW_PREVIEW_HOST` rather than `localhost`, or a viewer on another
 machine cannot reach it. A dev server whose hot-reload socket runs on a
 separate port needs both ports from `ports`, and the page it serves has to
-point its socket at the same host:
+point its socket at the same host. That works on the LAN only; a
+[relayed preview](#relayed-previews) tunnels one port, so there the socket must
+share the app's port:
 
 ```yaml
 hooks:
@@ -186,8 +189,7 @@ URL `(proxy)`.
   `/__periscope/` routes.
 - **Lifecycle.** The proxy ends with the periscope: `down` and the idle check
   stop it with the dev server, and `up --resume` starts it again. It adds no
-  authentication and no remote reach; it is the place a remote viewer's
-  authentication will go.
+  authentication. Remote reach comes only from [relayed previews](#relayed-previews).
 
 ## Periscopes for Passengers
 
@@ -196,9 +198,64 @@ chat. Set `hostPeriscopes: true` on a route that already hosts Passengers, and
 `ship.previewHost` to the name a Passenger reaches this ship by. What the flag
 grants and does not grant is on [Host Passengers](/host-passengers#periscopes).
 
-The preview URL is a plain address on the ship's network. It is reachable
-over the LAN or a private network only; it is not relayed, and nothing about
-it is public.
+Unless the ship relays previews (below), the preview URL is a plain address on
+the ship's network, reachable over the LAN or a private network only.
+
+## Relayed previews
+
+With `ship.relayPreviews: true` (it needs `ship.relayHost` and a route key,
+the same prerequisites as the Passenger tunnel), `crew periscope up` makes the
+preview reachable from anywhere at `https://<slug>.<relay domain>`. The slug is
+12 random characters minted for that periscope, never derived from the ticket.
+`ship.previewHost` is not needed for relayed previews, and the control API no
+longer answers 409 for its absence.
+
+**Anyone who has the link can open the preview while the periscope is active.**
+There is no sign-in, token or cookie in front of it: the link is the
+credential. A periscope on shared state serves the operator's development data
+behind only the repository's own login, so share the link accordingly, and
+use `crew periscope up --no-relay` for a periscope that should stay on the LAN.
+
+How it works:
+
+- `up` starts one detached `ssh -R` process per periscope, forwarding the
+  periscope [proxy](#the-proxy) (so the inspector overlay and click-to-point
+  work for remote viewers) to the relay. The ship's Passenger and control
+  tunnel is a separate process and is never touched. With relaying on and no
+  `--host`, the proxy listens on `localhost`, so nothing is exposed on the LAN.
+- The public URL is the one recorded on the row, shown by `list` and printed by
+  `up`; the ticket comment carries it. `list` shows the proxy address behind it.
+- `down` ends the tunnel before it stops the proxy and server. The idle check
+  stops it with the server, and `up --resume` restarts it under the same slug,
+  so the same link works again. A stopped or ended periscope's link answers 502.
+- A tunnel that dies later (a network drop, a relay restart) is restarted by
+  the daemon. One that keeps dying before it settles raises a `tunnel_rejected`
+  attention item for the periscope.
+- If the relay does not accept the tunnel (a relay too old for the `preview`
+  tunnel kind, or a rejected key), `up` still succeeds: it records the LAN
+  address and prints that the preview is not relayed, and why.
+
+The `preview` hook gets one more variable for a relayed periscope,
+`CREW_PREVIEW_URL`, the public origin. Two rules for a hook that serves a
+relayed preview:
+
+- **The hot-reload socket must use the app's own port and follow the page
+  origin.** Only one port is tunneled, so a separate `HMR_PORT` is not
+  reachable from outside. For Vite, leave `server.hmr.port` unset (or set
+  `clientPort` to the page's port) so the client connects back to wherever the
+  page was loaded from.
+- **A backend with an origin allow-list must accept `CREW_PREVIEW_URL`**, or
+  it refuses requests made from the public address.
+
+```yaml
+hooks:
+  ports: scripts/dev-ports.sh      # prints APP_PORT=…
+  preview: |
+    export ALLOWED_ORIGINS="${CREW_PREVIEW_URL:-http://localhost:$APP_PORT}"
+    nohup pnpm dev --host "${CREW_PREVIEW_HOST:-localhost}" \
+      --port "$APP_PORT" >/dev/null 2>&1 &
+    echo "http://${CREW_PREVIEW_HOST:-localhost}:$APP_PORT"
+```
 
 ### The periscope's own MCP endpoint
 
@@ -263,6 +320,7 @@ the session itself, are a separate piece of work (CREW-2912).
 | `ship.periscopeIdleMinutes` | 120 | Idle time recorded as the periscope's expiry. |
 | `ship.intelStartupSeconds` | 20 | How long `periscope up` waits for the repository's `intel` symbol service. |
 | `ship.previewHost` | — | Host a Passenger reaches the ship by; required once a route hosts periscopes. |
+| `ship.relayPreviews` | false | Relay every periscope's preview: a public `https://<slug>.<relay domain>` link. Needs `ship.relayHost`. `up --no-relay` opts one out. |
 | route `hostPeriscopes` | false | Lets Passengers open periscopes. |
 
 The settings are described in the [command reference](/commands).

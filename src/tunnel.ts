@@ -122,9 +122,11 @@ export function generateTunnelSlug(): string {
  */
 export function bindAddrFor(
   o: Pick<TunnelOptions, 'workspaceId' | 'slug' | 'apiKey' | 'mcpSecret'>,
-  path?: 'control',
+  path?: 'control' | 'preview',
 ): string {
   // `-path-control` (CREW-2795) names the relay's second target; no segment is the MCP target.
+  // `-path-preview` (CREW-3059) is a periscope's preview: its slug is the periscope's own, and the
+  // link is the credential, so no `-secret-` segment either.
   const base = `workspace-${o.workspaceId}-slug-${o.slug}${path ? `-path-${path}` : ''}-key-${o.apiKey}`;
   // The secret is the passenger container's identity; the control API has no use for it.
   return o.mcpSecret && !path ? `${base}-secret-${o.mcpSecret}` : base;
@@ -162,6 +164,10 @@ export function sshArgsFor(
   const forwards: string[] = [];
   if (o.localPort !== undefined) forwards.push('-R', `${bindAddrFor(o)}:0:127.0.0.1:${o.localPort}`);
   if (o.controlSocket) forwards.push('-R', `${bindAddrFor(o, 'control')}:0:${o.controlSocket}`);
+  return sshArgs(o, forwards);
+}
+
+function sshArgs(o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'privateKeyPath'>, forwards: string[]): string[] {
   return [
     '-N',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -178,6 +184,35 @@ export function sshArgsFor(
     ...forwards,
     o.relayHost,
   ];
+}
+
+/**
+ * The ssh arguments for one periscope's preview tunnel (CREW-3059): a single forward to the
+ * periscope proxy at `targetHost:targetPort`, under the periscope's own `slug`. It is its own
+ * ssh process so the ship's passenger/control tunnel is never touched or respawned. The
+ * argument carries the API key: nothing may log it.
+ */
+export function previewSshArgsFor(
+  o: Pick<TunnelOptions, 'relayHost' | 'relayPort' | 'workspaceId' | 'slug' | 'apiKey' | 'privateKeyPath'> & { targetHost: string; targetPort: number },
+): string[] {
+  return sshArgs(o, ['-R', `${bindAddrFor(o, 'preview')}:0:${o.targetHost}:${o.targetPort}`]);
+}
+
+/**
+ * Starts one periscope preview tunnel, detached like the passenger one (`DEFAULT_SPAWN_OPTIONS`)
+ * so it outlives the `crew periscope up` that opened it; `periscope down`, the idle pass and
+ * the daemon's respawn step manage it by pid.
+ */
+export function startPreviewTunnel(
+  o: Parameters<typeof previewSshArgsFor>[0] & { spawnFn?: SpawnFn },
+): { pid: number | undefined; exited(): boolean } {
+  const child = (o.spawnFn ?? defaultSpawn)('ssh', previewSshArgsFor(o));
+  child.unref?.();
+  // A spawn error (no ssh binary) counts as an exit, which the caller's settle check sees.
+  let exited = false;
+  child.on('exit', () => { exited = true; });
+  child.on('error', () => { exited = true; });
+  return { pid: child.pid, exited: () => exited };
 }
 
 /**

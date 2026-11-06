@@ -13,7 +13,8 @@ import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { registerCodeServer } from './intel-register.ts';
 import { dropSerenaFolder, missingPrerequisites, realSerenaDeps, startSerena } from './intel-serena.ts';
 import { intelFlavor, wantsCodeBridge, lspFlavor, lspBinaryFound, ensureLspPlugin, LSP_SERVERS } from './intel.ts';
-import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, removePeriscopeSidecar } from './periscope-state.ts';
+import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, removePeriscopeSidecar, readPeriscopeSidecars as readSidecars, updatePeriscopeSidecar } from './periscope-state.ts';
+import { openPreviewTunnel, stopRecordedTunnel, type PreviewRelay } from './periscope-relay.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
 import { sandboxHookGaps, imageHasBinary, imageStoreProblem } from './sandbox-hooks.ts';
@@ -164,7 +165,7 @@ import {
   type ContainerPlan,
 } from './passenger-containers.ts';
 import {
-  syncPassengerTunnels, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
+  syncPassengerTunnels, startPreviewTunnel, generateTunnelSlug, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
   TUNNEL_REJECTED_KEY, TUNNEL_REJECTED_AFTER, tunnelRejectedMessage, rejectedTunnels,
   RELAY_CONTROL_UNSUPPORTED_KEY, relayControlUnsupportedMessage, controlRefusedTunnels,
 } from './tunnel.ts';
@@ -435,7 +436,7 @@ function usage(problem?: string, requested = false): never {
   crew reap [route]              kill orphaned servers, drop worktrees for closed tickets
   crew drop [route] NNN          remove a merged ticket's worktree and branch
   crew rotate-passenger-url [route]   force a Host Passengers tunnel to reconnect with a fresh public URL
-  crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--serve-mcp] [--host H] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]
+  crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--serve-mcp] [--host H] [--no-relay] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]
   crew periscope up --resume NNN restart the preview an idle periscope's server was stopped for
                                  file a draft ticket, cut and prepare its worktree, start the repo's preview hook and record a Periscopes row (alias: start)
   crew periscope down [[route] NNN] --keep|--discard [--allow-empty] [--json]
@@ -1158,6 +1159,38 @@ function routeRelayUrl(route: Route): string | null {
 }
 
 /** workspaceId -> the owning route's own API key, for the relay's `/auth/me` entitlement check (CREW-1320). */
+/**
+ * The relayed-preview settings for one route's periscopes (CREW-3059), or undefined when
+ * `ship.relayPreviews` is off. A missing route key or ship keypair does not fail `up`: the
+ * tunnel's outcome says why the preview is not relayed.
+ */
+function previewRelayFor(route: Route): PreviewRelay | undefined {
+  if (!cfg.ship.relayPreviews || !cfg.ship.relayHost) return undefined;
+  const relayHost = cfg.ship.relayHost;
+  const workspaceId = route.resolved?.workspaceId;
+  return {
+    newSlug: generateTunnelSlug,
+    publicUrl: (slug) => relayBaseUrlFor(slug, relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain),
+    open: async (slug, localUrl) => {
+      if (!workspaceId) return { ok: false, reason: `route ${route.route} is not connected` };
+      let apiKey: string;
+      let privateKeyPath: string;
+      try {
+        apiKey = resolveApiKey(route);
+        privateKeyPath = ensureShipSshKeypair(cfg.ship.stateDir).privateKeyPath;
+      } catch (e) { return { ok: false, reason: (e as Error).message }; }
+      return openPreviewTunnel({
+        start: (target) => startPreviewTunnel({
+          relayHost, relayPort: cfg.ship.relayPort, workspaceId, slug, apiKey, privateKeyPath, targetHost: target.host, targetPort: target.port,
+        }),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        kill: (pid) => { try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
+      }, localUrl);
+    },
+    stop: (pid) => { try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
+  };
+}
+
 function passengerApiKeys(routes: Route[]): Map<string, string> {
   const keys = new Map<string, string>();
   for (const r of routes) {
@@ -3226,6 +3259,7 @@ switch (command) {
       periscopes: {
         routes: controlRoutes.filter((r) => r.enabled).map((r) => ({ route: r.route, workspaceId: r.resolved!.workspaceId, hostPeriscopes: r.hostPeriscopes === true })),
         previewHost: cfg.ship.previewHost,
+        relayPreviews: cfg.ship.relayPreviews,
         maxPeriscopes: cfg.ship.maxPeriscopes,
         run: runCrew,
         verifyIn: (token, ws) => controlAuth.verifyIn(token, ws),
@@ -5341,7 +5375,7 @@ switch (command) {
     // supplies the real git, shell and tracker.
     const subP = positional[1];
     if (subP !== 'up' && subP !== 'start' && subP !== 'down' && subP !== 'end' && subP !== 'list') {
-      process.stderr.write('crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--host H] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]\n');
+      process.stderr.write('crew periscope up [[route] REPO] [--topic TEXT|--issue NNN] [--isolate] [--host H] [--no-relay] [--assignee ID] [--no-open] [--open] [--dry-run] [--json]\n');
       process.stderr.write('crew periscope down [[route] NNN] --keep|--discard [--allow-empty] [--json]\n');
       process.stderr.write('crew periscope list [route] [--json]\n');
       process.exit(2);
@@ -5371,6 +5405,7 @@ switch (command) {
               number: /(\d+)$/.exec(ticket.issue_id)?.[1] ?? '', repo: repo?.name ?? '?',
               state: str(row.state), url: str(row.url), worktree: str(row.worktree), branch: str(row.branch),
               lastActivityAt: str(row.last_activity_at) || null,
+              localUrl: readSidecars(cfg.ship.stateDir).find((x) => x.ticketRecordId === ticket.id)?.localUrl,
             };
           });
         };
@@ -5378,7 +5413,7 @@ switch (command) {
           const listRows = (await Promise.all(routesP.map(gather))).flat().map((r) => ({ ...r, pointedAt: readPointedAt(r.worktree) }));
           // Same port probe as `crew status`, so the two commands cannot disagree.
           const serving = new Map(await Promise.all(listRows.map(async (r) => {
-            const port = urlPort(r.url);
+            const port = urlPort(r.localUrl ?? r.url);
             return [r.id, port === undefined ? false : await portListening(port)] as const;
           })));
           const entries = periscopeListEntries(listRows, new Date(), (r) => serving.get(r.id) ?? false);
@@ -5456,6 +5491,10 @@ switch (command) {
             await trD.updateTicket(id, patch);
           },
           postPushed: (id, sha, rem, branch) => trD.postEvent(id, pushedEventBody(sha, rem, branch), memberD, 'pushed'),
+          stopTunnel: (id) => {
+            const sc = readSidecars(cfg.ship.stateDir).find((x) => x.ticketRecordId === id);
+            return sc && stopRecordedTunnel(sc) ? 1 : 0;
+          },
           stopServer: async (wt, n) => {
             const pids = pidsInWorktree(wt, Number(n));
             if (pids.length) await killGently(pids);
@@ -5513,6 +5552,11 @@ switch (command) {
           worktreeExists: (p) => existsSync(p),
           prepareDropFile,
           startProxy: (wt, url, n) => launchProxy(crewInvocation(CREW_HOME), wt, url, Number(n), { host: hit!.row.host || 'localhost', inject: hit!.repo.config.periscope?.inspector !== 'repo' }),
+          relay: hit && previewRelayFor(hit.route) && {
+            ...previewRelayFor(hit.route)!,
+            slugFor: (id) => readSidecars(cfg.ship.stateDir).find((x) => x.ticketRecordId === id)?.slug,
+            record: (id, patch) => { updatePeriscopeSidecar(cfg.ship.stateDir, id, patch); },
+          },
           caps: periscopeCaps(cfg.ship as typeof cfg.ship & PeriscopeLimits),
           runHook: async (name, cwd, env) => {
             const script = hit?.repo.config.hooks[name];
@@ -5527,7 +5571,7 @@ switch (command) {
         else process.stdout.write(`${resumed.ticket}\n${resumed.worktree}\n${resumed.url}\n`);
         break;
       }
-      const parsedUp = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), requestedBy: value('requested-by'), isolate: flag('isolate'), json: jsonP });
+      const parsedUp = parsePeriscopeUpArgs(positional, { topic: value('topic'), issue: value('issue'), host: value('host'), assignee: value('assignee'), requestedBy: value('requested-by'), isolate: flag('isolate'), json: jsonP, noRelay: flag('no-relay') });
       // CREW-2866: with no REPO, the working directory (a checkout, or a worktree of one) names the route and repository.
       let a: PeriscopeUpArgs;
       if (parsedUp.repo !== undefined) a = { ...parsedUp, repo: parsedUp.repo };
@@ -5624,6 +5668,7 @@ switch (command) {
         createRow: (fields) => trackerP.createPeriscope(fields),
         prepareDropFile,
         startProxy: (wt, url, n) => launchProxy(crewInvocation(CREW_HOME), wt, url, Number(n), { host: a.host ?? 'localhost', inject: repoP.config.periscope?.inspector !== 'repo' }),
+        relay: previewRelayFor(routeP),
         registerCode: registerCodeServer,
         recordLocal: (sc) => {
           writePeriscopeSidecar(cfg.ship.stateDir, { ...sc, route: routeP.route });

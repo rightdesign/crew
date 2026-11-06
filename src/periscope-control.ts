@@ -43,6 +43,8 @@ export interface PeriscopeHosting {
   /** Every enabled, connected route, with whether it hosts Passenger periscopes. */
   routes: { route: string; workspaceId: string; hostPeriscopes: boolean }[];
   previewHost?: string;
+  /** `ship.relayPreviews`: the preview is reached through the relay, so `previewHost` is not required (CREW-3059). */
+  relayPreviews?: boolean;
   maxPeriscopes: number;
   /** Runs `crew <args>`; each complete stderr line is passed to `onLine` as it arrives. */
   run: (args: string[], onLine: (line: string) => void) => Promise<CliResult>;
@@ -220,7 +222,7 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
         const mine = Array.isArray(list) ? list : [];
         for (const e of mine) rows.push({ route: c.route, ...(e as object) });
         hosting.push({
-          route: c.route, workspaceId: c.workspaceId, previewHostSet: !!h.previewHost,
+          route: c.route, workspaceId: c.workspaceId, previewHostSet: !!h.previewHost || h.relayPreviews === true,
           maxPeriscopes: h.maxPeriscopes, live: mine.length, repos: h.previewRepos?.(c.route) ?? [],
         });
       } catch { return err(502, 'the list command did not answer JSON'); }
@@ -262,7 +264,7 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
   const requestedBy = plainText(b.requestedBy, 'requestedBy', false);
   for (const v of [repo, topic, requestedBy]) if (isErr(v)) return err(400, v.error);
   if (b.isolate !== undefined && typeof b.isolate !== 'boolean') return err(400, 'isolate must be a boolean');
-  if (!h.previewHost) return err(409, 'this ship has no ship.previewHost, so a Passenger could not reach a periscope');
+  if (!h.previewHost && !h.relayPreviews) return err(409, 'this ship has no ship.previewHost, so a Passenger could not reach a periscope');
 
   // Over the cap: refuse before anything is filed. The command checks again, which covers a race.
   const live = await h.run(['periscope', 'list', picked.route, '--json'], () => {});
@@ -275,7 +277,7 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
   return execute(h, [
     'periscope', 'up', picked.route, repo as string,
     ...(issue ? ['--issue', issue] : ['--topic', topic as string]),
-    '--host', h.previewHost,
+    ...(h.previewHost ? ['--host', h.previewHost] : []),
     ...(requestedBy && !issue ? ['--requested-by', requestedBy as string] : []),
     ...(b.isolate === true ? ['--isolate'] : []), ...(h.mcp ? ['--serve-mcp'] : []), '--no-open', '--json',
   ], q.wantsStream, h.mcp ? async (done) => ({ ...done, ...(await h.mcp!.onUp(picked, done)) }) : undefined);

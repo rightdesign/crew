@@ -105,9 +105,14 @@ outside the periscope's own worktree. The Passenger container itself stays
 read-only, as described above; a periscope is a separate worktree on the ship,
 not a writable view of that container.
 
-The preview URL is an address on `previewHost`, reachable over the LAN or a
-private network only. It is not sent through the relay. See
-[Periscope](/periscope) for the whole flow.
+By default the preview URL is an address on `previewHost`, reachable over the
+LAN or a private network only, and is not sent through the relay. With
+`ship.relayPreviews: true` it is instead a public `https://<slug>.<relay domain>`
+link carried by its own relay tunnel, and `previewHost` is not required. **A
+relayed preview is open to anyone who has the link while the periscope is
+active**, so a periscope on shared state serves the operator's development data
+behind only the repository's own login. See [Periscope](/periscope) for the
+whole flow.
 
 To run a locally built image instead, set `ship.passengerImage` in `crew.yaml`
 (or export `CREW_PASSENGER_IMAGE`, which takes precedence). Build it from the

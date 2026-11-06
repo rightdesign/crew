@@ -32,6 +32,22 @@ export interface PeriscopeSidecar {
   startedAt: string;
   lastActivityAt: string;
   expiresAt: string;
+  /**
+   * Relayed preview (CREW-3059), all absent when the periscope is not relayed. `slug` is the
+   * periscope's own opaque public label; `url` is then the public address and `localUrl` the
+   * proxy address the tunnel forwards to (what the serving probe checks).
+   */
+  slug?: string;
+  localUrl?: string;
+  /** Pid of the detached ssh process carrying the preview forward; absent while it is stopped. */
+  tunnelPid?: number;
+  tunnelStartedAt?: string;
+  /** A pass found the tunnel alive after it started (it was not refused). */
+  tunnelSettled?: boolean;
+  /** Consecutive passes that found a never-settled tunnel dead; `tunnel_rejected` is raised at the threshold. */
+  tunnelQuickExits?: number;
+  /** The tunnel was stopped on purpose (idle stop, failed resume): the respawn step leaves it alone until `up --resume`. */
+  tunnelStopped?: boolean;
 }
 
 export interface PeriscopeStatus extends PeriscopeSidecar {
@@ -47,6 +63,16 @@ const fileOf = (stateDir: string, ticketRecordId: string) => join(dirOf(stateDir
 export function writePeriscopeSidecar(stateDir: string, sc: PeriscopeSidecar): void {
   mkdirSync(dirOf(stateDir), { recursive: true });
   writeFileSync(fileOf(stateDir, sc.ticketRecordId), `${JSON.stringify(sc, null, 2)}\n`);
+}
+
+/** Merges `patch` into a periscope's sidecar; a no-op when there is none. Returns the result. */
+export function updatePeriscopeSidecar(stateDir: string, ticketRecordId: string, patch: Partial<PeriscopeSidecar>): PeriscopeSidecar | undefined {
+  const sc = readPeriscopeSidecars(stateDir).find((x) => x.ticketRecordId === ticketRecordId);
+  if (!sc) return undefined;
+  const next = { ...sc, ...patch };
+  for (const k of Object.keys(patch) as Array<keyof PeriscopeSidecar>) if (patch[k] === undefined) delete next[k];
+  writePeriscopeSidecar(stateDir, next);
+  return next;
 }
 
 export function removePeriscopeSidecar(stateDir: string, ticketRecordId: string): void {
@@ -106,7 +132,7 @@ export async function periscopesForStatus(
   probe: (port: number) => Promise<boolean> = portListening,
 ): Promise<PeriscopeStatus[]> {
   return Promise.all(readPeriscopeSidecars(stateDir).map(async (sc) => {
-    const port = urlPort(sc.url);
+    const port = urlPort(sc.localUrl ?? sc.url);
     return { ...sc, serving: port === undefined ? false : await probe(port), pointedAt: readPointedAt(sc.worktree) };
   }));
 }

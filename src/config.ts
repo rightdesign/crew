@@ -572,6 +572,13 @@ export interface Ship {
    * the bind host is a ship setting rather than a relay URL.
    */
   previewHost?: string;
+  /**
+   * Relay every periscope's preview through the ship's relay (CREW-3059): `crew periscope up`
+   * opens a `preview` tunnel and records `https://<slug>.<relay domain>` as the periscope's URL,
+   * reachable from anywhere by anyone holding the link. Needs `relayHost` and a route key, like
+   * the passenger tunnel. Off by default; `crew periscope up --no-relay` skips it for one periscope.
+   */
+  relayPreviews?: boolean;
   /** Most periscopes this ship keeps open at once. Default 3. */
   maxPeriscopes: number;
   /** Minutes without traffic before an open periscope is closed. Default 120. */
@@ -678,7 +685,7 @@ const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
   'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
-  'previewHost', 'maxPeriscopes', 'periscopeIdleMinutes', 'intelStartupSeconds', 'mapTokenBudget', 'noopRunRepeats', 'secretStore', 'env', 'runner', 'sandbox',
+  'previewHost', 'relayPreviews', 'maxPeriscopes', 'periscopeIdleMinutes', 'intelStartupSeconds', 'mapTokenBudget', 'noopRunRepeats', 'secretStore', 'env', 'runner', 'sandbox',
 ]);
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
@@ -1137,6 +1144,12 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(maxPeriscopes) || maxPeriscopes < 1) {
     missing.add(`ship.maxPeriscopes must be a positive integer (got "${shipRaw.maxPeriscopes}")`);
   }
+  if (shipRaw.relayPreviews !== undefined && typeof shipRaw.relayPreviews !== 'boolean') {
+    missing.add(`ship.relayPreviews must be true or false (got "${String(shipRaw.relayPreviews)}")`);
+  }
+  if (shipRaw.relayPreviews === true && !shipRaw.relayHost) {
+    missing.add('ship.relayPreviews is true but ship.relayHost is not set — a relayed preview needs the relay');
+  }
   const periscopeIdleMinutes = shipRaw.periscopeIdleMinutes === undefined ? DEFAULT_PERISCOPE_IDLE_MINUTES : Number(shipRaw.periscopeIdleMinutes);
   if (!Number.isInteger(periscopeIdleMinutes) || periscopeIdleMinutes < 1) {
     missing.add(`ship.periscopeIdleMinutes must be a positive integer (got "${shipRaw.periscopeIdleMinutes}")`);
@@ -1257,6 +1270,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       cloneScheme: parseCloneScheme(shipRaw.cloneScheme),
       forges: parseShipForges(shipRaw.forges),
       previewHost: shipRaw.previewHost ? String(shipRaw.previewHost).trim() || undefined : undefined,
+      relayPreviews: shipRaw.relayPreviews === true ? true : undefined,
       maxPeriscopes,
       periscopeIdleMinutes,
       intelStartupSeconds,

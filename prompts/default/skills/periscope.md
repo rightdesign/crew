@@ -44,8 +44,11 @@ or when no host is named, follow the chat's default host.
 ## 3. Open the preview
 
 Call `periscope_up` with `issue` set to the issue you found. Post the URL it
-returns, with one note: the URL is reachable only on that host's network (the
-same LAN or private network), not from outside it.
+returns, with one note about where it works. An address on the host itself
+(`localhost` or a LAN name) is reachable only on that host's network (the same
+LAN or private network), not from outside it. An `https://` address on the
+relay's domain works from anywhere for anyone who has the link, so say that it
+is open to whoever it is shared with.
 
 ## 4. Work in the preview
 

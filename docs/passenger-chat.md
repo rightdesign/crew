@@ -38,9 +38,11 @@ When a ship also offers periscopes, you can ask the agent to open one:
 a throwaway preview of the project on the ship, makes the change you describe
 there, and gives you a URL.
 
-- The URL is reachable only from the ship's network (the same LAN or private
-  network); it does not work from outside it. If you cannot open it, you are
-  probably not on that network.
+- On most ships the URL is reachable only from the ship's network (the same LAN
+  or private network); it does not work from outside it, and if you cannot open
+  it you are probably not on that network. A ship that relays previews gives an
+  `https://` link that works from anywhere, for anyone who has it, so share it
+  only with people who should see the work.
 - Keep refining in the chat; the preview shows each change.
 - When you are done, ask the agent to keep it or discard it. **Keep** files
   the idea as a ticket at `new` for a maintainer to look at, with the branch

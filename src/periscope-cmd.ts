@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { PeriscopeSidecar } from './periscope-state.ts';
 import { pointedAtEnv, type PointedAt } from './periscope-pointed.ts';
 import { proxyPortFor } from './ports.ts';
+import type { PreviewRelay } from './periscope-relay.ts';
 
 export class PeriscopeError extends Error {}
 
@@ -73,6 +74,8 @@ export interface PeriscopeUpArgs {
   issue?: string;
   isolate: boolean;
   host?: string;
+  /** `--no-relay`: open this periscope without a relayed preview even when `ship.relayPreviews` is on (CREW-3059). */
+  noRelay?: boolean;
   assignee?: string;
   /** `--requested-by`: who the draft is for when the control API opens it on a Passenger's behalf; recorded as the ticket's reporter. */
   requestedBy?: string;
@@ -96,9 +99,9 @@ export type ParsedPeriscopeUpArgs = Omit<PeriscopeUpArgs, 'repo'> & { repo?: str
  */
 export function parsePeriscopeUpArgs(
   positional: string[],
-  flags: { topic?: string; issue?: string; host?: string; assignee?: string; requestedBy?: string; isolate: boolean; json: boolean },
+  flags: { topic?: string; issue?: string; host?: string; assignee?: string; requestedBy?: string; isolate: boolean; json: boolean; noRelay?: boolean },
 ): ParsedPeriscopeUpArgs {
-  const usage = 'usage: crew periscope up [[route] REPO] [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--assignee CREW_ROW_ID] [--requested-by ID] [--no-open] [--json]';
+  const usage = 'usage: crew periscope up [[route] REPO] [--topic TEXT | --issue NNN] [--isolate] [--host HOST] [--no-relay] [--assignee CREW_ROW_ID] [--requested-by ID] [--no-open] [--json]';
   const rest = positional.slice(2);   // [periscope, up|start, ...]
   if (rest.length > 2) throw new PeriscopeError(usage);
   const topic = flags.topic?.trim();
@@ -116,6 +119,7 @@ export function parsePeriscopeUpArgs(
     ...(issue ? { issue } : {}),
     isolate: flags.isolate,
     ...(flags.host ? { host: flags.host } : {}),
+    ...(flags.noRelay ? { noRelay: true as const } : {}),
     ...(flags.assignee ? { assignee: flags.assignee } : {}),
     ...(flags.requestedBy?.trim() ? { requestedBy: flags.requestedBy.trim() } : {}),
     json: flags.json,
@@ -250,6 +254,11 @@ export interface PeriscopeDeps {
    * should use (CREW-2880). Absent where proxying is not supported; a throw abandons the `up`.
    */
   startProxy?(worktree: string, previewUrl: string, number: string): Promise<string>;
+  /**
+   * Relayed previews (CREW-3059): present when `ship.relayPreviews` is on and the relay is
+   * configured. Used only together with `startProxy`, since the tunnel forwards the proxy.
+   */
+  relay?: PreviewRelay;
   /** Registers the symbol service as the `code` MCP server in the worktree's harness configuration; returns one-line reasons for files left alone. */
   registerCode?(worktree: string, url: string): { skipped: string[] };
   comment(ticketId: string, body: string): Promise<void>;
@@ -352,8 +361,10 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   }
 
   let wt: { path: string; branch: string } | undefined;
+  let tunnel: { pid: number; slug: string } | undefined;
   const abandon = async (why: string): Promise<never> => {
     // Best effort each: a failure to clean one thing must not hide the reason or skip the rest.
+    if (tunnel) { try { d.relay?.stop(tunnel.pid, tunnel.slug); } catch { /* the ssh process is detached; nothing more to do */ } }
     if (wt) await d.teardown(wt.path, wt.branch).catch(() => {});
     if (prior) await d.existing!.restore(prior.id, prior.assignee).catch(() => {});
     else await d.closeDraft(draft.id, `Periscope abandoned: ${why.split('\n')[0]}`).catch(() => {});
@@ -372,6 +383,9 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
     return abandon(`setup failed (exit ${prepared.code})\n${tail(prepared.output)}`);
   }
 
+  // The slug exists before the hooks run so a hook can be told the public origin (CREW_PREVIEW_URL).
+  const relaySlug = d.relay && d.startProxy && !args.noRelay ? d.relay.newSlug() : undefined;
+  const relayOrigin = relaySlug ? d.relay!.publicUrl(relaySlug) : undefined;
   const env: Record<string, string> = { CREW_TICKET: draft.tag, CREW_BRANCH: wt.branch };
   const ports = await d.runHook('ports', wt.path, env);
   if (ports) Object.assign(env, parseEnvLines(ports.output));
@@ -388,7 +402,9 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
   } catch (e) {
     return abandon(`preparing the drop file failed: ${(e as Error).message}`);
   }
-  const preview = await d.runHook('preview', wt.path, { ...env, CREW_PREVIEW_HOST: d.host, ...pointedAtEnv(wt.path) });
+  const preview = await d.runHook('preview', wt.path, {
+    ...env, CREW_PREVIEW_HOST: d.host, ...(relayOrigin ? { CREW_PREVIEW_URL: relayOrigin } : {}), ...pointedAtEnv(wt.path),
+  });
   if (!preview || preview.code !== 0) {
     return abandon(`preview exited ${preview?.code ?? 'without running'}\n${tail(preview?.output ?? '')}`);
   }
@@ -402,6 +418,19 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
       return abandon(`starting the periscope proxy failed: ${(e as Error).message}`);
     }
     d.say('proxy', `proxy at ${url} in front of ${previewUrl}`, { url, previewUrl });
+  }
+  // A relayed preview forwards the proxy; if the relay will not take it the periscope still comes up on the LAN address.
+  let relayed: { slug: string; pid: number; localUrl: string } | undefined;
+  if (relaySlug) {
+    const outcome = await d.relay!.open(relaySlug, url);
+    if (outcome.ok) {
+      relayed = { slug: relaySlug, pid: outcome.pid, localUrl: url };
+      tunnel = { pid: outcome.pid, slug: relaySlug };
+      url = relayOrigin!;
+      d.say('relay', `preview relayed at ${url}`, { url, localUrl: relayed.localUrl });
+    } else {
+      d.say('warning', `the preview is not relayed: ${outcome.reason}; it is reachable at ${url} on the ship's network only`, { url });
+    }
   }
   d.say('preview', `preview at ${url}`, { url });
 
@@ -449,6 +478,10 @@ export async function runPeriscopeUp(d: PeriscopeDeps, args: PeriscopeUpArgs): P
     d.recordLocal?.({
       ticket: draft.tag, ticketRecordId: draft.id, periscopeRecordId: row.id, repo: args.repo,
       worktree: wt.path, branch: wt.branch, url, host: d.host, state: 'live', isolated: args.isolate,
+      ...(relayed ? {
+        slug: relayed.slug, localUrl: relayed.localUrl, tunnelPid: relayed.pid,
+        tunnelStartedAt: now.toISOString(), tunnelSettled: true, tunnelQuickExits: 0,
+      } : {}),
       ...(intel.state === 'ready' ? { intelUrl: intel.url, intelTools: intel.tools } : {}),
       startedAt: now.toISOString(), lastActivityAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + d.caps.idleMinutes * 60_000).toISOString(),
@@ -518,6 +551,8 @@ export interface PeriscopeRowInfo {
   worktree: string;
   branch: string;
   lastActivityAt: string | null;
+  /** The proxy address behind a relayed `url` (from the local record), else absent. */
+  localUrl?: string;
   /** The newest line of the worktree's drop file, when `list` read one. */
   pointedAt?: PointedAt | null;
 }
@@ -555,6 +590,8 @@ export interface PeriscopeDownDeps {
   /** Whether the remote has the branch; a local branch whose remote copy exists is never deleted. */
   remoteHasBranch?(worktree: string, branch: string): boolean;
   postPushed(ticketRecordId: string, sha: string, remote: string, branch: string): Promise<void>;
+  /** Kills the periscope's relay tunnel, if it has one (CREW-3059); done before the proxy and server stop. Returns how many processes were stopped. */
+  stopTunnel?(ticketRecordId: string): number;
   /** Kills what listens for the worktree. Returns how many processes were stopped. */
   stopServer(worktree: string, number: string): Promise<number>;
   /** Deletes the worktree's crew-managed symbol-service folder (CREW-2914); the main-checkout index stays. */
@@ -596,6 +633,14 @@ export interface PeriscopeDownResult {
   status?: string;
 }
 
+/** A tunnel that will not stop must not keep `down` from ending the periscope. */
+function stopTunnel(d: PeriscopeDownDeps, ticketRecordId: string): void {
+  try {
+    const n = d.stopTunnel?.(ticketRecordId) ?? 0;
+    if (n > 0) d.say('tunnel', 'stopped the relay tunnel');
+  } catch (e) { d.say('warn', `could not stop the relay tunnel: ${(e as Error).message}`); }
+}
+
 function forgetLocal(d: PeriscopeDownDeps, ticketRecordId: string): void {
   try { d.forgetLocal?.(ticketRecordId); } catch (e) { d.say('warn', `could not remove the local periscope record: ${(e as Error).message}`); }
 }
@@ -616,6 +661,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   const prior = existing ? d.priorHold?.(row.ticketRecordId) : undefined;
 
   if (existing && args.mode === 'discard') {
+    stopTunnel(d, row.ticketRecordId);
     const killed = await d.stopServer(row.worktree, row.number);
     d.dropIntel?.(row.number);
     d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
@@ -631,6 +677,7 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   }
 
   if (args.mode === 'discard') {
+    stopTunnel(d, row.ticketRecordId);
     const killed = await d.stopServer(row.worktree, row.number);
     d.dropIntel?.(row.number);
     d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
@@ -672,7 +719,8 @@ export async function runPeriscopeDown(d: PeriscopeDownDeps, args: PeriscopeDown
   }
   await d.postPushed(row.ticketRecordId, pushed.sha, pushed.remote, row.branch);
 
-  const killed = await d.stopServer(row.worktree, row.number);
+  stopTunnel(d, row.ticketRecordId);
+    const killed = await d.stopServer(row.worktree, row.number);
   d.dropIntel?.(row.number);
   d.say('server', killed ? `stopped ${killed} process(es)` : 'no server was listening');
   d.removeWorktree(row.worktree, row.branch, false);
@@ -698,14 +746,14 @@ export function isProxyUrl(url: string, number: string): boolean {
 export function periscopeListEntries(rows: PeriscopeRowInfo[], now: Date, isListening: (r: PeriscopeRowInfo) => boolean): PeriscopeListEntry[] {
   return rows.filter((r) => r.state === 'live').map((r) => {
     const at = r.lastActivityAt ? new Date(r.lastActivityAt).getTime() : NaN;
-    return { ...r, idleMinutes: Number.isNaN(at) ? null : Math.max(0, Math.floor((now.getTime() - at) / 60_000)), listening: isListening(r), proxied: isProxyUrl(r.url, r.number) };
+    return { ...r, idleMinutes: Number.isNaN(at) ? null : Math.max(0, Math.floor((now.getTime() - at) / 60_000)), listening: isListening(r), proxied: isProxyUrl(r.localUrl ?? r.url, r.number) };
   });
 }
 
 export function formatPeriscopeList(entries: PeriscopeListEntry[]): string {
   if (entries.length === 0) return 'no live periscopes on this ship';
   return entries.map((e) => [
-    e.ticket, e.repo, e.worktree, e.proxied ? `${e.url} (proxy)` : e.url, e.state,
+    e.ticket, e.repo, e.worktree, e.localUrl ? `${e.url} (relayed from ${e.localUrl})` : e.proxied ? `${e.url} (proxy)` : e.url, e.state,
     e.idleMinutes === null ? 'idle ?' : `idle ${e.idleMinutes} min`,
     e.listening ? 'listening' : 'not listening',
   ].join('  ')).join('\n');

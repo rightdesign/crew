@@ -73,7 +73,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { RoleName, Route, Ship } from './config.ts';
-import { dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, routeSlug } from './config.ts';
+import { resolveApiKey, dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor, reposOf, routeSlug } from './config.ts';
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { isUpgradeRequired, raiseFromUpgradeRequired } from './crew-floor.ts';
@@ -109,7 +109,10 @@ import { fetchSkillOverrides } from './skills.ts';
 import { isForbiddenError, forbiddenDetail, seatCannotWriteKey, seatCannotWriteItem, seatWriteStillRefused } from './seat-read-probe.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention, workspaceAuthKey, workspaceAllowanceKey, workspaceAllowanceItem, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
-import { readPeriscopeSidecars, writePeriscopeSidecar } from './periscope-state.ts';
+import { readPeriscopeSidecars, writePeriscopeSidecar, updatePeriscopeSidecar } from './periscope-state.ts';
+import { runPeriscopeTunnelPass, stopRecordedTunnel, isPreviewTunnel } from './periscope-relay.ts';
+import { startPreviewTunnel } from './tunnel.ts';
+import { ensureShipSshKeypair } from './ssh-keys.ts';
 import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
 import { periscopeCaps, type PeriscopeLimits } from './periscope-cmd.ts';
 import { killGently, pidsInWorktree } from './ports.ts';
@@ -739,12 +742,42 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
             repo: (t.repo_id && o.route.resolved?.repoNames?.[t.repo_id]) || 'unknown repository',
           };
         },
+        stopTunnel: (row) => {
+          const sc = readPeriscopeSidecars(o.ship.stateDir).find((s) => s.ticketRecordId === row.issue_id);
+          if (!sc?.slug) return;
+          stopRecordedTunnel(sc);
+          updatePeriscopeSidecar(o.ship.stateDir, sc.ticketRecordId, { tunnelPid: undefined, tunnelStopped: true });
+        },
         stopServer: (worktree, number) => killGently(pidsInWorktree(worktree, Number(number))),
         raise: async (item) => { await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, item); },
         clear: (key) => clearShipAttention(o.state, key),
         openKeys: () => openShipAttention(o.state).filter((i) => i.kind === 'periscope_idle').map((i) => i.key),
         warn: (message) => emit.warn(message, { step: 'sweep' }),
       });
+      // CREW-3059: a relayed preview whose tunnel died later (network drop, relay restart) is restarted.
+      if (o.ship.relayPreviews && o.ship.relayHost) {
+        const ship = o.ship;
+        const relayHost = ship.relayHost!;
+        const workspaceId = o.route.resolved.workspaceId;
+        await runPeriscopeTunnelPass({
+          sidecars: () => readPeriscopeSidecars(ship.stateDir).filter((s) => s.route === o.route.route),
+          isAlive: (sc) => sc.tunnelPid !== undefined && !!sc.slug && isPreviewTunnel(sc.tunnelPid, sc.slug),
+          respawn: (sc) => {
+            if (!sc.slug || !sc.localUrl) return undefined;
+            const target = new URL(sc.localUrl);
+            return startPreviewTunnel({
+              relayHost, relayPort: ship.relayPort, workspaceId, slug: sc.slug, apiKey: resolveApiKey(o.route),
+              privateKeyPath: ensureShipSshKeypair(ship.stateDir).privateKeyPath,
+              targetHost: target.hostname.replace(/^\[|\]$/g, ''), targetPort: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+            }).pid;
+          },
+          patch: (id, patch) => { updatePeriscopeSidecar(ship.stateDir, id, patch); },
+          raise: async (item) => { await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, item); },
+          clear: (key) => clearShipAttention(o.state, key),
+          now: () => new Date(),
+          warn: (message) => emit.warn(message, { step: 'sweep' }),
+        });
+      }
     } catch (e) {
       emit.warn(`could not check idle periscopes: ${(e as Error).message}`, { step: 'sweep' });
     }

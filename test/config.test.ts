@@ -1003,6 +1003,17 @@ test('ship.roleConcurrency rejects a non-positive value and an unknown role (CRE
   }
 });
 
+test('ship.relayPreviews defaults off, parses, and needs a boolean and a relayHost (CREW-3059)', () => {
+  const { dir, file } = withConfig(ONE);
+  assert.equal(loadConfig(dir, file).ship.relayPreviews, undefined);
+  const on = withConfig(ONE.replace('agent: { bin: /bin/true }', 'agent: { bin: /bin/true }\n  relayHost: crewd@ships.example.com\n  relayPreviews: true'));
+  assert.equal(loadConfig(on.dir, on.file).ship.relayPreviews, true);
+  const noHost = withConfig(ONE.replace('agent: { bin: /bin/true }', 'agent: { bin: /bin/true }\n  relayPreviews: true'));
+  assert.throws(() => loadConfig(noHost.dir, noHost.file), /relayPreviews is true but ship\.relayHost is not set/);
+  const bad = withConfig(ONE.replace('agent: { bin: /bin/true }', 'agent: { bin: /bin/true }\n  relayPreviews: yes please'));
+  assert.throws(() => loadConfig(bad.dir, bad.file), /ship\.relayPreviews must be true or false/);
+});
+
 test('hostPeriscopes and the periscope ship settings default, and validate (CREW-2853)', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);

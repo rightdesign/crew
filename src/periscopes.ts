@@ -16,7 +16,7 @@ export function periscopeSummary(cfg: Pick<CrewConfig, 'routes' | 'ship'>): stri
   const routes = periscopeRoutes(cfg);
   const limits = `max ${cfg.ship.maxPeriscopes}, idle ${cfg.ship.periscopeIdleMinutes} min`;
   if (routes.length === 0) return `off (no enabled route sets hostPeriscopes: true; ${limits})`;
-  return `ON for ${routes.join(', ')} (host ${cfg.ship.previewHost ?? 'NOT SET (ship.previewHost)'}, ${limits})`;
+  return `ON for ${routes.join(', ')} (${cfg.ship.relayPreviews ? 'previews relayed' : `host ${cfg.ship.previewHost ?? 'NOT SET (ship.previewHost)'}`}, ${limits})`;
 }
 
 /** What doctor finds wrong with the preview host; undefined when fine or periscopes are off. */
@@ -25,6 +25,8 @@ export async function previewHostProblem(
   resolve: (host: string) => Promise<unknown> = (h) => lookup(h),
 ): Promise<string | undefined> {
   if (periscopeRoutes(cfg).length === 0) return undefined;
+  // A relayed preview (CREW-3059) is reached through the relay, so there is no host to hand out.
+  if (cfg.ship.relayPreviews) return undefined;
   const host = cfg.ship.previewHost;
   if (!host) return 'ship.previewHost is not set — a route hosts periscopes, so Passengers have no host to be sent to';
   try {
