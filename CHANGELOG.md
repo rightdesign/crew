@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.0] — 2026-11-06
+
+- CREW-3059 With `ship.relayPreviews` on, `crew periscope up` opens a relay tunnel for the preview and records a public `https://<slug>.<relay domain>` link that works until the periscope ends
+
 ## [0.136.1] — 2026-11-05
 
 - CREW-3057 The lane policy now tells seats that a refused compound command is refused for its denied part only, so they drop that part and re-run the rest instead of parking the ticket.
