@@ -6559,7 +6559,7 @@ switch (command) {
         runs: runs.map((x) => describeRun(x, route, seatIds)),
         // Additive (CREW-2857): every live periscope on this ship, from its local record. `version` stays 1.
         periscopes,
-        watermark: state.watermark(),
+        watermark: state.watermark(routeSlug(route.route)),
         route: {
           name: route.route,
           // Additive (CREW-2248): the running version and the workspace's floor. `version` stays 1.
@@ -6638,7 +6638,7 @@ switch (command) {
         periscopes.map((p) => `periscope:  ${p.ticket} ${p.repo} ${p.url} ${p.state}${p.serving ? '' : ' (not serving)'} expires ${p.expiresAt}\n`).join('') +
         `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
         `release:    ${state.releaseSkipReason() ? 'paused' : 'active'}\n` +
-        `watermark:  ${state.watermark()}\n`,
+        `watermark:  ${state.watermark(routeSlug(route.route))}\n`,
     );
     for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
       if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);

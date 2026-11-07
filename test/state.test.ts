@@ -344,3 +344,12 @@ test('CREW-3100: watermarks are kept per route scope', () => {
   assert.equal(s.watermark('a'), '2026-11-07T19:00:00Z');
   assert.equal(s.watermark('b'), '2026-11-07T18:00:00Z');
 });
+
+test('CREW-3103: a route with no watermark of its own starts from the legacy shared file', () => {
+  const s = fresh();
+  s.setWatermark('2026-11-07T17:00:00Z');
+  assert.equal(s.watermark('a'), '2026-11-07T17:00:00Z');
+  s.setWatermark('2026-11-07T19:00:00Z', 'a');
+  assert.equal(s.watermark('a'), '2026-11-07T19:00:00Z');
+  assert.equal(s.watermark('b'), '2026-11-07T17:00:00Z');
+});

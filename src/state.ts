@@ -45,6 +45,10 @@ export class State {
       const v = readFileSync(this.path(watermarkFile(scope)), 'utf8').trim();
       return v || EPOCH;
     } catch {
+      // CREW-3103: a route with no watermark of its own yet starts from the legacy
+      // shared file, so the first cycle after upgrade does not treat every
+      // comment on a watched ticket as new.
+      if (scope) return this.watermark();
       return EPOCH;
     }
   }
