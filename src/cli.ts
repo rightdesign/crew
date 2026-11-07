@@ -182,7 +182,7 @@ import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { contractFixers } from './contract-refusal.ts';
 import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey } from './ship-attention.ts';
 import {
-  runDaemonLoop, runOnePass, makeStaleChecker, SpawnBreaker,
+  runDaemonLoop, runFleetPass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
 } from './daemon.ts';
 import { ControlAuth, controlSocketFor, crewJson, schedulerHandler, startControlServer } from './control-api.ts';
@@ -826,7 +826,10 @@ for (const w of cfg.warnings) process.stderr.write(`crew: warning: ${w}\n`);
 // `passengers` spans every route this ship declares the same way `poll`/
 // `run` do (see `syncHostPassengers`'s own doc comment) — it must not
 // demand one be named either.
-const FLEET_CAPABLE = new Set(['poll', 'run', 'passengers']);
+// `daemon` serves every enabled route when none is named (CREW-3063): the unit
+// `crew install` writes names none, and its start/stop/status/restart are per
+// ship, not per route.
+const FLEET_CAPABLE = new Set(['poll', 'run', 'passengers', 'daemon']);
 // `--fleet` is release/merge/deploy's own opt-in to the same fleet-wide path
 // `poll`/`run` take automatically — release stays "a deliberate act on one
 // repo" by default (README), so an operator naming no route on a multi-route
@@ -3122,10 +3125,10 @@ switch (command) {
   }
 
   case 'daemon': {
-    // The persistent supervisor loop (ISSUE-762), for the `run` route only —
-    // `release`/`passengers` keep their own fixed-timer units untouched, and
-    // this command is not fleet-wide: name a route the same way a
-    // single-route `crew run` would need to on a multi-route ship.
+    // The persistent supervisor loop (ISSUE-762), for the `run` job only —
+    // `release`/`passengers` keep their own fixed-timer units untouched.
+    // Naming no route on a multi-route ship serves every enabled route
+    // (CREW-3063), as `crew run` does; `crew daemon <route>` serves one.
     //
     // `start`/`stop`/`status` (ISSUE-763) are thin wrappers around whatever
     // OS service manager `crew install` already handed the `run` job to —
@@ -3205,20 +3208,31 @@ switch (command) {
       process.exit(2);
     }
     requireArmed('run the daemon loop');
+    // CREW-3063: the routes this daemon serves. Named, or a one-route ship: that route. Otherwise every enabled one.
+    const daemonRoutes = fleetWide ? cfg.routes.filter((r) => r.enabled) : [route];
+    if (!daemonRoutes.length) {
+      emit.error('no enabled routes — nothing for the daemon to serve');
+      process.exit(1);
+    }
+    // The control API's status/doctor answer for one route; a fleet answers for the first it serves.
+    const primary = daemonRoutes[0]!;
     // CREW-2993: on a fresh sandbox ship the mirrors the contracts are read from do not exist yet and
     // only the cache pass creates them, so run it before judging servability, and do not exit over
     // a repository that is merely unmirrored (the loop's own pass repairs it on a later tick).
-    const sandboxCachePass = cfg.ship.runner === 'sandbox' ? buildSandboxCachePass(route, cfg.ship, state, emit) : undefined;
-    if (sandboxCachePass && (await unmirroredTargets(route)).size > 0) {
-      emit.emit('sandbox cache: some served repositories have no mirror yet; refreshing before reading their contracts');
-      try { await sandboxCachePass(); } catch (e) { emit.warn(`sandbox cache refresh failed: ${e instanceof Error ? e.message : String(e)}`); }
+    const sandboxCachePasses = new Map<string, () => Promise<unknown>>();
+    const servable: typeof daemonRoutes = [];
+    for (const r of daemonRoutes) {
+      const pass = cfg.ship.runner === 'sandbox' ? buildSandboxCachePass(r, cfg.ship, state, emit.forRoute(r.route)) : undefined;
+      if (pass) sandboxCachePasses.set(r.route, pass);
+      if (pass && (await unmirroredTargets(r)).size > 0) {
+        emit.emit('sandbox cache: some served repositories have no mirror yet; refreshing before reading their contracts');
+        try { await pass(); } catch (e) { emit.warn(`sandbox cache refresh failed: ${e instanceof Error ? e.message : String(e)}`); }
+      }
+      if (await anyRepoServable(r, true)) servable.push(r);
+      else emit.forRoute(r.route).error(`refusing route ${r.route} — this ship is ${cfg.ship.platform}, but ${await explainUnservable(r)}`);
     }
-    if (!(await anyRepoServable(route, true))) {
-      emit.error(
-        `refusing this route — this ship is ${cfg.ship.platform}, but ${await explainUnservable(route)}`,
-      );
-      process.exit(1);
-    }
+    // A route this machine cannot serve is left out while another can be; with none the daemon cannot run.
+    if (!servable.length) process.exit(1);
 
     // Self-update detection (ISSUE-764): watch whichever paths actually
     // determine this process's own code. `bin/crew` prefers `dist/cli.js`
@@ -3283,15 +3297,15 @@ switch (command) {
       periscopeMcp: controlRoutes.some((r) => r.enabled && r.hostPeriscopes)
         ? (req, res, ticket) => handlePeriscopeMcp(periscopeMcpDeps(), req, res, ticket)
         : undefined,
-      status: () => crewJson(['status', route.route, '--json']),
-      doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
+      status: () => crewJson(['status', primary.route, '--json']),
+      doctor: () => crewJson(['doctor', primary.route, '--json', '--offline']),
       diagnostics: () => collectDiagnostics({
         stateDir: cfg.ship.stateDir,
         workspaceIds: [...new Set(controlRoutes.map((r) => r.resolved!.workspaceId))],
         runner: cfg.ship.runner ?? 'host',
         unitStems: detectSystemd() ? (['run', 'release', 'passengers'] as const).map((j) => labelFor(CREW_HOME, j)) : [],
         userScope: process.getuid?.() !== 0,
-        doctor: () => crewJson(['doctor', route.route, '--json', '--offline']),
+        doctor: () => crewJson(['doctor', primary.route, '--json', '--offline']),
       }),
       scheduler: schedulerHandler(planDaemonControl(CREW_HOME, hostPlatform(), detectSystemd())),
       log: (m) => emit.warn(m),
@@ -3307,17 +3321,17 @@ switch (command) {
       onStaleDeferred: ({ runs, waitedMs }) => emit.warn(
         `reload or update pending for ${Math.round(waitedMs / 1000)}s — waiting for ${runs} agent run(s) to end before relaunching (\`crew reload --now\` forces it)`,
       ),
-      runPass: () => runOnePass({
+      runPass: () => runFleetPass({
         inFlight,
-        sandboxCache: sandboxCachePass,
+        sandboxCache: (r) => sandboxCachePasses.get(r.route)?.() ?? Promise.resolve(),
         sandboxHygiene: sandboxHygienePass,
-        route, ship: cfg.ship, state,
+        routes: servable, ship: cfg.ship, state,
         maxConcurrentAgents: cfg.ship.maxConcurrentAgents,
         roleConcurrency: cfg.ship.roleConcurrency,
         spawnBreaker,
         configFile: cfg.configFile,
-        newEmitter: () => new Emitter({
-          route: route.route,
+        newEmitter: (r) => new Emitter({
+          route: r.route,
           eventFile: eventFileFor(cfg.ship.stateDir),
           rotateBytes: cfg.ship.eventsRotateBytes,
           logFile: cfg.ship.logFile,
@@ -3348,7 +3362,7 @@ switch (command) {
           sandboxBuilding = true;
           void sandboxReposOf(cfg.routes.filter((r) => r.enabled))
             .then(withShipSandbox)
-            .then((repos) => (repos.length ? sandboxBuildTick(repos, sandboxTickDeps(emit, route)) : null))
+            .then((repos) => (repos.length ? sandboxBuildTick(repos, sandboxTickDeps(emit, primary)) : null))
             .catch((err) => emit.warn(`sandbox image build tick failed: ${err instanceof Error ? err.message : String(err)}`))
             .finally(() => { sandboxBuilding = false; });
         }

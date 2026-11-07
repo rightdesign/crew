@@ -83,6 +83,8 @@ import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBr
 import { claimStillHeld, resolveTopCandidate } from './claim.ts';
 import { refreshUnknownRepos, reportUnservable, repoLabelFor } from './repo-refresh.ts';
 import { applySweep } from './blocked.ts';
+import { applyEpicSync } from './epics.ts';
+import { decideFleet } from './fleet.ts';
 import { runStalledSweep } from './stalled.ts';
 import { type AgentPlan, AgentSpawnError, WorkspaceAuthRefused, WorkspaceAllowanceExhausted, streamShowsAllowanceRefusal, planAgentRun, spawnAgent } from './agent.ts';
 import { guardRunHandoff, replayRoutePending } from './handoff-guard.ts';
@@ -642,6 +644,20 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   // roles from selection (poll.ts `pausedRoles`), so they never reach the loop.
   if (o.state.isPaused()) return { pending: [], started: [], skipped: [] };
 
+  const { ctx } = await prepareRoutePass(o);
+  const decision = await (o.decide ?? decideCycle)(ctx);
+  await applyRouteDecision(o, ctx, decision);
+  const { started, skipped } = await fillSlots(o, [{ ctx, decision, roles: decision.selection.pending }]);
+  await publishShipAttention(o.state, o.route, o.ship);
+  return { pending: decision.selection.pending, started, skipped };
+}
+
+/**
+ * Everything a route's pass does before it decides: re-reads its API key, runs
+ * the sandbox cache, reconciles the ship name and accounts for runs an earlier
+ * process left behind.
+ */
+async function prepareRoutePass(o: RunOnePassOptions): Promise<{ ctx: RoleAgentContext }> {
   // Re-check the OS keychain for this route on every cycle (ISSUE-966) —
   // cheap for a route that isn't keychain-backed at all (see
   // `hydrateApiKeys`'s own doc comment), and what lets a re-`crew connect`
@@ -649,9 +665,6 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   // of requiring a daemon restart.
   await hydrateApiKeys([o.route], o.getSessionStore);
   const emit = o.newEmitter();
-  const decide = o.decide ?? decideCycle;
-  const spawn = o.spawnRoleAgent ?? runRoleAgent;
-  const breaker = o.spawnBreaker ?? new SpawnBreaker();
   const ctx: RoleAgentContext = { route: o.route, ship: o.ship, state: o.state, emit, getSessionStore: o.getSessionStore };
   if (o.sandboxCache) {
     try { await o.sandboxCache(); } catch (e) { emit.warn(`sandbox cache refresh failed: ${e instanceof Error ? e.message : String(e)}`); }
@@ -673,8 +686,16 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   if (o.sandboxHygiene) {
     try { await o.sandboxHygiene(); } catch (e) { emit.warn(`sandbox hygiene failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
+  return { ctx };
+}
 
-  const decision = await decide(ctx);
+/**
+ * What a route's pass does with its decision besides spawning: persists the
+ * attention set, then applies the sweep, hold releases, the stalled sweep and
+ * the idle-periscope pass.
+ */
+async function applyRouteDecision(o: RunOnePassOptions, ctx: RoleAgentContext, decision: CycleDecision): Promise<void> {
+  const { emit } = ctx;
 
   // CREW-1413: persist this pass's attention set so the next pass diffs
   // against it. `decideCycle` only emits transitions relative to
@@ -696,6 +717,14 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
       );
     } catch (e) {
       emit.warn(`could not sweep: ${(e as Error).message}`, { step: 'sweep' });
+    }
+  }
+  if (decision.epicSync.length) {
+    const tracker = new Tracker(o.route, o.ship);
+    try {
+      await applyEpicSync(tracker, decision.epicSync, tracker.contract, emit);
+    } catch (e) {
+      emit.warn(`could not sync epics: ${(e as Error).message}`, { step: 'sweep' });
     }
   }
   if (decision.holdReleases?.length) {
@@ -782,14 +811,105 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
       emit.warn(`could not check idle periscopes: ${(e as Error).message}`, { step: 'sweep' });
     }
   }
+}
 
+/**
+ * Options for a pass over every enabled route of a ship (CREW-3063). The
+ * ship-wide fields are `RunOnePassOptions`'s; the route-scoped ones become
+ * functions of the route.
+ */
+export interface RunFleetPassOptions extends Omit<RunOnePassOptions, 'route' | 'newEmitter' | 'sandboxCache' | 'decide'> {
+  routes: Route[];
+  newEmitter: (route: Route) => Emitter;
+  sandboxCache?: (route: Route) => Promise<unknown>;
+  /** Injected for testing, per route. Defaults to the real `decideCycle`. */
+  decide?: Decide;
+}
+
+/**
+ * One pass over every enabled route: each is prepared the way `runOnePass`
+ * prepares its own, all are polled through `decideFleet`, every route's sweep,
+ * epic sync and the rest are applied (not only the winner's — a route that
+ * never wins would otherwise never park or restore a blocked ticket), every
+ * workspace's Ships row is beaten, and then slots are filled starting with
+ * the fleet winner.
+ *
+ * A ship with one enabled route is exactly `runOnePass`.
+ */
+export async function runFleetPass(o: RunFleetPassOptions): Promise<PassResult> {
+  // A single route is served as given (`crew daemon <route>`); several are the enabled ones.
+  const routes = o.routes.length === 1 ? o.routes : o.routes.filter((r) => r.enabled);
+  const one = routes.length === 1 ? routes[0] : undefined;
+  const perRoute = (route: Route): RunOnePassOptions => ({
+    ...o, route, newEmitter: () => o.newEmitter(route),
+    sandboxCache: o.sandboxCache ? () => o.sandboxCache!(route) : undefined, decide: o.decide,
+  });
+  if (one) return runOnePass(perRoute(one));
+  try {
+    if (o.state.isPaused()) return { pending: [], started: [], skipped: [] };
+    const ctxs = new Map<string, RoleAgentContext>();
+    for (const route of routes) {
+      try { ctxs.set(route.route, (await prepareRoutePass(perRoute(route))).ctx); }
+      catch (e) { if (isUpgradeRequired(e) || isTransientError(e)) throw e; o.newEmitter(route).warn(`${route.route}: could not prepare the pass: ${(e as Error).message}`, { step: 'poll' }); }
+    }
+    const decide = o.decide ?? decideCycle;
+    const fleet = await decideFleet({
+      routes: routes.filter((r) => ctxs.has(r.route)), ship: o.ship, state: o.state, emit: o.newEmitter(routes[0]!),
+      decide: (c) => decide({ ...ctxs.get(c.route.route)!, emit: c.emit }),
+    });
+    // Every route unreachable is a tracker outage, which the loop backs off from as it does for one route.
+    if (fleet.entries.length && fleet.entries.every((e) => e.error)) throw new Error(fleet.entries[0]!.error);
+    const live: Array<{ ctx: RoleAgentContext; decision: CycleDecision; roles: RoleName[] }> = [];
+    for (const e of fleet.entries) {
+      const ctx = ctxs.get(e.route.route)!;
+      if (e.error || !e.decision) continue;
+      await applyRouteDecision(perRoute(e.route), ctx, e.decision);
+      live.push({ ctx, decision: e.decision, roles: e.decision.selection.pending });
+    }
+    // Every enabled route's Ships row beats on every pass, best effort (ISSUE-380).
+    await Promise.all(live.map(async ({ ctx }) => {
+      try { await new Tracker(ctx.route, o.ship).beatShip(o.ship.name); }
+      catch (e) { ctx.emit.warn(`could not beat ship for ${ctx.route.route}: ${(e as Error).message}`, { step: 'poll' }); }
+    }));
+    const { started, skipped } = await fillSlots(o, live, fleet.winner && { route: fleet.winner.route.route, role: fleet.winner.role });
+    for (const { ctx } of live) await publishShipAttention(o.state, ctx.route, o.ship);
+    return { pending: [...new Set(live.flatMap((l) => l.roles))], started, skipped };
+  } catch (e) {
+    if (!isUpgradeRequired(e)) throw e;
+    const route = routes[0]!;
+    await raiseFromUpgradeRequired({ state: o.state, emit: o.newEmitter(route), route, ship: o.ship }, e);
+    return { pending: [], started: [], skipped: [] };
+  }
+}
+
+/** One route's roles that may start this pass, with the decision and context they start from. */
+interface Candidate { role: RoleName; ctx: RoleAgentContext; decision: CycleDecision }
+
+/**
+ * Tries to start every candidate, most urgent first (CREW-2821's rounds for
+ * roles with a per-role cap). `routes` is each route's decision with the roles
+ * it has pending; the candidates are ordered by rank, a route listed first
+ * winning a tie, and `first` (the fleet winner, whose rank was aged) goes
+ * ahead of the rest. Capacity and role locks are the ship's, so two routes
+ * competing for one role take turns however the order falls.
+ */
+async function fillSlots(
+  o: Pick<RunOnePassOptions, 'state' | 'ship' | 'maxConcurrentAgents' | 'roleConcurrency' | 'spawnRoleAgent' | 'seatWriteRefused' | 'spawnBreaker' | 'inFlight'>,
+  routes: Array<{ ctx: RoleAgentContext; decision: CycleDecision; roles: RoleName[] }>,
+  first?: { route: string; role: RoleName },
+): Promise<{ started: RoleName[]; skipped: Array<{ role: RoleName; reason: string }> }> {
+  const spawn = o.spawnRoleAgent ?? runRoleAgent;
+  const breaker = o.spawnBreaker ?? new SpawnBreaker();
+  const fleet = routes.length > 1;
   // Most urgent first, same comparator `decideCycle`/`selectRole` already
   // ranked with — a role with no rank (shouldn't happen for a pending role,
   // but `ranks` is a Partial) sorts last rather than crashing the pass.
-  const order = [...decision.selection.pending].sort(
-    (a, b) => (decision.selection.ranks[a] ?? Number.POSITIVE_INFINITY) -
-      (decision.selection.ranks[b] ?? Number.POSITIVE_INFINITY),
-  );
+  const rankOf = (c: Candidate): number => c.decision.selection.ranks[c.role] ?? Number.POSITIVE_INFINITY;
+  const isFirst = (c: Candidate): boolean => !!first && c.ctx.route.route === first.route && c.role === first.role;
+  const order: Candidate[] = routes
+    .flatMap((r) => r.roles.map((role) => ({ role, ctx: r.ctx, decision: r.decision })))
+    .sort((a, b) => Number(isFirst(b)) - Number(isFirst(a)) || rankOf(a) - rankOf(b));
+  const { state } = o;
 
   const started: RoleName[] = [];
   const skipped: Array<{ role: RoleName; reason: string }> = [];
@@ -801,29 +921,31 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   // that settled on a ticket (CREW-2821). A role drops out of the rounds on its
   // first refusal, so a ship with no per-role cap makes exactly one attempt per
   // role, as before.
-  const live = new Map<RoleName, number>(order.map((r) => [r, 0]));
+  const live = new Map<Candidate, number>(order.map((c) => [c, 0]));
   while (live.size) {
-    for (const role of order) {
-      const count = live.get(role);
+    for (const cand of order) {
+      const count = live.get(cand);
       if (count === undefined) continue;
+      const { role, ctx, decision } = cand;
+      const skip = (reason: string): void => { if (count === 0) skipped.push({ role, reason: fleet ? `${ctx.route.route}: ${reason}` : reason }); };
       // CREW-2963: a seat whose role cannot write the hand-off fields would only re-run the same ticket into the same 403.
-      if (openShipAttention(o.state).some((i) => i.key === seatCannotWriteKey(role))) {
-        if (await (o.seatWriteRefused ?? ((r) => seatWriteStillRefused(o.route, r, { userAgent: o.ship.userAgent })))(role)) {
-          if (count === 0) skipped.push({ role, reason: 'seat role cannot write the hand-off fields — see attention' });
-          live.delete(role);
+      if (openShipAttention(state).some((i) => i.key === seatCannotWriteKey(role))) {
+        if (await (o.seatWriteRefused ?? ((r) => seatWriteStillRefused(ctx.route, r, { userAgent: o.ship.userAgent })))(role)) {
+          skip('seat role cannot write the hand-off fields — see attention');
+          live.delete(cand);
           continue;
         }
-        clearShipAttention(o.state, seatCannotWriteKey(role));
+        clearShipAttention(state, seatCannotWriteKey(role));
       }
       if (!breaker.allows(role)) {
-        if (count === 0) skipped.push({ role, reason: 'agent recently failed to start — waiting before retry' });
-        live.delete(role);
+        skip('agent recently failed to start — waiting before retry');
+        live.delete(cand);
         continue;
       }
-      const lock = o.state.acquireRun(role, o.maxConcurrentAgents, roleCap(role));
+      const lock = state.acquireRun(role, o.maxConcurrentAgents, roleCap(role));
       if (!lock.ok) {
-        if (count === 0) skipped.push({ role, reason: lock.reason });
-        live.delete(role);
+        skip(lock.reason);
+        live.delete(cand);
         continue;
       }
       // `undefined`: the run settled without ever reporting, which counts as a launch.
@@ -833,51 +955,51 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
       const run = spawn(role, decision, ctx, { ready })
         .then(() => {
           breaker.recordSuccess(role);
-          clearShipAttention(o.state, `role_parked:${role}`);
-          clearShipAttention(o.state, workspaceAuthKey(role));
-          clearShipAttention(o.state, workspaceAllowanceKey(role));
+          clearShipAttention(state, `role_parked:${role}`);
+          clearShipAttention(state, workspaceAuthKey(role));
+          clearShipAttention(state, workspaceAllowanceKey(role));
         })
         .catch(async (e) => {
           const message = (e as Error).message;
           if (e instanceof SignedOutError) {
             // The credential cannot work, so a run per cycle would only burn the cycle: hold the role.
             breaker.pause(role, SIGNED_OUT_PAUSE_MS);
-            emit.warn(`${role} paused: ${message}`, { step: 'agent', role });
-            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, signedOutItem(e.toolchain, e.mode));
+            ctx.emit.warn(`${role} paused: ${message}`, { step: 'agent', role });
+            await raiseShipAttention({ state, emit: ctx.emit, route: ctx.route, ship: o.ship }, signedOutItem(e.toolchain, e.mode));
             return;
           }
           if (e instanceof WorkspaceAllowanceExhausted) {
             // No retry now: hold the role, and let the next pass after the pause try again.
             breaker.pause(role, ALLOWANCE_PAUSE_MS);
-            emit.warn(`${role} paused: ${message}`, { step: 'agent', role });
-            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, workspaceAllowanceItem(o.route.route, role));
+            ctx.emit.warn(`${role} paused: ${message}`, { step: 'agent', role });
+            await raiseShipAttention({ state, emit: ctx.emit, route: ctx.route, ship: o.ship }, workspaceAllowanceItem(ctx.route.route, role));
             return;
           }
           if (e instanceof WorkspaceAuthRefused) {
             breaker.recordFailure(role, message);
-            emit.warn(`${role} agent refused: ${message}`, { step: 'agent', role });
-            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, {
-              kind: 'workspace_auth', key: workspaceAuthKey(role), message: `${o.route.route}: ${message}`, since: new Date().toISOString(),
+            ctx.emit.warn(`${role} agent refused: ${message}`, { step: 'agent', role });
+            await raiseShipAttention({ state, emit: ctx.emit, route: ctx.route, ship: o.ship }, {
+              kind: 'workspace_auth', key: workspaceAuthKey(role), message: `${ctx.route.route}: ${message}`, since: new Date().toISOString(),
             });
             return;
           }
           if (!(e instanceof AgentSpawnError)) {
-            emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
+            ctx.emit.warn(`${role} agent run failed: ${message}`, { step: 'agent', role });
             return;
           }
           // Nothing ran, so this is not an agent run failure: warn once per
           // distinct message, and say so when the role is parked.
           const report = breaker.recordFailure(role, message);
           if (report.firstOfMessage || report.parked) {
-            emit.warn(`${role} agent could not start: ${message}`, { step: 'agent', role });
+            ctx.emit.warn(`${role} agent could not start: ${message}`, { step: 'agent', role });
           }
           if (report.parked) {
-            emit.error(
+            ctx.emit.error(
               `${role} parked for ${Math.round(report.retryInMs / 1000)}s after ${report.failures} ` +
                 'consecutive failed starts — check that ship.agent.bin is installed and on PATH',
             );
             // CREW-1373: visible from the board and `crew status`, not only this ship's log.
-            await raiseShipAttention({ state: o.state, emit, route: o.route, ship: o.ship }, {
+            await raiseShipAttention({ state, emit: ctx.emit, route: ctx.route, ship: o.ship }, {
               kind: 'role_parked',
               key: `role_parked:${role}`,
               message: `${role} agent is parked after ${report.failures} failed starts: ${message}`,
@@ -902,30 +1024,25 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
       const tookTicket = reported !== false;
       if (tookTicket) started.push(role);
       if (roleCap(role) <= 1) {
-        live.delete(role);
+        live.delete(cand);
         continue;
       }
-      if (tookTicket && count + 1 < roleCap(role)) live.set(role, count + 1);
-      else live.delete(role);
+      if (tookTicket && count + 1 < roleCap(role)) live.set(cand, count + 1);
+      else live.delete(cand);
     }
   }
 
-  // Show a change to the open ship-attention set on the board without
-  // waiting for the next engaged/idle beat (CREW-1373). Best effort, and only
-  // when the set differs from what this process last published.
-  await publishShipAttention(o);
-
-  return { pending: decision.selection.pending, started, skipped };
+  return { started, skipped };
 }
 
-let lastPublishedAttention: string | undefined;
+const lastPublishedAttention = new Map<string, string>();
 
-async function publishShipAttention(o: RunOnePassOptions): Promise<void> {
-  const key = JSON.stringify(openShipAttention(o.state).map((i) => i.key));
-  if (key === lastPublishedAttention) return;
+async function publishShipAttention(state: State, route: Route, ship: Ship): Promise<void> {
+  const key = JSON.stringify(openShipAttention(state).map((i) => i.key));
+  if (key === lastPublishedAttention.get(route.route)) return;
   try {
-    await new Tracker(o.route, o.ship).publishShipAttention(o.ship.name);
-    lastPublishedAttention = key;
+    await new Tracker(route, ship).publishShipAttention(ship.name);
+    lastPublishedAttention.set(route.route, key);
   } catch { /* the board being unreachable must not fail a pass; the next change retries */ }
 }
 

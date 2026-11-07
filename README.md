@@ -216,6 +216,10 @@ was hit for real, and doubles every line.
 chains cycles immediately when there's work and backs off when there isn't
 (launchd `KeepAlive`/systemd `Restart=on-failure` restart it if it crashes).
 Installing it starts it, the same as installing any other service would.
+On a ship with several enabled routes the unit serves all of them: each pass
+polls every route, applies each route's sweeps, beats each workspace's Ships
+row and starts the most urgent work across the fleet first (`crew daemon
+<route>` serves just one).
 `bin/crew daemon start|stop|status|restart` control that same service
 directly — useful without a full reinstall — except on the plain-crontab
 fallback, which cannot supervise a persistent process and so keeps the old
@@ -241,7 +245,7 @@ now on disk. `crew daemon restart` forces this immediately, for a manual
 ```
 crew poll [route]              decide a cycle and report it; writes nothing
 crew run [route] [--role R]    run the winning role's session, then release
-crew daemon [route]                run the persistent supervisor loop in the foreground
+crew daemon [route]                run the persistent supervisor loop in the foreground (every enabled route when none is named)
 crew daemon start|stop|status      control the installed `run` service directly
 crew daemon restart                stop then start it (force-picks-up an update)
 crew release [route]           merge what QA verified, version it, ship it

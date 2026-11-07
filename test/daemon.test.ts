@@ -9,9 +9,9 @@ import type { Route, Ship } from '../src/config.ts';
 import { resolveApiKey } from '../src/config.ts';
 import type { CycleDecision } from '../src/poll.ts';
 import {
-  runDaemonLoop, runOnePass, computeTreeSignature, makeStaleChecker, SpawnBreaker,
+  runDaemonLoop, runOnePass, runFleetPass, computeTreeSignature, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, noteDaemonStarted, readDaemonStarted, configChangedAfter,
-  type PassResult, type RunOnePassOptions,
+  type PassResult, type RunOnePassOptions, type RunFleetPassOptions,
 } from '../src/daemon.ts';
 import { AgentSpawnError } from '../src/agent.ts';
 import type { SessionStore, StoredSession } from '@tablation/client';
@@ -900,4 +900,94 @@ test('an unset roleConcurrency still runs one agent per role (CREW-2821)', async
   assert.equal(spawns, 2);
   assert.deepEqual(result.started, ['dev', 'qa']);
   assert.deepEqual(result.skipped, []);
+});
+
+// CREW-3063: one daemon serving every enabled route of a ship.
+function fleetRig(): {
+  state: State; ship: Ship; routes: [Route, Route]; swept: string[];
+  base: Omit<RunFleetPassOptions, 'decide' | 'spawnRoleAgent'>;
+} {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-fleet-'));
+  const state = new State(dir);
+  const ship = fakeShip(dir);
+  const a = fakeRoute({ route: 'a/issues' });
+  const b = fakeRoute({ route: 'b/issues' });
+  return {
+    state, ship, routes: [a, b], swept: [],
+    base: {
+      routes: [a, b], ship, state, maxConcurrentAgents: 5,
+      newEmitter: (r) => new Emitter({ route: r.route, eventFile: eventFileFor(dir), logFile: ship.logFile, console: () => {} }),
+    },
+  };
+}
+
+test('runFleetPass: two routes with work — the more urgent route starts first and both routes are decided on the same pass', async () => {
+  const { base, routes } = fleetRig();
+  const decided: string[] = [];
+  const spawned: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  // Route a's dev work is rank 5; route b's is rank 1 (more urgent).
+  const dec = (rank: number): CycleDecision => {
+    const d = fakeDecision(['dev']);
+    d.selection.ranks = { dev: rank };
+    return d;
+  };
+  const result = await runFleetPass({
+    ...base,
+    maxConcurrentAgents: 1,
+    decide: async (ctx) => { decided.push(ctx.route.route); return ctx.route.route === 'a/issues' ? dec(5) : dec(1); },
+    // The run holds the ship's one slot until the test ends, as a real agent does.
+    spawnRoleAgent: async (role, _d, ctx, o) => { spawned.push(`${ctx.route.route}:${role}`); o?.ready(true); await gate; },
+  });
+  release();
+  assert.deepEqual([...decided].sort(), ['a/issues', 'b/issues']);
+  assert.deepEqual(spawned, ['b/issues:dev']);
+  assert.deepEqual(result.started, ['dev']);
+  // The other route's dev lost the one slot, and says which route it was.
+  assert.equal(result.skipped.length, 1);
+  assert.match(result.skipped[0]!.reason, /^a\/issues: /);
+  void routes;
+});
+
+test('runFleetPass: every route\'s decision is applied on the pass, not only the winner\'s', async () => {
+  const { base, state } = fleetRig();
+  const dec = (rank: number, ticket: string): CycleDecision => {
+    const d = fakeDecision(['dev']);
+    d.selection.ranks = { dev: rank };
+    d.attention = { [ticket]: ['needs_info'] };
+    return d;
+  };
+  await runFleetPass({
+    ...base,
+    decide: async (ctx) => (ctx.route.route === 'a/issues' ? dec(5, 'A-1') : dec(1, 'B-1')),
+    spawnRoleAgent: async () => {},
+  });
+  assert.deepEqual(state.attention('a/issues').previous(), { 'A-1': ['needs_info'] });
+  assert.deepEqual(state.attention('b/issues').previous(), { 'B-1': ['needs_info'] });
+});
+
+test('runFleetPass: a disabled route is not served; one enabled route behaves as runOnePass', async () => {
+  const { base, routes } = fleetRig();
+  const decided: string[] = [];
+  const result = await runFleetPass({
+    ...base,
+    routes: [routes[0], { ...routes[1], enabled: false }],
+    decide: async (ctx) => { decided.push(ctx.route.route); return fakeDecision(['dev']); },
+    spawnRoleAgent: async () => {},
+  });
+  assert.deepEqual(decided, ['a/issues']);
+  assert.deepEqual(result.started, ['dev']);
+});
+
+test('runFleetPass: an unreachable route does not stop the other from being served', async () => {
+  const { base } = fleetRig();
+  const spawned: string[] = [];
+  const result = await runFleetPass({
+    ...base,
+    decide: async (ctx) => { if (ctx.route.route === 'a/issues') throw new Error('boom'); return fakeDecision(['qa']); },
+    spawnRoleAgent: async (role, _d, ctx) => { spawned.push(`${ctx.route.route}:${role}`); },
+  });
+  assert.deepEqual(spawned, ['b/issues:qa']);
+  assert.deepEqual(result.started, ['qa']);
 });

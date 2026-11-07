@@ -84,6 +84,8 @@ export interface FleetOptions {
    * consumes it, so a dry run must not advance its dedupe state.
    */
   dryRun?: boolean;
+  /** Injected for testing and for a caller that has prepared each route's context (CREW-3063). Defaults to `decideCycle`. */
+  decide?: typeof decideCycle;
 }
 
 /**
@@ -104,7 +106,7 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
       // cli.ts), but this route is one of several polled concurrently here —
       // its events must carry ITS OWN route, not whichever route happened to
       // be first in crew.yaml.
-      const decision = await decideCycle({ route: route, ship: o.ship, state: o.state, emit: o.emit.forRoute(route.route) });
+      const decision = await (o.decide ?? decideCycle)({ route: route, ship: o.ship, state: o.state, emit: o.emit.forRoute(route.route) });
       const sel = decision.selection;
       if (!sel.selected) return { route, decision, rank: NOTHING_ACTIONABLE };
       const rawRank = sel.ranks[sel.selected] ?? NOTHING_ACTIONABLE;
