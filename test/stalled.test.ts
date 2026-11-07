@@ -39,6 +39,13 @@ test('a ship engaged on the ticket, and a ticket assigned to a hold, are never s
   assert.equal(planStalled([ticket({ assignee_id: 'brad' })], [], ships(), DEFAULT_CONTRACT, new Set(['brad']), NOW).length, 0);
 });
 
+test('a ticket flagged needs_review or needs_planning is never stalled; clearing the flag re-arms it', () => {
+  for (const flag of ['needs_review', 'needs_planning'] as const) {
+    assert.equal(planStalled([ticket({ [flag]: true })], [], ships(), DEFAULT_CONTRACT, new Set(), NOW).length, 0, flag);
+    assert.equal(planStalled([ticket({ [flag]: false })], [], ships(), DEFAULT_CONTRACT, new Set(), NOW).length, 1, `${flag} false`);
+  }
+});
+
 test('a stalled event newer than the last activity marks it announced; new activity re-arms it', () => {
   const marker: RunnerEvent = { record_id: 't1', event_type: 'stalled', message: `${STALLED_MARKER} stalled`, occurred_at: at(OLD - 120_000) };
   const [s] = planStalled([ticket()], [comment()], ships(), DEFAULT_CONTRACT, new Set(), NOW, undefined, [marker]);

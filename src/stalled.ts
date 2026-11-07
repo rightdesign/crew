@@ -20,8 +20,11 @@
  *     own — no ship writes another ship's attention);
  *   - an unheld ticket gets the comment alone.
  *
- * Never touched: a ticket assigned to a hold row (a person is driving it), and
- * one whose holder is engaged on it right now.
+ * Never touched: a ticket assigned to a hold row (a person is driving it), one
+ * flagged `needs_review` or `needs_planning` (a human-only gate: a person owes
+ * an answer, so however long the review takes the ticket is not stalled; the
+ * open `stalled:<key>` item clears on the next sweep, and the ticket is watched
+ * again once the flag is cleared), and one whose holder is engaged on it right now.
  *
  * Pure planning here; `applyStalled` writes. Nothing is stored: activity is
  * read off the ticket and its comments, and the event comment's marker is the
@@ -91,6 +94,7 @@ export function planStalled(
   for (const t of withinWorkMode(tickets, wm)) {
     if (!watched.has(t.status)) continue;
     if (t.assignee_id && holds.has(t.assignee_id)) continue;
+    if (t.needs_review === true || t.needs_planning === true) continue;
     const mine = byTicket.get(t.id) ?? [];
     const lastMarker = Math.max(0, ...events
       .filter((e) => e.record_id === t.id && e.event_type === 'stalled')
