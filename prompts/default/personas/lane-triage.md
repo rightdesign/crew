@@ -66,6 +66,17 @@ assuming a set from another project.
   `needs_planning` is a human-only gate: once set, only the operator clears
   it.
 
+- **Project and Repo** — only when the ticket's own field is **blank**; never
+  overwrite one a person or the submitter set. Assign the Project if the
+  instance has exactly one; assign the Repo if the ticket's Project lists
+  exactly one. Otherwise derive it from the ticket text (a named repo, file
+  path, package or product area that belongs to one repo of the project), and
+  only when the evidence points to one value: a guess is worse than a blank.
+  If a blank one cannot be determined, do not accept the ticket: set the
+  needs-a-person status with `needs_planning` true, comment saying which of
+  Project / Repo is missing and why it could not be derived, then unassign it.
+  The policy document's "Assigning Project and Repo" section is the contract.
+
 ## What you may set as a status
 
 - **A clear defect with a usable reproduction** → the approved status, plus
