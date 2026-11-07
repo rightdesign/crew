@@ -75,7 +75,7 @@ import {
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
 import { collectDiagnostics } from './diagnostics.ts';
-import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
+import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, systemUnitPathFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
@@ -90,6 +90,7 @@ import { withRepoMaps, mapFilePath, inspectMapFile } from './repo-map.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
+import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
@@ -6597,6 +6598,19 @@ switch (command) {
     // CREW-2239: push auth per checkout, and gh/node/docker as soft checks.
     // Computed once; the text report prints them, `--json` prints only them.
     const doctorSchedulerPath = pathFor(cfg.ship);
+    // CREW-3065: what the service manager says about the daemon unit; null where no manager supervises it (cron, Windows).
+    const daemonLiveness: DaemonLiveness | null = (() => {
+      if (host === 'windows') return null;
+      const hasSystemd = detectSystemd();
+      if (host === 'linux' && !hasSystemd) return null;
+      const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, 'run', installContext());
+      const label = labelFor(CREW_HOME, 'run');
+      return probeDaemonUnit({
+        plan, label, uid: process.getuid?.() ?? 0,
+        system: plan.mechanism === 'systemd' && existsSync(systemUnitPathFor(label)),
+        stamp: readDaemonStamp(cfg.ship.stateDir),
+      });
+    })();
     const pushAuth: Array<{ route: string; repo: string; result: PushAuthResult }> = [];
     const toolRows: ToolCheck[] = [];
     {
@@ -6682,6 +6696,10 @@ switch (command) {
         }
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
+      if (daemonLiveness) {
+        const dp = daemonProblem(daemonLiveness, route.route);
+        if (dp) problems.push(dp); else passed++;
+      }
       const runtimeDir = runtimeDirWarning(process.platform, process.getuid?.() ?? null, existsSync, userInfo().username);
       if (runtimeDir) problems.push({ severity: 'attention', kind: 'runtime_dir_missing', message: runtimeDir });
       if (!flag('offline')) {
@@ -6720,7 +6738,7 @@ switch (command) {
       }
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
-      process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, problems, passed }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, daemon: daemonLiveness, problems, passed }, null, 2)}\n`);
       break;
     }
     process.stdout.write(
@@ -6794,11 +6812,19 @@ switch (command) {
       }
     }
 
+    // CREW-3065: the service manager's view of the daemon comes first; the
+    // reload and config checks below mean nothing without a live process.
+    if (daemonLiveness) {
+      process.stdout.write(`daemon:            ${daemonLineText(daemonLiveness)}\n`);
+      if (daemonLiveness.state === 'exited') process.exitCode = 1;
+    }
+    const daemonDead = daemonKnownDead(daemonLiveness);
+
     // CREW-2887: a reload request the running daemon has not yet honored.
     const reloadAt = readReloadRequestedAt(cfg.ship.stateDir);
     if (reloadAt !== null) {
       process.stdout.write(
-        `reload request:    WARN pending for ${Math.max(0, Math.round((Date.now() - reloadAt) / 1000))}s — the daemon is waiting for its running agents to end; \`crew reload --now\` forces it\n`,
+        `reload request:    ${reloadRequestText(Math.max(0, Math.round((Date.now() - reloadAt) / 1000)), daemonLiveness, liveRuns(cfg.ship.stateDir).length)}\n`,
       );
     }
 
@@ -6809,8 +6835,10 @@ switch (command) {
       const changed = configChangedAfter(daemonConfigPaths(cfg), daemonStartedAt);
       if (changed) {
         process.stdout.write(
-          `daemon config:     WARN ${changed} changed at ${new Date(statSync(changed).mtimeMs).toISOString()} ` +
-            `but the daemon started at ${new Date(daemonStartedAt).toISOString()} — run \`crew reload\`\n`,
+          daemonDead
+            ? `daemon config:     WARN ${changed} changed at ${new Date(statSync(changed).mtimeMs).toISOString()} — no daemon is running; the new config applies when it starts\n`
+            : `daemon config:     WARN ${changed} changed at ${new Date(statSync(changed).mtimeMs).toISOString()} ` +
+              `but the daemon started at ${new Date(daemonStartedAt).toISOString()} — run \`crew reload\`\n`,
         );
       }
     }
