@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.7] — 2026-11-07
+
+- CREW-3099 A ticket awaiting a person's review or planning answer no longer raises a stalled item or a crew:stalled comment.
+
 ## [0.137.6] — 2026-11-07
 
 - CREW-3085 New "Adopt Repository Contract" skill guides the crew in writing and verifying a repository's .crew.yaml.
