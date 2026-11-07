@@ -60,6 +60,8 @@ export interface DeprovisionDeps {
   /** Forge hosts configured on this ship, and a way to erase each token. */
   forgeHosts(): string[];
   eraseForgeToken(host: string): 'erased' | 'env' | 'absent';
+  /** CREW-3084: removes the repository environment file (also gone with the state wipe). */
+  eraseRepositoryEnv?(): void;
   labeled(): LabeledDockerResources;
   removeVolume(name: string): void;
   removeImage(name: string): void;
@@ -129,6 +131,7 @@ export async function runDeprovision(o: DeprovisionOptions, fx: ResetEffects, de
         steps.push({ step: 'forge', target: host, action: 'failed', detail: (e as Error).message });
       }
     }
+    if (!o.dryRun) deps.eraseRepositoryEnv?.();
     const { volumes, images } = deps.labeled();
     for (const v of volumes) steps.push(attempt('cache', `volume ${v}`, () => { deps.removeVolume(v); }, o.dryRun));
     for (const i of images) steps.push(attempt('cache', `image ${i}`, () => { deps.removeImage(i); }, o.dryRun));

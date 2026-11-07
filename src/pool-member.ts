@@ -16,6 +16,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { RepositoryEnv } from './repo-env.ts';
 
 export const POOL_EXIT = { ok: 0, failed: 1, credential: 2 } as const;
 
@@ -45,6 +46,8 @@ export interface LeasePayload {
   /** Older platform builds: one key for every route. */
   connectKey?: string;
   forges: Array<{ host: string; token: string }>;
+  /** CREW-3084: environment per repository, for the sandboxes of that repository's runs only. */
+  repositoryEnv?: RepositoryEnv[];
   relayHost?: string;
   /** CREW-3001: the relay's public HTTP port (default 443 when absent, i.e. an older platform). */
   relayHttpPort?: number;
@@ -53,7 +56,7 @@ export interface LeasePayload {
 
 export type LeaseAnswer =
   | { action: 'provision'; lease: LeasePayload }
-  | { action: 'tokens'; leaseId: string; forges: Array<{ host: string; token: string }> }
+  | { action: 'tokens'; leaseId: string; forges: Array<{ host: string; token: string }>; repositoryEnv?: RepositoryEnv[] }
   | { action: 'release'; leaseId: string }
   | { action: 'retire' };
 
@@ -101,6 +104,8 @@ export interface PoolMemberDeps {
   reconcile(): Promise<ProvisionResult>;
   /** CREW-2902: replaces the stored forge tokens with exactly this set; hosts absent from it lose their token. */
   applyTokens(forges: Array<{ host: string; token: string }>): Promise<ProvisionResult>;
+  /** CREW-3084: replaces the stored repository environment with exactly this set. Absent on a host that has none. */
+  applyRepositoryEnv?(entries: RepositoryEnv[]): Promise<ProvisionResult>;
   /** `crew deprovision`: true only after the host verified clean. */
   deprovision(): Promise<ProvisionResult>;
   /** This ship's hashed machine id and the tunnel URL, once known. */
@@ -294,6 +299,11 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
         if (body.leaseId !== current) { deps.log(`ignoring a tokens message for ${body.leaseId}; this member holds ${current ?? 'no lease'}`); continue; }
         const applied = await deps.applyTokens(body.forges ?? []);
         if (!applied.ok) { deps.log(`tokens: ${applied.reason ?? 'could not apply the delivered forge tokens'}`); continue; }
+        // An older platform omits the field: that leaves the set alone. An array, even an empty one, replaces it.
+        if (Array.isArray(body.repositoryEnv) && deps.applyRepositoryEnv) {
+          const env = await deps.applyRepositoryEnv(body.repositoryEnv);
+          if (!env.ok) { deps.log(`tokens: ${env.reason ?? 'could not apply the delivered repository environment'}`); continue; }
+        }
         deps.log(`tokens: replaced the forge tokens (${(body.forges ?? []).length} host${(body.forges ?? []).length === 1 ? '' : 's'})`);
         // The platform treats the next status report as the acknowledgement.
         const r = await report('running', { leaseId: current });
@@ -312,6 +322,10 @@ export async function runPoolMember(deps: PoolMemberDeps): Promise<number> {
       if (r === 'stopped') return POOL_EXIT.ok;
       const done = await deps.provision(lease, platform.instanceClassKey, platform.shipKind ?? 'pooled_instance');
       if (!done.ok) return fail(lease.id, done.reason ?? 'provisioning failed');
+      if (deps.applyRepositoryEnv) {
+        const env = await deps.applyRepositoryEnv(lease.repositoryEnv ?? []);
+        if (!env.ok) return fail(lease.id, env.reason ?? 'could not store the repository environment');
+      }
       r = await report('running', { leaseId: lease.id });
       if (r === 'credential') return POOL_EXIT.credential;
       current = lease.id;

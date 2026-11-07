@@ -12,7 +12,7 @@ import { join } from 'node:path';
 const dir = process.env.FAKE_OS_DIR;
 mkdirSync(join(dir, 'sandboxes'), { recursive: true });
 const argv = process.argv.slice(2);
-appendFileSync(join(dir, 'calls.jsonl'), JSON.stringify({ argv, env: { CREW_API_KEY: process.env.CREW_API_KEY ?? null } }) + '\n');
+appendFileSync(join(dir, 'calls.jsonl'), JSON.stringify({ argv, env: { CREW_API_KEY: process.env.CREW_API_KEY ?? null, DATABASE_URL: process.env.DATABASE_URL ?? null } }) + '\n');
 const [group, verb] = argv;
 const dash = argv.indexOf('--');
 const nameOf = () => argv[(argv.includes('-n') ? argv.indexOf('-n') : argv.indexOf('--name')) + 1];

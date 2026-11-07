@@ -214,6 +214,13 @@ export class SandboxRunner implements Runner {
       if (/[\r\n]/.test(v)) throw new Error(`the sandbox environment variable ${k} contains a newline, which the sandbox gateway refuses`);
     }
     const createEnv: NodeJS.ProcessEnv = { ...process.env, ...plan.setEnv };
+    // CREW-3084: the ticket repository's own environment, by name only in argv; a name crew already sets is not overridden.
+    for (const [k, v] of Object.entries(plan.sandboxRepoEnv ?? {})) {
+      if (k in plan.setEnv) continue;
+      if (/[\r\n]/.test(v)) throw new Error(`the repository environment variable ${k} contains a newline, which the sandbox gateway refuses`);
+      createEnv[k] = v;
+      if (!secretKeys.includes(k)) secretKeys.push(k);
+    }
     if (cfg.forgeTokenVar && o.env[cfg.forgeTokenVar] !== undefined) createEnv[cfg.forgeTokenVar] = o.env[cfg.forgeTokenVar];
 
     // CREW-2801: crew writes the policy for every run, beside the stream files.

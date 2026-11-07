@@ -17,6 +17,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { eraseForgeToken, hasForgeToken } from './forges.ts';
+import { eraseRepositoryEnv, hasRepositoryEnv } from './repo-env.ts';
 import { status as gitWorkingTreeStatus, worktreeForNumber } from './git.ts';
 import { interruptedComment } from './interrupted.ts';
 import { loadedCrewLabels, planInstall, detectSystemd, installContext } from './install.ts';
@@ -121,6 +122,7 @@ export function realDeprovisionDeps(
     },
     forgeHosts,
     eraseForgeToken: (host) => eraseForgeToken(cfg.ship.forges, host, stateDir),
+    eraseRepositoryEnv: () => { eraseRepositoryEnv(stateDir); },
     labeled: labeledDocker,
     removeVolume: (name) => { docker(['volume', 'rm', '-f', name]); },
     removeImage: (name) => { docker(['image', 'rm', '-f', name]); },
@@ -128,6 +130,7 @@ export function realDeprovisionDeps(
       const left: string[] = [];
       if (existsSync(cfg.configFile)) left.push(`config ${cfg.configFile}`);
       for (const h of forgeHosts()) if (hasForgeToken(cfg.ship.forges, h, stateDir)) left.push(`forge token for ${h}`);
+      if (hasRepositoryEnv(stateDir)) left.push('repository environment');
       try { for (const k of readdirSync(keysDir(stateDir))) left.push(`seat key ${k}`); } catch { /* no key directory */ }
       for (const s of sandboxes()) left.push(`sandbox ${s}`);
       try {

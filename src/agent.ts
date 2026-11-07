@@ -20,7 +20,8 @@ import { authModeOf, streamShowsSignedOut } from './signed-out.ts';
 import { raiseShipAttention, clearShipAttention, agentLogRefusedItem, agentLogRefusedKey } from './ship-attention.ts';
 import { seatCannotWriteItem, seatCannotWriteKey } from './seat-read-probe.ts';
 import type { Route, RoleName, Ship } from './config.ts';
-import { routeSlug, SELF_CONTAINED_ROLES, reposOf } from './config.ts';
+import { routeSlug, SELF_CONTAINED_ROLES, reposOf, repoIdForName } from './config.ts';
+import { envForRepository, readRepositoryEnv } from './repo-env.ts';
 import { loadRepoConfig, type RepoConfig } from './repo-config.ts';
 import { SANDBOX_INTEL_DIR, ensureLspPlugin, lspFlavor, sandboxLspPlugin } from './intel.ts';
 import type { SandboxPolicyInput } from './sandbox-policy.ts';
@@ -144,6 +145,11 @@ export interface AgentPlan {
    * repository, where the runner falls back to the route directory's origin.
    */
   sandboxOrigin?: string;
+  /**
+   * CREW-3084: the ticket repository's environment from the platform (`repo-env.ts`), secret values. The sandbox
+   * runner passes it through `--env-from`; it is never in `setEnv`, `describePlan` or any sidecar.
+   */
+  sandboxRepoEnv?: Record<string, string>;
   /** CREW-2956: the built image the sandbox is created from (`--from`), unless `sandboxConfig.image` overrides it. Absent while nothing has built yet. */
   sandboxImage?: string;
   /** CREW-3032: why that image (or none) was chosen, for the `sandbox_created` line. */
@@ -584,6 +590,9 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const code = codeBridgeFor(o, adapter.harness);
   const sandboxLsp = o.ship.runner === 'sandbox' && adapter.harness === 'claude' ? sandboxLspPluginFor(o.route, o.repo) : undefined;
   const sandboxOrigin = o.ship.runner === 'sandbox' ? sandboxOriginFor(o.route, o.repo) : undefined;
+  const repoEnv = o.ship.runner === 'sandbox' && o.repo
+    ? envForRepository(readRepositoryEnv(o.stateDir), { repoRowId: repoIdForName(o.route, o.repo), remote: sandboxOrigin })
+    : {};
   const sandboxChoice = o.ship.runner === 'sandbox' ? sandboxImageOf(o.route, o.repo, o.stateDir, o.repoContract) : undefined;
   const sandboxImage = sandboxChoice?.image;
   const sandboxFiles = [...(code?.files ?? []), ...(sandboxLsp?.files ?? [])];
@@ -648,6 +657,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
           runner: 'sandbox' as const,
           ...(o.ship.sandbox ? { sandboxConfig: o.ship.sandbox } : {}),
           ...(sandboxOrigin ? { sandboxOrigin } : {}),
+          ...(Object.keys(repoEnv).length ? { sandboxRepoEnv: repoEnv } : {}),
           ...(sandboxImage ? { sandboxImage } : {}),
           ...(sandboxChoice ? { sandboxImageReason: sandboxChoice.reason } : {}),
           sandboxPolicy: sandboxPolicyInputFor(o.route, toolchain, { harnessBin: invocation.bin, repo: o.repo, sandbox: o.ship.sandbox, contract: o.repoContract }),

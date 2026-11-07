@@ -97,6 +97,7 @@ import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
+import { repositoryEnvCount } from './repo-env.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
 import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, readMirrorWarmFiles, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport, repoContractFor } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
@@ -6577,6 +6578,8 @@ switch (command) {
             name: x.name, harness: x.harness, bin: x.bin, launcher: x.launcher ?? null, model: x.model,
           })),
           stateDir: cfg.ship.stateDir,
+          // CREW-3084: how many repositories carry environment; never their names or values.
+          repositoriesWithEnv: repositoryEnvCount(cfg.ship.stateDir),
           logFile: cfg.ship.logFile,
           eventFile: eventFileFor(cfg.ship.stateDir),
           // Additive (CREW-1373): open ship-level items, including the

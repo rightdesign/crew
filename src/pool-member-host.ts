@@ -14,6 +14,7 @@ import { eraseForgeToken, readForgeMisses } from './forges.ts';
 import { crewInvocation } from './install.ts';
 import { ensureMachineId } from './machine-id.ts';
 import { hostArchitecture, type LeasePayload, type PoolApi, type PoolMemberDeps, type MemberStore } from './pool-member.ts';
+import { eraseRepositoryEnv, writeRepositoryEnv } from './repo-env.ts';
 import { runActivity } from './live-runs.ts';
 import { PROVISION_EXIT, realProvisionDeps, runProvision } from './provision.ts';
 import { readPersistedTunnel, relayBaseUrlFor } from './tunnel.ts';
@@ -97,6 +98,14 @@ export function realPoolMemberDeps(o: RealPoolMemberOptions): PoolMemberDeps {
         if (want.has(host.toLowerCase())) continue;
         try { eraseForgeToken(cfg.ship.forges, host, cfg.ship.stateDir, env); } catch (e) { return { ok: false, reason: `forge ${host}: ${(e as Error).message}` }; }
       }
+      return { ok: true };
+    },
+
+    async applyRepositoryEnv(entries) {
+      // Values go to an owner-only file in the state directory: never argv, never a log line.
+      const cfg = loadShip(o.crewHome);
+      if (!cfg) return { ok: false, reason: 'no ship config to store the repository environment under' };
+      try { writeRepositoryEnv(cfg.ship.stateDir, entries); } catch (e) { return { ok: false, reason: `repository environment: ${(e as Error).message}` }; }
       return { ok: true };
     },
 

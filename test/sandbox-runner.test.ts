@@ -328,3 +328,16 @@ test('CREW-2956: the sandbox is created from the plan\'s built image, and ship.s
   await spawnAgent(b.plan(STREAM, { sandboxImage: 'crew-sandbox/ship:abc', sandboxConfig: { bin: b.bin, agentBin: process.execPath, cacheVolume: 'cache-vol', policy: '/p.yaml', image: 'op/own:1' } }), b.emitter());
   assert.equal(from(create(b)), 'op/own:1');
 });
+
+test("a repository's environment reaches the sandbox through --env-from, never argv, and not over a name crew sets (CREW-3084)", async () => {
+  const r = rig();
+  await spawnAgent(r.plan(STREAM, { sandboxRepoEnv: { DATABASE_URL: 'postgres://repo-secret', CREW_API_KEY: 'hijack' } }), r.emitter());
+  const create = r.calls().find((c) => c.argv[1] === 'create')!;
+  assert.ok(create.argv.includes('DATABASE_URL'));
+  assert.equal(create.env.DATABASE_URL, 'postgres://repo-secret');
+  assert.equal(create.env.CREW_API_KEY, 'sk-secret-value');
+  assert.ok(!JSON.stringify(r.calls().map((c) => c.argv)).includes('repo-secret'));
+  assert.ok(!readFileSync(join(r.dir, 'events.jsonl'), 'utf8').includes('repo-secret'), 'the event stream holds no value');
+  const run = r.plan(STREAM);
+  assert.equal(run.sandboxRepoEnv, undefined);
+});

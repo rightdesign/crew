@@ -415,3 +415,25 @@ test('platformBaseUrl strips the API prefix from the pool URL', async () => {
   assert.equal(platformBaseUrl('https://app.tablation.com'), 'https://app.tablation.com');
   assert.equal(platformBaseUrl('http://127.0.0.1:3000/x/api'), 'http://127.0.0.1:3000/x');
 });
+
+test('repository environment arrives with the lease and is replaced by each tokens message (CREW-3084)', async () => {
+  const applied: unknown[] = [];
+  const w = world({
+    leases: [
+      { status: 200, body: { action: 'provision', lease: { ...lease('L1'), repositoryEnv: [{ repoRowId: 'r1', env: { DATABASE_URL: 'a' } }] } } },
+      { status: 200, body: { action: 'tokens', leaseId: 'L1', forges: [], repositoryEnv: [{ repoRowId: 'r1', env: { DATABASE_URL: 'b' } }] } },
+      { status: 200, body: { action: 'tokens', leaseId: 'L1', forges: [], repositoryEnv: [] } },
+      { status: 200, body: { action: 'tokens', leaseId: 'L1', forges: [] } },
+    ],
+  });
+  const logged: string[] = [];
+  w.deps.log = (l) => { logged.push(l); };
+  w.deps.applyRepositoryEnv = async (e) => { applied.push(e); return { ok: true }; };
+  await runPoolMember(w.deps);
+  assert.deepEqual(applied, [
+    [{ repoRowId: 'r1', env: { DATABASE_URL: 'a' } }],
+    [{ repoRowId: 'r1', env: { DATABASE_URL: 'b' } }],
+    [],
+  ], 'a message without the field leaves the set alone');
+  assert.ok(!logged.join('\n').includes('postgres') && !/'a'|'b'/.test(logged.join('\n')));
+});
