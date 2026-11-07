@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.11] — 2026-11-07
+
+- CREW-3104 The release phase looks at a verified branch's `.crew.yaml` when deciding whether this ship may release a repository, so a branch that changes `platform` to include this ship can be released by it; a repository no ship can release now raises an attention item and a doctor problem.
+
 ## [0.137.9] — 2026-11-07
 
 - CREW-3103 `crew status` now shows the route's own advancing poll watermark instead of the legacy shared one.
