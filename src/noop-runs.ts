@@ -92,9 +92,10 @@ export function clearNoopRuns(stateDir: string, recordId: string): void {
 }
 
 /** What the attention item and the ticket comment say while the ticket is backing off. */
-export function noopAttentionMessage(tag: string, role: string, count: number, nextAt: number, lastComment: string | null): string {
+export function noopAttentionMessage(tag: string, role: string, count: number, nextAt: number, lastComment: string | null, waitingOnPerson = false): string {
   const mins = Math.max(1, Math.round((nextAt - Date.now()) / 60_000));
-  return `${tag}: ${role} run ended ${count} time${count === 1 ? '' : 's'} in a row with nothing pushed and no hand-off; next attempt in about ${mins} minutes` +
+  const next = waitingOnPerson ? 'waiting on a person to answer before it is picked up again' : `next attempt in about ${mins} minutes`;
+  return `${tag}: ${role} run ended ${count} time${count === 1 ? '' : 's'} in a row with nothing pushed and no hand-off; ${next}` +
     (lastComment ? `. Its last comment: ${lastComment.slice(0, 300)}` : '');
 }
 
@@ -146,10 +147,15 @@ export type NoopSettlement = 'progress' | 'backoff' | 'bounced';
 export async function settleNoopRun(o: SettleNoopOptions): Promise<NoopSettlement> {
   const tag = o.before.issue_tag ?? o.before.issue_id;
   const after = await o.tracker.ticket(o.ticketId);
+  // CREW-3101: the design lane's hand-off is a flag plus a comment, never a push or a status change.
+  const flagged = (k: 'needs_review' | 'needs_planning'): boolean => Boolean(after[k]) && !o.before[k];
   const noop = o.before[o.columns.status] === o.statuses.building &&
     after[o.columns.status] === o.before[o.columns.status] &&
     after[o.columns.assignee] === o.before[o.columns.assignee] &&
-    o.tipBefore === o.tipAfter;
+    o.tipBefore === o.tipAfter &&
+    !flagged('needs_review') && !flagged('needs_planning') &&
+    // A person owes an answer, so an earlier stale entry for this ticket is not a repeat either.
+    !after.needs_review;
   if (!noop) {
     clearNoopRuns(o.stateDir, o.ticketId);
     o.clear(noopRunsKey(o.before.issue_id));
@@ -166,7 +172,7 @@ export async function settleNoopRun(o: SettleNoopOptions): Promise<NoopSettlemen
   if (!verdict.bounce) {
     await o.raise({
       kind: 'noop_runs', key: noopRunsKey(o.before.issue_id), since: new Date().toISOString(),
-      message: noopAttentionMessage(tag, o.role, verdict.count, verdict.nextAt, last),
+      message: noopAttentionMessage(tag, o.role, verdict.count, verdict.nextAt, last, Boolean(after.needs_planning)),
     });
     return 'backoff';
   }

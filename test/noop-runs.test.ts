@@ -91,3 +91,28 @@ test('a push, a hand-off or a reassignment clears the record', async () => {
     assert.deepEqual(s.raised, []);
   }
 });
+
+test('a design run that sets needs_review is a hand-off and clears an earlier entry (CREW-3101)', async () => {
+  for (const patch of [{ needs_review: true }, { needs_planning: true }] as Array<Partial<Ticket>>) {
+    const s = setup(patch);
+    recordNoopRun(s.stateDir, 'rec', 9);
+    assert.equal(await settleNoopRun(s.opts), 'progress');
+    assert.deepEqual(readNoopRuns(s.stateDir), {});
+    assert.deepEqual(s.raised, []);
+    assert.deepEqual(s.cleared, [noopRunsKey('CREW-9')]);
+  }
+});
+
+test('a run that changes nothing is still recorded', async () => {
+  const s = setup({ needs_review: false });
+  assert.equal(await settleNoopRun(s.opts), 'backoff');
+  assert.match(s.raised[0]!.message, /next attempt in about/);
+});
+
+test('a no-op on a ticket waiting for a person does not promise a next attempt', async () => {
+  const s = setup({ needs_planning: true });
+  s.opts.before = { ...s.opts.before, needs_planning: true } as Ticket;
+  assert.equal(await settleNoopRun(s.opts), 'backoff');
+  assert.match(s.raised[0]!.message, /waiting on a person/);
+  assert.doesNotMatch(s.raised[0]!.message, /next attempt/);
+});
