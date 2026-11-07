@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.9] — 2026-11-07
+
+- CREW-3103 `crew status` now shows the route's own advancing poll watermark instead of the legacy shared one.
+- ISSUE-3100 Two routes on one ship no longer clear each other's stalled attention items or share a poll watermark, which re-announced the same stalled ticket every cycle.
+
 ## [0.137.8] — 2026-11-07
 
 - CREW-3100 Two routes on one ship no longer clear each other's stalled attention items or share a poll watermark, which re-announced the same stalled ticket every cycle.
