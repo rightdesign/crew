@@ -25,7 +25,7 @@ import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefre
 import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -160,6 +160,22 @@ export function repoContractRefusedItem(repo: string, detail: string, nowIso = n
   return {
     kind: 'repo_contract_refused', key: repoContractRefusedKey(repo), since: nowIso,
     message: `${repo}: its repo contract is refused and the repository is skipped — ${detail}. Resumes automatically once the file is valid on its base; \`crew doctor\` names the problem`,
+  };
+}
+
+/** The key of a repo's `repo_platform_unreleasable` item; one per repo. */
+export const repoPlatformUnreleasableKey = (repo: string): string => `repo_platform_unreleasable:${repo}`;
+
+/**
+ * Verified work in a repository whose `platform` this ship does not satisfy, with
+ * no verified branch changing it (CREW-3104). Without this the release pass logs
+ * a skip every cycle and nothing else says the repository is stuck. Cleared once
+ * the ship can release the repository or nothing verified waits on it.
+ */
+export function repoPlatformUnreleasableItem(repo: string, detail: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'repo_platform_unreleasable', key: repoPlatformUnreleasableKey(repo), since: nowIso,
+    message: `${detail}. Resumes automatically once a ship that satisfies the platform serves the route or a verified branch changes it`,
   };
 }
 

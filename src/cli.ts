@@ -65,7 +65,8 @@ import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR, sandboxPoli
 import { generateSandboxPolicy } from './sandbox-policy.ts';
 import { guardRunHandoff, describeHandoffPush, repoConfigFor, pushedEventBody } from './handoff-guard.ts';
 import { planRunWorktree, applyRunWorktree, describeRunWorktreePlan, planIsUsable } from './run-worktree.ts';
-import { hostPlatform, satisfies, explain } from './platform.ts';
+import { hostPlatform, satisfies, explain, isShipPlatform } from './platform.ts';
+import { platformAdmitters, platformStuckNote } from './platform-gate.ts';
 import {
   runWizard, shouldRunWizard, firstRunConfigPath, renderShipBlock, renderFullConfig, writeNewConfig, nextSteps,
   type Prompter, type WizardAnswers,
@@ -183,7 +184,7 @@ import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { contractFixers } from './contract-refusal.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey } from './ship-attention.ts';
 import {
   runDaemonLoop, runFleetPass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -1595,6 +1596,15 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
       const mine = matchShipRows(ships, cfg.ship.name, doctorMachineId(cfg.ship.stateDir)).rows;
       if (mine.length !== 1) problems.push(`ship record: ${mine.length} rows named "${cfg.ship.name}"`);
       else if (mine[0]!.platform && mine[0]!.platform !== host) problems.push(`ship record: declares ${mine[0]!.platform}, this host is ${host}`);
+      // CREW-3104: a repository whose contract no registered ship can satisfy is never released, and nothing else says so.
+      const fleet = ships.map((x) => x.platform ?? '').filter(isShipPlatform);
+      if (fleet.length > 0) {
+        for (const r of doctorRepos) {
+          if (!fleet.some((p) => satisfies(p, r.config.platform))) {
+            problems.push(`repo ${r.name}: requires ${r.config.platform}, but no registered ship satisfies it (ships: ${[...new Set(fleet)].join(', ')})`);
+          }
+        }
+      }
     }
   } catch (e) {
     problems.push(`tracker unreachable: ${e instanceof Error ? e.message : String(e)}`);
@@ -2135,10 +2145,18 @@ async function releasePhase(
     // (`.crew.yaml`), not the route's — a route can span repos with
     // different needs. Skip only this one; the rest of the route's
     // repos may still be releasable here.
-    if (!satisfies(cfg.ship.platform, repo.platform)) {
+    // CREW-3104: the base contract alone is self-sealing (the branch that
+    // changes `platform` to admit this ship is the one it would refuse to
+    // look at), so a live release defers this decision until the verified
+    // branches are known; a dry run has none and keeps the base verdict.
+    const baseAdmitsShip = satisfies(cfg.ship.platform, repo.platform);
+    if (!baseAdmitsShip && dryRun) {
       const detail = explain(cfg.ship.platform, repo.platform);
       remit.emit(`${scope}: skipping — ${detail}`, { step: 'release' });
       return { scope, tests: 'skipped', outcome: 'skipped', detail };
+    }
+    if (baseAdmitsShip) {
+      try { clearShipAttention(new State(cfg.ship.stateDir), repoPlatformUnreleasableKey(target.name)); } catch { /* attention is a convenience */ }
     }
 
     // A repo that names its releaser (`release.ship`) is released by that ship
@@ -2192,6 +2210,33 @@ async function releasePhase(
       // CREW-2603: same ref the release itself will decide on, so a dirty or
       // off-base primary does not read as "blocked" or stale before the lock.
       const remoteBase = remoteBranchExists(target.dir, repo.branch.remote, repo.branch.base);
+      if (!baseAdmitsShip) {
+        const baseRef = remoteBase ? `${repo.branch.remote}/${repo.branch.base}` : repo.branch.base;
+        const verifiedPre = pre.filter((t) => t.status === tracker.contract.statuses.verified);
+        const admitters = platformAdmitters(
+          target.dir, baseRef, cfg.ship.platform, verifiedPre,
+          (t) => locateBranchForTicket(target.dir, repo, t as Ticket)?.branch ?? null,
+        );
+        if (admitters.length === 0) {
+          const detail = explain(cfg.ship.platform, repo.platform);
+          const ids = verifiedPre.map((t) => t.issue_id);
+          if (firstReport(`${scope}:platform:${ids.join(',')}`)) remit.emit(`${scope}: skipping — ${detail}`, { step: 'release' });
+          if (ids.length) {
+            try {
+              await raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship },
+                repoPlatformUnreleasableItem(target.name, platformStuckNote(target.name, repo.platform, cfg.ship.platform, ids)));
+            } catch { /* the skip line above still says it */ }
+          } else {
+            try { clearShipAttention(state, repoPlatformUnreleasableKey(target.name)); } catch { /* attention is a convenience */ }
+          }
+          return { scope, tests: 'skipped', outcome: 'skipped', detail };
+        }
+        try { clearShipAttention(state, repoPlatformUnreleasableKey(target.name)); } catch { /* attention is a convenience */ }
+        remit.emit(
+          `${scope}: the base contract requires ${repo.platform}, but ${admitters.map((a) => a.issueId).join(', ')} change${admitters.length === 1 ? 's' : ''} platform to ${admitters[0]!.platform}, which this ship satisfies — releasing`,
+          { step: 'release' },
+        );
+      }
       const d = decideRelease(target.dir, pre, tracker.contract, {
         tagPattern: repo.release.tagPattern ?? 'v*', base: repo.branch.base,
         ...(remoteBase ? { ref: `${repo.branch.remote}/${repo.branch.base}`, guard: false } : {}),
