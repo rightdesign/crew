@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  planContainers, portFor, containerNameFor, listPassengerContainers, startContainer, stopContainer,
+  planContainers, portFor, containerNameFor, listPassengerContainers, startContainer, bindMountSpec, stopContainer,
   syncPassengerContainers, syncAllPassengerCheckouts, passengerCheckoutSyncSpecs, dockerAvailable, passengerImageRef, ensureImage, type Exec, type ContainerPlan,
 } from '../src/passenger-containers.ts';
 import type { CrewConfig, Route } from '../src/config.ts';
@@ -284,8 +284,8 @@ test('startContainer() runs `docker run -d` with one -v per mount, the mountsHas
   assert.ok(args.includes('PASSENGER_MCP_WORKSPACE_ID=ws-1'));
   assert.ok(args.includes('TABLATION_API_BASE_URL=https://app.tablation.com/api'));
   assert.ok(args.includes('crew.mounts.hash=deadbeef'));
-  assert.ok(args.includes('/tmp/a:/workspace/a:ro'));
-  assert.ok(args.includes('/tmp/b:/workspace/b:ro'));
+  assert.ok(args.includes('type=bind,source=/tmp/a,target=/workspace/a,readonly'));
+  assert.ok(args.includes('type=bind,source=/tmp/b,target=/workspace/b,readonly'));
   assert.equal(args[args.length - 1], 'tablation/crew-passenger-mcp:9.9.9');
   assert.ok(!args.includes('host.docker.internal:host-gateway'), 'no --add-host without a sync endpoint');
 });
@@ -488,4 +488,9 @@ test('a sandbox-runner ship mounts mirror-fed checkouts from its state dir; swit
   assert.equal(spec!.mirror?.cache.volume, 'crew-cache');
   assert.equal(spec!.dir, '/tmp/state/passenger-sources/w/alpha');
   assert.deepEqual(syncAllPassengerCheckouts(sandbox), [], 'a mirror-fed checkout is never cloned from the forge');
+});
+
+test('bindMountSpec survives a colon or comma in the host path (ISSUE-3067)', () => {
+  assert.equal(bindMountSpec('/Users/b/Crew/a:b/x', '/workspace/x'), 'type=bind,source=/Users/b/Crew/a:b/x,target=/workspace/x,readonly');
+  assert.equal(bindMountSpec('/t/a,b', '/w'), 'type=bind,source="/t/a,b",target=/w,readonly');
 });

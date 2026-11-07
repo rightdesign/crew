@@ -258,6 +258,12 @@ export interface SyncDaemonEndpoint {
  * Authorization header (`mcp-endpoint-registry.ts`). Omitted, same as the sync env vars, whenever `sync` itself is
  * unavailable — `validateCredential`'s real-API-key path is the fallback.
  */
+export function bindMountSpec(hostPath: string, containerPath: string): string {
+  // --mount is comma-separated key=value CSV; quote a field holding a comma or quote.
+  const q = (v: string): string => (/[",]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  return `type=bind,source=${q(hostPath)},target=${q(containerPath)},readonly`;
+}
+
 export function startContainer(
   plan: ContainerPlan, tablationApiBaseUrl: string, sync: SyncDaemonEndpoint | undefined, exec: Exec = realExec,
 ): void {
@@ -278,7 +284,9 @@ export function startContainer(
       '-e', `PASSENGER_MCP_SECRET=${sync.secret}`,
     );
   }
-  for (const m of plan.mounts) args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);
+  // `--mount`, not `-v`: `-v` splits on ':' so a host path containing one (a
+  // workspace named `a:b`, ISSUE-3067) is an "invalid spec: too many colons".
+  for (const m of plan.mounts) args.push('--mount', bindMountSpec(m.hostPath, m.containerPath));
   args.push(plan.image);
   exec('docker', args);
 }
