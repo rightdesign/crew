@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.3] — 2026-11-07
+
+- CREW-3065 crew doctor now shows whether the daemon is running (pid, or exit code and last scheduler log line) and no longer says a dead daemon is waiting for its agents.
+
 ## [0.137.2] — 2026-11-07
 
 - CREW-3063 `crew daemon` serves every enabled route when none is named, so the unit `crew install` writes starts on a ship with two or more routes
