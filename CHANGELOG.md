@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.6] — 2026-11-07
+
+- CREW-3085 New "Adopt Repository Contract" skill guides the crew in writing and verifying a repository's .crew.yaml.
+
 ## [0.137.5] — 2026-11-07
 
 - CREW-3064 A daemon that cannot start now raises a `daemon_start_failed` ship attention item and an error event, and sleeps between identical failures so the unit's relaunch no longer floods the scheduler log; `crew status` still shows it when the route's key is missing.
