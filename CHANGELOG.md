@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.2] — 2026-11-07
+
+- CREW-3063 `crew daemon` serves every enabled route when none is named, so the unit `crew install` writes starts on a ship with two or more routes
+
 ## [0.137.1] — 2026-11-07
 
 - CREW-3062 The triage seat now fills in a blank project or repo when it can be determined, and otherwise parks the ticket for planning instead of accepting it.
