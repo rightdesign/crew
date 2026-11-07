@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.138.0] — 2026-11-07
+
+- CREW-3084 Sandbox runs receive their repository's environment from the lease payload and the tokens message, scoped to runs for that repository and never logged.
+- CREW-3116 Agent runs now appear in the platform's Agent Log while they run, with the seat that ran them, instead of only after they end.
+
 ## [0.137.11] — 2026-11-07
 
 - CREW-3104 The release phase looks at a verified branch's `.crew.yaml` when deciding whether this ship may release a repository, so a branch that changes `platform` to include this ship can be released by it; a repository no ship can release now raises an attention item and a doctor problem.
