@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.137.1] — 2026-11-07
+
+- CREW-3062 The triage seat now fills in a blank project or repo when it can be determined, and otherwise parks the ticket for planning instead of accepting it.
+
 ## [0.137.0] — 2026-11-06
 
 - CREW-3059 With `ship.relayPreviews` on, `crew periscope up` opens a relay tunnel for the preview and records a public `https://<slug>.<relay domain>` link that works until the periscope ends
