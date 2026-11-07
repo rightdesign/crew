@@ -35,7 +35,7 @@ import { intelRelDir, parseRemote } from './sandbox-cache.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
 import { BeforeFirstEditTracker } from './tool-classify.ts';
-import { reportAgentRun, startAgentRunRow, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { reportAgentRun, startAgentRunRow, LiveRunReporter, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
@@ -621,6 +621,8 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
         apiKey: o.apiKey,
         userAgent: o.ship.userAgent,
         agentId: o.resolvedAgentId,
+        ...(o.route.resolved.models?.crew && o.route.resolved.seats?.[o.role]
+          ? { actor: { table: o.route.resolved.models.crew, recordId: o.route.resolved.seats[o.role]! } } : {}),
         ...(o.route.resolved.models?.issues ? { tickets: {
           issuesModelId: o.route.resolved.models.issues,
           keyColumn: columns.key,
@@ -778,6 +780,15 @@ export interface RunSidecar {
   workspaceRunId?: string;
   /** CREW-3038: the Agent Log row posted at run start; the finish path updates it rather than posting another. */
   agentLogRowId?: string;
+  /** CREW-3116: cycles already delivered to that row while the run went, so a restarted daemon resumes after them. */
+  cyclesPosted?: number;
+}
+
+/** Merges fields into a run's sidecar; a missing or unwritable sidecar is not worth failing the run over. */
+function updateSidecar(streamPath: string, patch: Partial<RunSidecar>): void {
+  const sc = readRunSidecar(streamPath);
+  if (!sc) return;
+  try { writeFileSync(pidPathFor(streamPath), JSON.stringify({ ...sc, ...patch })); } catch { /* the finish path still has the row id in memory */ }
 }
 
 /** The sidecar path for a stream. */
@@ -924,6 +935,8 @@ const TAIL_POLL_MS = 200;
  */
 class RunObserver {
   readonly cycles: AgentCycle[] = [];
+  /** CREW-3116: sends the cycles to the run's Agent Log row as they are mapped. */
+  reporter?: LiveRunReporter;
   readonly attribution = new TicketAttributionTracker();
   /** Hand-off writes and their outcomes, to tell a run whose hand-off never landed (CREW-2363). */
   readonly handoff = new HandoffTranscriptTracker();
@@ -957,6 +970,12 @@ class RunObserver {
     this.emitCycle = emitCycle;
     this.liveTicket = id.ticket ?? undefined;
     this.mapper = adapter.createStreamMapper?.() ?? { map: (p: unknown) => adapter.mapStreamLine(p), flush: () => [] };
+  }
+
+  /** Hands the live reporter every cycle mapped so far, then each new one as it arrives. */
+  attachReporter(r: LiveRunReporter): void {
+    this.reporter = r;
+    for (const c of this.cycles) r.add(c);
   }
 
   feed(text: string): void {
@@ -1037,7 +1056,7 @@ class RunObserver {
       if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) {
         turnText += `${ev.text}\n`;
         const cycleIndex = this.cycles.length;
-        this.cycles.push({
+        const cycle: AgentCycle = {
           cycleIndex,
           occurredAt: e.at,
           thinking: ev.text,
@@ -1048,7 +1067,9 @@ class RunObserver {
           // for the same column. A `thought` cycle stays untagged, same
           // as before this change.
           ...(ev.kind === 'text' ? { role: 'assistant' as const } : {}),
-        });
+        };
+        this.cycles.push(cycle);
+        this.reporter?.add(cycle);
         // A second event alongside the raw `thought`/`text` one above
         // (ISSUE-481) — a live consumer (crew-macos's log window) wants
         // the same text correlated with the Agent Log Cycle it will end
@@ -1203,6 +1224,7 @@ async function finishRun(
         // CREW-2980: under `auth: workspace` the endpoint's rows are the accounting; the run row
         // keeps turns only, and `reportAgentRun` sums those rows into the ticket counters.
         ...(id.agentLogRowId ? { rowId: id.agentLogRowId } : {}),
+        ...(obs.reporter ? { cyclesPosted: obs.reporter.posted } : {}),
         ...(id.workspaceRunId ? { runId: id.workspaceRunId } : {
           tokensIn: result?.inputTokens,
           tokensOut: result?.outputTokens,
@@ -1346,24 +1368,30 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
       try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify(sidecar)); } catch { /* a run nobody can find again is no worse than before */ }
     }
 
-    // CREW-3038: the run's Agent Log row goes up now, not at the end, so the run's per-call
-    // inference rows fold under it while it is still going. Only a workspace-auth run has
-    // such rows (they join on its run id). The sidecar is rewritten with the row id so a
-    // daemon that restarts mid-run updates this row rather than posting a second.
-    const startedRow: Promise<void> = plan.workspaceRunId && plan.agentLog
+    // CREW-3038/3116: the run's Agent Log row goes up now, not at the end, so the platform shows the
+    // run while it happens (and, under workspace auth, folds the per-call inference rows under it).
+    // The sidecar is rewritten with the row id so a daemon that restarts mid-run updates this row
+    // rather than posting a second. A live reporter then sends the run's cycles in batches.
+    const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
+    const startedRow: Promise<void> = plan.agentLog
       ? startAgentRunRow(plan.agentLog, {
           runId: plan.workspaceRunId, ticketReference: plan.ticket ?? undefined, startedAt,
           model: plan.model, harness: id.harness, provider: id.provider,
-          promptVersion: plan.promptVersion, promptSha: plan.promptSha,
-        }).then((rowId) => {
-          if (!rowId) return;
-          id.agentLogRowId = rowId;
-          const sc = readRunSidecar(plan.streamPath);
-          if (sc) { try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify({ ...sc, agentLogRowId: rowId })); } catch { /* the row still gets its update from this process */ } }
+          promptVersion: plan.promptVersion, promptSha: plan.promptSha, actorLabel: plan.role,
+        }).then((row) => {
+          if (!row) return;
+          id.agentLogRowId = row.id;
+          updateSidecar(plan.streamPath, { agentLogRowId: row.id });
+          if (row.live && plan.agentLog) {
+            const reporter = new LiveRunReporter(plan.agentLog, row.id, {
+              onPosted: (n) => updateSidecar(plan.streamPath, { cyclesPosted: n }),
+            });
+            obs.attachReporter(reporter);
+            reporter.start();
+          }
         })
       : Promise.resolve();
 
-    const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
     // Written at spawn and rewritten on claim and on close, so an interrupted
     // run (no `close`) still leaves a sidecar naming the ticket it was on (CREW-1776).
     const meta = { pid: child.pid ?? null, ...(deadline ? { deadline } : {}) };
@@ -1406,6 +1434,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
         killed = { limitMinutes: plan.maxRunMinutes ?? 0, elapsedMs: Date.now() - Date.parse(spawnedAt) };
       }
       await startedRow;
+      await obs.reporter?.stop();
       const { ms, handoffPending } = await finishRun(
         id, obs, emit, startedAt, { code: code ?? 1, ...(killed ? { interrupted: WALL_CLOCK_REASON } : {}) },
         plan.agentLog?.apiKey, hintMoved,
@@ -1473,6 +1502,16 @@ export async function reattachRun(
   obs.feed(tail.poll());
   obs.muted = false;
 
+  // CREW-3116: the first process may have died with the run still going. Carry on reporting to the
+  // same row, after the cycles it delivered, so the platform does not mark a working run interrupted.
+  if (sc.agentLogRowId && sc.agentLog && o.agentLogKey) {
+    const reporter = new LiveRunReporter({ ...sc.agentLog, apiKey: o.agentLogKey }, sc.agentLogRowId, {
+      onPosted: (n) => updateSidecar(streamPath, { cyclesPosted: n }),
+    }, sc.cyclesPosted ?? 0);
+    obs.attachReporter(reporter);
+    reporter.start();
+  }
+
   const runner = runnerOfSidecar(sc);
   const adopted = isAlive(sc);
   let killed: ReattachResult['killed'];
@@ -1492,6 +1531,7 @@ export async function reattachRun(
   }
   obs.feed(tail.poll());
   obs.end();
+  await obs.reporter?.stop();
   await endSink(eventsSink);
   // A sandbox outlives a dead client: delete it whichever way the run ended.
   await runner.release(runner.reattach(sc), emit);

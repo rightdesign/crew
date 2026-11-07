@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reportAgentRun, startAgentRunRow, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
+import { reportAgentRun, startAgentRunRow, LiveRunReporter, capCycleText, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
 
 /** Wires a fetch mock keyed by exact pathname+method, ignoring host/baseUrl — same shape as connect.test.ts's mockFetch. */
 function mockFetch(routes: Record<string, unknown>) {
@@ -401,15 +401,15 @@ test('sumInferenceRows adds each figure once and tolerates missing values', () =
     { calls: 3, tokensIn: 0, tokensOut: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 });
 });
 
-test('startAgentRunRow posts the run row as running, with its run id and no finish time (CREW-3038)', async (t) => {
+test('startAgentRunRow posts the run row live: run id, no outcome, no finish time (CREW-3038)', async (t) => {
   const { restore, calls } = mockFetch({ 'POST /api/workspaces/ws-1/agents/log': { id: 'log-s' } });
   t.after(restore);
   const id = await startAgentRunRow(target, {
     runId: 'run-1', ticketReference: 'CREW-3038', startedAt: '2026-11-03T08:00:00.000Z', model: 'm', harness: 'claude', provider: 'anthropic',
   });
-  assert.equal(id, 'log-s');
+  assert.deepEqual(id, { id: 'log-s', live: false });
   const body = calls[0]!.body as Record<string, unknown>;
-  assert.equal(body.outcome, 'running');
+  assert.equal('outcome' in body, false);
   assert.equal(body.runId, 'run-1');
   assert.equal(body.client, 'crew');
   assert.equal('finishedAt' in body, false);
@@ -455,4 +455,106 @@ test('when the started row is gone (404) the end of the run posts the row whole'
   });
   assert.equal(out.agentLogId, 'log-new');
   assert.ok(calls.some((c) => c.key === 'PATCH /api/data-models/al-1/records/log-gone'));
+});
+
+const actorTarget: AgentLogTarget = { ...target, actor: { table: 'crew-model', recordId: 'seat-1' } };
+
+test('startAgentRunRow stamps the seat as the actor, labelled with its name (CREW-3116)', async (t) => {
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-1': { name: 'Developer agent (Studio)' },
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-a' },
+  });
+  t.after(restore);
+  const row = await startAgentRunRow(actorTarget, { startedAt: '2026-11-07T21:00:00.000Z', actorLabel: 'dev' });
+  assert.deepEqual(row, { id: 'log-a', live: true });
+  const body = calls.find((c) => c.key.startsWith('POST'))!.body as Record<string, unknown>;
+  assert.equal(body.actorTable, 'crew-model');
+  assert.equal(body.actorRecordId, 'seat-1');
+  assert.equal(body.actorLabel, 'Developer agent (Studio)');
+});
+
+test('startAgentRunRow drops the actor columns on a platform that rejects them: no early row without a run id, a non-live one with (CREW-3116)', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const posts: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (init?.method !== 'POST') return new Response('{}', { status: 200 });
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    posts.push(body);
+    return 'actorTable' in body
+      ? new Response('{}', { status: 400 })
+      : new Response(JSON.stringify({ id: url.pathname }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const row = await startAgentRunRow(actorTarget, { startedAt: '2026-11-07T21:00:00.000Z' });
+  assert.equal(row, undefined);
+  assert.equal(posts.length, 1);
+  const withRun = await startAgentRunRow(actorTarget, { runId: 'run-1', startedAt: '2026-11-07T21:00:00.000Z' });
+  assert.equal(withRun?.live, false);
+  assert.equal(posts.length, 3);
+});
+
+test('capCycleText keeps text within 2 KB and marks the cut', () => {
+  assert.equal(capCycleText('short'), 'short');
+  const capped = capCycleText('é'.repeat(3000));
+  assert.ok(Buffer.byteLength(capped) <= 2048);
+  assert.ok(capped.endsWith('[truncated]'));
+});
+
+test('LiveRunReporter sends buffered cycles as one batch, skipping ones already delivered (CREW-3116)', async (t) => {
+  const { restore, calls } = mockFetch({ 'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { ids: [] } });
+  t.after(restore);
+  const posted: number[] = [];
+  const r = new LiveRunReporter(target, 'log-1', { onPosted: (n) => posted.push(n) }, 1);
+  const cy = (i: number) => ({ cycleIndex: i, occurredAt: '2026-11-07T21:00:00.000Z', thinking: `c${i}` });
+  r.add(cy(0)); r.add(cy(1)); r.add(cy(2)); r.add(cy(2));
+  await r.tick();
+  assert.equal(calls.length, 1);
+  assert.deepEqual((calls[0]!.body as Array<{ cycleIndex: number }>).map((c) => c.cycleIndex), [1, 2]);
+  assert.equal(r.posted, 3);
+  assert.deepEqual(posted, [3]);
+});
+
+test('LiveRunReporter heartbeats when idle, and stops for good on a 404 (CREW-3116)', async (t) => {
+  const { restore, calls } = mockFetch({});
+  t.after(restore);
+  const r = new LiveRunReporter(target, 'log-1', { heartbeatMs: 0 });
+  await r.tick();
+  assert.equal(calls[0]!.key, 'PATCH /api/workspaces/ws-1/agents/log/log-1');
+  assert.equal(r.live, false);
+  r.add({ cycleIndex: 0, occurredAt: 'x', thinking: 'ignored' });
+  await r.tick();
+  assert.equal(calls.length, 1);
+  assert.equal(r.posted, 0);
+});
+
+test('LiveRunReporter keeps its buffer through a 5xx and sends it next window (CREW-3116)', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = (async () => new Response('{}', { status: n++ === 0 ? 503 : 200 })) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const r = new LiveRunReporter(target, 'log-1');
+  r.add({ cycleIndex: 0, occurredAt: 'x', thinking: 'a' });
+  await r.tick();
+  assert.equal(r.posted, 0);
+  await r.tick();
+  assert.equal(r.posted, 1);
+});
+
+test('the end-of-run report posts only the cycles the live reporter had not delivered (CREW-3116)', async (t) => {
+  resetCounterColumnCache();
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/agent_log': { id: 'al-1' },
+    'GET /api/data-models/al-1': { fields: ['outcome', 'finished_at'].map((columnName) => ({ columnName })) },
+    'PATCH /api/data-models/al-1/records/log-s': {},
+    'POST /api/workspaces/ws-1/agents/log/log-s/cycles': { id: 'c' },
+  });
+  t.after(restore);
+  await reportAgentRun(target, {
+    outcome: 'success', startedAt: 'a', finishedAt: 'b', rowId: 'log-s', cyclesPosted: 2,
+    cycles: [0, 1, 2].map((i) => ({ cycleIndex: i, occurredAt: 'x', thinking: `c${i}` })),
+  });
+  const cycles = calls.filter((c) => c.key.endsWith('/cycles'));
+  assert.equal(cycles.length, 1);
+  assert.equal((cycles[0]!.body as { cycleIndex: number }).cycleIndex, 2);
 });

@@ -515,6 +515,45 @@ test('spawnAgent reports the run as one Agent Log row, its thinking block and it
   });
 });
 
+test('a run with a resolved seat starts its row live with the actor, then finishes that same row (CREW-3116)', async (t) => {
+  const { home, state } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1', models: { crew: 'crew-model' }, seats: { dev: 'seat-1' } },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'ISSUE-401',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE];
+  plan.cwd = state;
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-1': { name: 'Developer agent (Studio)' },
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'GET /api/data-models/agent_log': { id: 'al-1' },
+    'GET /api/data-models/al-1': { fields: ['outcome', 'finished_at', 'num_turns'].map((columnName) => ({ columnName })) },
+    'PATCH /api/data-models/al-1/records/log-1': {},
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { id: 'cycle-1' },
+  });
+  t.after(restore);
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  assert.equal((await spawnAgent(plan, emit)).code, 0);
+
+  const posts = calls.filter((c) => c.key === 'POST /api/workspaces/ws-1/agents/log');
+  assert.equal(posts.length, 1, 'one row for the run, never a second at the end');
+  const start = posts[0]!.body as Record<string, unknown>;
+  assert.equal('outcome' in start, false);
+  assert.equal(start.actorTable, 'crew-model');
+  assert.equal(start.actorRecordId, 'seat-1');
+  assert.equal(start.actorLabel, 'Developer agent (Studio)');
+  const finish = calls.find((c) => c.key === 'PATCH /api/data-models/al-1/records/log-1');
+  assert.equal((finish!.body as Record<string, unknown>).outcome, 'success');
+  assert.equal(calls.filter((c) => c.key.endsWith('/cycles')).length, 2);
+});
+
 test('spawnAgent cites the ticket the transcript actually spent the most tokens on, not the pre-run poll hint (ISSUE-621-under-ISSUE-430)', async (t) => {
   const { home, state, ship } = rig();
   const route = {

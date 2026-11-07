@@ -34,6 +34,12 @@ export interface AgentLogTarget {
    */
   agentId?: string;
   /**
+   * The seat that performs the run (CREW-3116): the Crew table's model id and the seat's row id,
+   * stamped on the Agent Log row as `actor_table` / `actor_record_id` so the platform can say which
+   * agent instance ran it. Absent for a route with no resolved seat.
+   */
+  actor?: { table: string; recordId: string };
+  /**
    * Where the run's ticket lives and which Issues columns accumulate its spend
    * (CREW-2580). Absent for a caller with no resolved Issues table, which
    * reports the Agent Log row alone.
@@ -129,6 +135,12 @@ export interface AgentRunReport {
    * the run updates that row (outcome, finish time, turns, ticket) instead of posting a second one.
    */
   rowId?: string;
+  /**
+   * CREW-3116: how many leading `cycles` the live reporter already delivered to the started row.
+   * The end-of-run report posts only the rest, so nothing is sent twice and nothing is lost when the
+   * platform lacked the lifecycle endpoints.
+   */
+  cyclesPosted?: number;
   /**
    * The harness's own totals for that run. Used for the ticket counters only when the endpoint
    * wrote no inference row for the run (an older server that predates the Run Id column), so a
@@ -368,9 +380,13 @@ async function writeHandoffBounces(target: AgentLogTarget, rowId: string, count:
 }
 
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
+  return send<T>(target, 'POST', path, body);
+}
+
+async function send<T>(target: AgentLogTarget, method: 'POST' | 'PATCH', path: string, body: unknown): Promise<T> {
   const url = `${target.baseUrl.replace(/\/+$/, '')}/api/workspaces/${target.workspaceId}${path}`;
   const res = await fetch(url, {
-    method: 'POST',
+    method,
     headers: {
       Authorization: `Bearer ${target.apiKey}`,
       // Cloudflare 403s default agents on this host — same header connect.ts sends.
@@ -385,7 +401,8 @@ async function post<T>(target: AgentLogTarget, path: string, body: unknown): Pro
 
 /** What `startAgentRunRow` writes: the run row as it reads while the run is still going. */
 export interface AgentRunStart {
-  runId: string;
+  /** The workspace-auth run id; absent for a run whose inference is not metered by the platform. */
+  runId?: string;
   ticketReference?: string;
   startedAt: string;
   model?: string;
@@ -393,35 +410,62 @@ export interface AgentRunStart {
   provider?: string;
   promptVersion?: string;
   promptSha?: string;
+  /** The seat's name when the run started, used when the Crew row cannot be read. */
+  actorLabel?: string;
 }
 
-/** The outcome of a run row that has started and not yet been updated (CREW-3038). */
-export const RUNNING_OUTCOME = 'running';
+/** A started row, and whether the platform has the live-run lifecycle endpoints (CREW-3116). */
+export interface StartedRow {
+  id: string;
+  /** False when the platform rejected the actor columns: it predates the lifecycle, so cycles go up at the end of the run. */
+  live: boolean;
+}
 
 /**
- * Posts the run's Agent Log row when the run begins (CREW-3038), outcome `running` and no finish
- * time, so the per-call inference rows (joined by `run_id`, and rolled into the row's totals by the
- * platform as they arrive) fold under it from the first call rather than standing alone until the
- * run ends. Returns the row id, or undefined when it could not be posted: best effort, because the
- * end-of-run report still posts the whole row when there is no id to update.
+ * Posts the run's Agent Log row when the run begins (CREW-3038, CREW-3116): no outcome and no finish
+ * time, so the platform lists it as live and its sweep can mark it interrupted if the run goes
+ * silent. The seat is stamped as the actor. Per-call inference rows (joined by `run_id`) fold under
+ * it from the first call. Returns the row, or undefined when it could not be posted: best effort,
+ * because the end-of-run report still posts the whole row when there is no id to update.
  */
-export async function startAgentRunRow(target: AgentLogTarget, s: AgentRunStart): Promise<string | undefined> {
+export async function startAgentRunRow(target: AgentLogTarget, s: AgentRunStart): Promise<StartedRow | undefined> {
+  // Nothing to gain from an early row: no seat to show as the actor and no metered inference to fold under it.
+  if (!target.actor && !s.runId) return undefined;
+  const body = {
+    agentId: target.agentId,
+    ticketReference: s.ticketReference,
+    startedAt: s.startedAt,
+    source: 'client',
+    client: 'crew',
+    model: s.model,
+    promptVersion: s.promptVersion,
+    promptSha: s.promptSha,
+    runId: s.runId,
+    harness: s.harness,
+    provider: s.provider,
+  };
+  let actor: Record<string, string> = {};
+  if (target.actor) {
+    let label = s.actorLabel;
+    try {
+      const row = await request<{ name?: string | null }>(target, 'GET', `/data-models/${target.actor.table}/records/${target.actor.recordId}`);
+      if (row.name) label = row.name;
+    } catch { /* the label is a convenience */ }
+    actor = { actorTable: target.actor.table, actorRecordId: target.actor.recordId, ...(label ? { actorLabel: label } : {}) };
+  }
   try {
-    const entry = await post<{ id: string }>(target, '/agents/log', {
-      agentId: target.agentId,
-      ticketReference: s.ticketReference,
-      outcome: RUNNING_OUTCOME,
-      startedAt: s.startedAt,
-      source: 'client',
-      client: 'crew',
-      model: s.model,
-      promptVersion: s.promptVersion,
-      promptSha: s.promptSha,
-      runId: s.runId,
-      harness: s.harness,
-      provider: s.provider,
-    });
-    return entry.id;
+    const entry = await post<{ id: string }>(target, '/agents/log', { ...body, ...actor });
+    return { id: entry.id, live: target.actor !== undefined };
+  } catch (e) {
+    // A platform that predates the actor columns rejects them as unknown properties (400):
+    // it has no lifecycle either, so the row is still started and everything else waits for the end.
+    if (!(e instanceof AgentLogHttpError) || e.status !== 400 || Object.keys(actor).length === 0) return undefined;
+  }
+  // Without a run id there is nothing to fold under an early row either: the end-of-run report posts it whole.
+  if (!s.runId) return undefined;
+  try {
+    const entry = await post<{ id: string }>(target, '/agents/log', body);
+    return { id: entry.id, live: false };
   } catch {
     return undefined;
   }
@@ -471,6 +515,120 @@ async function updateStartedRow(target: AgentLogTarget, rowId: string, body: Rec
     if (e.status >= 500) throw new AgentLogUnreachableError(e.message);
     e.row = true;
     throw e;
+  }
+}
+
+/** The server's cap on one cycle's text (TABL-3105); the client trims first so a batch stays small. */
+export const CYCLE_BODY_LIMIT_BYTES = 2048;
+const CYCLE_TRUNCATION_MARKER = ' …[truncated]';
+/** The server accepts at most this many cycles in one post. */
+const MAX_CYCLES_PER_BATCH = 200;
+
+/** Trims a cycle's text to the 2 KB body limit, on a character boundary, with a marker. Pure. */
+export function capCycleText(text: string): string {
+  if (Buffer.byteLength(text) <= CYCLE_BODY_LIMIT_BYTES) return text;
+  const room = CYCLE_BODY_LIMIT_BYTES - Buffer.byteLength(CYCLE_TRUNCATION_MARKER);
+  let out = text.slice(0, room);
+  while (Buffer.byteLength(out) > room) out = out.slice(0, -1);
+  return out + CYCLE_TRUNCATION_MARKER;
+}
+
+export interface LiveRunOptions {
+  /** How often buffered cycles go up as one batch. Default 4 s (the 3-5 s window). */
+  windowMs?: number;
+  /** A heartbeat goes up when nothing else has been sent for this long. Default 30 s, inside the platform's 60 s cadence. */
+  heartbeatMs?: number;
+  /** Called after cycles are delivered with the running total, so a restart can resume where this left off. */
+  onPosted?: (posted: number) => void;
+}
+
+/**
+ * Reports a started run while it happens (CREW-3116): batches the run's cycles into one post per
+ * window, and sends a bare heartbeat PATCH when nothing else went out for a while, so the platform
+ * keeps the row live and can tell a silent run from a working one.
+ *
+ * Best effort and self-disabling. A 404/4xx from a lifecycle endpoint means the platform predates
+ * them: reporting stops for the rest of the run (detected once) and `posted` says how much the
+ * end-of-run report must still send. A 5xx or a dropped request keeps the buffer for the next window.
+ * Cycles are deduplicated by index, so a restarted daemon replaying the stream cannot re-send them.
+ */
+export class LiveRunReporter {
+  /** Cycles delivered to the row, from the start of the run. */
+  posted = 0;
+  live = true;
+  private nextIndex = 0;
+  private readonly pending: AgentCycle[] = [];
+  private lastSent = Date.now();
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private inFlight: Promise<void> = Promise.resolve();
+  private readonly windowMs: number;
+  private readonly heartbeatMs: number;
+
+  private readonly target: AgentLogTarget;
+  readonly rowId: string;
+  private readonly o: LiveRunOptions;
+
+  constructor(target: AgentLogTarget, rowId: string, o: LiveRunOptions = {}, alreadyPosted = 0) {
+    this.target = target;
+    this.rowId = rowId;
+    this.o = o;
+    this.windowMs = o.windowMs ?? 4000;
+    this.heartbeatMs = o.heartbeatMs ?? 30_000;
+    this.posted = alreadyPosted;
+    this.nextIndex = alreadyPosted;
+  }
+
+  start(): void {
+    if (this.timer || !this.live) return;
+    this.timer = setInterval(() => { void this.tick(); }, this.windowMs);
+    this.timer.unref?.();
+  }
+
+  /** Buffers one cycle for the next batch. A cycle already delivered or buffered is ignored. */
+  add(c: AgentCycle): void {
+    if (!this.live || c.cycleIndex < this.nextIndex) return;
+    this.nextIndex = c.cycleIndex + 1;
+    this.pending.push({ ...c, thinking: capCycleText(c.thinking) });
+  }
+
+  /** One window: send the buffered cycles, or a heartbeat when idle too long. Serialized. */
+  tick(): Promise<void> {
+    this.inFlight = this.inFlight.then(() => this.step());
+    return this.inFlight;
+  }
+
+  /** Stops the timer and waits out a send in flight. What is still buffered is left to the end-of-run report. */
+  async stop(): Promise<void> {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    await this.inFlight;
+  }
+
+  private async step(): Promise<void> {
+    if (!this.live) return;
+    try {
+      if (this.pending.length > 0) {
+        const batch = this.pending.slice(0, MAX_CYCLES_PER_BATCH);
+        await post(this.target, `/agents/log/${this.rowId}/cycles`, batch.map((c) => ({
+          cycleIndex: c.cycleIndex, occurredAt: c.occurredAt, thinking: c.thinking, ...(c.role ? { role: c.role } : {}),
+        })));
+        this.pending.splice(0, batch.length);
+        this.posted = batch[batch.length - 1]!.cycleIndex + 1;
+        this.lastSent = Date.now();
+        this.o.onPosted?.(this.posted);
+      } else if (Date.now() - this.lastSent >= this.heartbeatMs) {
+        await send(this.target, 'PATCH', `/agents/log/${this.rowId}`, {});
+        this.lastSent = Date.now();
+      }
+    } catch (e) {
+      // A 4xx (no such endpoint, a refusal) will not get better; a 5xx or no answer is tried again next window.
+      if (e instanceof AgentLogHttpError && e.status < 500) {
+        this.live = false;
+        if (this.timer) clearInterval(this.timer);
+        this.timer = undefined;
+        this.pending.length = 0;
+      }
+    }
   }
 }
 
@@ -533,7 +691,7 @@ export async function reportAgentRun(
       }
     }
   }
-  for (const cycle of run.cycles) {
+  for (const cycle of run.cycles.slice(run.cyclesPosted ?? 0)) {
     await post(target, `/agents/log/${entry!.id}/cycles`, {
       cycleIndex: cycle.cycleIndex,
       occurredAt: cycle.occurredAt,
