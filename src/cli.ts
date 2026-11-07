@@ -75,6 +75,7 @@ import {
 } from './connect-json.ts';
 import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKind } from './provision.ts';
 import { collectDiagnostics } from './diagnostics.ts';
+import { schedulerLogFor } from './install.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, systemUnitPathFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
 import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
@@ -92,6 +93,7 @@ import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
+import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
@@ -703,6 +705,36 @@ if (command === 'passenger-sync-daemon') {
   await runBridge(stateDir, bridgeRoute, bridgeTicket);
 } else {
 
+
+/**
+ * CREW-3064: a `crew daemon` that cannot start for a reason that will repeat on
+ * relaunch leaves a `daemon_start_failed` ship attention item and an `error`
+ * event, then (from the second identical failure) sleeps before exiting so the
+ * unit's relaunch is one scheduler-log line a minute. It needs nothing that may
+ * have failed: the record lives in the state directory, and the Ships row is
+ * published on every enabled route whose key resolves, best effort.
+ */
+async function failDaemonStart(o: {
+  stateDir: string; reason: string; fix?: string; code: number;
+  routes?: Array<ReturnType<typeof findRoute>>; ship?: Ship; logFile?: string;
+}): Promise<never> {
+  const failEmit = new Emitter({
+    route: '', eventFile: eventFileFor(o.stateDir), logFile: o.logFile, console: () => {},
+  });
+  const failState = new State(o.stateDir);
+  const ship = o.ship;
+  await reportStartFailure({
+    state: failState, stateDir: o.stateDir, emit: failEmit, reason: o.reason, fix: o.fix,
+    logPath: o.logFile ? schedulerLogFor(o.logFile, 'run') : undefined,
+    publish: ship ? async () => {
+      await Promise.all((o.routes ?? []).filter((r) => r.enabled).map(async (r) => {
+        try { await new Tracker(r, ship).publishShipAttention(ship.name); } catch { /* this route's key or tracker may be what failed */ }
+      }));
+    } : undefined,
+  });
+  process.exit(o.code);
+}
+
 /**
  * A bad config is an operator's mistake, not a crash. Print what is wrong and
  * exit — a stack trace naming this file's internals tells them nothing about
@@ -776,6 +808,12 @@ try {
 } catch (e) {
   if (e instanceof ConfigError) {
     process.stderr.write(`crew: ${e.message}\n`);
+    if (command === 'daemon' && !['start', 'stop', 'status', 'restart'].includes(positional[1] ?? '')) {
+      await failDaemonStart({
+        stateDir: fallbackStateDir(findConfigFile(CREW_HOME)), reason: e.message,
+        fix: 'Fix crew.yaml (`crew doctor` names what is wrong)', code: 2,
+      });
+    }
     process.exit(2);
   }
   throw e;
@@ -860,7 +898,16 @@ let route: ReturnType<typeof findRoute>;
 try {
   route = fleetWide ? (cfg.routes[0] as ReturnType<typeof findRoute>) : findRoute(cfg, named);
 } catch (e) {
-  if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+  if (e instanceof ConfigError) {
+    process.stderr.write(`crew: ${e.message}\n`);
+    if (command === 'daemon' && !DAEMON_SUBCOMMANDS.has(positional[1] ?? '')) {
+      await failDaemonStart({
+        stateDir: cfg.ship.stateDir, reason: e.message, fix: 'Name a route in the unit (`crew install`) or correct crew.yaml',
+        code: 2, routes: cfg.routes, ship: cfg.ship, logFile: cfg.ship.logFile,
+      });
+    }
+    process.exit(2);
+  }
   throw e;
 }
 const state = new State(cfg.ship.stateDir);
@@ -3213,7 +3260,11 @@ switch (command) {
     const daemonRoutes = fleetWide ? cfg.routes.filter((r) => r.enabled) : [route];
     if (!daemonRoutes.length) {
       emit.error('no enabled routes — nothing for the daemon to serve');
-      process.exit(1);
+      await failDaemonStart({
+        stateDir: cfg.ship.stateDir, reason: 'no enabled routes — nothing for the daemon to serve',
+        fix: 'Set `enabled: true` on a route in crew.yaml, or run `crew connect`', code: 1,
+        routes: cfg.routes, ship: cfg.ship, logFile: cfg.ship.logFile,
+      });
     }
     // The control API's status/doctor answer for one route; a fleet answers for the first it serves.
     const primary = daemonRoutes[0]!;
@@ -3222,6 +3273,7 @@ switch (command) {
     // a repository that is merely unmirrored (the loop's own pass repairs it on a later tick).
     const sandboxCachePasses = new Map<string, () => Promise<unknown>>();
     const servable: typeof daemonRoutes = [];
+    const unservable: string[] = [];
     for (const r of daemonRoutes) {
       const pass = cfg.ship.runner === 'sandbox' ? buildSandboxCachePass(r, cfg.ship, state, emit.forRoute(r.route)) : undefined;
       if (pass) sandboxCachePasses.set(r.route, pass);
@@ -3230,10 +3282,37 @@ switch (command) {
         try { await pass(); } catch (e) { emit.warn(`sandbox cache refresh failed: ${e instanceof Error ? e.message : String(e)}`); }
       }
       if (await anyRepoServable(r, true)) servable.push(r);
-      else emit.forRoute(r.route).error(`refusing route ${r.route} — this ship is ${cfg.ship.platform}, but ${await explainUnservable(r)}`);
+      else {
+        const why = await explainUnservable(r);
+        unservable.push(`route ${r.route}: this ship is ${cfg.ship.platform}, but ${why}`);
+        emit.forRoute(r.route).error(`refusing route ${r.route} — this ship is ${cfg.ship.platform}, but ${why}`);
+      }
     }
     // A route this machine cannot serve is left out while another can be; with none the daemon cannot run.
-    if (!servable.length) process.exit(1);
+    if (!servable.length) {
+      await failDaemonStart({
+        stateDir: cfg.ship.stateDir, reason: `no route can be served on this machine (${unservable.join('; ')})`,
+        fix: 'Run `crew doctor` to see what each route needs', code: 1,
+        routes: daemonRoutes, ship: cfg.ship, logFile: cfg.ship.logFile,
+      });
+    }
+    // A route that is servable here but has no resolved ids or no readable key
+    // fails every pass with a ConfigError, which the loop logs and carries on
+    // from: the daemon would run, doing nothing, and say so only in the scheduler
+    // log. When no route can run a pass at all, that is a startup failure.
+    const unready: string[] = [];
+    const ready = servable.filter((r) => {
+      if (!r.resolved) { unready.push(`route ${r.route} has no resolved ids`); return false; }
+      try { resolveApiKey(r); } catch (e) { unready.push(`route ${r.route}: ${e instanceof Error ? e.message : String(e)}`); return false; }
+      return true;
+    });
+    if (!ready.length) {
+      await failDaemonStart({
+        stateDir: cfg.ship.stateDir, reason: `no route can run a pass (${unready.join('; ')})`,
+        fix: 'Run `crew connect` for a route without ids, or restore its API key file or `apiKeyVar`', code: 1,
+        routes: daemonRoutes, ship: cfg.ship, logFile: cfg.ship.logFile,
+      });
+    }
 
     // Self-update detection (ISSUE-764): watch whichever paths actually
     // determine this process's own code. `bin/crew` prefers `dist/cli.js`
@@ -3358,6 +3437,8 @@ switch (command) {
       ),
       checkStale: makeStaleChecker(watchPaths, { reloadSentinel: reloadSentinelFor(cfg.ship.stateDir) }),
       onPass: (result) => {
+        // CREW-3064: a completed pass means the start failure is over.
+        clearStartFailure(state, cfg.ship.stateDir);
         // CREW-3034: a full docker host builds nothing.
         if (!sandboxBuilding && !diskFullStop(state)) {
           sandboxBuilding = true;
@@ -6363,7 +6444,26 @@ switch (command) {
     // fleet) is doing" names both. Absent entirely on a workspace with no
     // Ships table, same as `doctor`'s "this workspace has no Ships table
     // (fine)".
-    const statusTracker = new Tracker(route, cfg.ship);
+    // CREW-3064: a route whose key or ids are gone is exactly when a daemon
+    // cannot start, so `status` must still say so (the ship attention set is
+    // local) instead of dying with the same ConfigError the daemon exited on.
+    let statusTracker: Tracker;
+    try {
+      statusTracker = new Tracker(route, cfg.ship);
+    } catch (e) {
+      if (!(e instanceof ConfigError)) throw e;
+      const attention = openShipAttention(state);
+      if (flag('json')) {
+        process.stdout.write(`${JSON.stringify({
+          version: 1, configFile: cfg.configFile, ship: { name: cfg.ship.name, platform: cfg.ship.platform },
+          route: route.route, attention, error: e.message,
+        }, null, 2)}\n`);
+      } else {
+        process.stdout.write(`crew: ${e.message}\n`);
+        for (const i of attention) process.stdout.write(`attention:  ${i.kind} — ${i.message}\n`);
+      }
+      process.exit(1);
+    }
     const shipRows = await statusTracker.shipRows();
     const engagedTicketIds = shipRows.map((s) => s.engaged_ticket_id).filter((id): id is string => !!id);
     const engagedTickets = engagedTicketIds.length ? await statusTracker.ticketsByIds(engagedTicketIds) : [];

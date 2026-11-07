@@ -189,7 +189,7 @@ export interface UninstallPlan {
  * alone always has, or one job's crash-before-crew's-own-emitter-starts
  * output is unreadable interleaved with the other's.
  */
-function schedulerLogFor(crewLog: string, job: InstallJob): string {
+export function schedulerLogFor(crewLog: string, job: InstallJob): string {
   const ext = extname(crewLog);
   const stem = ext ? crewLog.slice(0, -ext.length) : crewLog;
   const suffix =
