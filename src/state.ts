@@ -15,6 +15,13 @@ import type { ShipAttentionItem } from './ship-attention.ts';
 /** Before the first poll, everything is new. */
 export const EPOCH = '1970-01-01T00:00:00.000Z';
 
+/**
+ * CREW-3100: one watermark per route. Two routes on one ship read different
+ * tickets, so a shared file flipped between their windows every cycle. No
+ * scope keeps the original file name (single-route ships, tests).
+ */
+const watermarkFile = (scope?: string): string => (scope ? `.poll-watermark-${scope}` : '.poll-watermark');
+
 export class State {
   readonly dir: string;
   constructor(dir: string) {
@@ -33,17 +40,17 @@ export class State {
    * evaluated: bumping it inside the first role's check would hide that
    * role's new comments from the second.
    */
-  watermark(): string {
+  watermark(scope?: string): string {
     try {
-      const v = readFileSync(this.path('.poll-watermark'), 'utf8').trim();
+      const v = readFileSync(this.path(watermarkFile(scope)), 'utf8').trim();
       return v || EPOCH;
     } catch {
       return EPOCH;
     }
   }
 
-  setWatermark(at: string): void {
-    writeFileSync(this.path('.poll-watermark'), `${at}\n`);
+  setWatermark(at: string, scope?: string): void {
+    writeFileSync(this.path(watermarkFile(scope)), `${at}\n`);
   }
 
   /**
@@ -53,12 +60,12 @@ export class State {
    * and the write — a race that loses work rather than repeating it, which is
    * the wrong way round. Repeating a cycle is free; missing one is not.
    */
-  advanceWatermark(seen: Array<{ created_at?: string; updated_at?: string }>): string {
+  advanceWatermark(seen: Array<{ created_at?: string; updated_at?: string }>, scope?: string): string {
     const stamps = seen
       .flatMap((s) => [s.created_at, s.updated_at])
       .filter((v): v is string => typeof v === 'string' && v.length > 0);
-    const next = stamps.length ? stamps.reduce((a, b) => (a > b ? a : b)) : this.watermark();
-    this.setWatermark(next);
+    const next = stamps.length ? stamps.reduce((a, b) => (a > b ? a : b)) : this.watermark(scope);
+    this.setWatermark(next, scope);
     return next;
   }
 

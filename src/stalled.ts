@@ -38,6 +38,7 @@ import { shipName, ticketHolderShipId } from './ship-affinity.ts';
 import { raiseShipAttention, clearShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import type { Emitter } from './events.ts';
 import type { Route, Ship } from './config.ts';
+import { routeSlug } from './config.ts';
 import type { State } from './state.ts';
 import { withinWorkMode, type WorkModes } from './work-mode.ts';
 
@@ -50,7 +51,8 @@ export const STALLED_AFTER_MS = STALLED_AFTER_CYCLES * CYCLE_MS;
 export const STALLED_MARKER = calloutHeader('WARNING', 'Stalled');
 
 /** The key of a ticket's ship-attention item. */
-export const stalledKey = (issueId: string): string => `stalled:${issueId}`;
+export const stalledKey = (issueId: string, routeScope?: string): string =>
+  routeScope ? `stalled:${routeScope}:${issueId}` : `stalled:${issueId}`;
 
 export interface Stalled {
   ticket: Ticket;
@@ -206,10 +208,19 @@ export async function runStalledSweep(
     o.tracker, stalled, o.ships, o.memberId, o.myShipId, o.emit, o.dryRun ?? false,
   );
   if (o.dryRun) return r;
-  const keep = new Set(r.attention.map((i) => i.key));
-  for (const item of r.attention) await raiseShipAttention({ state: o.state, emit: o.emit, route: o.route, ship: o.ship }, item);
+  // CREW-3100: the attention store is one per ship, so a route's items carry
+  // its slug and its sweep clears only those — another route's sweep must not
+  // close (and so re-announce) what this one raised.
+  const scope = o.route ? routeSlug(o.route.route) : undefined;
+  const prefix = scope ? `stalled:${scope}:` : 'stalled:';
+  const scoped = r.attention.map((i) => (scope ? { ...i, key: stalledKey(i.key.slice('stalled:'.length), scope) } : i));
+  const keep = new Set(scoped.map((i) => i.key));
+  for (const item of scoped) await raiseShipAttention({ state: o.state, emit: o.emit, route: o.route, ship: o.ship }, item);
   for (const open of o.state.shipAttention().previous()) {
-    if (open.kind === 'stalled' && !keep.has(open.key)) clearShipAttention(o.state, open.key);
+    if (open.kind !== 'stalled' || keep.has(open.key)) continue;
+    // Own-route keys, plus unscoped keys an older version wrote; another route's keys stay.
+    const unscoped = !/^stalled:[^:]+:/.test(open.key);
+    if (unscoped || open.key.startsWith(prefix)) clearShipAttention(o.state, open.key);
   }
   return r;
 }

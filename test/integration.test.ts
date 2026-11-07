@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
  * the crew would hang waiting for a reply this process could not send.
  */
 const run = promisify(execFile);
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FakeTracker, MODELS, SEATS, OPERATOR, crewRows, ticket } from './helpers/fake-tracker.ts';
@@ -155,7 +155,7 @@ test('the poll writes a digest and advances the watermark on disk', async () => 
     const digest = join(s.home, 'state', 'digest-test-proj-dev.md');
     assert.ok(existsSync(digest), 'the digest must be written, or the agent refetches everything');
     assert.match(readFileSync(digest, 'utf8'), /ISSUE-1/);
-    const wm = readFileSync(join(s.home, 'state', '.poll-watermark'), 'utf8').trim();
+    const wm = readFileSync(join(s.home, 'state', readdirSync(join(s.home, 'state')).find((f) => f.startsWith('.poll-watermark'))!), 'utf8').trim(); // per-route file (CREW-3100)
     assert.notEqual(wm, '1970-01-01T00:00:00.000Z', 'the watermark must advance, or every comment stays "new"');
   } finally { await t.stop(); }
 });

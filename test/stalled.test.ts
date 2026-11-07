@@ -103,3 +103,24 @@ test('an announced stall writes nothing again, and a dry run writes nothing at a
   await applyStalled(w, fresh, ships(), 'seat', null, silent, true, NOW);
   assert.equal(patches.length + notes.length, 0);
 });
+
+test('CREW-3100: one route\'s sweep leaves another route\'s stalled item open', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { State } = await import('../src/state.ts');
+  const { runStalledSweep } = await import('../src/stalled.ts');
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-3100-')));
+  const { w } = writer();
+  const base = { tracker: { ...w, contract: DEFAULT_CONTRACT }, state, emit: silent as never, ships: ships(), memberId: 'seat', myShipId: 'ship-A' };
+  const stalled = planStalled([ticket()], [], ships(), DEFAULT_CONTRACT, new Set(), NOW);
+  const routeA = { route: 'issues/issues' } as never;
+  const routeB = { route: 'paradium/pauldb' } as never;
+  await runStalledSweep({ ...base, route: routeA }, stalled);
+  const keyA = state.shipAttention().previous().map((i) => i.key);
+  assert.equal(keyA.length, 1);
+  await runStalledSweep({ ...base, route: routeB }, []);
+  assert.deepEqual(state.shipAttention().previous().map((i) => i.key), keyA);
+  await runStalledSweep({ ...base, route: routeA }, []);
+  assert.equal(state.shipAttention().previous().length, 0);
+});

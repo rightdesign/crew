@@ -336,3 +336,11 @@ test('the ticket lock is exclusive, released with its holder, and a dead pid is 
   assert.equal(s.ticketInFlight('rec-3'), false);
   assert.equal(s.acquireTicket('rec-3').ok, true);
 });
+
+test('CREW-3100: watermarks are kept per route scope', () => {
+  const s = new State(mkdtempSync(join(tmpdir(), 'crew-3100-wm-')));
+  s.setWatermark('2026-11-07T19:00:00Z', 'a');
+  s.setWatermark('2026-11-07T18:00:00Z', 'b');
+  assert.equal(s.watermark('a'), '2026-11-07T19:00:00Z');
+  assert.equal(s.watermark('b'), '2026-11-07T18:00:00Z');
+});

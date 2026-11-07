@@ -279,7 +279,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   }
 
   emit.enter('select');
-  const watermark = state.watermark();
+  const watermark = state.watermark(routeSlug(route.route));
   // CREW-1403: clear any base stop that has resolved BEFORE selecting, so a
   // repo level again is startable this very cycle without an agent run.
   for (const repo of recheckBaseStops(state, route)) {
@@ -320,7 +320,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // Advanced to the newest thing this cycle actually SAW, never to the clock
   // — using `now` would silently skip anything written between the fetch and
   // the write, and losing a signal is worse than repeating one.
-  const advanced = state.advanceWatermark([...comments, ...tickets]);
+  const advanced = state.advanceWatermark([...comments, ...tickets], routeSlug(route.route));
   if (advanced !== watermark) {
     emit.emit(`watermark ${watermark.slice(0, 19)} -> ${advanced.slice(0, 19)}`, {
       step: 'poll', data: { from: watermark, to: advanced },
