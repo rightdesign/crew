@@ -14,6 +14,12 @@
  *  - `GET /events`            incremental tail of the ship event log.
  *  - `GET /streams`           the live run listing.
  *  - `GET /streams/<run>`     incremental tail of one run's stream.
+ *  - `POST /streams/<run>/messages`  `{ text, author? }` (CREW-3119): a note for a live run. Crew records it
+ *                             on the run's Agent Log row (a `user` cycle), writes it to the harness when the
+ *                             run still reads input, and answers `{ cycleId, state, acceptsInput }` with
+ *                             `state` `delivered` or `carried_forward` (the next run of the work item reads
+ *                             it in its brief). 404 for an unknown or finished run, 409 for a live run this
+ *                             daemon cannot reach or the platform refused; same bearer check as other writes.
  *  - `POST /pause`, `/resume` `{ "role"?: "dev"|"design"|"qa" }`.
  *  - `POST /release/pause`, `/release/resume`.
  *  - `POST /scheduler/{start,stop,restart}`  wraps `planDaemonControl`; answers 202.
@@ -53,6 +59,8 @@ import { execFile, spawn } from 'node:child_process';
 import type { RoleName } from './config.ts';
 import { eventFileFor, ROTATED_EVENTS_RE } from './events.ts';
 import { liveRuns, type LiveRun } from './live-runs.ts';
+import { runInputFor } from './run-input.ts';
+import { markMessage, postMessage } from './agent-log.ts';
 import { readDaemonStarted } from './daemon.ts';
 import { secretsMatch } from './secret-compare.ts';
 import type { State } from './state.ts';
@@ -383,6 +391,32 @@ async function tailReply(path: string, q: URLSearchParams, rotated: boolean, abo
   return reply(200, r);
 }
 
+const NOTE_MAX_CHARS = 4000;
+
+/** `POST /streams/<run>/messages` (CREW-3119). */
+async function postRunMessage(deps: ControlDeps, run: string, body: Record<string, unknown> | null): Promise<Reply> {
+  if (!RUN_NAME_RE.test(run) || run.includes('..')) return err(400, 'not a run name');
+  const live = liveRuns(deps.stateDir).find((r) => basename(r.streamPath, '.jsonl') === run.replace(/\.jsonl$/, ''));
+  const carry = 'A note for the work item posted from the platform is carried forward into its next run\'s brief.';
+  if (!live) return err(404, `no live run ${run}: it is unknown or has finished. ${carry}`);
+  if (!body) return err(400, 'body must be a small JSON object');
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (!text || text.length > NOTE_MAX_CHARS) return err(400, `text must be a string of 1 to ${NOTE_MAX_CHARS} characters`);
+  if (body.author !== undefined && typeof body.author !== 'string') return err(400, 'author must be a string');
+  const input = runInputFor(basename(live.streamPath, '.jsonl'));
+  const rowId = input?.agentLogRowId();
+  if (!input?.target || !rowId) return err(409, `run ${run} is live but this daemon cannot record a note on it (it did not start the run, or the run has no Agent Log row). ${carry}`);
+  try {
+    const recorded = await postMessage(input.target, rowId, text);
+    const acceptsInput = input.accepts();
+    const state = acceptsInput ? await input.deliver(recorded, (body.author as string | undefined) || undefined) : 'carried_forward';
+    if (!acceptsInput) await markMessage(input.target, rowId, recorded.id, 'carried_forward');
+    return reply(200, { cycleId: recorded.id, state, acceptsInput });
+  } catch (e) {
+    return err(409, `the platform did not take the note: ${(e as Error).message}. ${carry}`);
+  }
+}
+
 export async function route(deps: ControlDeps, method: string, url: URL, req: IncomingMessage, abort: AbortSignal): Promise<Reply> {
   const p = url.pathname.replace(/\/+$/, '') || '/';
   const get = method === 'GET';
@@ -422,6 +456,8 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
     if (!existsSync(file)) return err(404, 'no such run');
     return tailReply(file, url.searchParams, false, abort);
   }
+  const note = /^\/streams\/([^/]+)\/messages$/.exec(p);
+  if (note && post) return postRunMessage(deps, decodeURIComponent(note[1]!), await readJsonBody(req));
   if ((p === '/pause' || p === '/resume') && post) {
     const body = await readJsonBody(req);
     if (!body) return err(400, 'body must be a small JSON object');

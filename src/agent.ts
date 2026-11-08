@@ -35,6 +35,7 @@ import { intelRelDir, parseRemote } from './sandbox-cache.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
 import { BeforeFirstEditTracker } from './tool-classify.ts';
+import { registerRunInput, unregisterRunInput } from './run-input.ts';
 import { reportAgentRun, startAgentRunRow, LiveRunReporter, markMessage, memberNames, type PendingMessage, fetchPendingMessages, frameNote, operatorNotesSection, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
@@ -792,6 +793,11 @@ export interface RunSidecar {
   agentLogRowId?: string;
   /** CREW-3116: cycles already delivered to that row while the run went, so a restarted daemon resumes after them. */
   cyclesPosted?: number;
+  /**
+   * CREW-3119: the harness's stdin is open for operator notes. Cleared when the final result closes it.
+   * Only the process named by `ownerPid` holds that stdin, so a reader also checks the owner is alive.
+   */
+  acceptsInput?: boolean;
 }
 
 /** Merges fields into a run's sidecar; a missing or unwritable sidecar is not worth failing the run over. */
@@ -1434,6 +1440,7 @@ function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Pr
         toolchain: id.toolchain, harness: id.harness, provider: id.provider, eventsPath: plan.eventsPath,
         agentLog: id.agentLog, promptVersion: plan.promptVersion, promptSha: plan.promptSha,
         ...(plan.workspaceRunId ? { workspaceRunId: plan.workspaceRunId } : {}),
+        ...(streamsInput(plan) && !promptDelivered && adapter.userMessageLine ? { acceptsInput: true } : {}),
       };
       try { writeFileSync(pidPathFor(plan.streamPath), JSON.stringify(sidecar)); } catch { /* a run nobody can find again is no worse than before */ }
     }
@@ -1450,14 +1457,34 @@ function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Pr
     const closeInput = (): void => {
       if (!inputOpen) return;
       inputOpen = false;
+      updateSidecar(plan.streamPath, { acceptsInput: false });
       child.stdin?.end();
     };
     if (inputOpen) obs.onResult = closeInput;
+    const handled = new Set<string>();
     const writeNote = (text: string): Promise<boolean> => new Promise((done) => {
       const stdin = child.stdin;
       if (!inputOpen || !stdin || !stdin.writable) { done(false); return; }
       try { stdin.write(adapter.userMessageLine!(text), (err) => done(!err)); } catch { done(false); }
     });
+    // CREW-3119: the control API's way in. A note posted there is recorded on the platform first, then
+    // written here at once rather than waiting for the next cycle post to hand it back.
+    const runName = basename(plan.streamPath).replace(/\.jsonl$/, '');
+    if (inputOpen) {
+      registerRunInput(runName, {
+        accepts: () => inputOpen,
+        agentLogRowId: () => id.agentLogRowId,
+        ...(plan.agentLog ? { target: plan.agentLog } : {}),
+        deliver: async (note, author) => {
+          if (handled.has(note.id)) return 'delivered';
+          handled.add(note.id);
+          const landed = await writeNote(frameNote(note, author));
+          const rowId = id.agentLogRowId;
+          if (plan.agentLog && rowId) await markMessage(plan.agentLog, rowId, note.id, landed ? 'delivered' : 'carried_forward');
+          return landed ? 'delivered' : 'carried_forward';
+        },
+      });
+    }
     const startedRow: Promise<void> = plan.agentLog
       ? startAgentRunRow(plan.agentLog, {
           runId: plan.workspaceRunId, ticketReference: plan.ticket ?? undefined, startedAt,
@@ -1470,7 +1497,11 @@ function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Pr
           if (row.live && plan.agentLog) {
             const reporter = new LiveRunReporter(plan.agentLog, row.id, {
               onPosted: (n) => updateSidecar(plan.streamPath, { cyclesPosted: n }),
-              onMessages: (msgs) => deliverNotes(plan.agentLog!, row.id, msgs, writeNote),
+              onMessages: (msgs) => {
+                const fresh = msgs.filter((m) => !handled.has(m.id));
+                for (const m of fresh) handled.add(m.id);
+                return deliverNotes(plan.agentLog!, row.id, fresh, writeNote);
+              },
             });
             obs.attachReporter(reporter);
             reporter.start();
@@ -1502,6 +1533,7 @@ function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Pr
     let spawnFailed = false;
     child.on('error', (err) => {
       spawnFailed = true;
+      unregisterRunInput(runName);
       clearInterval(timer);
       clearTimeout(limitTimer);
       void runner.release(handle, emit);
@@ -1509,6 +1541,7 @@ function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Pr
     });
     child.on('close', async (code) => {
       inputOpen = false;
+      unregisterRunInput(runName);
       clearInterval(timer);
       clearTimeout(limitTimer);
       obs.feed(tail.poll());

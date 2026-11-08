@@ -111,6 +111,10 @@ export async function settleRunEnd(o: {
   }
 }
 
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
 /** The `runs` entry `crew status --json` prints for one live run. */
 export function describeRun(
   run: LiveRun, route: Route, seatIds: Partial<Record<string, string>>,
@@ -133,5 +137,8 @@ export function describeRun(
     pid: run.pid,
     startedAt: run.spawnedAt,
     deadline: run.deadline ?? null,
+    // CREW-3119: the harness still reads notes, and the process holding its stdin is alive.
+    acceptsInput: !!run.acceptsInput && pidAlive(run.ownerPid),
+    agentLogId: run.agentLogRowId ?? null,
   };
 }

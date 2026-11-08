@@ -539,6 +539,14 @@ export async function markMessage(target: AgentLogTarget, rowId: string, message
   } catch { return false; }
 }
 
+/**
+ * CREW-3119: records an operator note on a run's row, the way the platform's own message route does
+ * (a `user` cycle, `queued`), and returns it so the caller can deliver and mark it.
+ */
+export async function postMessage(target: AgentLogTarget, rowId: string, text: string): Promise<PendingMessage> {
+  return post<PendingMessage>(target, `/agents/log/${rowId}/messages`, { text });
+}
+
 /** Queued and carried-forward notes across every run of a work item, oldest first; empty when the platform predates them. */
 export async function fetchPendingMessages(target: AgentLogTarget, workItem: { table: string; recordId: string }): Promise<PendingMessage[]> {
   try {

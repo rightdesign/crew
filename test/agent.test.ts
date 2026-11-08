@@ -1,12 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, utimesSync, readFileSync, existsSync, WriteStream } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
+import { request as httpRequest } from 'node:http';
+import { startControlServer } from '../src/control-api.ts';
+import { runInputFor } from '../src/run-input.ts';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import {
   allowedTools, DISALLOWED_TOOLS, scrubbedEnv, BILLING_VARS_TO_UNSET, assemblePrompt,
-  planAgentRun, describePlan, spawnAgent, deliverNotes, withOperatorNotes, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
+  planAgentRun, readRunSidecar, describePlan, spawnAgent, deliverNotes, withOperatorNotes, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
 import { State } from '../src/state.ts';
@@ -912,4 +915,65 @@ test('a ticket with notes waiting gets an "Operator notes since the last run" se
   const { restore: r2 } = mockFetch({ 'GET /api/workspaces/ws-1/agents/log/pending-messages': { messages: [] } });
   t.after(r2);
   assert.equal(await withOperatorNotes(plan), plan);
+});
+
+test('a note posted over the control socket reaches a live Claude run and is marked delivered; a finished run answers 404 (CREW-3119)', async (t) => {
+  const { home, state } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1', models: { crew: 'crew-model' }, seats: { dev: 'seat-1' } },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'CREW-3119',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_STREAMING, '--input-format', 'stream-json'];
+  plan.cwd = state;
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-1': { name: 'Developer agent (Studio)' },
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'POST /api/workspaces/ws-1/agents/log/log-1/messages': { id: 'm-9', authorId: null, text: 'switch branches', occurredAt: null, deliveryState: 'queued' },
+    'PATCH /api/workspaces/ws-1/agents/log/log-1/messages/m-9': {},
+    'GET /api/workspaces/ws-1/members': [],
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': {},
+    'GET /api/data-models/agent_log': { id: 'al-1' },
+    'GET /api/data-models/al-1': { fields: [] },
+    'PATCH /api/data-models/al-1/records/log-1': {},
+  });
+  t.after(restore);
+
+  const srv = (await startControlServer({
+    stateDir: state, state: new State(state), auth: { verify: async () => 'ok' },
+    status: async () => ({}), doctor: async () => ({}), scheduler: () => ({ accepted: false, detail: 'none' }),
+  }))!;
+  t.after(() => srv.close());
+  const postNote = (run: string, body: unknown) => new Promise<{ status: number; json: any }>((resolve, reject) => {
+    const req = httpRequest({ socketPath: srv.path, method: 'POST', path: `/streams/${run}/messages`, headers: { Authorization: 'Bearer x', 'Content-Type': 'application/json' } }, (res) => {
+      let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode!, json: JSON.parse(b) }));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  const running = spawnAgent(plan, emit);
+  const run = basename(plan.streamPath, '.jsonl');
+  for (let i = 0; i < 200 && !runInputFor(run)?.agentLogRowId(); i++) await new Promise((r) => setTimeout(r, 25));
+  assert.ok(runInputFor(run)?.agentLogRowId(), 'the run registered for input and has its row');
+  assert.equal(readRunSidecar(plan.streamPath)?.acceptsInput, true);
+
+  const ok = await postNote(run, { text: 'switch branches', author: 'Brad' });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { cycleId: 'm-9', state: 'delivered', acceptsInput: true });
+  assert.equal((await running).code, 0);
+  assert.match(readFileSync(plan.streamPath, 'utf8'), /got: Note from Brad \(operator\): switch branches/);
+  assert.deepEqual(calls.filter((c) => c.key.includes('/messages/')).map((c) => c.body), [{ deliveryState: 'delivered' }]);
+  assert.equal(readRunSidecar(plan.streamPath)?.acceptsInput, false, 'closed with the final result');
+
+  const late = await postNote(run, { text: 'too late' });
+  assert.equal(late.status, 404);
+  assert.match(late.json.error, /carried forward/);
+  assert.equal((await postNote('nope', { text: 'x' })).status, 404);
 });

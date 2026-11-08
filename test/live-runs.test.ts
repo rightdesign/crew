@@ -91,7 +91,14 @@ test('describeRun reports the status entry, with the seat only for this route', 
   assert.deepEqual(describeRun(run, route, { dev: 'seat-dev' }), {
     role: 'dev', seat: 'seat-dev', ticket: 'CREW-1', ticketRecordId: 'rec-1', repo: null, worktree: null,
     stream: '/s/a.jsonl', pid: 100, startedAt: '2026-11-01T01:00:00.000Z', deadline: null,
+    acceptsInput: false, agentLogId: null,
   });
+  // CREW-3119: open stdin counts only while the process holding it is alive.
+  const open = { ...run, acceptsInput: true, agentLogRowId: 'row-1' } as LiveRun;
+  assert.deepEqual(
+    [describeRun({ ...open, ownerPid: process.pid }, route, {}).acceptsInput, describeRun({ ...open, ownerPid: 2 ** 22 + 1 }, route, {}).acceptsInput, describeRun({ ...open, ownerPid: process.pid }, route, {}).agentLogId],
+    [true, false, 'row-1'],
+  );
   assert.equal(describeRun({ ...run, deadline: '2026-11-01T05:00:00.000Z' }, route, { dev: 'seat-dev' }).deadline, '2026-11-01T05:00:00.000Z');
   assert.equal(describeRun({ ...run, route: 'other' }, route, { dev: 'seat-dev' }).seat, null);
 });

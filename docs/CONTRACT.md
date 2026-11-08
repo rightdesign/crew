@@ -187,6 +187,14 @@ route, `route`, `workspaceId`, `previewHostSet`, `maxPeriscopes`, `live` and
 `repos` (repositories whose `.crew.yaml` declares a `preview` hook). See
 [Host Passengers](/host-passengers).
 
+`POST /streams/<run>/messages` with `{ text, author? }` sends a note to a live run
+(CREW-3119). Crew records it on the run's Agent Log row as a `user` cycle, writes it to
+the harness when the run still reads input (`acceptsInput` in each `crew status --json`
+run entry, true only for a Claude run on the host whose final result has not arrived),
+and answers `{ cycleId, state, acceptsInput }`, `state` being `delivered` or
+`carried_forward`. A run that is unknown or has finished answers 404 and names the
+carry-forward path: a note posted to the work item reaches its next run's brief.
+
 ## Overriding it
 
 An org that renames its statuses, adds one, or orders priority differently
