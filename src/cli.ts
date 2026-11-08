@@ -111,7 +111,7 @@ import { probeSeatWrites, seatCannotWriteMessage, SEAT_NO_WRITE_REMEDY, probeSea
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
-import { validateContract, DEFAULT_CONTRACT } from './contract.ts';
+import { validateContract, DEFAULT_CONTRACT, EVENT_LOG_STATUS_UNTRACKED } from './contract.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
@@ -1611,6 +1611,8 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
   } catch (e) {
     problems.push(`tracker unreachable: ${e instanceof Error ? e.message : String(e)}`);
   }
+  // CREW-3144: the acceptor is read from the event log's status rows.
+  if ((await tracker.eventLogTracksStatus()) === false) problems.push(EVENT_LOG_STATUS_UNTRACKED(tracker.contract.columns.status));
   return { problems, readiness };
 }
 

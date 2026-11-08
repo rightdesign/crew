@@ -75,6 +75,11 @@ export function holdIds(roster: Roster): string[] {
   return [...roster.values()].filter((m) => m.kind === 'hold').map((m) => m.id);
 }
 
+/** The ship owner's hold (the `Operator` row `connect` writes), or undefined on a ship with none (CREW-3144). */
+export function operatorOf(roster: Roster): CrewMember | undefined {
+  return [...roster.values()].find((m) => m.kind === 'hold' && m.role.toLowerCase() === 'operator');
+}
+
 export function seats(roster: Roster): CrewMember[] {
   return [...roster.values()].filter((m) => m.kind === 'seat');
 }
@@ -146,11 +151,20 @@ export function rosterMarkdown(roster: Roster, meId: string | null): string {
   for (const m of holds(roster).sort(byRole)) {
     lines.push(`| ${m.role ? m.role.toLowerCase() : '—'} | ${crewLabel(m)} | \`${m.id}\` |`);
   }
+  const operator = operatorOf(roster);
   lines.push(
     '',
-    "The **operator** is this ship's owner: the machine, the dev stack and the",
-    'credentials the steps below refer to are theirs, and approving work is',
-    'their call alone.',
+    ...(operator
+      ? [
+          `The **operator** (${operator.name}) is this ship's owner: the machine, the dev stack and the`,
+          'credentials the steps below refer to are theirs, and, like any hold, they can authorize a',
+          'workspace change. They do not decide a ticket for you: a ticket\'s decisions belong to whoever',
+          'accepted it (the digest\'s `accepted by` and `park to` columns say who).',
+        ]
+      : [
+          'This ship has no operator hold. A ticket\'s decisions belong to whoever accepted it (the digest\'s',
+          '`accepted by` and `park to` columns say who); only a hold can authorize a workspace change.',
+        ]),
     '',
     'When the queue digest names a comment\'s author, that name comes from the',
     "server-stamped identity on the comment row joined to this roster (a hold's",
@@ -159,7 +173,7 @@ export function rosterMarkdown(roster: Roster, meId: string | null): string {
     'is theirs; one it marks "(no identity)" is from nobody this roster knows.',
     'A comment attributed to a named person marked "(person)" is from a real',
     "workspace member linked to a Crew row on another ship — their answer to a",
-    'question counts the same, though only a hold or the operator can authorize',
+    'question counts the same, though only a hold can authorize',
     'a workspace change.',
     '',
   );

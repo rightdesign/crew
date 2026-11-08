@@ -14,7 +14,8 @@
 
 import { modeOf, type WorkModes } from './work-mode.ts';
 import { compareRank, effectivePriority, positionRank, type Rankable } from './priority.ts';
-import { crewLabel, isHold, memberByIdentity, type Roster } from './roster.ts';
+import { crewLabel, isHold, memberByIdentity, operatorOf, type CrewMember, type Roster } from './roster.ts';
+import type { StatusChange } from './tracker.ts';
 
 export interface DigestTicket extends Rankable {
   id: string;
@@ -89,6 +90,13 @@ export const DIRECTION_EVENT_TYPES = [
 export const STATUS_EVENT_TYPES = ['gate_red'] as const;
 
 export interface DigestInput {
+  /**
+   * Status moves from the event log (CREW-3144), newest first, for the `accepted
+   * by` and `park to` columns. Absent or empty reads as "unknown", never an error.
+   */
+  statusChanges?: StatusChange[];
+  /** The status value that means approved (the contract's `approved`); `accepted` when unset. */
+  approvedStatus?: string;
   /** Runner events from the event log: the direction and status types above plus `pushed`. */
   events?: DigestEvent[];
   /**
@@ -250,6 +258,59 @@ function filedBy(t: DigestTicket, i: DigestInput): string {
   return t.reporter_name ? `${t.reporter_name} (unverified)` : '—';
 }
 
+const labelOf = (m: CrewMember, i: DigestInput): string => (m.id === i.me ? 'you' : (crewLabel(m) ?? m.name));
+
+/**
+ * CREW-3144: the person who last moved the ticket into the approved status.
+ * Only a `user` actor counts: a triage lane, workflow or the system also
+ * promotes tickets, and that is not a person making the call. The Crew row the
+ * log resolved wins, then the server-stamped identity through the roster;
+ * `name` is the log's display name for an identity the roster does not know.
+ */
+export function acceptor(t: DigestTicket, i: DigestInput): { member?: CrewMember; name?: string } | undefined {
+  const approved = i.approvedStatus ?? 'accepted';
+  const change = (i.statusChanges ?? []).find((c) => c.record_id === t.id && c.to === approved && c.actor_kind === 'user');
+  if (!change) return undefined;
+  const member = (change.actor_record_id ? i.roster.get(change.actor_record_id) : undefined) ?? memberByIdentity(i.roster, change.actor_id);
+  if (member) return { member };
+  return change.actor_name ? { name: change.actor_name } : undefined;
+}
+
+/** The `accepted by` cell, labelled like `filed by`; an unknown identity shows the logged name, unverified. */
+function acceptedBy(t: DigestTicket, i: DigestInput): string {
+  const a = acceptor(t, i);
+  if (!a) return '—';
+  return a.member ? labelOf(a.member, i) : `${a.name} (unverified)`;
+}
+
+/**
+ * CREW-3144: who a seat addresses and assigns when it parks this ticket on a
+ * question. First that resolves wins: the acceptor, the filer (only a hold or
+ * linked person, never a seat or a typed name), the ship operator, nobody.
+ * `unverified` carries the name of an acceptor the roster cannot assign, so
+ * the comment can still name them while the assignment falls through.
+ */
+export function parkTarget(t: DigestTicket, i: DigestInput): { step: 'acceptor' | 'filer' | 'operator' | 'none'; member?: CrewMember; unverified?: string } {
+  const person = (m: CrewMember | undefined) => (m && (m.kind === 'hold' || m.kind === 'person') ? m : undefined);
+  const a = acceptor(t, i);
+  const unverified = a && !a.member ? a.name : undefined;
+  const byAcceptor = person(a?.member);
+  if (byAcceptor) return { step: 'acceptor', member: byAcceptor };
+  const filer = person((t.filed_by_id ? i.roster.get(t.filed_by_id) : undefined) ?? memberByIdentity(i.roster, t.created_by_id));
+  if (filer) return { step: 'filer', member: filer, ...(unverified ? { unverified } : {}) };
+  const op = operatorOf(i.roster);
+  if (op) return { step: 'operator', member: op, ...(unverified ? { unverified } : {}) };
+  return { step: 'none', ...(unverified ? { unverified } : {}) };
+}
+
+/** The `park to` cell: the Crew row to write, or an instruction to leave the ticket unassigned. */
+function parkTo(t: DigestTicket, i: DigestInput): string {
+  const p = parkTarget(t, i);
+  const note = p.unverified ? `; ${p.unverified} accepted it (unverified, no Crew row)` : '';
+  if (!p.member) return `nobody by name — leave unassigned, no personal address${note}`;
+  return `${p.member.name} \`${p.member.id}\` (${p.step})${note}`;
+}
+
 /**
  * The newest comment on the ticket. Audit rows no longer live in Comments
  * (CREW-1574): the runner's own events and the app's "Status changed to …"
@@ -386,15 +447,15 @@ function table(ts: DigestTicket[], i: DigestInput, header: string, row: (t: Dige
 /** The digest for a building role — dev or design. */
 export function buildingDigest(i: DigestInput): string {
   const header =
-    '| ticket | repo | branch | worktree | mode | status | assignee | filed by | sev | pri | eff | updated | last comment | runner direction | new since last poll |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+    '| ticket | repo | branch | worktree | mode | status | assignee | filed by | accepted by | park to | sev | pri | eff | updated | last comment | runner direction | new since last poll |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   const row = (t: DigestTicket) => {
     const n = newFromOthers(i, t.id);
     const branch = i.branchFor ? i.branchFor(t) : '';
     const worktree = i.worktreeFor ? i.worktreeFor(t) : '';
     const dir = i.dirFor ? i.dirFor(t) : null;
     const repo = i.dirFor ? (dir ?? '**NO CHECKOUT**') : '';
-    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | ${effCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${directionCell(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
+    return `| ${displayKey(t)} | ${repo} | ${branch} | ${worktree} | ${modeCell(t, i)} | ${t.status} | ${who(t, i)} | ${filedBy(t, i)} | ${acceptedBy(t, i)} | ${parkTo(t, i)} | ${t.severity ?? '—'} | ${t.priority ?? '—'} | ${effCell(t)} | ${t.updated_at.slice(0, 16)}Z | ${lastComment(i, t.id)} | ${directionCell(i, t.id)} | ${n > 0 ? `**${n} new**` : '—'} |`;
   };
   const blockedRow = (t: DigestTicket) =>
     `| ${displayKey(t)} | ${t.status} | ${who(t, i)} | p${effectivePriority(t)} | ${blockers(t, i)} |`;
@@ -425,6 +486,7 @@ export function buildingDigest(i: DigestInput): string {
     '## Current queue — built for you by the poll\n',
     '\nAlready filtered to your lane, and already ordered by the Step 2 rule.\nTicket bodies are deliberately omitted: fetch the full record of only the\nticket you actually pick up. **Do not re-fetch the whole tracker.** This\ndigest comes from the same API call the poll just made, moments ago.\n',
     '\n"new since last poll" counts comments from someone other than you since\nthe poll watermark — the same signal that woke this run.\n',
+    '\n"accepted by" is the person who last moved the ticket into accepted, read from the event log (a lane, workflow or the system promoting it does not count); an identity with no Crew row shows the logged name marked unverified. "park to" is where YOU send a question on that ticket: the Crew row to write to `assignee_id` and address by name, or "nobody by name" to leave it unassigned at `needs_info` with no personal address.\n',
     '\n"runner direction" is the newest instruction the crew itself posted to the\nevent log (not Comments) that no push has answered yet: `conflict_handed_back`\n(merge the base into the branch and resolve), `requeued`, `bounced`,\n`conflict_escalated`, `interrupted` (an earlier run on this seat was cut short; its\nuncommitted worktree is yours, resume it), `build_failed` (the release gate found the branch builds alone but\nnot merged with the current base: merge the base in, fix, push, hand back to QA; the output is quoted). It is\ndirection, same as a comment from a hold: act on it. `gate_red` is status only: the ticket is merged and the\ngate is red, so there is nothing to build on the branch.\n',
     '\n**`repo` is the checkout a ticket\'s work happens in** — an area spans\nseveral repositories, so cut the worktree beside THAT directory, not beside\nwhichever one you started in. A ticket marked **NO CHECKOUT** is not yours:\nthis ship has no clone of its repository, and another ship may serve it.\n\n**Use the `branch` and `worktree` columns verbatim.** They are that\nrepository\'s own naming convention, rendered for THIS ticket — cut the\nworktree at `<repo>/../<worktree>`, on branch `<branch>`. Do not derive\neither yourself, and prefer these over the Environment section\'s own worked\nexample if the two ever disagree — that example is illustrative only,\nrendered before any ticket is picked.\n',
     ...(i.workModes && [...i.workModes.modes.values()].some((m) => m !== 'automatic')

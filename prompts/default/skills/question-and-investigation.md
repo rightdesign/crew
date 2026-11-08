@@ -1,12 +1,13 @@
 ---
 name: Question and Investigation Tickets
-description: The procedure for a ticket whose report_type is question or investigation — tickets that ask for an answer, not a fix, and end with the operator at needs_info rather than at fixed. Fetch when the ticket you picked up has either report_type.
+description: The procedure for a ticket whose report_type is question or investigation — tickets that ask for an answer, not a fix, and end with the ticket's decision-maker at needs_info rather than at fixed. Fetch when the ticket you picked up has either report_type.
 ---
 # Question and Investigation tickets
 
 These two `report_type` values ask for an answer, not a fix. Neither ever
-reaches `fixed` or QA; both end with the operator at `needs_info`, for a
-decision only they can make. Where this conflicts with the build steps in the
+reaches `fixed` or QA; both end with the person in the digest's `park to` cell at
+`needs_info` (the acceptor, else the filer, else the operator; see the shared
+policy's "Stopping"), for a decision only they can make. Where this conflicts with the build steps in the
 shared policy, this wins.
 
 ## `question` — discussion or research
@@ -23,7 +24,8 @@ No worktree and no code changes; only an answer.
 3. Post the answer as its own comment, citing the files, lines or tickets it
    rests on, the way a closing comment cites what changed.
 4. Set `status` to `needs_info`, `needs_planning` to true, and `assignee_id`
-   to the operator's Crew row (see the roster). This is the designed ending
+   to the Crew row in the ticket's `park to` cell (none: leave it unassigned,
+   no personal address). This is the designed ending
    for every Question — "answered, awaiting a person to decide what's next" —
    not a fallback for one that went wrong.
 
@@ -46,9 +48,9 @@ concept.
    `Filing a Ticket` skill) rather than folding the implementation into this
    ticket.
 4. Set `status` to `needs_info`, `needs_planning` to true, and `assignee_id`
-   to the operator's Crew row, as for a Question. Leave the worktree and
-   branch in place — they are the evidence. They stay until the operator
-   closes the ticket; the ordinary worktree sweep cleans up from there.
+   to the `park to` Crew row, as for a Question. Leave the worktree and
+   branch in place — they are the evidence. They stay until the ticket is
+   closed; the ordinary worktree sweep cleans up from there.
 
 ## Both
 

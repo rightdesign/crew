@@ -471,6 +471,10 @@ export function orderFromChoiceOptions(
 export const EVENT_LOG_MISSING =
   "the Issues table has no event log — crew writes its audit trail there (CREW-1574). In the app, open the Issues table's Data & lifecycle tab and turn on Event log, then rerun.";
 
+/** What `crew connect` and doctor say when the event log does not track the status column (CREW-3144). */
+export const EVENT_LOG_STATUS_UNTRACKED = (column: string): string =>
+  `the Issues table's event log does not track the "${column}" column, so who accepted a ticket cannot be known and a seat parks questions on the filer or operator instead. In the app, open the Issues table's Data & lifecycle tab and add "${column}" to the tracked fields.`;
+
 /**
  * The columns the crew writes on an optional `Periscopes` table (EPIC-077).
  * Fixed, not overridable per route: the table is discovered by name like

@@ -97,3 +97,15 @@ test('a configured member keeps its classification when its row also carries a u
   assert.equal(r.get('op-1')?.kind, 'hold');
   assert.equal(memberByIdentity(r, 'ident-brad')?.id, 'op-1');
 });
+
+test('the roster block states who decides a ticket, with and without an operator hold (CREW-3144)', () => {
+  const withOp = buildRoster([{ id: 'dev-1', role: 'Dev', kind: 'seat' }, { id: 'op-1', role: 'Operator', kind: 'hold' }], [{ id: 'dev-1', name: 'Dev' }, { id: 'op-1', name: 'Ops' }]);
+  const a = rosterMarkdown(withOp, 'dev-1');
+  assert.match(a, /\*\*operator\*\* \(Ops\)/);
+  assert.match(a, /decisions belong to whoever\s+accepted it/);
+  assert.ok(!a.includes('their call alone'));
+  const noOp = buildRoster([{ id: 'dev-1', role: 'Dev', kind: 'seat' }], [{ id: 'dev-1', name: 'Dev' }]);
+  const b = rosterMarkdown(noOp, 'dev-1');
+  assert.match(b, /no operator hold/);
+  assert.ok(!/The \*\*operator\*\*/.test(b));
+});

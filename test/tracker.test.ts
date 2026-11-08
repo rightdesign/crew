@@ -609,3 +609,44 @@ test('retireShip() trashes a managed_instance ship\'s seats then its Ships row; 
   assert.equal(operator.calls.length, 1);
   assert.ok(operator.calls[0]!.startsWith('PATCH ') || operator.calls[0]!.startsWith('PUT '), operator.calls[0]);
 });
+
+test('statusChanges() reads status rows, preferring metadata.to over the label, and degrades to empty (CREW-3144)', async (t) => {
+  const urls: string[] = [];
+  const inner = globalThis.fetch;
+  t.after(() => { globalThis.fetch = inner; });
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify([
+      { record_id: 'a', event_type: 'field_changed', field: 'status', to_value: 'Approved', metadata: { to: 'accepted' }, actor_kind: 'user', actor_id: 'u1', actor_name: 'Maria', actor_record_id: 'c1', occurred_at: '2026-11-01T00:00:00Z' },
+      { record_id: 'a', event_type: 'field_changed', field: 'assignee_id', to_value: 'x', occurred_at: '2026-11-02T00:00:00Z' },
+      { record_id: 'b', event_type: 'field_changed', field: 'status', to_value: 'Fixed', actor_kind: 'agent', occurred_at: '2026-11-03T00:00:00Z' },
+    ]), { status: 200 });
+  }) as typeof fetch;
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  const rows = await tracker.statusChanges();
+  assert.deepEqual(rows.map((r) => [r.record_id, r.to, r.actor_kind, r.actor_record_id]), [['b', 'Fixed', 'agent', null], ['a', 'accepted', 'user', 'c1']]);
+  assert.match(decodeURIComponent(urls[0]!), /"columnName":"field","operator":"EQ","value":"status"/);
+
+  const warns: string[] = [];
+  tracker.onReadFailure = (m) => warns.push(m);
+  globalThis.fetch = (async () => new Response('bad gateway', { status: 502 })) as typeof fetch;
+  assert.deepEqual(await tracker.statusChanges(), []);
+  assert.equal(warns.length, 1);
+  globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+  assert.deepEqual(await tracker.statusChanges(), []);
+  globalThis.fetch = (async () => { throw new Error('reset'); }) as typeof fetch;
+  assert.deepEqual(await tracker.statusChanges(), []);
+});
+
+test('eventLogTracksStatus() names an untracked status column and stays quiet when unreadable (CREW-3144)', async (t) => {
+  const inner = globalThis.fetch;
+  t.after(() => { globalThis.fetch = inner; });
+  const tracker = new Tracker(makeRoute(), { userAgent: 'crew-test', name: 'test-ship' });
+  const model = (tracked: string[]) => (async () => new Response(JSON.stringify({ eventLogEnabled: true, eventLogConfig: { trackedFields: tracked } }), { status: 200 })) as typeof fetch;
+  globalThis.fetch = model(['assignee_id']);
+  assert.equal(await tracker.eventLogTracksStatus(), false);
+  globalThis.fetch = model(['status', 'assignee_id']);
+  assert.equal(await tracker.eventLogTracksStatus(), true);
+  globalThis.fetch = (async () => new Response('no', { status: 500 })) as typeof fetch;
+  assert.equal(await tracker.eventLogTracksStatus(), null);
+});

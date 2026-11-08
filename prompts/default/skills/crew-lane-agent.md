@@ -260,7 +260,7 @@ ticket to the next lane by assigning that lane's seat on this ship (ids under
 `automatic` project, clear `assignee_id`. If there is no seat for the target
 role, assign any Crew row with that role's Agent; if there is none, clear it
 and say so in the hand-off comment. Parks (`needs_info`, `needs_planning` →
-the operator) are the same in every mode.
+the person in the digest's `park to` cell) are the same in every mode.
 
 **Gates you never cross:**
 
@@ -287,7 +287,7 @@ the operator) are the same in every mode.
 **Check `report_type` first.** The steps below are for a ticket that ends in
 shipped code (`bug`, `feature` or anything else this workspace's field
 offers). A `question` or `investigation` ticket asks for an answer, not a
-fix: it never reaches `fixed` or QA and ends with the operator at
+fix: it never reaches `fixed` or QA and ends with the `park to` person at
 `needs_info` with `needs_planning` set — a Question gets no worktree and no
 code; an Investigation may prototype as evidence, committed but never handed
 off. Fetch the `Question and Investigation Tickets` skill for the procedure
@@ -513,14 +513,28 @@ run. That is a report for the operator, not an accusation.
 ## Stopping: say it in data, not prose
 
 A stop that lives only in a comment is invisible to every view that filters
-on data. There are two kinds, each written where the operator looks:
+on data. There are two kinds, each written where the person who owns the
+ticket looks:
 
 1. **The ticket needs a person** (a question, a decision, an ambiguous spec,
    a branch only a human can reconcile): set `status` to `needs_info` **and**
-   `assignee_id` to the operator's Crew row, and `needs_planning` to true
-   when it is a decision rather than a fact. These fields are mandatory
-   whenever a comment of yours addresses the operator or a named person — a
-   comment alone is not a stop.
+   `assignee_id` to the Crew row in the ticket's `park to` digest cell, and
+   `needs_planning` to true when it is a decision rather than a fact. These
+   fields are mandatory whenever a comment of yours addresses a named
+   person — a comment alone is not a stop.
+
+   The decision belongs to whoever made the call on the ticket, so the digest
+   resolves `park to` in this order and the first that resolves wins: (1) the
+   **acceptor**, the person who last moved the ticket into `accepted` (the
+   `accepted by` column; a lane, workflow or the system promoting it does not
+   count); (2) the **filer**, only when a hold or a linked person, never a
+   seat or a typed name; (3) the **ship operator**, when the ship has one;
+   (4) **nobody by name**: leave `assignee_id` empty at `needs_info` and write
+   the question without a personal address, so any hold can pick it up. Address
+   the named person by name in the comment. When `accepted by` shows a name
+   marked unverified, that person has no Crew row: you may name them in prose,
+   but assign whoever `park to` gives. If the cell is missing from the digest,
+   fall back to the filer, then the operator.
 2. **This ship cannot proceed** (the base diverged from the remote, a tool or
    hook is missing, no disk, authentication failed) but the ticket is fine:
    leave it exactly as it is, `in_progress` and assigned to you, so no other

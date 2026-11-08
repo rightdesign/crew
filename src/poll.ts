@@ -8,7 +8,7 @@
 
 import type { Route, RoleName, Ship } from './config.ts';
 import { configuredMembers, routeSlug } from './config.ts';
-import { Tracker, ticketBranchContext, type Ticket, type Comment, type ShipRow } from './tracker.ts';
+import { Tracker, ticketBranchContext, type Ticket, type Comment, type ShipRow, type StatusChange } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
@@ -63,6 +63,8 @@ export interface CycleDecision {
   watermark: string;
   /** Runner direction events plus `pushed` markers, for the digest (CREW-1761). */
   directionEvents?: DigestEvent[];
+  /** Status moves from the event log, for the digest's `accepted by` (CREW-3144). */
+  statusChanges?: StatusChange[];
   /**
    * The exact input `selectRole` ranked this cycle — exposed so the caller
    * can re-rank the winning role's candidates itself (ISSUE-395's claim
@@ -124,6 +126,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   ]);
   // CREW-1761: the runner's own directions live in the event log, not Comments.
   const directionEvents = (await Promise.all([...DIRECTION_EVENT_TYPES, ...STATUS_EVENT_TYPES, 'pushed'].map((t) => tracker.events(t)))).flat();
+  const statusChanges = await tracker.statusChanges();
   emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
   });
@@ -310,7 +313,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const selection = selectRole(selectionInput);
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark, directionEvents,
+    tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark, directionEvents, statusChanges,
     selectionInput, attention: attentionCurrent, unroutable,
   };
 
@@ -465,6 +468,8 @@ export function writeDigest(
       myShipId: d.ships.find((s) => (s.name ?? '').trim() === o.ship.name.trim())?.id ?? null,
       watermark: d.watermark,
       events: d.directionEvents,
+      statusChanges: d.statusChanges,
+      approvedStatus: d.selectionInput.contract?.statuses.approved,
       previousRun: (t: { id: string }) => {
         const r = pendingHandoffFor(stateDir, t.id);
         return r?.finalText ? { finalText: r.finalText.slice(0, 2000), at: r.createdAt } : null;

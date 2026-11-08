@@ -18,7 +18,7 @@
  * that part shipped as ISSUE-609's device-authorization handshake instead.
  */
 
-import { DEFAULT_CONTRACT, EVENT_LOG_MISSING } from './contract.ts';
+import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, EVENT_LOG_STATUS_UNTRACKED } from './contract.ts';
 import { ensureLockRows, releaseLockScope, type LockProvisionClient } from './board-lock.ts';
 import { PERSONA_NAME } from './agents.ts';
 import { DEFAULT_BASE_URL, type RoleName } from './config.ts';
@@ -570,6 +570,15 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   if (out.models.issues) {
     try {
       await get(o, `/data-models/${out.models.issues}/events?limit=1`);
+      // CREW-3144: who accepted a ticket is read from its status rows, so the
+      // log must track the status column. Unreadable is left alone, not blamed.
+      try {
+        const model = await get<{ eventLogConfig?: { trackedFields?: unknown } | null }>(o, `/data-models/${out.models.issues}`);
+        const tracked = model.eventLogConfig?.trackedFields;
+        if (Array.isArray(tracked) && !tracked.includes(DEFAULT_CONTRACT.columns.status)) {
+          problems.push(EVENT_LOG_STATUS_UNTRACKED(DEFAULT_CONTRACT.columns.status));
+        }
+      } catch { /* leave it to doctor */ }
     } catch (e) {
       if (e instanceof ConnectHttpError && e.status === 404) problems.push(EVENT_LOG_MISSING);
     }

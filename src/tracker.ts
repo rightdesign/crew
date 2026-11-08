@@ -127,6 +127,26 @@ export interface RunnerEvent {
   metadata?: Record<string, unknown> | null;
 }
 
+/**
+ * A row of the Issues event log that moved a ticket's status (CREW-3144), cut
+ * down to what the "accepted by" resolution reads. `to` is the raw status
+ * value (`metadata.to`), because `to_value` on the row is the choice's display
+ * label ("Approved"), which varies by workspace.
+ */
+export interface StatusChange {
+  record_id: string;
+  to: string;
+  occurred_at: string;
+  /** `user`, `agent`, `workflow`, `system`: only `user` is a person's own decision. */
+  actor_kind: string | null;
+  /** The server-stamped identity (joins to `Crew.user_id`). */
+  actor_id: string | null;
+  /** The display name the log recorded for that identity. */
+  actor_name: string | null;
+  /** The Crew row the log resolved the actor to, when the table has an actor table. */
+  actor_record_id: string | null;
+}
+
 export interface Comment {
   id: string;
   ticket_id: string;
@@ -892,6 +912,65 @@ export class Tracker {
     }
     return rows.filter((e) => e.event_type === type)
       .sort((a, b) => Date.parse(b.occurred_at ?? b.created_at ?? '') - Date.parse(a.occurred_at ?? a.created_at ?? ''));
+  }
+
+  /**
+   * Every status change in the log, newest first (CREW-3144): who moved which
+   * ticket to which status. One table-wide read per poll rather than one per
+   * ticket; a change older than the window reads as unknown. Degrades like
+   * `events()`: a missing log, a 5xx or a non-JSON reply is an empty list.
+   */
+  async statusChanges(limit = 1000): Promise<StatusChange[]> {
+    const filters = encodeURIComponent(JSON.stringify([
+      { columnName: 'event_type', operator: 'EQ', value: 'field_changed' },
+      { columnName: 'field', operator: 'EQ', value: this.contract.columns.status },
+    ]));
+    let rows: Array<Record<string, unknown>>;
+    try {
+      const res = await this.eventsFetch('GET', `/events?limit=${limit}&filters=${filters}`);
+      if (res.status === 404) return [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = (await res.json()) as Array<Record<string, unknown>>;
+      if (!Array.isArray(rows)) throw new Error('not a list');
+    } catch (err) {
+      this.onReadFailure?.(`reading status changes failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+    const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+    const out: StatusChange[] = [];
+    for (const r of rows) {
+      if (r.event_type !== 'field_changed' || r.field !== this.contract.columns.status) continue;
+      const meta = (r.metadata && typeof r.metadata === 'object' ? r.metadata : {}) as Record<string, unknown>;
+      const to = str(meta.to) ?? str(r.to_value);
+      const at = str(r.occurred_at) ?? str(r.created_at);
+      const record = str(r.record_id);
+      if (!to || !at || !record) continue;
+      out.push({
+        record_id: record, to, occurred_at: at, actor_kind: str(r.actor_kind), actor_id: str(r.actor_id),
+        actor_name: str(r.actor_name), actor_record_id: str(r.actor_record_id),
+      });
+    }
+    return out.sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at));
+  }
+
+  /**
+   * Whether the event log tracks the status column (CREW-3144). Without it the
+   * acceptor of a ticket is unknowable. `null` when the answer cannot be read
+   * (no log, the table unreachable, a table that does not say): not a finding.
+   */
+  async eventLogTracksStatus(): Promise<boolean | null> {
+    try {
+      const res = await fetch(`${this.route.baseUrl}/api/data-models/${this.models.issues}`, {
+        headers: { Authorization: `Bearer ${resolveApiKey(this.route)}`, 'User-Agent': this.userAgent },
+      });
+      if (!res.ok) return null;
+      const model = (await res.json()) as { eventLogEnabled?: boolean; eventLogConfig?: { trackedFields?: unknown } | null };
+      if (model.eventLogEnabled !== true) return null;
+      const tracked = model.eventLogConfig?.trackedFields;
+      return Array.isArray(tracked) ? tracked.includes(this.contract.columns.status) : null;
+    } catch {
+      return null;
+    }
   }
 
   /** The newest event of `type` on a ticket, or undefined — e.g. the `pushed` tip QA verifies against. */

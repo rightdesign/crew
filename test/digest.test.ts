@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildingDigest, qaDigest, type DigestInput } from '../src/digest.ts';
+import { buildingDigest, qaDigest, parkTarget, type DigestInput } from '../src/digest.ts';
 import { buildRoster } from '../src/roster.ts';
 import { otherRunsRemoved, ownRunBanner } from '../src/poll.ts';
 
@@ -358,7 +358,8 @@ test('a public reporter\'s reply is never attributed to the view creator who ran
     author_name: 'Mallory', kind: 'comment', created_at: '2026-10-11T20:37:23.000Z' };
   const out = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [reply] }));
   assert.match(out, /Mallory \(public reporter\)/);
-  assert.doesNotMatch(out, /Brad C\./);
+  // The operator still shows as the `park to` fallback (CREW-3144); what must not happen is authoring the reply.
+  assert.doesNotMatch(out, /Z Brad C\./);
   assert.match(out, /\*\*1 new\*\*/);
 
   const anon = buildingDigest(input({ roster: linked, tickets: [ticket], comments: [{ ...reply, author_name: '  ' }] }));
@@ -394,4 +395,58 @@ test('a run\'s digest names its own ticket and leaves out tickets other live run
   assert.doesNotMatch(out, /ISSUE-1/, 'run 1\'s ticket is not offered');
   assert.match(out, /ISSUE-2 /);
   assert.deepEqual(otherRunsRemoved([a, b, c]), [a, b, c], 'without a run, nothing is filtered');
+});
+
+// CREW-3144: the acceptor, and where a seat parks a question.
+const ACC_ROWS = [...ROWS, { id: 'maria-1', name: 'Maria', user_id: 'u-maria' }, { id: 'filer-1', name: 'Filer', user_id: 'u-filer' }];
+const accRoster = buildRoster([...MEMBERS, { id: 'maria-1', role: 'Product', kind: 'hold' as const }, { id: 'filer-1', role: 'Product', kind: 'hold' as const }], ACC_ROWS);
+const accept = (over: Record<string, unknown> = {}) => ({
+  record_id: 'a', to: 'accepted', occurred_at: '2026-08-23T11:00:00.000Z', actor_kind: 'user',
+  actor_id: 'u-maria', actor_name: 'Maria L', actor_record_id: null, ...over,
+}) as NonNullable<DigestInput['statusChanges']>[number];
+
+test('park to: the acceptor first, then the filer, then the operator, then nobody', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', filed_by_id: 'filer-1' });
+  const base = { roster: accRoster, tickets: [t] };
+  assert.deepEqual(parkTarget(t, input({ ...base, statusChanges: [accept()] })).member?.id, 'maria-1');
+  assert.equal(parkTarget(t, input({ ...base, statusChanges: [accept({ actor_id: 'x', actor_record_id: 'maria-1' })] })).step, 'acceptor');
+  assert.equal(parkTarget(t, input({ ...base })).member?.id, 'filer-1');
+  const seatFiled = T({ id: 'a', issue_id: 'ISSUE-1', status: 'needs_info', filed_by_id: 'qa-1', reporter_name: 'Someone' });
+  assert.equal(parkTarget(seatFiled, input({ ...base })).step, 'operator');
+  const noOp = buildRoster(MEMBERS.filter((m) => m.role !== 'Operator'), ROWS);
+  assert.equal(parkTarget(seatFiled, input({ roster: noOp })).step, 'none');
+});
+
+test('park to: a promotion by an agent or the system is not an acceptance', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', filed_by_id: 'qa-1' });
+  const out = parkTarget(t, input({ roster: accRoster, statusChanges: [accept({ actor_kind: 'agent', actor_record_id: 'maria-1' })] }));
+  assert.equal(out.step, 'operator');
+  const digest = buildingDigest(input({ roster: accRoster, tickets: [t], statusChanges: [accept({ actor_kind: 'agent', actor_record_id: 'maria-1' })] }));
+  assert.match(digest, /\| accepted by \| park to \|/);
+  assert.match(digest, /\| — \| Brad C\. `op-1` \(operator\) \|/);
+});
+
+test('an acceptor with no Crew row shows the logged name, unverified, and assignment falls through', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', filed_by_id: 'filer-1' });
+  const i = input({ roster: accRoster, tickets: [t], statusChanges: [accept({ actor_id: 'u-stranger', actor_name: 'Stranger S' })] });
+  const out = buildingDigest(i);
+  assert.match(out, /Stranger S \(unverified\)/);
+  assert.match(out, /Filer \(Product\) `filer-1`|Filer `filer-1`/);
+  assert.match(out, /Stranger S accepted it \(unverified, no Crew row\)/);
+  assert.equal(parkTarget(t, i).unverified, 'Stranger S');
+});
+
+test('accepted by uses the newest acceptance and labels the reader as you', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' });
+  const out = buildingDigest(input({
+    tickets: [t],
+    statusChanges: [accept({ actor_record_id: 'dev-1', occurred_at: '2026-08-24T00:00:00.000Z' }), accept({ actor_record_id: 'op-1' })],
+  }));
+  assert.match(out, /\| you \|/);
+});
+
+test('with no operator and no one else, park to says nobody by name', () => {
+  const noOp = buildRoster(MEMBERS.filter((m) => m.role !== 'Operator'), ROWS);
+  const out = buildingDigest(input({ roster: noOp, tickets: [T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted' })] }));
+  assert.match(out, /nobody by name — leave unassigned, no personal address/);
 });
