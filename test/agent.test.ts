@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import {
   allowedTools, DISALLOWED_TOOLS, scrubbedEnv, BILLING_VARS_TO_UNSET, assemblePrompt,
-  planAgentRun, describePlan, spawnAgent, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
+  planAgentRun, describePlan, spawnAgent, deliverNotes, withOperatorNotes, AgentError, AgentSpawnError, DIGEST_MAX_AGE_SECONDS,
 } from '../src/agent.ts';
 import { Emitter } from '../src/events.ts';
 import { State } from '../src/state.ts';
@@ -17,6 +17,7 @@ const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'f
 const FAKE_CLAUDE_MULTITICKET = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-multiticket.mjs');
 const FAKE_CLAUDE_CLAIM = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-claim.mjs');
 const FAKE_CLAUDE_PLAIN = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-plain.mjs');
+const FAKE_CLAUDE_STREAMING = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-streaming-input.mjs');
 const FAKE_CLAUDE_LARGE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-large.mjs');
 
 function rig() {
@@ -89,11 +90,12 @@ test('a plan is fully decided without running anything', () => {
   assert.equal(plan.cwd, '/tmp/proj');
   assert.equal(plan.bin, '/bin/echo');
   assert.deepEqual(plan.args, [
-    '-p', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'mcp__tablation__*',
+    '-p', '--input-format', 'stream-json', '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'mcp__tablation__*',
     '--disallowedTools', ...DISALLOWED_TOOLS,
     '--model', 'claude-sonnet-5',
     '--output-format', 'stream-json', '--verbose',
   ]);
+  assert.equal(plan.acceptsInput, true);
   assert.match(plan.prompt, /R[\s\S]*SHARED POLICY[\s\S]*BRIEF dev/);
   assert.equal(plan.digestAttached, false);
   assert.match(describePlan(plan), /prompt:\s+\d+ bytes on stdin \(never argv\)/);
@@ -820,4 +822,94 @@ test('a 502 on the Agent Log post is queued and raises no attention item (CREW-2
   const { home, state } = rig();
   t.after(agentLogStatus([502]));
   assert.deepEqual(await runWithAgentLog(state, home, 'c1'), []);
+});
+
+test('a note returned on a cycle batch is written to a streaming harness, framed with its author, and marked delivered (CREW-3118)', async (t) => {
+  const { home, state } = rig();
+  const route = {
+    route: 'test/proj', dir: '/tmp/proj', baseUrl: 'https://example.test', promptsDir: join(home, 'prompts'),
+    resolved: { workspaceId: 'ws-1', models: { crew: 'crew-model' }, seats: { dev: 'seat-1' } },
+  } as any;
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' }, userAgent: 'crew-test' } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', apiKey: 'k', cycle: 'c1', ticket: 'CREW-3118',
+  });
+  assert.equal(plan.acceptsInput, true);
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_STREAMING, '--input-format', 'stream-json'];
+  plan.cwd = state;
+  const { restore, calls } = mockFetch({
+    'GET /api/data-models/crew-model/records/seat-1': { name: 'Developer agent (Studio)' },
+    'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
+    'GET /api/workspaces/ws-1/members': [{ id: 'u-1', name: 'Brad', email: 'b@example.test' }],
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': {
+      pendingMessages: [{ id: 'm-1', authorId: 'u-1', text: 'use the other branch', occurredAt: '2026-11-08T01:00:00.000Z', deliveryState: 'queued' }],
+    },
+    'PATCH /api/workspaces/ws-1/agents/log/log-1/messages/m-1': {},
+    'GET /api/data-models/agent_log': { id: 'al-1' },
+    'GET /api/data-models/al-1': { fields: [] },
+    'PATCH /api/data-models/al-1/records/log-1': {},
+  });
+  t.after(restore);
+
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  const result = await spawnAgent(plan, emit);
+  assert.equal(result.code, 0);
+
+  const stream = readFileSync(plan.streamPath, 'utf8');
+  assert.match(stream, /got: Note from Brad \(operator\): use the other branch/);
+  assert.doesNotMatch(stream, /no note arrived/);
+  const marks = calls.filter((c) => c.key.includes('/messages/'));
+  assert.equal(marks.length, 1, 'a note is marked once, however many responses repeat it');
+  assert.deepEqual(marks[0]!.body, { deliveryState: 'delivered' });
+});
+
+test('notes a run cannot take are carried forward, and every note is marked exactly once (CREW-3118)', async (t) => {
+  const { restore, calls } = mockFetch({
+    'GET /api/workspaces/ws-1/members': [{ id: 'u-1', name: 'Brad' }],
+    'PATCH /api/workspaces/ws-1/agents/log/log-1/messages/m-1': {},
+    'PATCH /api/workspaces/ws-1/agents/log/log-1/messages/m-2': {},
+  });
+  t.after(restore);
+  const target = { baseUrl: 'https://example.test', workspaceId: 'ws-1', apiKey: 'k', userAgent: 'crew-test' };
+  const written: string[] = [];
+  await deliverNotes(target, 'log-1', [
+    { id: 'm-1', authorId: 'u-1', text: 'a', occurredAt: null },
+    { id: 'm-2', authorId: null, text: 'b', occurredAt: null },
+  ], async (text) => { written.push(text); return false; });
+  assert.deepEqual(written, ['Note from Brad (operator): a', 'Note from the operator (operator): b']);
+  assert.deepEqual(calls.filter((c) => c.key.startsWith('PATCH')).map((c) => c.body), [{ deliveryState: 'carried_forward' }, { deliveryState: 'carried_forward' }]);
+});
+
+test('a sandbox run keeps the one-shot stdin, since its prompt may travel by upload (CREW-3118)', () => {
+  const { state, route } = rig();
+  const sandboxed = planAgentRun({ role: 'dev', route: { ...route, repos: {} }, ship: { agent: { bin: '/bin/echo', model: 'claude-sonnet-5' }, runner: 'sandbox' } as any, stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1' });
+  assert.equal(sandboxed.acceptsInput, undefined);
+  assert.ok(!sandboxed.args.includes('--input-format'));
+});
+
+test('a ticket with notes waiting gets an "Operator notes since the last run" section and the notes are marked delivered (CREW-3118)', async (t) => {
+  const { restore, calls } = mockFetch({
+    'GET /api/workspaces/ws-1/agents/log/pending-messages': { messages: [
+      { id: 'm-1', agentLogId: 'old-1', authorId: 'u-1', text: 'check the migration', occurredAt: '2026-11-07T23:00:00.000Z', deliveryState: 'carried_forward' },
+    ] },
+    'GET /api/workspaces/ws-1/members': [{ id: 'u-1', name: 'Brad' }],
+    'PATCH /api/workspaces/ws-1/agents/log/old-1/messages/m-1': {},
+  });
+  t.after(restore);
+  const plan = { prompt: 'BRIEF', promptBytes: 5, ticketRecordId: 'rec-1', agentLog: {
+    baseUrl: 'https://example.test', workspaceId: 'ws-1', apiKey: 'k', userAgent: 'crew-test',
+    tickets: { issuesModelId: 'issues-1' },
+  } } as any;
+  const out = await withOperatorNotes(plan);
+  assert.match(out.prompt, /^BRIEF\n\n## Operator notes since the last run/);
+  assert.match(out.prompt, /2026-11-07T23:00:00.000Z — Brad: check the migration/);
+  assert.equal(out.promptBytes, Buffer.byteLength(out.prompt));
+  assert.deepEqual(calls.find((c) => c.key.startsWith('PATCH'))!.body, { deliveryState: 'delivered' });
+  assert.ok(calls.some((c) => c.key === 'GET /api/workspaces/ws-1/agents/log/pending-messages'));
+  // No notes: the plan comes back untouched.
+  const { restore: r2 } = mockFetch({ 'GET /api/workspaces/ws-1/agents/log/pending-messages': { messages: [] } });
+  t.after(r2);
+  assert.equal(await withOperatorNotes(plan), plan);
 });

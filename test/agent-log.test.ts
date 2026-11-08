@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reportAgentRun, startAgentRunRow, LiveRunReporter, capCycleText, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
+import { reportAgentRun, startAgentRunRow, LiveRunReporter, markMessage, frameNote, operatorNotesSection, capCycleText, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
 
 /** Wires a fetch mock keyed by exact pathname+method, ignoring host/baseUrl — same shape as connect.test.ts's mockFetch. */
 function mockFetch(routes: Record<string, unknown>) {
@@ -557,4 +557,43 @@ test('the end-of-run report posts only the cycles the live reporter had not deli
   const cycles = calls.filter((c) => c.key.endsWith('/cycles'));
   assert.equal(cycles.length, 1);
   assert.equal((cycles[0]!.body as { cycleIndex: number }).cycleIndex, 2);
+});
+
+test('LiveRunReporter hands each pending note over once, from batch and heartbeat responses alike (CREW-3118)', async (t) => {
+  const note = (id: string) => ({ id, authorId: 'u-1', text: id, occurredAt: null });
+  const { restore } = mockFetch({
+    'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { ids: [], pendingMessages: [note('m-1')] },
+    'PATCH /api/workspaces/ws-1/agents/log/log-1': { id: 'log-1', pendingMessages: [note('m-1'), note('m-2')] },
+  });
+  t.after(restore);
+  const got: string[][] = [];
+  const r = new LiveRunReporter(target, 'log-1', { heartbeatMs: 0, onMessages: (m) => { got.push(m.map((x) => x.id)); } });
+  r.add({ cycleIndex: 0, occurredAt: 'x', thinking: 'a' });
+  await r.tick();   // batch
+  await r.tick();   // heartbeat repeats m-1 (still queued) and adds m-2
+  assert.deepEqual(got, [['m-1'], ['m-2']]);
+});
+
+test('a throwing note callback does not stop the reporter (CREW-3118)', async (t) => {
+  const { restore } = mockFetch({ 'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { pendingMessages: [{ id: 'm-1', authorId: null, text: 't', occurredAt: null }] } });
+  t.after(restore);
+  const r = new LiveRunReporter(target, 'log-1', { onMessages: () => { throw new Error('boom'); } });
+  r.add({ cycleIndex: 0, occurredAt: 'x', thinking: 'a' });
+  await r.tick();
+  assert.equal(r.live, true);
+  assert.equal(r.posted, 1);
+});
+
+test('markMessage, frameNote and operatorNotesSection (CREW-3118)', async (t) => {
+  const { restore, calls } = mockFetch({ 'PATCH /api/workspaces/ws-1/agents/log/log-1/messages/m-1': {} });
+  t.after(restore);
+  assert.equal(await markMessage(target, 'log-1', 'm-1', 'delivered'), true);
+  assert.deepEqual(calls[0]!.body, { deliveryState: 'delivered' });
+  assert.equal(await markMessage(target, 'log-1', 'missing', 'delivered'), false);
+  assert.equal(frameNote({ text: 'hi' }, 'Brad'), 'Note from Brad (operator): hi');
+  assert.equal(operatorNotesSection([], new Map()), '');
+  const sec = operatorNotesSection([{ id: 'm', authorId: 'u', text: 'l1\nl2', occurredAt: '2026-11-08T00:00:00.000Z' }], new Map([['u', 'Brad']]));
+  assert.match(sec, /Operator notes since the last run/);
+  assert.match(sec, /acknowledge/);
+  assert.match(sec, /2026-11-08T00:00:00.000Z — Brad: l1\n  l2/);
 });

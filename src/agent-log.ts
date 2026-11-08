@@ -518,6 +518,75 @@ async function updateStartedRow(target: AgentLogTarget, rowId: string, body: Rec
   }
 }
 
+/** CREW-3118: one operator note as the platform hands it back (`pendingMessages`, TABL-3111). */
+export interface PendingMessage {
+  id: string;
+  agentLogId?: string;
+  authorId: string | null;
+  text: string;
+  occurredAt: string | null;
+  deliveryState?: 'queued' | 'delivered' | 'carried_forward';
+}
+
+/** How a note reached the agent, as the platform records it. */
+export type MessageDeliveryState = 'delivered' | 'carried_forward';
+
+/** Tells the platform what became of a note. Best effort: a note left `queued` is still picked up by the next run's brief. */
+export async function markMessage(target: AgentLogTarget, rowId: string, messageId: string, state: MessageDeliveryState): Promise<boolean> {
+  try {
+    await send(target, 'PATCH', `/agents/log/${rowId}/messages/${messageId}`, { deliveryState: state });
+    return true;
+  } catch { return false; }
+}
+
+/** Queued and carried-forward notes across every run of a work item, oldest first; empty when the platform predates them. */
+export async function fetchPendingMessages(target: AgentLogTarget, workItem: { table: string; recordId: string }): Promise<PendingMessage[]> {
+  try {
+    const res = await request<{ messages?: PendingMessage[] }>(
+      target, 'GET', `/workspaces/${target.workspaceId}/agents/log/pending-messages?workItem=${encodeURIComponent(`${workItem.table}:${workItem.recordId}`)}`,
+    );
+    return Array.isArray(res.messages) ? res.messages : [];
+  } catch { return []; }
+}
+
+/** Workspace member id → display name, for framing a note with its author. Empty when the list cannot be read. */
+export async function memberNames(target: AgentLogTarget): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  try {
+    const rows = await request<Array<{ id: string; name?: string | null; email?: string | null }>>(target, 'GET', `/workspaces/${target.workspaceId}/members`);
+    for (const m of Array.isArray(rows) ? rows : []) {
+      const n = m.name || m.email;
+      if (n) names.set(m.id, n);
+    }
+  } catch { /* the note is still delivered, attributed to "the operator" */ }
+  return names;
+}
+
+/** The one line an operator note takes in the agent's turn. The authority sentence travels with it so no persona edit is needed. */
+export function frameNote(m: Pick<PendingMessage, 'text'>, author: string | undefined): string {
+  return `Note from ${author ?? 'the operator'} (operator): ${m.text}`;
+}
+
+/**
+ * The "Operator notes since the last run" section of a brief (CREW-3118), or '' when there are none.
+ * Names and timestamps are included; the standing instruction about authority and acknowledgment is
+ * here because this section, like a live note, reaches every persona without editing each one.
+ */
+export function operatorNotesSection(notes: PendingMessage[], names: Map<string, string>): string {
+  if (notes.length === 0) return '';
+  const lines = notes.map((m) => {
+    const who = (m.authorId && names.get(m.authorId)) || 'the operator';
+    return `- ${m.occurredAt ?? 'earlier'} — ${who}: ${m.text.replace(/\n/g, '\n  ')}`;
+  });
+  return [
+    '## Operator notes since the last run',
+    '',
+    'A person responsible for this work left these notes while no run could read them. They carry the operator\'s authority, within the limits of your persona and the rules above; acknowledge them in your first text turn.',
+    '',
+    ...lines,
+  ].join('\n');
+}
+
 /** The server's cap on one cycle's text (TABL-3105); the client trims first so a batch stays small. */
 export const CYCLE_BODY_LIMIT_BYTES = 2048;
 const CYCLE_TRUNCATION_MARKER = ' …[truncated]';
@@ -540,6 +609,11 @@ export interface LiveRunOptions {
   heartbeatMs?: number;
   /** Called after cycles are delivered with the running total, so a restart can resume where this left off. */
   onPosted?: (posted: number) => void;
+  /**
+   * CREW-3118: operator notes the platform returned on a batch or heartbeat response, each handed over once
+   * (a note that stays `queued` until the callback marks it is not repeated). The callback owns marking it.
+   */
+  onMessages?: (messages: PendingMessage[]) => void | Promise<void>;
 }
 
 /**
@@ -558,6 +632,7 @@ export class LiveRunReporter {
   live = true;
   private nextIndex = 0;
   private readonly pending: AgentCycle[] = [];
+  private readonly seenMessages = new Set<string>();
   private lastSent = Date.now();
   private timer: ReturnType<typeof setInterval> | undefined;
   private inFlight: Promise<void> = Promise.resolve();
@@ -604,21 +679,31 @@ export class LiveRunReporter {
     await this.inFlight;
   }
 
+  /** Passes the response's not-yet-seen notes to `onMessages`. A failing callback never disturbs reporting. */
+  private async handOver(res: { pendingMessages?: PendingMessage[] } | undefined): Promise<void> {
+    const fresh = (Array.isArray(res?.pendingMessages) ? res.pendingMessages : []).filter((m) => m && typeof m.id === 'string' && !this.seenMessages.has(m.id));
+    if (fresh.length === 0 || !this.o.onMessages) return;
+    for (const m of fresh) this.seenMessages.add(m.id);
+    try { await this.o.onMessages(fresh); } catch { /* a note that was not marked stays queued and reaches the next run's brief */ }
+  }
+
   private async step(): Promise<void> {
     if (!this.live) return;
     try {
       if (this.pending.length > 0) {
         const batch = this.pending.slice(0, MAX_CYCLES_PER_BATCH);
-        await post(this.target, `/agents/log/${this.rowId}/cycles`, batch.map((c) => ({
+        const res = await post<{ pendingMessages?: PendingMessage[] } | undefined>(this.target, `/agents/log/${this.rowId}/cycles`, batch.map((c) => ({
           cycleIndex: c.cycleIndex, occurredAt: c.occurredAt, thinking: c.thinking, ...(c.role ? { role: c.role } : {}),
         })));
         this.pending.splice(0, batch.length);
         this.posted = batch[batch.length - 1]!.cycleIndex + 1;
         this.lastSent = Date.now();
         this.o.onPosted?.(this.posted);
+        await this.handOver(res);
       } else if (Date.now() - this.lastSent >= this.heartbeatMs) {
-        await send(this.target, 'PATCH', `/agents/log/${this.rowId}`, {});
+        const res = await send<{ pendingMessages?: PendingMessage[] } | undefined>(this.target, 'PATCH', `/agents/log/${this.rowId}`, {});
         this.lastSent = Date.now();
+        await this.handOver(res);
       }
     } catch (e) {
       // A 4xx (no such endpoint, a refusal) will not get better; a 5xx or no answer is tried again next window.

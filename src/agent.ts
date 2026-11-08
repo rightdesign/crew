@@ -35,7 +35,7 @@ import { intelRelDir, parseRemote } from './sandbox-cache.ts';
 import { intelDir } from './intel-bridge.ts';
 import { resolveContract } from './contract.ts';
 import { BeforeFirstEditTracker } from './tool-classify.ts';
-import { reportAgentRun, startAgentRunRow, LiveRunReporter, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
+import { reportAgentRun, startAgentRunRow, LiveRunReporter, markMessage, memberNames, type PendingMessage, fetchPendingMessages, frameNote, operatorNotesSection, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
 import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
@@ -156,6 +156,11 @@ export interface AgentPlan {
   sandboxImageReason?: string;
   /** CREW-2922: files the runner writes into the sandbox before launching the harness (the symbol bridge's Gemini settings, the `typescript-lsp` plugin). */
   sandboxFiles?: SandboxFile[];
+  /**
+   * CREW-3118: the harness reads further user messages on stdin while it runs (the adapter has streaming
+   * input and the run is on the host), so `spawnAgent` keeps stdin open after the prompt. Absent otherwise.
+   */
+  acceptsInput?: boolean;
   /** Passed on stdin, never as argv — see `spawnAgent`. */
   prompt: string;
   promptBytes: number;
@@ -596,8 +601,12 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
   const sandboxChoice = o.ship.runner === 'sandbox' ? sandboxImageOf(o.route, o.repo, o.stateDir, o.repoContract) : undefined;
   const sandboxImage = sandboxChoice?.image;
   const sandboxFiles = [...(code?.files ?? []), ...(sandboxLsp?.files ?? [])];
+  // CREW-3118: streaming input is for runs the daemon supervises directly; a sandbox run may carry its
+  // prompt by upload (stdin redirected from a file), which cannot take a second message.
+  const streamInput = adapter.userMessageLine !== undefined && o.ship.runner !== 'sandbox';
   const invocation = adapter.invocation(toolchain, {
     code,
+    streamInput,
     role: o.role,
     model,
     pluginDirs: adapter.harness !== 'claude' ? undefined : sandboxLsp ? [sandboxLsp.dir] : lspPluginDirsFor(o.route, o.repo, o.stateDir),
@@ -668,6 +677,7 @@ export function planAgentRun(o: PlanOptions): AgentPlan {
       : {}),
     resolution: { toolchain: seat.toolchainWhy, model: seat.modelWhy },
     warnings: [...(seat.warnings ?? []), ...expanded.warnings],
+    ...(streamInput ? { acceptsInput: true } : {}),
     prompt,
     promptBytes: Buffer.byteLength(prompt, 'utf8'),
     unsetEnv: adapter.unsetEnv,
@@ -953,6 +963,8 @@ class RunObserver {
    * ticket the run actually claims (CREW-1776); `id.ticket` stays the hint.
    */
   liveTicket: string | undefined;
+  /** CREW-3118: called when the stream first carries the harness's final result, e.g. to close a streaming stdin. */
+  onResult?: () => void;
   /** Called after `liveTicket` changes, so the sidecar can be rewritten. */
   onClaim?: () => void;
   private buf = '';
@@ -1005,7 +1017,11 @@ class RunObserver {
       const got = this.adapter.extractResult(parsed);
       if (got) {
         this.result = { ...this.result, ...Object.fromEntries(Object.entries(got).filter(([, v]) => v !== undefined)) };
-        if (got.numTurns !== undefined || got.costUsd !== undefined) this.sawResult = true;
+        if (got.numTurns !== undefined || got.costUsd !== undefined) {
+          const first = !this.sawResult;
+          this.sawResult = true;
+          if (first && !this.muted) this.onResult?.();
+        }
       }
       this.handoff.feed(parsed);
       this.consume(parsed, this.mapper.map(parsed));
@@ -1291,6 +1307,57 @@ async function finishRun(
 }
 
 /**
+ * CREW-3118: hands operator notes to a running agent. `write` puts one on the harness's stdin and says
+ * whether it landed; a note it could not write is marked `carried_forward`, which the next run of the work
+ * item reads in its brief. Every note gets exactly one mark, and a failed mark leaves it `queued`, which
+ * the next run reads just the same.
+ */
+export async function deliverNotes(
+  target: AgentLogTarget, rowId: string, msgs: PendingMessage[],
+  write: (text: string) => Promise<boolean>,
+): Promise<void> {
+  const names = await memberNames(target);
+  for (const m of msgs) {
+    const landed = await write(frameNote(m, (m.authorId && names.get(m.authorId)) || undefined));
+    await markMessage(target, rowId, m.id, landed ? 'delivered' : 'carried_forward');
+  }
+}
+
+/**
+ * CREW-3118: adds the "Operator notes since the last run" section to a plan's prompt, from the notes the
+ * work item has waiting (queued, or carried forward by an earlier run), and marks them delivered. Without
+ * a work item or a reporting target the plan is returned as it is.
+ */
+export async function withOperatorNotes(plan: AgentPlan): Promise<AgentPlan> {
+  const log = plan.agentLog;
+  const issues = log?.tickets?.issuesModelId;
+  if (!log || !issues || !plan.ticketRecordId) return plan;
+  const notes = await fetchPendingMessages(log, { table: issues, recordId: plan.ticketRecordId });
+  if (notes.length === 0) return plan;
+  const section = operatorNotesSection(notes, await memberNames(log));
+  const prompt = `${plan.prompt}\n\n${section}\n`;
+  // Each note's own run row is where it is marked; the section is now part of the brief either way.
+  await Promise.all(notes.map((m) => (m.agentLogId ? markMessage(log, m.agentLogId, m.id, 'delivered') : Promise.resolve(false))));
+  return { ...plan, prompt, promptBytes: Buffer.byteLength(prompt, 'utf8') };
+}
+
+/**
+ * Whether the harness was actually launched in streaming-input mode: the plan allows it and the argv
+ * carries the flag. A plan whose command was replaced (a test's stand-in harness, which reads plain text
+ * until EOF) is not streaming, so its stdin closes after the prompt as before.
+ */
+function streamsInput(plan: AgentPlan): boolean {
+  const i = plan.args.indexOf('--input-format');
+  return !!plan.acceptsInput && i >= 0 && plan.args[i + 1] === 'stream-json';
+}
+
+/** Launches the planned run (`spawnPlanned`), after folding in any operator notes its work item has waiting. */
+export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Promise<RunResult> {
+  if (!plan.agentLog?.tickets || !plan.ticketRecordId) return spawnPlanned(plan, emit, hintMoved);
+  return withOperatorNotes(plan).catch(() => plan).then((p) => spawnPlanned(p, emit, hintMoved));
+}
+
+/**
  * Launch it.
  *
  * The prompt goes in on STDIN, never as an argv string. `claude -p` reads it
@@ -1309,11 +1376,14 @@ async function finishRun(
  * reader is gone the agent's next write fails with EPIPE, so a daemon restart
  * would kill the run no matter what process group it was in (CREW-1775).
  *
+ * CREW-3118: when `plan.acceptsInput`, the prompt is the first stream-json user message and stdin then stays
+ * open for operator notes until the harness reports its final result.
+ *
  * The child also gets a process group of its own (`detached`), so launchd or
  * systemd taking down the daemon's group does not take the run with it, and a
  * `<stream>.pid` sidecar so the next daemon can find it (`reattachRun`).
  */
-export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Promise<RunResult> {
+function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Promise<RunResult> {
   const adapter = adapterFor(plan.harness ?? LEGACY_TOOLCHAIN_HARNESS);
   const runner: Runner = runnerFor(plan.runner, plan.sandboxConfig);
   const started = Date.now();
@@ -1373,6 +1443,21 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     // The sidecar is rewritten with the row id so a daemon that restarts mid-run updates this row
     // rather than posting a second. A live reporter then sends the run's cycles in batches.
     const obs = new RunObserver(id, adapter, eventsSink, emit.cycle);
+    // CREW-3118: operator notes. A streaming harness takes them as further user messages on the stdin that
+    // stays open after the prompt; it is closed once the harness reports its final result, after which a
+    // late note is carried forward to the next run's brief instead.
+    let inputOpen = streamsInput(plan) && !promptDelivered && !!adapter.userMessageLine;
+    const closeInput = (): void => {
+      if (!inputOpen) return;
+      inputOpen = false;
+      child.stdin?.end();
+    };
+    if (inputOpen) obs.onResult = closeInput;
+    const writeNote = (text: string): Promise<boolean> => new Promise((done) => {
+      const stdin = child.stdin;
+      if (!inputOpen || !stdin || !stdin.writable) { done(false); return; }
+      try { stdin.write(adapter.userMessageLine!(text), (err) => done(!err)); } catch { done(false); }
+    });
     const startedRow: Promise<void> = plan.agentLog
       ? startAgentRunRow(plan.agentLog, {
           runId: plan.workspaceRunId, ticketReference: plan.ticket ?? undefined, startedAt,
@@ -1385,6 +1470,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
           if (row.live && plan.agentLog) {
             const reporter = new LiveRunReporter(plan.agentLog, row.id, {
               onPosted: (n) => updateSidecar(plan.streamPath, { cyclesPosted: n }),
+              onMessages: (msgs) => deliverNotes(plan.agentLog!, row.id, msgs, writeNote),
             });
             obs.attachReporter(reporter);
             reporter.start();
@@ -1422,6 +1508,7 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
       reject(new AgentSpawnError(`cannot run ${plan.bin}: ${err.message}`));
     });
     child.on('close', async (code) => {
+      inputOpen = false;
       clearInterval(timer);
       clearTimeout(limitTimer);
       obs.feed(tail.poll());
@@ -1452,7 +1539,11 @@ export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved
     });
     // An uploaded prompt (over the sandbox stdin limit) is already in place; writing it again would push
     // the same multi-MiB payload through the exec client's stdin, which is what the upload avoids.
-    if (promptDelivered) child.stdin?.end(); else child.stdin?.end(plan.prompt);
+    if (promptDelivered) child.stdin?.end();
+    else if (inputOpen) {
+      // The prompt is the first user message; stdin stays open for the notes that follow it.
+      child.stdin?.write(adapter.userMessageLine!(plan.prompt));
+    } else child.stdin?.end(plan.prompt);
   });
   }
 }
@@ -1505,8 +1596,11 @@ export async function reattachRun(
   // CREW-3116: the first process may have died with the run still going. Carry on reporting to the
   // same row, after the cycles it delivered, so the platform does not mark a working run interrupted.
   if (sc.agentLogRowId && sc.agentLog && o.agentLogKey) {
-    const reporter = new LiveRunReporter({ ...sc.agentLog, apiKey: o.agentLogKey }, sc.agentLogRowId, {
+    const logTarget = { ...sc.agentLog, apiKey: o.agentLogKey };
+    const reporter = new LiveRunReporter(logTarget, sc.agentLogRowId, {
       onPosted: (n) => updateSidecar(streamPath, { cyclesPosted: n }),
+      // CREW-3118: the adopted run's stdin belongs to the process that died, so a note can only be carried forward.
+      onMessages: (msgs) => deliverNotes(logTarget, sc.agentLogRowId!, msgs, async () => false),
     }, sc.cyclesPosted ?? 0);
     obs.attachReporter(reporter);
     reporter.start();

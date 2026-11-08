@@ -303,6 +303,10 @@ the toolchain and the concrete model for that seat's runs:
 and any warnings. `crew doctor` lists every seat whose persona vendor has no
 toolchain on this ship.
 
+## Operator notes during a run
+
+A person responsible for a seat can post a note to a live run from the web. A Claude run on the host started with `--input-format stream-json`: the prompt is the first user message and stdin stays open until the harness reports its final result. When a cycle batch or heartbeat response returns a queued note, crew writes it to the run as `Note from <name> (operator): …` and marks it `delivered`; the agent sees it on its next turn. A harness without streaming input (Codex, Gemini, a sandbox run), a run whose stdin has closed, and a run adopted by a restarted daemon cannot take a note, so it is marked `carried_forward`. At the start of every run crew reads the work item's queued and carried-forward notes into an "Operator notes since the last run" section of the brief, with names and timestamps, and marks them `delivered`. Notes carry the operator's authority within the persona's limits, and the agent acknowledges them in its next text turn.
+
 ## Capability profiles
 
 Seats are granted neutral profiles; each adapter maps them onto its own

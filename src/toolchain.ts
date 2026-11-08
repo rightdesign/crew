@@ -150,7 +150,13 @@ export interface HarnessAdapter {
    * `pluginDirs` are harness plugin directories to load for this run
    * (CREW-2916); only the Claude adapter uses them, the others ignore them.
    */
-  invocation(spec: ToolchainSpec, o: { role: RoleName; model: string; mcp?: McpTarget; pluginDirs?: string[]; code?: CodeBridge }): { bin: string; args: string[] };
+  invocation(spec: ToolchainSpec, o: { role: RoleName; model: string; mcp?: McpTarget; pluginDirs?: string[]; code?: CodeBridge; streamInput?: boolean }): { bin: string; args: string[] };
+  /**
+   * CREW-3118: present only on a harness that can read further user messages on stdin while it runs.
+   * `invocation` then takes `streamInput`, after which stdin carries one of these lines per message (the
+   * prompt first) and the harness stays up until stdin closes.
+   */
+  userMessageLine?(text: string): string;
   /** Environment to add for a run (beyond the tracker key). */
   runEnv(spec: ToolchainSpec, o?: { code?: CodeBridge }): Record<string, string>;
   /** Variables removed from the inherited environment before exec. */

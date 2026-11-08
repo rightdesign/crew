@@ -204,9 +204,12 @@ export const claudeAdapter: HarnessAdapter = {
     'git push is not blocked, only forced pushes',
   ],
 
+  // CREW-3118: with `--input-format stream-json` stdin is NDJSON user messages, so a note can follow the prompt.
+  userMessageLine: (text) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n',
+
   invocation(spec, o) {
     const args = [
-      '-p', '--allowedTools', ...allowedTools(o.role),
+      '-p', ...(o.streamInput ? ['--input-format', 'stream-json'] : []), '--allowedTools', ...allowedTools(o.role),
       '--disallowedTools', ...DISALLOWED_TOOLS,
       // oMLX denies LSP itself for prefix-cache stability, but only when the
       // caller passes no --disallowedTools of its own — and crew always does.
