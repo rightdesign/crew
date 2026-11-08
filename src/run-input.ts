@@ -17,7 +17,9 @@ export interface RunInput {
    * carried forward. A note the run's own reporter already handed over is not written twice.
    * Resolves to the state the note ended in.
    */
-  deliver(note: PendingMessage, author: string | undefined): Promise<'delivered' | 'carried_forward'>;
+  deliver(note: PendingMessage, author: string | undefined, frame?: (note: PendingMessage) => string): Promise<'delivered' | 'carried_forward'>;
+  /** Ids of ticket comments already handed to this run (CREW-3170); the registration dies with the run, so it never outlives it. */
+  deliveredComments: Set<string>;
   /** The Agent Log row the run reports to, when it has one. */
   agentLogRowId(): string | undefined;
   /** The reporting target, when the run has one. */

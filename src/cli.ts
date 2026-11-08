@@ -92,6 +92,7 @@ import { withRepoMaps, mapFilePath, inspectMapFile } from './repo-map.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
+import { anyRunAcceptsInput, COMMENT_DELIVERY_BACKOFF_MS, runCommentDeliveryPass } from './comment-delivery.ts';
 import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
@@ -3450,7 +3451,10 @@ switch (command) {
       onStaleDeferred: ({ runs, waitedMs }) => emit.warn(
         `reload or update pending for ${Math.round(waitedMs / 1000)}s — waiting for ${runs} agent run(s) to end before relaunching (\`crew reload --now\` forces it)`,
       ),
-      runPass: () => runFleetPass({
+      // CREW-3170: while a run this daemon started takes input, keep passes quick and hand it the ticket's new comments.
+      backoffCapMs: () => (anyRunAcceptsInput(liveRuns(cfg.ship.stateDir)) ? COMMENT_DELIVERY_BACKOFF_MS : undefined),
+      runPass: async () => {
+        const result = await runFleetPass({
         inFlight,
         sandboxCache: (r) => sandboxCachePasses.get(r.route)?.() ?? Promise.resolve(),
         sandboxHygiene: sandboxHygienePass,
@@ -3466,7 +3470,24 @@ switch (command) {
           logFile: cfg.ship.logFile,
           console: (l) => process.stderr.write(`${l}\n`),
         }),
-      }),
+      });
+        await runCommentDeliveryPass({
+          runs: () => liveRuns(cfg.ship.stateDir),
+          warn: (m) => emit.warn(m),
+          fetch: async (slug) => {
+            const rt = servable.find((r) => routeSlug(r.route) === slug);
+            if (!rt) return null;
+            const tr = new Tracker(rt, cfg.ship);
+            const [comments, crewRows] = await Promise.all([tr.comments(200), tr.crewRows()]);
+            return {
+              comments,
+              roster: buildRoster(configuredMembers(rt), crewRows),
+              seatId: (role) => rt.resolved?.seats[role],
+            };
+          },
+        });
+        return result;
+      },
       onTransient: ({ err, consecutive, backoffMs }) => emit.warn(
         `tracker unavailable (${describeCause(err)}); attempt ${consecutive}, retrying in ${Math.round(backoffMs / 1000)}s`,
       ),

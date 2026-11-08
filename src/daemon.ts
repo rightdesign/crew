@@ -167,6 +167,11 @@ export interface DaemonLoopOptions {
    */
   onPass?: (result: PassResult, nextBackoffMs: number) => void;
   /**
+   * CREW-3170: a cap on the idle backoff while something wants quick passes (a live run takes comments as
+   * messages). Undefined or absent means the ceiling alone applies.
+   */
+  backoffCapMs?: () => number | undefined;
+  /**
    * CREW-1774: called with whatever a rejected `runPass` threw. The loop backs
    * off like an idle pass and carries on; without this hook it still survives,
    * just silently. Only the `'stale'` path ends the process.
@@ -310,7 +315,8 @@ export async function runDaemonLoop(o: DaemonLoopOptions): Promise<DaemonStopRea
     if (o.maxPasses !== undefined && passes >= o.maxPasses) return 'maxPasses';
     if (o.signal?.aborted) return 'aborted';
     if (o.checkStale?.() && await staleStop()) return 'stale';
-    await sleep(backoff);
+    const cap = o.backoffCapMs?.();
+    await sleep(cap === undefined ? backoff : Math.min(backoff, cap));
     backoff = Math.min(backoff * 2, ceiling);
   }
 }

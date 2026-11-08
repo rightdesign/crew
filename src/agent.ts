@@ -1475,10 +1475,11 @@ function spawnPlanned(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Pr
         accepts: () => inputOpen,
         agentLogRowId: () => id.agentLogRowId,
         ...(plan.agentLog ? { target: plan.agentLog } : {}),
-        deliver: async (note, author) => {
+        deliveredComments: new Set<string>(),
+        deliver: async (note, author, frame) => {
           if (handled.has(note.id)) return 'delivered';
           handled.add(note.id);
-          const landed = await writeNote(frameNote(note, author));
+          const landed = await writeNote(frame ? frame(note) : frameNote(note, author));
           const rowId = id.agentLogRowId;
           if (plan.agentLog && rowId) await markMessage(plan.agentLog, rowId, note.id, landed ? 'delivered' : 'carried_forward');
           return landed ? 'delivered' : 'carried_forward';
