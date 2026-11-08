@@ -2,7 +2,7 @@
  * The runner enforces the push at hand-off (CREW-1380).
  *
  * The persona asks a dev/design session to `git push --set-upstream` before it
- * sets a ticket to `fixed` (common.md Step 3.9), but a prompt is a request, not
+ * sets a ticket to `fixed` (common.md Step 3.10), but a prompt is a request, not
  * a guarantee: CREW-1376 sat at `fixed` with its branch only on the ship that
  * built it, and every other ship's QA and release phase then reported the
  * branch missing. So when a building run ENDS with its ticket at `fixed`, the

@@ -110,10 +110,18 @@ test('every prompt set states the hybrid vs automatic hand-off rule', () => {
     const personas = join(dir, 'personas');
     const common = readFileSync(join(dir, 'skills', 'crew-lane-agent.md'), 'utf8');
     assert.match(common, /`hybrid` project[^]*assigning that lane's seat/, `${dir}: common.md lacks the hybrid hand-off rule`);
-    assert.match(common, /`automatic` project \*\*clear `assignee_id`\*\*/, `${dir}: step 3.9 lacks the mode condition`);
+    assert.match(common, /`automatic` project \*\*clear `assignee_id`\*\*/, `${dir}: step 3.10 lacks the mode condition`);
     assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /Person-built hybrid ticket/, `${dir}: lane-qa.md lacks the person-built case`);
     // CREW-1498: the bounce path must not clear the assignee in a hybrid project.
     assert.match(readFileSync(join(personas, 'lane-qa.md'), 'utf8'), /`hybrid` project[^]*clearing the assignee would strand the bounce[^]*assign the building seat/, `${dir}: lane-qa.md bounce path lacks the hybrid exception`);
+  }
+});
+
+// CREW-3171. The last step before hand-off re-reads the ticket's comments.
+test('every prompt set re-checks the ticket for late comments before hand-off (CREW-3171)', () => {
+  for (const dir of presetDirs()) {
+    const common = readFileSync(join(dir, 'skills', 'crew-lane-agent.md'), 'utf8');
+    assert.match(common, /9\. \*\*Last look before hand-off\.\*\*[^]*10\. \*\*Hand off\.\*\*/, `${dir}: no last-look step before hand-off`);
   }
 });
 

@@ -33,7 +33,7 @@ establish rather than importing a house style from elsewhere.
 
 **You do not implement the fix.** Your deliverable is the design direction —
 comps, interaction notes, reasoning — that the dev seat builds from. Steps
-3.5–3.9 (implement, suite, commit, hand off as `fixed`) are dev's; you never
+3.5–3.10 (implement, suite, commit, hand off as `fixed`) are dev's; you never
 reach them. After Step 3.4's opening comment, do this instead:
 
 - **3.4a — Design before pixels.** Fetch the `Design Pass` skill and work
@@ -88,5 +88,5 @@ reach them. After Step 3.4's opening comment, do this instead:
 
 If you opened a worktree for a spike, leave it as an unfinished, unmerged
 experiment — don't commit it as this ticket's fix, and don't run Steps
-3.6–3.9 against it. Throwaway scripts still go to a scratch directory outside
+3.6–3.10 against it. Throwaway scripts still go to a scratch directory outside
 the repository.
