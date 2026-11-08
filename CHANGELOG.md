@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.142.0] — 2026-11-08
+
+- CREW-3170 A new comment on a ticket a live agent run holds now reaches that run within about 30 seconds, framed with the commenter's roster name; public replies and unresolvable authors still wait for the next brief.
+- CREW-3172 A lane re-reads its ticket's comments before hand-off and acts on anything that arrived during the run.
+
 ## [0.141.1] — 2026-11-08
 
 - CREW-3171 The last step before a lane hands a ticket on is now re-reading its comments and mentions, and acting on anything new from a hold.
