@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.141.0] — 2026-11-08
+
+- CREW-3144 A seat that parks a ticket on a question now addresses the person who accepted it (falling back to the filer, then the ship operator, then no one by name) instead of always the operator.
+
 ## [0.140.0] — 2026-11-08
 
 - CREW-3119 The control API accepts notes for a live run (`POST /streams/<run>/messages`), and `crew status --json` runs report `acceptsInput` and `agentLogId`.
