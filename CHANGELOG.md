@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.139.0] — 2026-11-08
+
+- CREW-3117 Persona avatars ship beside each persona brief (lane-<role>.png|svg) and `crew agents sync` uploads them, leaving hand-set images alone; a failed upload is a `crew doctor` warning.
+- CREW-3118 A note posted to a live Claude run now reaches the agent on its next turn; runs that cannot take input carry the note forward into the next run's brief.
+
 ## [0.138.0] — 2026-11-07
 
 - CREW-3084 Sandbox runs receive their repository's environment from the lease payload and the tokens message, scoped to runs for that repository and never logged.
