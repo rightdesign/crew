@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { ROLE_NAMES, resolvedPathFor, type Route } from './config.ts';
 import {
-  syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink,
+  syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, PERSONA_NAME, describeCrewLink,
 } from './agents.ts';
+import { syncPersonaAvatars, describeAvatarOutcome } from './persona-avatars.ts';
 import { syncSkills, skillMarkerWarnings, describeSkillSyncOutcome } from './skills.ts';
 
 export interface AgentsSyncRunOptions {
@@ -74,6 +75,14 @@ export async function runAgentsSync(target: Route, o: AgentsSyncRunOptions): Pro
   }
   for (const s of skillResult?.outcomes ?? []) o.say(describeSkillSyncOutcome(s));
   for (const w of skillResult?.warnings ?? []) o.warn(`warning: ${w}`);
+  // CREW-3117: bundled persona images; a failure is a warning, recorded for `crew doctor`.
+  const avatarFailures: Record<string, string> = {};
+  if (!readOnly && !dryRun) {
+    for (const a of await syncPersonaAvatars(target, personaResult.agentPersonas, { userAgent: o.userAgent })) {
+      const line = describeAvatarOutcome(a, PERSONA_NAME[a.role]);
+      if (a.status === 'failed') { o.warn(`warning: ${line}`); avatarFailures[a.role] = a.detail ?? 'unknown error'; } else o.say(line);
+    }
+  }
   if (!dryRun) {
     // Persist `agentPersonas` and `agentSkills` into this route's resolved
     // state file — merge-not-clobber, since a hand-authored `contract` block
@@ -82,6 +91,7 @@ export async function runAgentsSync(target: Route, o: AgentsSyncRunOptions): Pro
     const raw = existsSync(resolvedPath) ? JSON.parse(readFileSync(resolvedPath, 'utf8')) : {};
     raw.agentPersonas = personaResult.agentPersonas;
     if (skillResult) raw.agentSkills = skillResult.agentSkills;
+    if (!readOnly) raw.avatarSyncFailures = avatarFailures;
     if (personaResult.releaseAgentId) raw.releaseAgentId = personaResult.releaseAgentId;
     mkdirSync(dirname(resolvedPath), { recursive: true });
     writeFileSync(resolvedPath, `${JSON.stringify(raw, null, 2)}\n`);

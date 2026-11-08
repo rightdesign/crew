@@ -127,6 +127,7 @@ import {
 import { getSessionStore, describeKeyStore } from './secret-store.ts';
 import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, withFoundSeats, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { checkCapabilities, describeCapability, missLine } from './capability-check.ts';
+import { routeAvatarFailures } from './persona-avatars.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
@@ -6844,6 +6845,8 @@ switch (command) {
         }
       }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
+      // CREW-3117: a bundled persona image that failed to upload is a warning, not a failure.
+      for (const f of routeAvatarFailures(cfg.ship.stateDir, route.route)) problems.push({ severity: 'note', kind: 'persona_avatar_upload_failed', route: route.route, message: `${f.role} persona avatar failed to upload: ${f.detail}`, remedy: 'run `crew agents sync` again' });
       if (daemonLiveness) {
         const dp = daemonProblem(daemonLiveness, route.route);
         if (dp) problems.push(dp); else passed++;
@@ -6895,6 +6898,7 @@ switch (command) {
     );
 
     for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
+    for (const r of cfg.routes) for (const f of routeAvatarFailures(cfg.ship.stateDir, r.route)) process.stdout.write(`persona avatar:    WARN ${r.route}: ${f.role} avatar failed to upload (${f.detail}); run \`crew agents sync\` again\n`);
 
     for (const t of rejectedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${tunnelRejectedMessage(t.workspaceId, t.quickExits)}\n`);
     for (const workspaceId of controlRefusedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${relayControlUnsupportedMessage(workspaceId)}\n`);
