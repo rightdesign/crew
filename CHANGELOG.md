@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.140.0] — 2026-11-08
+
+- CREW-3119 The control API accepts notes for a live run (`POST /streams/<run>/messages`), and `crew status --json` runs report `acceptsInput` and `agentLogId`.
+
 ## [0.139.0] — 2026-11-08
 
 - CREW-3117 Persona avatars ship beside each persona brief (lane-<role>.png|svg) and `crew agents sync` uploads them, leaving hand-set images alone; a failed upload is a `crew doctor` warning.
