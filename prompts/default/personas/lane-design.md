@@ -61,6 +61,10 @@ reach them. After Step 3.4's opening comment, do this instead:
     blocked on the operator's input, never as a substitute for the ordinary
     ending.
 
+  Before you write the status, re-read the ticket's comments newer than this
+  run's start, excluding your own seat's, and act on or answer anything that
+  changes the comp (Step 3.9 of the Crew Lane Agent policy).
+
   Before you post, check the comment: it must not name needed-but-unfiled
   work. A design that depends on a change in another repository files that
   ticket and links it in your ticket's `blocked_by` (see "Work your ticket

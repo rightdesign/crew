@@ -226,3 +226,24 @@ for (const preset of ['default', 'dev-qa']) {
     assert.match(text, /A validation error[^]*is a real failure/);
   });
 }
+
+// CREW-3172: every building seat re-reads the ticket's comments as the last
+// step before its hand-off write. (The dev-qa design lane is a stub that
+// builds nothing, so it carries no hand-off step.)
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} prompts re-read ticket comments before hand-off (CREW-3172)`, () => {
+    const dir = join(PROMPTS, preset);
+    const skill = readFileSync(join(dir, 'skills', 'crew-lane-agent.md'), 'utf8');
+    assert.match(skill, /re-read the ticket's comments/);
+    assert.match(skill, /newer than the start of this run/);
+    assert.match(skill, /skipping every comment written by your own seat/);
+    const roles = preset === 'default' ? ['dev', 'design', 'pair'] : ['dev', 'pair'];
+    for (const role of roles) {
+      const brief = readFileSync(join(dir, 'personas', `lane-${role}.md`), 'utf8');
+      assert.match(brief, /re-read the ticket's comments[\s\S]*?excluding your own/, `${preset}/lane-${role}.md`);
+      assert.match(brief, /Step 3\.9 of the Crew Lane Agent policy/, `${preset}/lane-${role}.md`);
+    }
+    const qa = readFileSync(join(dir, 'personas', 'lane-qa.md'), 'utf8');
+    assert.match(qa, /read the ticket's comments newer than this run's start/);
+  });
+}

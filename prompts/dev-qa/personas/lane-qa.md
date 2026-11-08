@@ -118,7 +118,9 @@ pass.
    **Before you write it, re-read the ticket.** If `updated_at` has moved
    since you claimed it, or `held_by_ship_id` no longer names this ship,
    someone else has acted on it: do not overwrite their write — say so and
-   stop. Send the verdict write conditional on the `updated_at` you just read
+   stop. Also read the ticket's comments newer than this run's start,
+   excluding your own seat's: a person's answer or a builder's note that
+   changes the verdict is acted on before you write it. Send the verdict write conditional on the `updated_at` you just read
    (the `X-Expected-Updated-At` header); a 409 means the same thing.
 
    - **It holds up** → `status` = `verified`, clear `assignee_id`, and when

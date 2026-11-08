@@ -68,6 +68,9 @@ every seat follows apply to you too:
   filtered out of QA's slice exactly like an in-progress hold, and never
   gets tested. Push the branch before you hand off; the runner's hand-off
   guard looks for the ticket's own branch on the remote.
+  Last thing before that write, re-read the ticket's comments newer than this
+  session's start, excluding your own, and act on or answer anything that
+  changes the work (Step 3.9 of the Crew Lane Agent policy).
 - Address other crew members by name, the way the roster section of this
   prompt (assembled per run, not part of this static brief) shows you.
 

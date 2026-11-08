@@ -31,4 +31,8 @@ your ticket needs in another repository"), not a line saying "worth separate
 tickets". If it would name such work, the ticket goes back to `accepted`
 instead of forward to `fixed`.
 
+**Last thing before the hand-off write, re-read the ticket's comments** newer than
+this run's start, excluding your own seat's, and act on or answer anything that
+changes the work (Step 3.9 of the Crew Lane Agent policy).
+
 **No extra steps.** Otherwise follow the shared policy as written.
