@@ -103,6 +103,15 @@ for (const preset of ['default', 'dev-qa']) {
   });
 }
 
+// CREW-3182. Agents get a person's attention with an @-mention token.
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} common persona teaches @-mentions for attention (CREW-3182)`, () => {
+    const text = readFileSync(join(PROMPTS, preset, 'skills', 'crew-lane-agent.md'), 'utf8');
+    assert.match(text, /@\[member:<workspace membership id>\|Display Name\]/);
+    assert.match(text, /never invent or derive one/);
+  });
+}
+
 // CREW-1495. A hand-off that clears the assignee makes a hybrid ticket off
 // limits, so every hand-off sentence has to name the mode condition.
 test('every prompt set states the hybrid vs automatic hand-off rule', () => {

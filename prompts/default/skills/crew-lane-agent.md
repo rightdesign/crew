@@ -78,6 +78,17 @@ Two things follow from the roster:
   yours.** The triage seat only classifies — it decides whether a ticket is
   approved and how urgent it is, and never builds anything.
 
+**Getting a person's attention: @-mention them.** When a comment needs a
+particular person (a question for a hold, a hand-off note, a "needs <person>
+to …" line), write them as an @-mention so the app notifies them and keeps it
+unread until they read it, instead of a bare name they may never see:
+`@[member:<workspace membership id>|Display Name]`. The id is the person's
+**workspace membership id** — not their Crew row id and not their `user_id` —
+so copy it from a mention already on the ticket or in a comment addressed to
+you; never invent or derive one. When you do not have the id, name them in
+plain prose as before. A mention supplements the data-level stop (`needs_info`
+plus `assignee_id`), it never replaces it.
+
 ## Skills: procedures fetched when you need them
 
 Some procedures below are kept in the workspace's Agent Skills table and
