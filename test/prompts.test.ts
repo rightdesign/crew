@@ -122,6 +122,9 @@ test('every prompt set re-checks the ticket for late comments before hand-off (C
   for (const dir of presetDirs()) {
     const common = readFileSync(join(dir, 'skills', 'crew-lane-agent.md'), 'utf8');
     assert.match(common, /9\. \*\*Last look before hand-off\.\*\*[^]*10\. \*\*Hand off\.\*\*/, `${dir}: no last-look step before hand-off`);
+    // CREW-3177: the two re-read steps are one; no second heading or paragraph.
+    assert.equal(common.match(/Last look before hand-off/g)?.length, 1, `${dir}: duplicate last-look step`);
+    assert.doesNotMatch(common, /Last check before the status write/, `${dir}: stale second re-read paragraph`);
   }
 });
 
@@ -234,9 +237,12 @@ for (const preset of ['default', 'dev-qa']) {
   test(`${preset} prompts re-read ticket comments before hand-off (CREW-3172)`, () => {
     const dir = join(PROMPTS, preset);
     const skill = readFileSync(join(dir, 'skills', 'crew-lane-agent.md'), 'utf8');
-    assert.match(skill, /re-read the ticket's comments/);
-    assert.match(skill, /newer than the start of this run/);
-    assert.match(skill, /skipping every comment written by your own seat/);
+    assert.match(skill, /re-read its Comments/);
+    assert.match(skill, /newer than the\s+start of this run/);
+    assert.match(skill, /GET \/me\/mentions\/unread/);
+    assert.match(skill, /say in the\s+hand-off comment why/);
+    assert.match(skill, /immediately before the write that sets `fixed`/);
+    assert.match(skill, /skipping every\s+comment written by your own seat/);
     const roles = preset === 'default' ? ['dev', 'design', 'pair'] : ['dev', 'pair'];
     for (const role of roles) {
       const brief = readFileSync(join(dir, 'personas', `lane-${role}.md`), 'utf8');
