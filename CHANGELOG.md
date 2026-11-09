@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.142.5] — 2026-11-09
+
+- CREW-3181 Lane personas now sync a fixed stock robot avatar per function instead of an initial disc.
+
 ## [0.142.4] — 2026-11-09
 
 - CREW-3182 Lane agents now use @-mentions in comments when they need a particular person's attention.
