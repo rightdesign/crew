@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.142.6] — 2026-11-09
+
+- CREW-3204 A worktree the sweep refuses now appears as a "Worktree held" ship attention item only after it stays refused across two sweeps or ten minutes, and a worktree with a live run is left alone without a hold.
+
 ## [0.142.5] — 2026-11-09
 
 - CREW-3181 Lane personas now sync a fixed stock robot avatar per function instead of an initial disc.
