@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.142.1] — 2026-11-09
+
+- CREW-3175 A release-blocked or build-failed alert on a CI-mode repository now closes itself when a later release passes that stage.
+
 ## [0.142.0] — 2026-11-08
 
 - CREW-3170 A new comment on a ticket a live agent run holds now reaches that run within about 30 seconds, framed with the commenter's roster name; public replies and unresolvable authors still wait for the next brief.
