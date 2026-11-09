@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { syncPersonaAvatars, personaAvatarFile, routeAvatarFailures } from '../src/persona-avatars.ts';
@@ -51,4 +51,17 @@ test('CREW-3117: a preset with no images makes no calls; png wins over svg', asy
   assert.deepEqual(await syncPersonaAvatars(route([]), personas, {}), []);
   assert.equal(personaAvatarFile(route(['lane-dev.svg', 'lane-dev.png']).promptsDir, 'dev')!.mimeType, 'image/png');
   assert.deepEqual(routeAvatarFailures('/nonexistent', 'x'), []);
+});
+
+test('CREW-3181: both bundled presets ship a stock PNG per lane and no SVG discs', () => {
+  const root = join(import.meta.dirname, '..', 'prompts');
+  for (const preset of ['default', 'dev-qa']) {
+    const dir = join(root, preset);
+    for (const role of ['dev', 'qa', 'design', 'triage', 'pair'] as const) {
+      const file = personaAvatarFile(dir, role);
+      assert.equal(file?.mimeType, 'image/png', `${preset}/${role}`);
+      assert.equal(file?.name, `lane-${role}.png`);
+    }
+    assert.deepEqual(readdirSync(join(dir, 'personas')).filter((f) => f.endsWith('.svg')), []);
+  }
 });
