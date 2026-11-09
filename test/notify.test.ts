@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { notify, describeRelease } from '../src/notify.ts';
+import { notify, describeRelease, recoveredFailureHeadlines } from '../src/notify.ts';
 import { Emitter } from '../src/events.ts';
 import type { Route, Ship } from '../src/config.ts';
 
@@ -113,4 +113,20 @@ test('a setup failure names the ship and that the host path was taken on a sandb
   const n = describeRelease(o, 'proj', { ship: 'Issues Ship 1', runner: 'sandbox' });
   assert.match(n!.detail ?? '', /Failed on ship Issues Ship 1 \(sandbox runner, released on the host/);
   assert.equal(n!.headline, plain!.headline);
+});
+
+test('a CI-mode release that merged and tagged recovers every stage before the deploy (CREW-3175)', () => {
+  const ci = { merged: [{}, {}], version: '0.142.0', tag: 'v0.142.0' };
+  const got = recoveredFailureHeadlines(ci, 'proj');
+  assert.ok(got.includes('proj: release blocked — setup failed'));
+  assert.ok(got.includes('proj: release blocked — tests failed'));
+  assert.ok(got.includes('proj: build FAILED'));
+  assert.equal(got.includes('proj: deploy FAILED'), false, 'a CI merge is not evidence a deploy worked');
+  // Nothing merged, no tag, or a stop: no recovery from this path.
+  assert.deepEqual(recoveredFailureHeadlines({ merged: [], version: '1', tag: 'v1' }, 'proj'), []);
+  assert.deepEqual(recoveredFailureHeadlines({ merged: [{}] }, 'proj'), []);
+  assert.deepEqual(recoveredFailureHeadlines({ ...ci, stopped: 'tests failed' }, 'proj'), []);
+  // local and integrate are unchanged: they still recover the deploy headline.
+  assert.ok(recoveredFailureHeadlines({ deployed: true }, 'proj').includes('proj: deploy FAILED'));
+  assert.ok(recoveredFailureHeadlines({ integrated: true }, 'proj').includes('proj: deploy FAILED'));
 });

@@ -199,6 +199,7 @@ export function describeRelease(o: {
  */
 export function recoveredFailureHeadlines(o: {
   deployed?: boolean; integrated?: boolean; stopped?: string;
+  merged?: readonly unknown[]; version?: string; tag?: string;
 }, route: string): string[] {
   const setup = `${route}: release blocked — setup failed`;
   const tests = `${route}: release blocked — tests failed`;
@@ -207,6 +208,18 @@ export function recoveredFailureHeadlines(o: {
   if (o.deployed || o.integrated) {
     return [
       setup, tests, build, deploy,
+      `${route}: release blocked — checkout is not on the base branch`,
+      `${route}: release blocked — working tree is not clean`,
+    ];
+  }
+  // CI-mode releases (`ci_auto`, `ci_manual`, `external`) set neither flag:
+  // the base is pushed and tagged and CI deploys later. Merging and tagging
+  // still prove every stage up to the deploy passed, so recover those — but
+  // not the deploy headline, since a CI merge is no evidence a deploy worked
+  // (CREW-3175).
+  if (!o.stopped && o.merged?.length && o.version && o.tag) {
+    return [
+      setup, tests, build,
       `${route}: release blocked — checkout is not on the base branch`,
       `${route}: release blocked — working tree is not clean`,
     ];

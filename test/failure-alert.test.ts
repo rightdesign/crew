@@ -161,3 +161,18 @@ test('recoveredFailureHeadlines follows the stages a release got past', () => {
   assert.equal(recoveredFailureHeadlines({ deployed: true }, 'proj').includes('proj: deploy FAILED'), true);
   assert.equal(recoveredFailureHeadlines({ integrated: true }, 'proj').includes(testsFailed), true);
 });
+
+test('CREW-3173 replay: a tests-failed alert is closed by the next CI-mode release that tags', async () => {
+  const { w, updates, notes } = recoveryWriter();
+  const alert = ticket({ id: 'a-3173', issue_id: 'ISSUE-3173', title: testsFailed, status: 'new' });
+  const headlines = recoveredFailureHeadlines(
+    { merged: [{}, {}], version: '0.142.0', tag: 'v0.142.0' }, 'proj',
+  );
+  const out = await applyFailureRecovery(
+    w, headlines, [alert], DEFAULT_CONTRACT, 'seat', 'proj released 0.142.0', silent, false,
+  );
+  assert.deepEqual(out.closed, ['ISSUE-3173']);
+  assert.equal(updates[0]!.patch.status, 'closed_completed');
+  assert.match(updates[0]!.patch.resolution_note as string, /^Resolved automatically/);
+  assert.match(notes[0]!.body, /Passed: proj released 0\.142\.0/);
+});
