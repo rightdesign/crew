@@ -367,9 +367,15 @@ export const heldWorktreeKey = (repo: string, path: string): string => `worktree
 /** A held worktree is re-warned about this often while it stays held. */
 export const HELD_WORKTREE_REMINDER_MS = 24 * 60 * 60 * 1000;
 
+/** CREW-3204: a refusal opens an item once seen on this many consecutive sweeps... */
+export const HELD_WORKTREE_MIN_SWEEPS = 2;
+/** ...or once it has been refused this long. */
+export const HELD_WORKTREE_MIN_AGE_MS = 10 * 60 * 1000;
+
 /**
  * Records that the sweep refused a worktree (CREW-2051) and says whether this
- * cycle should log a warning for it: the first time, when the reason changes,
+ * cycle should log a warning for it: the first time (once the refusal has
+ * persisted, CREW-3204; until then null and nothing is published), when the reason changes,
  * and once per `HELD_WORKTREE_REMINDER_MS` thereafter. The sweep runs every
  * cycle, so anything more frequent drowns the event stream (a ship logged 366
  * identical warnings overnight); the open item on `crew status` is what keeps
@@ -383,13 +389,31 @@ export function noteHeldWorktree(
   const key = heldWorktreeKey(h.repo, h.path);
   const existing = previous.find((i) => i.key === key)?.held;
   const nowIso = new Date(nowMs).toISOString();
+  // CREW-3204: a first refusal may clear on its own (a seat still finishing, a
+  // step's untracked output), so it is only recorded until the same refusal
+  // persists across two sweeps or HELD_WORKTREE_MIN_AGE_MS. `since` stays the
+  // first refusal.
+  let firstSeenAt = existing?.firstSeenAt;
+  if (!existing) {
+    const pending = state.pendingHeldWorktrees();
+    const all = pending.previous();
+    const p = all[key]?.reason === h.reason ? all[key] : undefined;
+    const sweeps = (p?.sweeps ?? 0) + 1;
+    firstSeenAt = p?.firstSeenAt ?? nowIso;
+    if (sweeps < HELD_WORKTREE_MIN_SWEEPS && nowMs - Date.parse(firstSeenAt) < HELD_WORKTREE_MIN_AGE_MS) {
+      pending.persist({ ...all, [key]: { reason: h.reason, firstSeenAt, sweeps } });
+      return null;
+    }
+    const { [key]: _promoted, ...rest } = all;
+    if (key in all) pending.persist(rest);
+  }
   const lastWarned = existing ? Date.parse(existing.lastWarnedAt) : NaN;
   const warn = !existing ? 'first'
     : existing.reason !== h.reason ? 'changed'
       : !(nowMs - lastWarned < HELD_WORKTREE_REMINDER_MS) ? 'reminder'
         : null;
   const held: HeldWorktree = {
-    ...h, firstSeenAt: existing?.firstSeenAt ?? nowIso, lastWarnedAt: warn ? nowIso : existing!.lastWarnedAt,
+    ...h, firstSeenAt: firstSeenAt!, lastWarnedAt: warn ? nowIso : existing!.lastWarnedAt,
   };
   const n = h.ticket.replace(/^\D+/, '');
   const item: ShipAttentionItem = {
@@ -410,6 +434,16 @@ export function reconcileHeldWorktrees(
   state: State, repo: string, log: { emit(msg: string, extra?: Record<string, unknown>): unknown },
   stillRefused?: ReadonlySet<string>,
 ): void {
+  // CREW-3204: a pending refusal that is gone or no longer refused never reaches an item.
+  const pending = state.pendingHeldWorktrees();
+  const waiting = pending.previous();
+  const keep = Object.fromEntries(Object.entries(waiting).filter(([key]) => {
+    const [, r, ...rest] = key.split(':');
+    const path = rest.join(':');
+    if (r !== repo) return true;
+    return existsSync(path) && !(stillRefused && !stillRefused.has(path));
+  }));
+  if (Object.keys(keep).length !== Object.keys(waiting).length) pending.persist(keep);
   for (const i of state.shipAttention().previous()) {
     if (i.kind !== 'worktree_held' || !i.held || i.held.repo !== repo) continue;
     const gone = !existsSync(i.held.path);

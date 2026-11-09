@@ -241,8 +241,10 @@ test('a refused worktree warns once, stays an open item, and clears when it disa
   const first = await sweep();
   assert.equal(first.refused.length, 1);
   const wtPath = first.refused[0]!; // git reports the realpath (/private/var on macOS)
-  assert.equal(warns.length, 1);
+  assert.equal(warns.length, 0, 'the first refusal is only recorded (CREW-3204)');
+  assert.equal(openShipAttention(state).length, 0);
   await sweep();
+  assert.equal(warns.length, 1);
   await sweep();
   assert.equal(warns.length, 1, 'repeat refusals are silent');
 
@@ -268,12 +270,72 @@ test('a held worktree re-warns when its reason changes and once per day', async 
   const state = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
   const h = { repo: 'proj', path: '/tmp/x-1', ticket: 'ISSUE-1', status: 'closed_deployed', reason: 'uncommitted changes' };
   const t0 = Date.parse('2026-10-20T00:00:00Z');
-  assert.equal(noteHeldWorktree(state, h, t0), 'first');
-  assert.equal(noteHeldWorktree(state, h, t0 + 120_000), null);
+  assert.equal(noteHeldWorktree(state, h, t0), null);
+  assert.equal(noteHeldWorktree(state, h, t0 + 120_000), 'first');
   assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 240_000), 'changed');
   assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 360_000), null);
   assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 240_000 + HELD_WORKTREE_REMINDER_MS), 'reminder');
   assert.equal(noteHeldWorktree(state, { ...h, reason: 'unpushed commits' }, t0 + 240_000 + HELD_WORKTREE_REMINDER_MS + 1000), null);
+});
+
+// CREW-3204: a first refusal is recorded, not published.
+test('a refusal published only after two sweeps or ten minutes, with since at the first refusal', async () => {
+  const { State } = await import('../src/state.ts');
+  const { noteHeldWorktree, openShipAttention, reconcileHeldWorktrees, HELD_WORKTREE_MIN_AGE_MS } = await import('../src/ship-attention.ts');
+  const h = { repo: 'proj', path: '/tmp/x-2', ticket: 'ISSUE-2', status: 'verified', reason: 'uncommitted changes' };
+  const t0 = Date.parse('2026-10-20T00:00:00Z');
+  const held = (s: InstanceType<typeof State>) => openShipAttention(s).filter((i) => i.kind === 'worktree_held');
+
+  // One sweep refused, the next clean: never an item, no warning.
+  const a = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  assert.equal(noteHeldWorktree(a, h, t0), null);
+  assert.equal(held(a).length, 0);
+  reconcileHeldWorktrees(a, 'proj', { emit: () => {} }, new Set());
+  assert.equal(noteHeldWorktree(a, h, t0 + 60_000), null, 'the count restarted after the clean sweep');
+  assert.equal(held(a).length, 0);
+
+  // Two consecutive sweeps: published, since = first refusal.
+  const b = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  noteHeldWorktree(b, h, t0);
+  assert.equal(noteHeldWorktree(b, h, t0 + 60_000), 'first');
+  assert.equal(held(b)[0]!.since, new Date(t0).toISOString());
+
+  // A changed reason restarts the count.
+  const c = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  noteHeldWorktree(c, h, t0);
+  assert.equal(noteHeldWorktree(c, { ...h, reason: 'unpushed commits' }, t0 + 60_000), null);
+
+  // Minimum age: a single later sighting past the age (pending file seeded by the first).
+  const d = new State(mkdtempSync(join(tmpdir(), 'crew-state-')));
+  const key = `worktree_held:${h.repo}:${h.path}`;
+  d.pendingHeldWorktrees().persist({ [key]: { reason: h.reason, firstSeenAt: new Date(t0).toISOString(), sweeps: 0 } });
+  assert.equal(noteHeldWorktree(d, h, t0 + HELD_WORKTREE_MIN_AGE_MS), 'first');
+  assert.equal(held(d)[0]!.since, new Date(t0).toISOString());
+});
+
+test('a worktree whose ticket has a live run on this ship is left in place with no hold', async () => {
+  const { State } = await import('../src/state.ts');
+  const { openShipAttention } = await import('../src/ship-attention.ts');
+  const { dir, g } = repo();
+  const { target, wt } = withWorktree(dir, g, 71);
+  writeFileSync(join(wt, 'dirty.txt'), 'x');
+  const stateDir = mkdtempSync(join(tmpdir(), 'crew-state-'));
+  const state = new State(stateDir);
+  mkdirSync(join(stateDir, 'streams'));
+  const sc = { pid: process.pid, ownerPid: process.pid, spawnedAt: new Date().toISOString(), role: 'dev', route: 'main', ticket: 'PROJ-71', ticketRecordId: 'r', model: 'm', toolchain: 't', harness: 'claude', provider: 'anthropic', eventsPath: '/tmp/e', promptSha: 'x' };
+  writeFileSync(join(stateDir, 'streams', 'a.jsonl'), '');
+  writeFileSync(join(stateDir, 'streams', 'a.jsonl.pid'), JSON.stringify(sc));
+  const t = ticket({ issue_id: 'ISSUE-71', status: 'verified' });
+  const warns: string[] = [];
+  const log: SweepLog = { emit: () => {}, warn: (m) => warns.push(m) };
+  for (let i = 0; i < 3; i++) {
+    const r = await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, log, 'origin', undefined, { state, repo: 'proj' });
+    assert.equal(r.refused.length, 0);
+  }
+  assert.ok(existsSync(wt));
+  assert.equal(warns.length, 0);
+  assert.equal(openShipAttention(state).length, 0);
+  assert.deepEqual(state.pendingHeldWorktrees().previous(), {});
 });
 
 // CREW-2050: crew's own hand-back merge, suffixed/detached worktrees, failed removals.

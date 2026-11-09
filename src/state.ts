@@ -454,6 +454,30 @@ export class State {
   }
 
   /**
+   * Worktree refusals not yet old enough to publish as `worktree_held` items
+   * (CREW-3204), keyed by the item key. Kept apart from `shipAttention()` so no
+   * client sees a refusal that may clear on its own. A corrupt or missing file
+   * reads as empty.
+   */
+  pendingHeldWorktrees() {
+    const file = '.worktree-held-pending.json';
+    return {
+      previous: (): Record<string, { reason: string; firstSeenAt: string; sweeps: number }> => {
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(this.path(file), 'utf8'));
+          return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, { reason: string; firstSeenAt: string; sweeps: number }>) : {};
+        } catch {
+          return {};
+        }
+      },
+      persist: (next: Record<string, { reason: string; firstSeenAt: string; sweeps: number }>): void => {
+        writeFileSync(this.path(file), JSON.stringify(next));
+      },
+    };
+  }
+
+  /**
    * When the release phase last ran a cycle (CREW-1373), as the mtime of a
    * marker file. `touch()` is called at the start and the end of every cycle
    * so a long deploy does not read as a stopped timer.

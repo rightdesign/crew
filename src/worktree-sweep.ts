@@ -35,6 +35,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { worktrees, git, gitOk, status, remoteConfigured, deleteRemoteBranch, type WorktreeInfo } from './git.ts';
 import { pidsInWorktree, killGently } from './ports.ts';
+import { liveRuns } from './live-runs.ts';
 import { worktreeHoldsUnpushed } from './run-worktree.ts';
 import type { RepoTarget } from './config.ts';
 import type { Contract } from './contract.ts';
@@ -263,9 +264,22 @@ export async function applyWorktreeSweep(
     // CREW-1364: a worktree with uncommitted work is reported, never removed
     // — on a ship that only ever TESTED the ticket this is rare, but `--force`
     // would destroy whatever a person left there.
+    const n = Number(a.ticket.issue_id.replace(/^\D+/, ''));
+    const pids = pidsInWorktree(a.path, n);
+    // CREW-3204: a seat still working in a worktree, or a process inside it, makes
+    // a dirty or unpushed state transient, not a hold. Leave it for the next cycle.
+    const liveRun = !!held && liveRuns(held.state.dir).some((r) => (r.ticket ?? '').replace(/^\D+/, '') === String(n));
+    const defer = (): void => {
+      log.emit(
+        `leaving ${a.path} for the next cycle: ${liveRun ? `${a.ticket.issue_id} has a run in progress on this ship` : `processes are still inside it (${pids.join(' ')})`}`,
+        { ticket: a.ticket.issue_id, step: 'worktree' },
+      );
+    };
+    if (!dryRun && liveRun && existsSync(a.path)) { defer(); continue; }
     if (!dryRun && existsSync(a.path)) {
       let dirty = false;
       try { dirty = status(a.path).length > 0; } catch { /* unreadable: treat as clean, same as before */ }
+      if (dirty && pids.length) { defer(); continue; }
       if (dirty) {
         refuse(a, 'uncommitted changes', 'it has uncommitted changes');
         continue;
@@ -273,11 +287,10 @@ export async function applyWorktreeSweep(
     }
     if (!dryRun && a.requirePushed && a.branch && existsSync(a.path)
       && remoteConfigured(cwd, remote) && worktreeHoldsUnpushed(a.path, remote)) {
+      if (pids.length) { defer(); continue; }
       refuse(a, 'unpushed commits', `${a.branch} has commits that are not on ${remote}`);
       continue;
     }
-    const n = Number(a.ticket.issue_id.replace(/^\D+/, ''));
-    const pids = pidsInWorktree(a.path, n);
     if (pids.length) {
       log.emit(
         `${dryRun ? 'would kill' : 'killing'} processes still inside ${a.path}: ${pids.join(' ')}`,
