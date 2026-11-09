@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.142.2] — 2026-11-09
+
+- CREW-3177 The lane skill carries a single pre-hand-off re-read step instead of two overlapping ones.
+
 ## [0.142.1] — 2026-11-09
 
 - CREW-3175 A release-blocked or build-failed alert on a CI-mode repository now closes itself when a later release passes that stage.
