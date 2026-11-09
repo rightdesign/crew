@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -43,17 +43,44 @@ function gitWorld() {
   return { root, bare, seed, checkoutDir };
 }
 
-function post(baseUrl: string, path: string, headers: Record<string, string>): Promise<{ status: number; body: any }> {
-  return fetch(`${baseUrl}${path}`, { method: 'POST', headers }).then(async (res) => ({
-    status: res.status,
-    body: await res.json().catch(() => undefined),
-  }));
+/** One request on its own connection (`agent: false` + `Connection: close`),
+ *  never the global fetch pool: a pooled keep-alive socket to a port a
+ *  previous test's server released could otherwise be reused against a later
+ *  server that happened to bind the same port (CREW-3176). The body is kept
+ *  so a wrong-server answer shows up in the assertion message. */
+function send(
+  baseUrl: string, path: string, init: { method?: string; headers?: Record<string, string> } = {},
+): Promise<{ status: number; text: string; json: () => any }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(`${baseUrl}${path}`, {
+      method: init.method ?? 'GET',
+      agent: false,
+      headers: { ...init.headers, Connection: 'close' },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: res.statusCode ?? 0, text, json: () => JSON.parse(text) });
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function post(baseUrl: string, path: string, headers: Record<string, string>): Promise<{ status: number; body: any }> {
+  const res = await send(baseUrl, path, { method: 'POST', headers });
+  let body: any;
+  try { body = res.json(); } catch { body = undefined; }
+  return { status: res.status, body };
 }
 
 test('createSyncDaemonServer() rejects a request with no/wrong bearer secret before touching git', async (t) => {
   const server = createSyncDaemonServer([], 'right-secret');
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(() => { server.close(); server.closeAllConnections(); });
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -67,33 +94,34 @@ test('createSyncDaemonServer() rejects a request with no/wrong bearer secret bef
 test('createSyncDaemonServer() 404s anything but POST /sync or GET/POST /activity, even unauthenticated', async (t) => {
   const server = createSyncDaemonServer([], 'secret');
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(() => { server.close(); server.closeAllConnections(); });
   const port = (server.address() as AddressInfo).port;
 
-  const withAuth = await fetch(`http://127.0.0.1:${port}/other`, { method: 'POST', headers: { Authorization: 'Bearer secret' } });
+  const withAuth = await send(`http://127.0.0.1:${port}`, '/other', { method: 'POST', headers: { Authorization: 'Bearer secret' } });
   assert.equal(withAuth.status, 404);
 
-  const withoutAuth = await fetch(`http://127.0.0.1:${port}/other`, { method: 'POST' });
+  const withoutAuth = await send(`http://127.0.0.1:${port}`, '/other', { method: 'POST' });
   assert.equal(withoutAuth.status, 404, 'an unrecognized route 404s before the secret is even checked');
 });
 
 test('GET /activity reports null until a POST /activity lands, then the timestamp of the most recent one', async (t) => {
   const server = createSyncDaemonServer([], 'right-secret');
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(() => { server.close(); server.closeAllConnections(); });
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${port}`;
   const authHeader = { Authorization: 'Bearer right-secret' };
 
-  const before = await fetch(`${baseUrl}/activity`, { headers: authHeader });
-  assert.equal(before.status, 200);
-  assert.deepEqual(await before.json(), { lastActivityAt: null });
+  const before = await send(baseUrl, '/activity', { headers: authHeader });
+  assert.equal(before.status, 200, before.text);
+  assert.deepEqual(before.json(), { lastActivityAt: null });
 
-  const posted = await fetch(`${baseUrl}/activity`, { method: 'POST', headers: authHeader });
-  assert.equal(posted.status, 204);
+  const posted = await send(baseUrl, '/activity', { method: 'POST', headers: authHeader });
+  assert.equal(posted.status, 204, posted.text);
 
-  const after = await fetch(`${baseUrl}/activity`, { headers: authHeader });
-  const body = await after.json() as { lastActivityAt: string | null };
+  const after = await send(baseUrl, '/activity', { headers: authHeader });
+  assert.equal(after.status, 200, after.text);
+  const body = after.json() as { lastActivityAt: string | null };
   assert.ok(body.lastActivityAt, 'expected a timestamp after a ping');
   assert.ok(!Number.isNaN(Date.parse(body.lastActivityAt!)), 'expected an ISO timestamp');
 });
@@ -101,15 +129,15 @@ test('GET /activity reports null until a POST /activity lands, then the timestam
 test('/activity requires the same bearer secret as /sync', async (t) => {
   const server = createSyncDaemonServer([], 'right-secret');
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(() => { server.close(); server.closeAllConnections(); });
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${port}`;
 
-  const noAuth = await fetch(`${baseUrl}/activity`, { method: 'POST' });
-  assert.equal(noAuth.status, 401);
+  const noAuth = await send(baseUrl, '/activity', { method: 'POST' });
+  assert.equal(noAuth.status, 401, noAuth.text);
 
-  const wrongAuth = await fetch(`${baseUrl}/activity`, { headers: { Authorization: 'Bearer wrong-secret' } });
-  assert.equal(wrongAuth.status, 401);
+  const wrongAuth = await send(baseUrl, '/activity', { headers: { Authorization: 'Bearer wrong-secret' } });
+  assert.equal(wrongAuth.status, 401, wrongAuth.text);
 });
 
 test('createSyncDaemonServer() fast-forwards every target checkout and reports outcomes, given a valid secret', async (t) => {
@@ -127,7 +155,7 @@ test('createSyncDaemonServer() fast-forwards every target checkout and reports o
   ];
   const server = createSyncDaemonServer(targets, 'right-secret');
   await new Promise<void>((resolve) => server.listen(0, resolve));
-  t.after(() => server.close());
+  t.after(() => { server.close(); server.closeAllConnections(); });
   const port = (server.address() as AddressInfo).port;
 
   const { status, body } = await post(`http://127.0.0.1:${port}`, '/sync', { Authorization: 'Bearer right-secret' });
