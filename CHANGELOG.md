@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.142.3] — 2026-11-09
+
+- CREW-3176 Fixed a flaky sync daemon test that could answer 404 on GET /activity and block a release.
+
 ## [0.142.2] — 2026-11-09
 
 - CREW-3177 The lane skill carries a single pre-hand-off re-read step instead of two overlapping ones.
