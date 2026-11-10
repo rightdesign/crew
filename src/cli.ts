@@ -56,7 +56,7 @@ import { refreshUnknownRepos, persistRepoRows } from './repo-refresh.ts';
 import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
-import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures } from './build-failure.ts';
+import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures, priorFailureNote } from './build-failure.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
@@ -2549,7 +2549,7 @@ async function releasePhase(
           const bounce = planBuildFailureBounce(target.dir, cu, repo.branch.base, repo.branch.remote);
           const r = await applyBuildFailureBounce(
             tracker, bounce, tracker.contract, seat, remit, dryRun,
-            { count: priorBuildFailures(cu.ticket, prior), operatorId: c.resolved?.operator },
+            { count: priorBuildFailures(cu.ticket, prior), operatorId: c.resolved?.operator, previousNote: priorFailureNote(cu.ticket, prior) },
           );
           if (r.kind === 'failed') {
             remit.warn(`could not hand back ${cu.ticket.issue_id}: ${r.why}`, { step: 'release' });
@@ -2569,6 +2569,23 @@ async function releasePhase(
         } catch (e) {
           remit.warn(`could not hand back ${cu.ticket.issue_id}: ${(e as Error).message}`, { step: 'release' });
         }
+      }
+    }
+
+    // A gate hook that failed once and passed on the immediate rerun
+    // (CREW-3220): the release went on, and the flake is recorded on a ticket
+    // (one per route and hook; a recurrence comments on it) so it gets fixed.
+    if (outcome.flakes?.length && !dryRun) {
+      const seat = releaseSeat(c);
+      for (const f of outcome.flakes) {
+        const files = f.files.length ? f.files.map((p) => `\`${p}\``).join(', ') : 'no file named in the output';
+        await applyFailureAlert(tracker, {
+          level: 'warn',
+          headline: `${scope}: flaky ${f.hook} gate`,
+          detail: `The \`${f.hook}\` hook (${f.label}) failed once during a release and passed on an immediate rerun of the same composition, so no branch was blamed and the release went on. Failing: ${files}.\n\n\`\`\`\n${f.tail.trimEnd()}\n\`\`\``,
+        }, scope, all, seat, remit, dryRun, await alertPlacement()).catch((e) => {
+          remit.warn(`could not file/update a flaky-gate ticket: ${(e as Error).message}`, { step: 'release' });
+        });
       }
     }
 

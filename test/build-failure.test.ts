@@ -11,7 +11,7 @@ import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
 import {
   failingPaths, culpritByFiles, planBuildFailureBounce, applyBuildFailureBounce,
-  buildFailureComment, BUILD_FAILURE_MARKER, priorBuildFailures,
+  buildFailureComment, BUILD_FAILURE_MARKER, priorBuildFailures, failureComparison, priorFailureNote,
 } from '../src/build-failure.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -206,4 +206,33 @@ test('a second hand-back after a push escalates to a person instead of looping (
   const r = await applyBuildFailureBounce(w, bounce, DEFAULT_CONTRACT, 'm', silent, false, { count: 1, operatorId: 'op' });
   assert.equal(r.kind, 'escalated');
   assert.deepEqual(patches[0], { status: DEFAULT_CONTRACT.statuses.needsHuman, assignee_id: 'op' });
+});
+
+
+
+const bounce = (over: Partial<Parameters<typeof buildFailureComment>[0]> = {}) => ({
+  ticket: { id: 't1', issue_id: 'ISSUE-1' } as never, branch: 'b', hook: 'test', tail: 'FAIL src/a.spec.ts\n', how: 'solo' as const,
+  base: 'main', remote: 'origin', worktree: null, cwd: '/repo', failingFiles: ['src/a.spec.ts'], inBranch: false, ...over,
+});
+
+test('escalation says whether the two failures were the same test (CREW-3220)', () => {
+  assert.match(failureComparison(bounce(), 'x\n```\nFAIL src/a.spec.ts\n```'), /Same failure both times: yes/);
+  assert.match(failureComparison(bounce(), 'x\n```\nFAIL src/b.spec.ts\n```'), /Same failure both times: \*\*no\*\*.*flake/);
+  assert.match(failureComparison(bounce(), undefined), /Unknown/);
+});
+
+test('escalation and hand-back say whether the failing files are among the branch changes (CREW-3220)', () => {
+  assert.match(failureComparison(bounce(), ''), /among the branch's changes: \*\*no\*\*/);
+  assert.match(failureComparison(bounce({ inBranch: true }), ''), /changes: yes/);
+  assert.match(buildFailureComment(bounce()), /None of the files the failure names/);
+  assert.doesNotMatch(buildFailureComment(bounce({ inBranch: true })), /None of the files/);
+});
+
+test('priorFailureNote returns the latest hand-back note for the ticket', () => {
+  const ev = [
+    { record_id: 't1', event_type: 'build_failed', occurred_at: '1', message: 'old' },
+    { record_id: 't1', event_type: 'build_failed', occurred_at: '2', message: 'new' },
+    { record_id: 't2', event_type: 'build_failed', occurred_at: '3', message: 'other' },
+  ];
+  assert.equal(priorFailureNote({ id: 't1' } as never, ev), 'new');
 });

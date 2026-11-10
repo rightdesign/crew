@@ -42,6 +42,8 @@ import { failureSummary, type GateComposition } from './test-evidence.ts';
 import type { Contract } from './contract.ts';
 
 export interface ReleaseRunOptions {
+  /** Collects gate flakes across a release's recursive passes (CREW-3220); set by `mergeAndRelease`. */
+  flakeLog?: GateFlake[];
   /**
    * Remembers a failed deploy and counts consecutive refusals, for THIS
    * route — `State#release(name)`. Scoped, because a ship releases each
@@ -226,6 +228,12 @@ export interface ReleaseOutcome {
    * may well have shipped.
    */
   buildCulprits?: BuildCulprit[];
+  /**
+   * Gate hooks that failed once and passed on an immediate rerun of the same
+   * composition (CREW-3220): a flake, not a branch's fault. The release went
+   * on; the caller records each on a ticket.
+   */
+  flakes?: GateFlake[];
   decision: ReleaseDecision;
   /**
    * Verified tickets left out of this release because their branch moved past
@@ -392,26 +400,6 @@ function hookFailure(o: ReleaseRunOptions, name: 'setup' | 'build' | 'deploy', o
 }
 
 /**
- * Whether a failed test hook's output looks like a worker crash rather than a
- * real assertion failure — a jest (or similar) worker process getting killed
- * by a signal, with no failing-test diff in the output to explain it.
- *
- * Narrow on purpose: this exists to retry a transient crash once, not to
- * paper over a real red suite. Two release cycles (2026-08-24T20:05Z and
- * 2026-08-28T05:43Z, ISSUE-490) both hit the same jest signature — a
- * different spec file each time, `signal=SIGSEGV` with no assertion diff,
- * consistent with a native-addon crash under concurrent-lane resource
- * contention — and both times the very next cycle ran clean. So a
- * crash-shaped failure with nothing else in the output is worth one retry
- * before filing a failure-alert ticket.
- */
-function looksLikeWorkerCrash(output: string): boolean {
-  const crashSignature = /worker process was terminated by another process|signal=SIG(SEGV|ABRT|BUS)/i;
-  const assertionDiff = /(AssertionError|Expected:|Received:|✕|not ok \d)/;
-  return crashSignature.test(output) && !assertionDiff.test(output);
-}
-
-/**
  * Whether a failed build/deploy hook's output looks like a bundler unable to
  * resolve an already-declared dependency, rather than a real code problem —
  * ISSUE-703: a release's `deploy` hook (`scripts/deploy-all.sh`, which builds
@@ -424,12 +412,45 @@ function looksLikeWorkerCrash(output: string): boolean {
  * `node_modules` was transiently inconsistent at the moment this build read
  * it, not that the import is actually wrong — one retry a few seconds later
  * reads a settled `node_modules` and should succeed, same reasoning as
- * `looksLikeWorkerCrash` above.
+ * the generic rerun of a failed gate (`rerunOnce`).
  */
 function looksLikeTransientResolveFailure(output: string): boolean {
   const resolveFailure = /Rolldown failed to resolve import|Could not resolve|\[vite\]: Failed to resolve import/i;
   const realBuildError = /(TS\d{4}:|SyntaxError|error TS|Cannot find module '\.)/;
   return resolveFailure.test(output) && !realBuildError.test(output);
+}
+
+/** A gate hook that failed once and passed on the immediate rerun (CREW-3220). */
+export interface GateFlake {
+  hook: 'test' | 'build';
+  label: string;
+  /** The failing first run's output, trimmed to the failing part. */
+  tail: string;
+  /** Repo-relative files the failing output names. */
+  files: string[];
+}
+
+/**
+ * Rerun a failed `test`/`build` hook once on the same composition before any
+ * branch is blamed (CREW-3220). One failing sample is not evidence: a flaky
+ * test that fails in the merged run and passes in the base run satisfies the
+ * isolation rule exactly (TABL-3216, 2026-11-10: two unrelated flakes handed a
+ * backend-only branch back twice). A pass on the rerun is logged as a flake in
+ * `o.flakeLog` and the release proceeds; a second failure is returned
+ * and isolation runs on it as before.
+ */
+async function rerunOnce(
+  o: ReleaseRunOptions, name: 'test' | 'build', first: NonNullable<Awaited<ReturnType<typeof hook>>>,
+): Promise<NonNullable<Awaited<ReturnType<typeof hook>>>> {
+  o.emit.warn(`${name} gate failed — rerunning once on the same composition before blaming a branch`);
+  const again = await hook(o, name);
+  if (!again || again.code !== 0) return again ?? first;
+  o.emit.warn(`${name} gate passed on the rerun — treating the first failure as a flake and going on`);
+  (o.flakeLog ??= []).push({
+    hook: name, label: hookLabel(o.repo, name),
+    tail: lastLines(first.output, HOOK_FAILURE_TAIL_LINES), files: failingPaths(first.output, o.cwd),
+  });
+  return again;
 }
 
 const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'deploy' | 'bump' | 'released' | 'pr',
@@ -1329,11 +1350,11 @@ async function isolateAndRetry(
       (gitOk(o.cwd, ['diff', '--name-only', `${preMerge}...${c.branch}`]) ?? '').split('\n').filter(Boolean),
     ),
   }));
-  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo' | 'pair'; tail: string; sibling?: MergeCandidate }> = [];
+  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo' | 'pair'; tail: string; paths: string[]; sibling?: MergeCandidate }> = [];
   const byFile = culpritByFiles(withFiles, failingPaths(output, o.cwd));
   if (byFile) {
     o.emit.warn(`${name} failed; its output names files only ${byFile.c.branch} changed — treating it as the culprit`, { ticket: byFile.c.ticket.issue_id });
-    culprits.push({ c: byFile.c, how: 'files', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) });
+    culprits.push({ c: byFile.c, how: 'files', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(output, o.cwd) });
   } else if (applied.length === 1) {
     // The combined tree is the base plus this one branch, and the base passed
     // its last gate (the previous release), so the branch is the likely
@@ -1351,7 +1372,7 @@ async function isolateAndRetry(
       return { tried: `Isolation found no culprit: the ${name} hook also fails on the base alone, without ${only.branch}, so there is no branch to hand back.` };
     }
     o.emit.warn(`${name} failed with only ${only.branch} merged and passes without it — treating it as the culprit`, { ticket: only.ticket.issue_id });
-    culprits.push({ c: only, how: 'solo', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES) });
+    culprits.push({ c: only, how: 'solo', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(output, o.cwd) });
   } else if (applied.length > cap) {
     o.emit.warn(`${name} failed with ${applied.length} branches merged, over release.isolateFailures.maxCandidates (${cap}) — not isolating`);
     return { tried: `Isolation was skipped: ${applied.length} branches were merged, over release.isolateFailures.maxCandidates (${cap}).` };
@@ -1365,7 +1386,7 @@ async function isolateAndRetry(
       const r = await hook(o, name);
       if (r && r.code !== 0) {
         o.emit.warn(`${c.branch} fails the ${name} hook on its own`, { ticket: c.ticket.issue_id });
-        culprits.push({ c, how: 'solo', tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES) });
+        culprits.push({ c, how: 'solo', tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(r.output, o.cwd) });
       }
     }
     // 3. Every branch passes alone: the failure is an interaction. Try pairs
@@ -1382,7 +1403,7 @@ async function isolateAndRetry(
         const r = await hook(o, name);
         if (r && r.code !== 0) {
           o.emit.warn(`${applied[j]!.branch} fails the ${name} hook together with ${applied[i]!.branch}`, { ticket: applied[j]!.ticket.issue_id });
-          culprits.push({ c: applied[j]!, how: 'pair', sibling: applied[i]!, tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES) });
+          culprits.push({ c: applied[j]!, how: 'pair', sibling: applied[i]!, tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(r.output, o.cwd) });
           break;
         }
       }
@@ -1392,6 +1413,7 @@ async function isolateAndRetry(
         // the earlier branches in that prefix are its siblings.
         let lo = 2, hi = applied.length;   // the whole set is known to fail
         let tail = lastLines(output, HOOK_FAILURE_TAIL_LINES);
+        let paths = failingPaths(output, o.cwd);
         while (lo < hi) {
           const mid = Math.floor((lo + hi) / 2);
           gitOk(o.cwd, ['reset', '--hard', preMerge]);
@@ -1401,11 +1423,11 @@ async function isolateAndRetry(
             if (mergeFailed(m)) { clean = false; break; }
           }
           const r = clean ? await hook(o, name) : null;
-          if (r && r.code !== 0) { hi = mid; tail = lastLines(r.output, HOOK_FAILURE_TAIL_LINES); } else lo = mid + 1;
+          if (r && r.code !== 0) { hi = mid; tail = lastLines(r.output, HOOK_FAILURE_TAIL_LINES); paths = failingPaths(r.output, o.cwd); } else lo = mid + 1;
         }
         const owner = applied[hi - 1]!;
         o.emit.warn(`${owner.branch} is the first branch whose prefix fails the ${name} hook (bisected over ${applied.length})`, { ticket: owner.ticket.issue_id });
-        culprits.push({ c: owner, how: 'pair', sibling: applied[hi - 2]!, tail });
+        culprits.push({ c: owner, how: 'pair', sibling: applied[hi - 2]!, tail, paths });
       }
     }
   }
@@ -1424,7 +1446,9 @@ async function isolateAndRetry(
   return {
     ...retried,
     buildCulprits: culprits.map((x) => ({
-      ticket: x.c.ticket, branch: x.c.branch!, hook: name, tail: x.tail, how: x.how,
+      ticket: x.c.ticket, branch: x.c.branch!, hook: name, tail: x.tail, how: x.how, cwd: o.cwd,
+      failingFiles: x.paths,
+      inBranch: x.paths.length === 0 ? null : x.paths.some((p) => withFiles.find((w) => w.c === x.c)?.changed.has(p) ?? false),
       ...(x.sibling ? { sibling: { key: x.sibling.ticket.issue_tag ?? x.sibling.ticket.issue_id, branch: x.sibling.branch! } } : {}),
     })),
   };
@@ -1436,6 +1460,18 @@ async function isolateAndRetry(
  * there is one (CREW-1383); its push is then `<releaseBranch>:<base>`.
  */
 async function mergeAndRelease(
+  o: ReleaseRunOptions,
+  decision: ReleaseDecision,
+  fresh: ReturnType<typeof refreshBase>,
+  releaseBranch?: string,
+  isolated = false,
+): Promise<ReleaseOutcome> {
+  const flakeLog: GateFlake[] = o.flakeLog ?? [];
+  const outcome = await mergeAndReleaseBody({ ...o, flakeLog }, decision, fresh, releaseBranch, isolated);
+  return flakeLog.length ? { ...outcome, flakes: [...flakeLog] } : outcome;
+}
+
+async function mergeAndReleaseBody(
   o: ReleaseRunOptions,
   decision: ReleaseDecision,
   fresh: ReturnType<typeof refreshBase>,
@@ -1618,10 +1654,7 @@ async function mergeAndRelease(
     if (o.dryRun) o.emit.emit(`would run the test gate: ${hookLabel(o.repo, 'test')}`);
     else {
       let r = await hook(o, 'test');
-      if (r && r.code !== 0 && looksLikeWorkerCrash(r.output)) {
-        o.emit.warn('test gate failed with what looks like a worker crash, not a real failure — retrying once');
-        r = await hook(o, 'test');
-      }
+      if (r && r.code !== 0 && !o.dryRun) r = await rerunOnce(o, 'test', r);
       if (r && r.code !== 0 && !isolated) {
         const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch);
         if (out && 'tried' in out) isolation = out.tried;
@@ -1684,10 +1717,7 @@ async function mergeAndRelease(
       }
     } else {
       let r = await hook(o, 'build');
-      if (r && r.code !== 0 && looksLikeTransientResolveFailure(r.output)) {
-        o.emit.warn('build failed with what looks like a transient dependency-resolution glitch, not a real failure — retrying once');
-        r = await hook(o, 'build');
-      }
+      if (r && r.code !== 0) r = await rerunOnce(o, 'build', r);
       if (r && r.code !== 0 && !isolated) {
         const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch);
         if (out && 'tried' in out) isolation = out.tried;

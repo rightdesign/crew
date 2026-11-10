@@ -167,7 +167,7 @@ test('a worker-crash-shaped test failure is retried once, and a clean retry proc
   });
   assert.equal(out.stopped, undefined);
   assert.equal(out.deployed, true);
-  assert.ok(lines.some((l) => /looks like a worker crash.*retrying once/.test(l)));
+  assert.ok(lines.some((l) => /test gate failed — rerunning once on the same composition/.test(l)));
 });
 
 test('a worker-crash-shaped failure that recurs on retry still stops the release', async () => {
@@ -177,8 +177,33 @@ test('a worker-crash-shaped failure that recurs on retry still stops the release
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
   });
   assert.equal(out.stopped, 'tests failed');
-  assert.ok(lines.some((l) => /looks like a worker crash.*retrying once/.test(l)));
+  assert.ok(lines.some((l) => /test gate failed — rerunning once on the same composition/.test(l)));
   assert.ok(lines.some((l) => /test gate FAILED/.test(l)));
+});
+
+test('an ordinary test failure that passes on the immediate rerun is a flake: the release proceeds and records it (CREW-3220)', async () => {
+  const { dir, repo } = project(LOCAL.replace('test: exit 0', `test: |
+    if [ -f .test-ran-once ]; then exit 0; else touch .test-ran-once; echo "FAIL src/flaky.spec.ts"; echo "expected 1 to equal 2"; exit 1; fi`));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, undefined);
+  assert.equal(out.deployed, true);
+  assert.equal(out.buildCulprits, undefined);
+  assert.equal(out.flakes?.length, 1);
+  assert.equal(out.flakes![0]!.hook, 'test');
+  assert.deepEqual(out.flakes![0]!.files, ['src/flaky.spec.ts']);
+  assert.match(out.flakes![0]!.tail, /expected 1 to equal 2/);
+  assert.ok(lines.some((l) => /passed on the rerun.*flake/.test(l)));
+});
+
+test('an ordinary test failure that fails the rerun too still stops the release, with no flake recorded (CREW-3220)', async () => {
+  const { dir, repo } = project(LOCAL.replace('test: exit 0', 'test: echo "FAIL src/real.spec.ts" && exit 1'));
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.stopped, 'tests failed');
+  assert.equal(out.flakes, undefined);
 });
 
 const INTEGRATE_NO_DEPLOY = `version: 1
@@ -240,7 +265,7 @@ test('a transient-resolve-failure-shaped build failure is retried once, and a cl
   });
   assert.equal(out.stopped, undefined);
   assert.equal(out.deployed, true);
-  assert.ok(lines.some((l) => /transient dependency-resolution glitch.*retrying once/.test(l)));
+  assert.ok(lines.some((l) => /build gate failed — rerunning once on the same composition/.test(l)));
 });
 
 test('a transient-resolve-failure-shaped build failure that recurs on retry still stops the release', async () => {
@@ -250,7 +275,7 @@ test('a transient-resolve-failure-shaped build failure that recurs on retry stil
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
   });
   assert.equal(out.stopped, 'build failed');
-  assert.ok(lines.some((l) => /transient dependency-resolution glitch.*retrying once/.test(l)));
+  assert.ok(lines.some((l) => /build gate failed — rerunning once on the same composition/.test(l)));
 });
 
 test('a transient-resolve-failure-shaped deploy failure is retried once, and a clean retry proceeds', async () => {
