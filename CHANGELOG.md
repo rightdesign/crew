@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.143.0] — 2026-11-10
+
+- CREW-3220 A release gate hook that fails once and passes on an immediate rerun no longer hands a branch back; the flake is filed as a ticket, and the escalation after a second hand-back says whether the two failures were the same test and whether they touch the branch's files.
+
 ## [0.142.6] — 2026-11-09
 
 - CREW-3204 A worktree the sweep refuses now appears as a "Worktree held" ship attention item only after it stays refused across two sweeps or ten minutes, and a worktree with a live run is left alone without a hold.
