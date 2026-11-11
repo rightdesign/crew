@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.147.0] — 2026-11-11
+
+- CREW-3255 Crew records a web link to a ticket's pushed branch (`branch_url`) and its pull request (`pr_url`), discovering pull requests a person opened.
+
 ## [0.146.2] — 2026-11-11
 
 - CREW-3254 Fixed a flaky release test gate (worktree-sweep live-run test) caused by comparing the test process's real start time with 'now'.
