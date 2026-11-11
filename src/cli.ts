@@ -6631,6 +6631,8 @@ switch (command) {
     );
     const lastRuns = lastRunsBySeat(cfg.ship.stateDir);
     const periscopes = await periscopesForStatus(cfg.ship.stateDir);
+    // CREW-3248: a run's preview is its ticket's periscope, when that one is serving.
+    const runPreviews = new Map(periscopes.filter((p) => p.serving).map((p) => [p.ticketRecordId, p.url] as const));
     if (flag('json')) {
       const nameSync = await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true });
       const repos = await resolvedRepos(route);
@@ -6710,7 +6712,7 @@ switch (command) {
           seats,
         },
         // Additive (CREW-2822): every live run on this ship. `version` stays 1.
-        runs: runs.map((x) => describeRun(x, route, seatIds, undefined, { titles: runTitles })),
+        runs: runs.map((x) => describeRun(x, route, seatIds, undefined, { titles: runTitles, previews: runPreviews })),
         // Additive (CREW-2857): every live periscope on this ship, from its local record. `version` stays 1.
         periscopes,
         watermark: state.watermark(routeSlug(route.route)),

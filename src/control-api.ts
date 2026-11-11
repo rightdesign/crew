@@ -59,6 +59,7 @@ import { execFile, spawn } from 'node:child_process';
 import type { RoleName } from './config.ts';
 import { eventFileFor, ROTATED_EVENTS_RE } from './events.ts';
 import { liveRuns, type LiveRun } from './live-runs.ts';
+import { appendRunNote } from './run-snapshot.ts';
 import { runInputFor } from './run-input.ts';
 import { markMessage, postMessage } from './agent-log.ts';
 import { readDaemonStarted } from './daemon.ts';
@@ -411,6 +412,10 @@ async function postRunMessage(deps: ControlDeps, run: string, body: Record<strin
     const acceptsInput = input.accepts();
     const state = acceptsInput ? await input.deliver(recorded, (body.author as string | undefined) || undefined) : 'carried_forward';
     if (!acceptsInput) await markMessage(input.target, rowId, recorded.id, 'carried_forward');
+    appendRunNote(live.streamPath, {
+      id: recorded.id, text, author: (body.author as string | undefined) || null,
+      at: recorded.occurredAt ?? new Date().toISOString(), state: state === 'delivered' ? 'delivered' : 'carried_forward',
+    });
     return reply(200, { cycleId: recorded.id, state, acceptsInput });
   } catch (e) {
     return err(409, `the platform did not take the note: ${(e as Error).message}. ${carry}`);

@@ -5,7 +5,7 @@
  * and cheap enough to compute on every `crew status --json`.
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RoleName } from './config.ts';
 import { runFinished } from './interrupted.ts';
@@ -20,6 +20,17 @@ export interface LastEvent {
   text: string;
   /** When the stream file last grew, ISO. */
   at: string;
+  /**
+   * CREW-3248: the turn ends in a question mark, i.e. the agent is asking the operator something
+   * rather than reporting. A heuristic on the closing characters only (trailing quotes, brackets and
+   * markdown emphasis are ignored); a question buried mid-turn is not flagged.
+   */
+  question: boolean;
+}
+
+/** True when `text` ends in a question mark, ignoring trailing quotes, brackets and emphasis marks. */
+export function endsWithQuestion(text: string): boolean {
+  return /\?[\s"'”’)\]*_`]*$/.test(text.trim());
 }
 
 /**
@@ -52,6 +63,7 @@ export function lastStreamEvent(streamPath: string): LastEvent | null {
         return {
           text: text.length > EXCERPT_CHARS ? `${text.slice(0, EXCERPT_CHARS - 1)}…` : text,
           at: new Date(st.mtimeMs).toISOString(),
+          question: endsWithQuestion(text),
         };
       }
     }
@@ -114,4 +126,39 @@ export function lastRunsBySeat(stateDir: string): Map<string, LastRun> {
     });
   }
   return out;
+}
+
+/** One operator note sent to a live run, kept so it outlives the pane that sent it (CREW-3248). */
+export interface RunNote {
+  id: string;
+  text: string;
+  author: string | null;
+  at: string;
+  /** How it reached the agent: written to its stdin, or left for the next run's brief. */
+  state: 'delivered' | 'carried_forward';
+}
+
+/** The notes sidecar of a run stream. Not `.jsonl`, so no stream scan mistakes it for a run. */
+export const notesPathFor = (streamPath: string): string => `${streamPath}.notes.json`;
+
+/**
+ * The notes sent to a run through this daemon's control API, oldest first; empty when there are none
+ * or the file is unreadable. Notes posted from the platform's own UI are not here: only the control
+ * API sees the author and state, and it is the one writer.
+ */
+export function readRunNotes(streamPath: string): RunNote[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(notesPathFor(streamPath), 'utf8'));
+    return Array.isArray(parsed) ? (parsed as RunNote[]) : [];
+  } catch { return []; }
+}
+
+/** Appends a note to the run's sidecar (write to a temp file, then rename, so a reader never sees half). Best effort. */
+export function appendRunNote(streamPath: string, note: RunNote): void {
+  try {
+    const path = notesPathFor(streamPath);
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify([...readRunNotes(streamPath), note]));
+    renameSync(tmp, path);
+  } catch { /* the note was delivered; a missing record of it only costs the menu its history */ }
 }

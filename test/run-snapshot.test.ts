@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lastStreamEvent, lastRunsBySeat, outcomeOf } from '../src/run-snapshot.ts';
+import { lastStreamEvent, lastRunsBySeat, outcomeOf, endsWithQuestion, appendRunNote, readRunNotes } from '../src/run-snapshot.ts';
 
 const dir = (): string => mkdtempSync(join(tmpdir(), 'crew-snap-'));
 const text = (t: string): string => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: t }] } });
@@ -50,4 +50,26 @@ test('lastRunsBySeat keeps the newest finished run per route and role, ignoring 
   assert.equal(m.get('r/dev')?.outcome, 'failed');
   assert.equal(m.get('r/qa')?.ticket, 'CREW-4');
   assert.equal(m.size, 2);
+});
+
+test('endsWithQuestion flags a turn that closes on a question, not one that merely contains one', () => {
+  assert.deepEqual(
+    ['Should I proceed?', 'Which one **do you want?**', 'Is it "done"?)', 'Why? Because.', 'Done.'].map(endsWithQuestion),
+    [true, true, true, false, false],
+  );
+  const d = dir();
+  writeFileSync(join(d, 'q.jsonl'), text('Shall I merge it?') + '\n');
+  assert.equal(lastStreamEvent(join(d, 'q.jsonl'))?.question, true);
+});
+
+test('run notes append to a sidecar that no stream scan mistakes for a run', () => {
+  const d = dir();
+  const s = join(d, 'r.jsonl');
+  assert.deepEqual(readRunNotes(s), []);
+  appendRunNote(s, { id: 'n1', text: 'one', author: 'Brad', at: '2026-11-11T00:00:00Z', state: 'delivered' });
+  appendRunNote(s, { id: 'n2', text: 'two', author: null, at: '2026-11-11T00:01:00Z', state: 'carried_forward' });
+  assert.deepEqual(readRunNotes(s).map((n) => n.id), ['n1', 'n2']);
+  assert.equal(readRunNotes(s)[1]!.state, 'carried_forward');
+  writeFileSync(`${s}.notes.json`, 'garbage');
+  assert.deepEqual(readRunNotes(s), []);
 });
