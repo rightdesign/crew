@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.144.0] — 2026-11-11
+
+- CREW-3247 The status snapshot now reports each live run's ticket title, latest text excerpt and past-deadline state, and each seat's last run and outcome, for the macOS menu.
+
 ## [0.143.4] — 2026-11-11
 
 - CREW-3054 crew connect now prints the server's own message after an HTTP error status, and no longer sends Ships kind/instance_class values the workspace's type has no option for (it names the missing option instead).
