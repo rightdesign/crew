@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.143.3] — 2026-11-11
+
+- CREW-3239 Relay tunnel warnings in doctor for a workspace the ship no longer serves are now cleared on the next passengers cycle instead of staying open indefinitely.
+- CREW-3241 In a hybrid project, a ticket held by a ship is handed back to that ship's operator when QA verifies it or a lane parks it, instead of to the person who filed it.
+
 ## [0.143.2] — 2026-11-11
 
 - CREW-3236 A checkout whose built bundle is out of date now says so in crew --version, on stderr for other commands, and in crew doctor.
