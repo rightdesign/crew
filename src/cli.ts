@@ -93,6 +93,7 @@ import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts'
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { anyRunAcceptsInput, COMMENT_DELIVERY_BACKOFF_MS, runCommentDeliveryPass } from './comment-delivery.ts';
+import { startLaunchdDaemon } from './launchd-start.ts';
 import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
@@ -3280,6 +3281,36 @@ switch (command) {
             ? `crew daemon ${daemonSub}: this host has no systemd, so the \`run\` job stays on the old periodic crontab invocation — there is no persistent process to ${daemonSub}.\n`
             : `crew daemon ${daemonSub}: nothing to control on this platform.\n`,
         );
+        break;
+      }
+      // CREW-3237: launchd's start is planned from what the service manager reports
+      // (loaded/running/unloaded), not a blind `load` that fails on a loaded unit.
+      const launchdStart = (o: { verifyAfterLoad?: boolean; assumeUnloaded?: boolean }): boolean => {
+        const runPlan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), 'run', installContext());
+        const label = labelFor(CREW_HOME, 'run');
+        const r = startLaunchdDaemon({
+          unitPath: runPlan.unitPaths[0]!, label, uid: process.getuid?.() ?? 0,
+          schedulerLog: runPlan.schedulerLog, dryRun, ...o,
+          run: (c) => {
+            const res = spawnSync(c[0]!, c.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() });
+            return res.error ? null : { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+          },
+        });
+        if (r.stdout) process.stdout.write(r.stdout);
+        if (r.stderr) process.stderr.write(r.stderr);
+        process.exitCode = r.exitCode;
+        return true;
+      };
+      if (control.mechanism === 'launchd' && daemonSub === 'start') { launchdStart({}); break; }
+      if (control.mechanism === 'launchd' && daemonSub === 'restart') {
+        if (dryRun) process.stdout.write(`would run: ${control.stopCommand!.join(' ')}\n`);
+        else {
+          // The unit may not be loaded yet; unloading it then is harmless.
+          const res = spawnSync(control.stopCommand![0]!, control.stopCommand!.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() });
+          if (res.stdout) process.stdout.write(res.stdout);
+          if (res.stderr) process.stderr.write(res.stderr);
+        }
+        launchdStart({ verifyAfterLoad: true, assumeUnloaded: true });
         break;
       }
       if (daemonSub === 'restart') {
