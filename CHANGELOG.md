@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.146.1] — 2026-11-11
+
+- CREW-3250 A route poll that fails on a transient tracker outage (connection drop, 502/503/504) is now logged as a warning instead of an error.
+
 ## [0.146.0] — 2026-11-11
 
 - CREW-3249 The control API can leave a note for an idle or paused seat (POST /seats/<role>/notes); the seat's next run reads it in its brief.
