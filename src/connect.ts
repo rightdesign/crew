@@ -242,12 +242,34 @@ export interface Discovered {
 export class ConnectHttpError extends Error {
   status: number;
   path: string;
-  constructor(status: number, path: string, statusText: string) {
-    super(`${path}: ${status} ${statusText}`);
+  constructor(status: number, path: string, statusText: string, detail?: string) {
+    super(`${path}: ${status} ${statusText}${detail ? ` — ${detail}` : ''}`);
     this.name = 'ConnectHttpError';
     this.status = status;
     this.path = path;
   }
+}
+
+/**
+ * What the server said about a failed call: the JSON `message` when there is
+ * one (Nest validation errors may carry an array of them), else the first
+ * ~300 characters of the body. Empty when the body is unreadable, so the
+ * error still reads as before.
+ */
+async function errorDetail(res: Response): Promise<string> {
+  let text = '';
+  try { text = (await res.text()).trim(); } catch { return ''; }
+  if (!text) return '';
+  try {
+    const m = (JSON.parse(text) as { message?: unknown }).message;
+    if (typeof m === 'string' && m) return m.slice(0, 300);
+    if (Array.isArray(m) && m.length > 0) return m.map(String).join('; ').slice(0, 300);
+  } catch { /* not JSON — fall through to the raw text */ }
+  return text.slice(0, 300);
+}
+
+async function httpError(res: Response, path: string): Promise<ConnectHttpError> {
+  return new ConnectHttpError(res.status, path, res.statusText, await errorDetail(res));
 }
 
 export async function get<T>(o: AuthOptions, path: string): Promise<T> {
@@ -258,7 +280,7 @@ export async function get<T>(o: AuthOptions, path: string): Promise<T> {
       'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
     },
   });
-  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+  if (!res.ok) throw await httpError(res, path);
   return (await res.json()) as T;
 }
 
@@ -272,7 +294,7 @@ async function post<T>(o: AuthOptions, path: string, body: unknown): Promise<T> 
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+  if (!res.ok) throw await httpError(res, path);
   return (await res.json()) as T;
 }
 
@@ -286,7 +308,7 @@ async function patch<T>(o: AuthOptions, path: string, body: unknown): Promise<T>
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+  if (!res.ok) throw await httpError(res, path);
   return (await res.json()) as T;
 }
 
@@ -298,7 +320,7 @@ async function del(o: AuthOptions, path: string): Promise<void> {
       'User-Agent': o.userAgent ?? 'Mozilla/5.0 TablationCrewAgent/1.0',
     },
   });
-  if (!res.ok) throw new ConnectHttpError(res.status, path, res.statusText);
+  if (!res.ok) throw await httpError(res, path);
 }
 
 /**
@@ -704,10 +726,31 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // arrive with a template update: `owner_id` (CREW-1286) and `machine_id`
     // (ISSUE-2249). Unreadable metadata reads as "column absent".
     let shipColumns = new Set<string>();
+    // CHOICE columns' option values (CREW-3054). A column absent here is not a
+    // choice, or its options were unreadable: nothing to check against.
+    const shipOptions = new Map<string, Set<string>>();
     try {
-      const shipsModel = await get<{ fields?: Array<{ columnName: string }> }>(o, `/data-models/${out.shipsModelId}`);
+      const shipsModel = await get<{
+        fields?: Array<{ columnName: string; fieldType?: { choiceOptions?: Array<{ value: string }> } }>;
+      }>(o, `/data-models/${out.shipsModelId}`);
       shipColumns = new Set((shipsModel.fields ?? []).map((f) => f.columnName));
+      for (const f of shipsModel.fields ?? []) {
+        const opts = f.fieldType?.choiceOptions;
+        if (Array.isArray(opts)) shipOptions.set(f.columnName, new Set(opts.map((x) => x.value)));
+      }
     } catch { /* see above */ }
+    // A choice value the workspace's type does not offer would 400 the whole
+    // write. For the non-essential columns it is skipped and named instead.
+    const skippedChoice = new Set<string>();
+    const choiceOk = (column: string, value: string): boolean => {
+      const opts = shipOptions.get(column);
+      if (!opts || opts.has(value)) return true;
+      if (!skippedChoice.has(`${column}=${value}`)) {
+        skippedChoice.add(`${column}=${value}`);
+        provisioning.push(`workspace's Ships ${column} type has no "${value}" option — left ${column} unset; update the template`);
+      }
+      return false;
+    };
     const hostPeriscopes = shipColumns.has('host_periscopes') ? o.ship.hostPeriscopes : undefined;
     let ownerId: string | undefined;
     if (out.meId) {
@@ -757,8 +800,8 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       if ((mine[0]!.host_passengers ?? false) !== hostPassengers) patchBody.host_passengers = hostPassengers;
       if (hostPeriscopes !== undefined && (mine[0]!.host_periscopes ?? false) !== hostPeriscopes) patchBody.host_periscopes = hostPeriscopes;
       // CREW-2882: a kind or class named on the command line is reconciled onto the row; unnamed leaves it alone.
-      if (o.ship.kind && shipColumns.has('kind') && (mine[0]!.kind ?? '') !== o.ship.kind) patchBody.kind = o.ship.kind;
-      if (o.ship.instanceClass && shipColumns.has('instance_class') && (mine[0]!.instance_class ?? '') !== o.ship.instanceClass) patchBody.instance_class = o.ship.instanceClass;
+      if (o.ship.kind && shipColumns.has('kind') && choiceOk('kind', o.ship.kind) && (mine[0]!.kind ?? '') !== o.ship.kind) patchBody.kind = o.ship.kind;
+      if (o.ship.instanceClass && shipColumns.has('instance_class') && choiceOk('instance_class', o.ship.instanceClass) && (mine[0]!.instance_class ?? '') !== o.ship.instanceClass) patchBody.instance_class = o.ship.instanceClass;
       if (sshPublicKey !== undefined && (mine[0]!.ssh_public_key ?? '') !== sshPublicKey) {
         patchBody.ssh_public_key = sshPublicKey;
       }
@@ -771,6 +814,12 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         if ('owner_id' in patchBody) provisioning.push(`recorded owner on Ships row "${o.ship.name}"`);
       }
     } else if (mine.length === 0) {
+      // `platform` is required on Ships, so an option it lacks fails with the
+      // specific message rather than being skipped.
+      if (o.ship.platform && shipOptions.get('platform') && !shipOptions.get('platform')!.has(o.ship.platform)) {
+        throw new Error(`workspace's Ships platform type has no "${o.ship.platform}" option — update the template`);
+      }
+      const kindValue = o.ship.kind ?? 'developer_machine';
       const created = await post<{ id: string }>(o, `/data-models/${out.shipsModelId}/records`, {
         name: o.ship.name,
         ...(o.ship.platform ? { platform: o.ship.platform } : {}),
@@ -781,8 +830,8 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
         ...(writeMachineId ? { machine_id: machineId } : {}),
         // ISSUE-2791: a ship connecting by hand is a developer machine; the
         // column arrives with a template update, so only written when present.
-        ...(shipColumns.has('kind') ? { kind: o.ship.kind ?? 'developer_machine' } : {}),
-        ...(o.ship.instanceClass && shipColumns.has('instance_class') ? { instance_class: o.ship.instanceClass } : {}),
+        ...(shipColumns.has('kind') && choiceOk('kind', kindValue) ? { kind: kindValue } : {}),
+        ...(o.ship.instanceClass && shipColumns.has('instance_class') && choiceOk('instance_class', o.ship.instanceClass) ? { instance_class: o.ship.instanceClass } : {}),
       });
       shipRowId = created.id;
       out.shipRow = { id: shipRowId, name: o.ship.name, action: 'created', matchedBy };

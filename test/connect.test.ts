@@ -1322,3 +1322,60 @@ test('discover() syncs host_periscopes only when the route sets it and the Ships
   assert.deepEqual(await run(['host_periscopes']), { host_periscopes: true });
   assert.equal(await run([]), undefined);
 });
+
+test('ConnectHttpError carries the server\'s message after the status (CREW-3054)', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = (async () => new Response(JSON.stringify({ message: 'Invalid value "developer_machine" for kind' }), { status: 400, statusText: 'Bad Request' })) as typeof fetch;
+  await assert.rejects(
+    () => discover({ ...BASE, workspace: 'issues', project: 'bar' }),
+    (e: Error) => e.message.includes('400 Bad Request — Invalid value "developer_machine" for kind'),
+  );
+  globalThis.fetch = (async () => new Response('<html>gateway down</html>', { status: 502, statusText: 'Bad Gateway' })) as typeof fetch;
+  await assert.rejects(
+    () => discover({ ...BASE, workspace: 'issues', project: 'bar' }),
+    (e: Error) => e.message.includes('502 Bad Gateway — <html>gateway down</html>'),
+  );
+});
+
+test('discover() leaves kind unset and names the missing option when the Ships kind type has none (CREW-3054)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model': { fields: [{ columnName: 'kind', fieldType: { choiceOptions: [] } }] },
+    '/api/data-models/ships-model/records?limit=200': [],
+    '/api/data-models/ships-model/records': { id: 'ship-new' },
+    '/api/data-models/crew-model/records?limit=200': [],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'M' } });
+  const body = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records')?.body as Record<string, unknown>;
+  assert.equal('kind' in body, false);
+  assert.ok(found.provisioning.some((p) => p.includes('no "developer_machine" option')));
+});
+
+test('discover() fails with a specific message when Ships platform lacks the option (CREW-3054)', async (t) => {
+  const { restore } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model': { fields: [{ columnName: 'platform', fieldType: { choiceOptions: [{ value: 'linux' }] } }] },
+    '/api/data-models/ships-model/records?limit=200': [],
+    '/api/data-models/crew-model/records?limit=200': [],
+  });
+  t.after(restore);
+  await assert.rejects(
+    () => discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'M', platform: 'macos' } }),
+    /Ships platform type has no "macos" option/,
+  );
+});
