@@ -123,7 +123,9 @@ pass.
    changes the verdict is acted on before you write it. Send the verdict write conditional on the `updated_at` you just read
    (the `X-Expected-Updated-At` header); a 409 means the same thing.
 
-   - **It holds up** → `status` = `verified`, clear `assignee_id`, and when
+   - **It holds up** → `status` = `verified`, clear `assignee_id` (in a
+     `hybrid` project assign the operator instead, so the ticket stays on
+     their board; the release phase merges it either way), and when
      the Issues table has a `verified_sha` column set it to the full sha of
      the branch head you tested (`git rev-parse HEAD`): for a repository that
      hands work to human review, the crew compares the branch against it and

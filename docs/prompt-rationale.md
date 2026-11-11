@@ -115,6 +115,11 @@ tracker.
   (CREW-1495, ISSUE-1498): an unassigned ticket in a hybrid project is off
   limits to every lane, so a cleared assignee stranded the hand-off or the
   bounce.
+- **A verified hybrid ticket is assigned to its owner, not cleared**
+  (CREW-3235): clearing the assignee on `verified` made the ticket drop off
+  the board of the person who had handed it to the agents. The `park to`
+  person (acceptor, then filer, then operator) is who gets it back; the
+  release phase ignores the assignee, so the merge is unaffected.
 - **QA verification is held per ship** (CREW-1389): two ships' QA seats
   each verified one branch, and a defective one merged on the second
   verdict. `held_by_ship_id` plus a conditional write (`X-Expected-Updated-At`)

@@ -275,6 +275,10 @@ ticket to the next lane by assigning that lane's seat on this ship (ids under
 role, assign any Crew row with that role's Agent; if there is none, clear it
 and say so in the hand-off comment. Parks (`needs_info`, `needs_planning` →
 the operator) are the same in every mode.
+**The end of the line returns to a person.** In a `hybrid` project, a ticket
+leaving the agent lanes for good (QA's `verified`, below) is assigned to the
+operator, never cleared: an unassigned hybrid ticket vanishes from that
+person's board. In an `automatic` project the end of the line stays cleared.
 
 **Gates you never cross:**
 
