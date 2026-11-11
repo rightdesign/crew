@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.143.1] — 2026-11-11
+
+- CREW-3235 A hybrid-project ticket that QA verifies is reassigned to the person it returns to (the acceptor, else the filer, else the operator) instead of becoming unassigned and disappearing from their board.
+
 ## [0.143.0] — 2026-11-10
 
 - CREW-3220 A release gate hook that fails once and passes on an immediate rerun no longer hands a branch back; the flake is filed as a ticket, and the escalation after a second hand-back says whether the two failures were the same test and whether they touch the branch's files.
