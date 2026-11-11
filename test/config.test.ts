@@ -77,6 +77,16 @@ test('hostPassengers defaults to false, and a route may opt in explicitly (ISSUE
   assert.equal(cfg2.routes[0]!.hostPassengers, false);
 });
 
+test('assistedRoles is absent by default, may be empty or a role list, and rejects a non-role (CREW-3258)', () => {
+  const at = (v: string) => { const { dir, file } = withConfig(ONE.replace('worktreePrefix: proj-issue-', `worktreePrefix: proj-issue-\n    assistedRoles: ${v}`)); return () => loadConfig(dir, file); };
+  const { dir, file } = withConfig(ONE);
+  assert.equal(loadConfig(dir, file).routes[0]!.assistedRoles, undefined);
+  assert.deepEqual(at('[]')().routes[0]!.assistedRoles, []);
+  assert.deepEqual(at('[dev]')().routes[0]!.assistedRoles, ['dev']);
+  assert.throws(at('[janitor]'), ConfigError);
+  assert.throws(at('dev'), ConfigError);
+});
+
 test('ship.relayHost is undefined unless set — the tunnel client has no relay to dial otherwise (ISSUE-553)', () => {
   const { dir, file } = withConfig(ONE);
   const cfg = loadConfig(dir, file);

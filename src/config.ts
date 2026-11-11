@@ -423,7 +423,16 @@ export interface Route {
    * toolchain's `maxRunMinutes` (CREW-2786). 0 disables the limit.
    */
   maxRunMinutes?: number;
+  /**
+   * Roles whose run start marks the ticket `crew_assisted` (CREW-3258).
+   * Absent means the default, `DEFAULT_ASSISTED_ROLES`; an empty list turns
+   * the marking off for this route.
+   */
+  assistedRoles?: RoleName[];
 }
+
+/** The roles that count as the crew having worked a ticket. */
+export const DEFAULT_ASSISTED_ROLES: readonly RoleName[] = ['dev', 'qa'];
 
 export interface Ship {
   name: string;
@@ -690,7 +699,7 @@ const SHIP_KEYS = new Set([
 const ROUTE_KEYS = new Set([
   'route', 'enabled', 'area', 'dir', 'repos', 'reposBasePath', 'worktreePrefix', 'weight',
   'baseUrl', 'apiKey', 'apiKeyFile', 'apiKeyVar',
-  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'hostPeriscopes', 'toolchain', 'maxRunMinutes',
+  'hooks', 'labels', 'release', 'branch', 'contract', 'resolved', 'promptSet', 'hostPassengers', 'hostPeriscopes', 'toolchain', 'maxRunMinutes', 'assistedRoles',
 ]);
 /** What an object-shaped `repos:` entry may say, on top of the bare dir string form. */
 /** A route repo's `worktreeName`, validated like `worktrees.name` in a repo's own `.crew.yaml`. */
@@ -1314,6 +1323,24 @@ function parseMaxRunMinutes(raw: unknown, where: string, missing: Missing): numb
   return n;
 }
 
+/** A route's `assistedRoles` (CREW-3258): a list of role names, [] meaning off; undefined when absent. */
+function parseAssistedRoles(raw: unknown, where: string, missing: Missing): RoleName[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    missing.add(`${where} must be a list of roles (expected any of ${ROLE_NAMES.join(', ')}), [] to turn the marking off`);
+    return undefined;
+  }
+  const out: RoleName[] = [];
+  for (const r of raw) {
+    if (!(ROLE_NAMES as string[]).includes(String(r))) {
+      missing.add(`${where} has "${String(r)}", which is not a role (expected any of ${ROLE_NAMES.join(', ')})`);
+      continue;
+    }
+    if (!out.includes(r as RoleName)) out.push(r as RoleName);
+  }
+  return out;
+}
+
 /** `ship.pair`: a list of harness names (CREW-1517). Undefined when absent. */
 function parsePair(raw: unknown, missing: Missing): string[] | undefined {
   if (raw === undefined) return undefined;
@@ -1414,6 +1441,7 @@ function parseOneRoute(
   rejectUnknownKeys(c, ROUTE_KEYS, `${where}`, file);
   const toolchain = c?.toolchain === undefined ? undefined : String(c.toolchain);
   const maxRunMinutes = parseMaxRunMinutes(c?.maxRunMinutes, `${where}.maxRunMinutes`, missing);
+  const assistedRoles = parseAssistedRoles(c?.assistedRoles, `${where}.assistedRoles`, missing);
   if (toolchain !== undefined && !toolchainNames.has(toolchain)) {
     missing.add(`${where}.toolchain "${toolchain}" is not defined in ship.toolchains (have: ${[...toolchainNames].join(', ')})`);
   }
@@ -1493,6 +1521,7 @@ function parseOneRoute(
     worktreePrefix: c?.worktreePrefix ? String(c.worktreePrefix) : undefined,
     ...(toolchain !== undefined ? { toolchain } : {}),
     ...(maxRunMinutes !== undefined ? { maxRunMinutes } : {}),
+    ...(assistedRoles !== undefined ? { assistedRoles } : {}),
     promptsDir: resolvePromptsDir(c?.promptSet ? String(c.promptSet) : undefined, crewHome, base),
     weight,
     baseUrl: String(c?.baseUrl ?? raw.ship?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),

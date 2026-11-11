@@ -145,6 +145,13 @@ export interface ContractColumns {
   cacheReadTokens: string;
   cacheWriteTokens: string;
   costUsd: string;
+  /**
+   * Whether the crew's Dev or QA lane has worked the ticket (CREW-3258): an
+   * optional Yes/No column, set true when such a run starts and never cleared
+   * by the crew. A table without it has not adopted the feature and is written
+   * around.
+   */
+  crewAssisted: string;
 }
 
 export interface ContractComments {
@@ -322,6 +329,7 @@ export const DEFAULT_CONTRACT: Contract = {
     cacheReadTokens: 'cache_read_tokens',
     cacheWriteTokens: 'cache_write_tokens',
     costUsd: 'cost_usd',
+    crewAssisted: 'crew_assisted',
   },
   comments: {
     parent: 'ticket_id',

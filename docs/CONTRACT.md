@@ -67,6 +67,17 @@ ticket goes after any positioned one. It is a tiebreak, never an override — it
 beats the severity and epic tiebreakers but can never move a ticket across an
 effective-priority band.
 
+`crew_assisted` (a Yes/No, `columns.crewAssisted`, CREW-3258) records that the
+crew's building or verifying lane worked the ticket. When a run of a role in
+the route's `assistedRoles` (default `[dev, qa]`; `[]` turns it off; see
+`crew.example.yaml`) is about to launch on a ticket, the crew sets it true with
+one update, skipped when the row already says true. It is never set by any other
+role and never set back to false, and a table without the column is not written
+to. `crew doctor` reports whether the column is present. The write is separate
+from the claim, so a run refused after the claim (a lost hold) does not mark it;
+a run that turns out signed out is only detected after launch and has already
+marked it.
+
 The run-spend counters (CREW-2580) are optional numbers on Issues:
 `agent_runs`, `tokens_in`, `tokens_out`, `cache_read_tokens`,
 `cache_write_tokens` (Integer) and `cost_usd` (Float), named in the contract as

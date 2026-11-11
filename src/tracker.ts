@@ -309,6 +309,7 @@ export class Tracker {
    * so concurrent first writes share one round of field-metadata reads.
    */
   private authorship?: Promise<Authorship>;
+  private crewAssistedColumn?: Promise<boolean>;
   private attachments?: Promise<AttachmentsProbe>;
   private readonly stateDir: string | undefined;
 
@@ -1004,6 +1005,12 @@ export class Tracker {
       column: this.contract.columns.heldBy,
       shipId: auth.shipId,
     };
+  }
+
+  /** Whether Issues carries the optional `crew_assisted` column (CREW-3258). */
+  async hasCrewAssistedColumn(): Promise<boolean> {
+    this.crewAssistedColumn ??= this.columnNames(this.models.issues).then((f) => f.has(this.contract.columns.crewAssisted));
+    return this.crewAssistedColumn;
   }
 
   /**

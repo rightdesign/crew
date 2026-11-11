@@ -132,6 +132,11 @@ routes:
     # dev/design/QA policy this repo ships with) when omitted. See
     # prompts/default/ for the shape a custom set needs to have.
     # promptSet: "dev-qa"
+    # Roles whose run start marks the ticket's optional `crew_assisted` Yes/No
+    # column true (CREW-3258): a record that the crew's building or verifying
+    # lane worked it. Defaults to [dev, qa]; [] turns the marking off for this
+    # route. Ignored on a workspace whose Issues table lacks the column.
+    # assistedRoles: [dev, qa]
     # What a host must be to build a repo lives in THAT repo's own .crew.yaml
     # (any | unix | macos | linux | windows) — never here. A route can span
     # repos with different needs; the ship refuses a route only when it can

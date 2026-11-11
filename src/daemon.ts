@@ -82,6 +82,7 @@ import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { claimStillHeld, resolveTopCandidate } from './claim.ts';
+import { markCrewAssistedAtLaunch } from './crew-assisted.ts';
 import { refreshUnknownRepos, reportUnservable, repoLabelFor } from './repo-refresh.ts';
 import { applySweep } from './blocked.ts';
 import { applyEpicSync } from './epics.ts';
@@ -1390,6 +1391,7 @@ async function runRoleAgentLocked(
     if (workingId) {
       try {
         const before = await tracker.ticket(workingId);
+        await markCrewAssistedAtLaunch(tracker, route, role, workingId, before, (m) => emit.warn(m, { step: 'agent' }));
         const col = tracker.contract.columns;
         const tipBefore = branchProgress(route, before);
         if (role === 'dev' || role === 'design') {

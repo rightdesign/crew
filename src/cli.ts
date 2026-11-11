@@ -52,6 +52,7 @@ import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
 import { resolveTopCandidate } from './claim.ts';
+import { markCrewAssistedAtLaunch } from './crew-assisted.ts';
 import { refreshUnknownRepos, persistRepoRows } from './repo-refresh.ts';
 import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
@@ -2993,6 +2994,7 @@ switch (command) {
       }
       try {
         const runStart = new Date().toISOString();
+        await markCrewAssistedAtLaunch(fleetTracker, w.route, w.role, fleetWorkingId ?? null, undefined, (m) => wemit.warn(m, { step: 'agent' }));
         await spawnAgent(fleetPlan, wemit);
         await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit, runStart);
       } finally {
@@ -3244,6 +3246,7 @@ switch (command) {
       }
       try {
         const runStart = new Date().toISOString();
+        await markCrewAssistedAtLaunch(tracker2, route, current, workingId ?? null, undefined, (m) => emit.warn(m, { step: 'agent' }));
         await spawnAgent(plan, emit);
         await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit, runStart);
       } finally {
@@ -7237,6 +7240,12 @@ switch (command) {
       await tracker.hasPublicReplyColumn()
         ? `public replies:  Comments.${tracker.contract.comments.publicReply} present — public reporters are labelled in the digest\n`
         : `public replies:  Comments.${tracker.contract.comments.publicReply} absent — no public intake form, nothing to guard\n`,
+    );
+    // CREW-3258: informational only — a table without the column has not adopted the marking.
+    process.stdout.write(
+      await tracker.hasCrewAssistedColumn()
+        ? `crew assisted:   Issues.${tracker.contract.columns.crewAssisted} present — Dev/QA runs mark the ticket\n`
+        : `crew assisted:   Issues.${tracker.contract.columns.crewAssisted} absent — tickets are not marked; update the Issues template to adopt it\n`,
     );
     // EPIC-077: the optional Periscopes table. Absent is a legitimate shape;
     // a present table missing a column the crew writes is named by column.
