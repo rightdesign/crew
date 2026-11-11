@@ -20,6 +20,10 @@
  *                             `state` `delivered` or `carried_forward` (the next run of the work item reads
  *                             it in its brief). 404 for an unknown or finished run, 409 for a live run this
  *                             daemon cannot reach or the platform refused; same bearer check as other writes.
+ *  - `POST /seats/<role>/notes`  `{ text, ticket?, author? }` (CREW-3249): a note for a seat with no live run.
+ *                             Crew spools it on this ship (`seat-notes.ts`) and the seat's next run (of that
+ *                             ticket, when `ticket` is given) reads it in its brief. Answers
+ *                             `{ id, state: "carried_forward", carriedForward: true }`; 400 for an unknown role.
  *  - `POST /pause`, `/resume` `{ "role"?: "dev"|"design"|"qa" }`.
  *  - `POST /release/pause`, `/release/resume`.
  *  - `POST /scheduler/{start,stop,restart}`  wraps `planDaemonControl`; answers 202.
@@ -57,6 +61,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { basename, dirname, join } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import type { RoleName } from './config.ts';
+import { addSeatNote } from './seat-notes.ts';
 import { eventFileFor, ROTATED_EVENTS_RE } from './events.ts';
 import { liveRuns, type LiveRun } from './live-runs.ts';
 import { appendRunNote } from './run-snapshot.ts';
@@ -393,6 +398,7 @@ async function tailReply(path: string, q: URLSearchParams, rotated: boolean, abo
 }
 
 const NOTE_MAX_CHARS = 4000;
+const SEAT_ROLES: readonly RoleName[] = ['dev', 'design', 'qa', 'triage', 'pair'];
 
 /** `POST /streams/<run>/messages` (CREW-3119). */
 async function postRunMessage(deps: ControlDeps, run: string, body: Record<string, unknown> | null): Promise<Reply> {
@@ -419,6 +425,26 @@ async function postRunMessage(deps: ControlDeps, run: string, body: Record<strin
     return reply(200, { cycleId: recorded.id, state, acceptsInput });
   } catch (e) {
     return err(409, `the platform did not take the note: ${(e as Error).message}. ${carry}`);
+  }
+}
+
+/** `POST /seats/<role>/notes` (CREW-3249). */
+function postSeatNote(deps: ControlDeps, role: string, body: Record<string, unknown> | null): Reply {
+  if (!SEAT_ROLES.includes(role as RoleName)) return err(400, `role must be one of ${SEAT_ROLES.join(', ')}`);
+  if (!body) return err(400, 'body must be a small JSON object');
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (!text || text.length > NOTE_MAX_CHARS) return err(400, `text must be a string of 1 to ${NOTE_MAX_CHARS} characters`);
+  if (body.author !== undefined && typeof body.author !== 'string') return err(400, 'author must be a string');
+  if (body.ticket !== undefined && (typeof body.ticket !== 'string' || !body.ticket.trim() || body.ticket.length > 64)) return err(400, 'ticket must be a ticket tag');
+  try {
+    const note = addSeatNote(deps.stateDir, {
+      role: role as RoleName, text,
+      ...(body.ticket ? { ticket: (body.ticket as string).trim() } : {}),
+      ...(body.author ? { author: (body.author as string).trim() } : {}),
+    });
+    return reply(200, { id: note.id, state: 'carried_forward', carriedForward: true });
+  } catch (e) {
+    return err(500, `could not store the note: ${(e as Error).message}`);
   }
 }
 
@@ -463,6 +489,8 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
   }
   const note = /^\/streams\/([^/]+)\/messages$/.exec(p);
   if (note && post) return postRunMessage(deps, decodeURIComponent(note[1]!), await readJsonBody(req));
+  const seatNote = /^\/seats\/([^/]+)\/notes$/.exec(p);
+  if (seatNote && post) return postSeatNote(deps, decodeURIComponent(seatNote[1]!), await readJsonBody(req));
   if ((p === '/pause' || p === '/resume') && post) {
     const body = await readJsonBody(req);
     if (!body) return err(400, 'body must be a small JSON object');
@@ -487,7 +515,7 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
   }
   if (p === '/diagnostics' && get && deps.diagnostics) return reply(200, await deps.diagnostics());
   const known = ['/status', '/events', '/streams', '/pause', '/resume', '/release/pause', '/release/resume', '/doctor', ...(deps.diagnostics ? ['/diagnostics'] : [])];
-  if (known.includes(p) || p.startsWith('/streams/') || sched) return err(405, 'method not allowed');
+  if (known.includes(p) || p.startsWith('/streams/') || seatNote || sched) return err(405, 'method not allowed');
   return err(404, 'not found');
 }
 

@@ -39,6 +39,7 @@ import { registerRunInput, unregisterRunInput } from './run-input.ts';
 import { reportAgentRun, startAgentRunRow, LiveRunReporter, markMessage, memberNames, type PendingMessage, fetchPendingMessages, frameNote, operatorNotesSection, queueAgentRun, queueTicketCounters, AgentLogUnreachableError, AgentLogHttpError, type AgentLogTarget, type AgentCycle } from './agent-log.ts';
 import { HandoffTranscriptTracker } from './handoff-transcript.ts';
 import { writePendingHandoff, stateDirOfStream } from './pending-handoff.ts';
+import { waitingSeatNotes, consumeSeatNotes, seatNotesSection } from './seat-notes.ts';
 import { DEFAULT_SANDBOX_WORKDIR, swapSandboxSkills } from './sandbox-brief.ts';
 import { SANDBOX_BRIDGE_PATH, readSandboxState, sandboxImageForRun, sandboxImageMissing } from './sandbox-image.ts';
 import { expandSkillMarkers, SkillIncludeError, type ExpandResult } from './skill-include.ts';
@@ -1359,8 +1360,24 @@ function streamsInput(plan: AgentPlan): boolean {
 
 /** Launches the planned run (`spawnPlanned`), after folding in any operator notes its work item has waiting. */
 export function spawnAgent(plan: AgentPlan, emit: Emitter, hintMoved?: HintMoved): Promise<RunResult> {
-  if (!plan.agentLog?.tickets || !plan.ticketRecordId) return spawnPlanned(plan, emit, hintMoved);
-  return withOperatorNotes(plan).catch(() => plan).then((p) => spawnPlanned(p, emit, hintMoved));
+  const seated = withSeatNotes(plan);
+  if (!seated.agentLog?.tickets || !seated.ticketRecordId) return spawnPlanned(seated, emit, hintMoved);
+  return withOperatorNotes(seated).catch(() => seated).then((p) => spawnPlanned(p, emit, hintMoved));
+}
+
+/**
+ * CREW-3249: adds the "Notes left for this seat" section from the notes the control API spooled while the seat
+ * had no live run (`seat-notes.ts`), and consumes them. Never throws: a spool that cannot be read leaves the plan as it is.
+ */
+export function withSeatNotes(plan: AgentPlan): AgentPlan {
+  try {
+    const stateDir = stateDirOfStream(plan.streamPath);
+    const notes = waitingSeatNotes(stateDir, plan.role, plan.ticket);
+    if (notes.length === 0) return plan;
+    const prompt = `${plan.prompt}\n\n${seatNotesSection(notes)}\n`;
+    consumeSeatNotes(stateDir, plan.role, notes);
+    return { ...plan, prompt, promptBytes: Buffer.byteLength(prompt, 'utf8') };
+  } catch { return plan; }
 }
 
 /**

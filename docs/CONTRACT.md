@@ -195,6 +195,13 @@ and answers `{ cycleId, state, acceptsInput }`, `state` being `delivered` or
 `carried_forward`. A run that is unknown or has finished answers 404 and names the
 carry-forward path: a note posted to the work item reaches its next run's brief.
 
+`POST /seats/<role>/notes` with `{ text, ticket?, author? }` leaves a note for a seat with no
+live run (CREW-3249), for an idle or paused seat. Crew spools it on the ship and the seat's
+next run reads it in its brief under "Notes left for this seat", then discards it. With
+`ticket` the note waits for a run on that ticket; without, for the role's next run of any
+ticket. It answers `{ id, state: "carried_forward", carriedForward: true }`; an unknown role,
+empty text or a non-string `ticket` is a 400.
+
 ## Overriding it
 
 An org that renames its statuses, adds one, or orders priority differently
