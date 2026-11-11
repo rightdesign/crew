@@ -417,6 +417,16 @@ test('park to: the acceptor first, then the filer, then the operator, then nobod
   assert.equal(parkTarget(seatFiled, input({ roster: noOp })).step, 'none');
 });
 
+test('park to: a hybrid ticket held by this ship goes to this ship\'s operator first (CREW-3241)', () => {
+  const workModes = { modes: new Map([['p-hyb', 'hybrid' as const], ['p-auto', 'automatic' as const]]), agentAssignees: new Set<string>() };
+  const mk = (project_id: string, held_by_ship_id: string) =>
+    T({ id: 'a', issue_id: 'ISSUE-1', status: 'verified', project_id, filed_by_id: 'filer-1', held_by_ship_id });
+  const base = { roster: accRoster, workModes, myShipId: 'ship-here', statusChanges: [accept()] };
+  assert.equal(parkTarget(mk('p-hyb', 'ship-here'), input(base)).step, 'operator');
+  assert.equal(parkTarget(mk('p-hyb', 'ship-other'), input(base)).step, 'acceptor');
+  assert.equal(parkTarget(mk('p-auto', 'ship-here'), input(base)).step, 'acceptor');
+});
+
 test('park to: a promotion by an agent or the system is not an acceptance', () => {
   const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', filed_by_id: 'qa-1' });
   const out = parkTarget(t, input({ roster: accRoster, statusChanges: [accept({ actor_kind: 'agent', actor_record_id: 'maria-1' })] }));

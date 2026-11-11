@@ -568,7 +568,9 @@ ticket looks:
    person — a comment alone is not a stop.
 
    The decision belongs to whoever made the call on the ticket, so the digest
-   resolves `park to` in this order and the first that resolves wins: (1) the
+   resolves `park to` in this order and the first that resolves wins: (0) in a
+   `hybrid` project, the **ship operator** of the ship currently holding the
+   ticket (`held_by_ship_id` is this ship); (1) the
    **acceptor**, the person who last moved the ticket into `accepted` (the
    `accepted by` column; a lane, workflow or the system promoting it does not
    count); (2) the **filer**, only when a hold or a linked person, never a

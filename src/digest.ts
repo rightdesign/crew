@@ -285,13 +285,19 @@ function acceptedBy(t: DigestTicket, i: DigestInput): string {
 
 /**
  * CREW-3144: who a seat addresses and assigns when it parks this ticket on a
- * question. First that resolves wins: the acceptor, the filer (only a hold or
+ * question. A hybrid ticket held by this ship goes to this ship's operator
+ * first (CREW-3241). Otherwise the first that resolves wins: the acceptor, the filer (only a hold or
  * linked person, never a seat or a typed name), the ship operator, nobody.
  * `unverified` carries the name of an acceptor the roster cannot assign, so
  * the comment can still name them while the assignment falls through.
  */
 export function parkTarget(t: DigestTicket, i: DigestInput): { step: 'acceptor' | 'filer' | 'operator' | 'none'; member?: CrewMember; unverified?: string } {
   const person = (m: CrewMember | undefined) => (m && (m.kind === 'hold' || m.kind === 'person') ? m : undefined);
+  // CREW-3241: a hybrid ticket held by this ship is being driven by this ship's operator, so a park or
+  // end-of-line hand-off returns to them, not to the acceptor or filer.
+  const heldHere = !!t.held_by_ship_id && t.held_by_ship_id === i.myShipId && !!i.workModes && modeOf(t, i.workModes) === 'hybrid';
+  const heldOp = heldHere ? operatorOf(i.roster) : undefined;
+  if (heldOp) return { step: 'operator', member: heldOp };
   const a = acceptor(t, i);
   const unverified = a && !a.member ? a.name : undefined;
   const byAcceptor = person(a?.member);
