@@ -322,7 +322,10 @@ test('a worktree whose ticket has a live run on this ship is left in place with 
   const stateDir = mkdtempSync(join(tmpdir(), 'crew-state-'));
   const state = new State(stateDir);
   mkdirSync(join(stateDir, 'streams'));
-  const sc = { pid: process.pid, ownerPid: process.pid, spawnedAt: new Date().toISOString(), role: 'dev', route: 'main', ticket: 'PROJ-71', ticketRecordId: 'r', model: 'm', toolchain: 't', harness: 'claude', provider: 'anthropic', eventsPath: '/tmp/e', promptSha: 'x' };
+  // runIsAlive compares this with the pid's real start time (ps, 15s tolerance), and the test
+  // process may have been running for longer than that: use its actual start, not now (CREW-3254).
+  const ownStart = new Date(Date.now() - process.uptime() * 1000).toISOString();
+  const sc = { pid: process.pid, ownerPid: process.pid, spawnedAt: ownStart, role: 'dev', route: 'main', ticket: 'PROJ-71', ticketRecordId: 'r', model: 'm', toolchain: 't', harness: 'claude', provider: 'anthropic', eventsPath: '/tmp/e', promptSha: 'x' };
   writeFileSync(join(stateDir, 'streams', 'a.jsonl'), '');
   writeFileSync(join(stateDir, 'streams', 'a.jsonl.pid'), JSON.stringify(sc));
   const t = ticket({ issue_id: 'ISSUE-71', status: 'verified' });
