@@ -45,7 +45,22 @@ feature, and the crew writes around it): `held_by_ship_id` (the ship holding a
 ticket), `verified_sha` (the branch head QA verified — written by QA with the
 move to `verified`) and `pr_ref` (the pull request a ticket was handed off
 under — a number or URL, written by the crew). The last two belong to the
-review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`). `position`
+review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`). `branch_url`
+and `pr_url` (CREW-3255) are web links to the code under review. `branch_url`
+is the forge's page for the pushed branch (`branch.push`, not the local name),
+built from the Repos row's `remote` and `forge_host` and written where the
+`pushed` event is posted; it is cleared when the sweep deletes the remote
+branch after release. `pr_url` is always a full URL: what `hooks.pr` printed
+(a number is built into a URL for the repo's forge), or, when a person opened
+the pull request, the one crew discovers each cycle — for an open ticket with a
+`pushed` event, an empty `pr_url` and a forge crew holds a token for, the open
+pull request whose head is the pushed branch, else the newest created after the
+ticket's first `pushed` event (so a reused branch name never attaches an old
+one); `pr_ref` is filled too when its column exists and is empty, so
+`hooks.merged` receives `CREW_PR`. Discovery skips quietly without a token or
+on a forge error, and `pr_url` is kept after release as the record of the
+review. `crew doctor` notes whether each column exists and which repos have no
+forge token. `position`
 (a nullable NUMBER, `columns.position`, CREW-1552) is a manual order: within
 one effective-priority band a lower position goes first and an unpositioned
 ticket goes after any positioned one. It is a tiebreak, never an override — it

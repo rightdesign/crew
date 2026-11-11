@@ -232,6 +232,8 @@ export interface SweepLog {
 export async function applyWorktreeSweep(
   cwd: string, actions: SweepAction[], dryRun: boolean, log: SweepLog, remote = 'origin', base?: string,
   held?: { state: State; repo: string },
+  /** CREW-3255: called once a ticket's pushed branch is gone from the remote, so the board stops linking to it. */
+  onRemoteBranchDeleted?: (ticket: Ticket) => Promise<void>,
 ): Promise<{ removed: number; keptBranches: number; refused: string[] }> {
   const refused: string[] = [];
   // CREW-2051: a refusal warns once, then lives on as a ship attention item.
@@ -324,6 +326,8 @@ export async function applyWorktreeSweep(
       // it; the rest find it already gone, which is success.
       if (remoteConfigured(cwd, remote) && !deleteRemoteBranch(cwd, remote, a.branch)) {
         log.warn(`could not delete ${remote}/${a.branch} — leaving it for the next sweep`, { ticket: a.ticket.issue_id, step: 'worktree' });
+      } else if (remoteConfigured(cwd, remote)) {
+        try { await onRemoteBranchDeleted?.(a.ticket); } catch { /* the link is cosmetic; the next sweep finds nothing to retry */ }
       }
     }
     log.emit(

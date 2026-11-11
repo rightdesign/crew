@@ -1011,10 +1011,25 @@ export class Tracker {
    * table carries. A table without them has not adopted the review hand-off:
    * the crew then pushes and moves the ticket without recording either.
    */
-  async reviewColumns(): Promise<{ verifiedSha: boolean; prRef: boolean }> {
+  async reviewColumns(): Promise<{ verifiedSha: boolean; prRef: boolean; prUrl: boolean }> {
     const fields = await this.columnNames(this.models.issues);
     return {
       verifiedSha: fields.has(this.contract.columns.verifiedSha),
+      prRef: fields.has(this.contract.columns.prRef),
+      prUrl: fields.has(this.contract.columns.prUrl),
+    };
+  }
+
+  /**
+   * Which of the optional link columns (`branch_url`, `pr_url`; CREW-3255) the
+   * Issues table carries. A table without them has not adopted the links and
+   * crew writes around them, with no extra forge calls.
+   */
+  async linkColumns(): Promise<{ branchUrl: boolean; prUrl: boolean; prRef: boolean }> {
+    const fields = await this.columnNames(this.models.issues);
+    return {
+      branchUrl: fields.has(this.contract.columns.branchUrl),
+      prUrl: fields.has(this.contract.columns.prUrl),
       prRef: fields.has(this.contract.columns.prRef),
     };
   }

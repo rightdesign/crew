@@ -77,6 +77,7 @@ import { resolveApiKey, dirForRepo, hydrateApiKeys, repoIdForName, repoTargetFor
 import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { isUpgradeRequired, raiseFromUpgradeRequired } from './crew-floor.ts';
+import { discoverForRoute } from './pr-links.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
@@ -737,6 +738,8 @@ async function applyRouteDecision(o: RunOnePassOptions, ctx: RoleAgentContext, d
     const tracker = new Tracker(o.route, o.ship);
     await applyHoldReleases(tracker, decision.holdReleases, tracker.contract, emit);
   }
+  // CREW-3255: a pull request a person opened is linked on the ticket.
+  await discoverForRoute(o.route, o.ship, decision.tickets, emit);
   // CREW-1401: stalled work is flagged every pass, and this ship's own
   // `stalled:*` attention items clear here once the ticket moves again.
   {

@@ -229,3 +229,26 @@ test('applyReview leaves pr_ref out when the table has no such column', async ()
   }, 'origin', emitter(), 'seat-1', { verifiedSha: false, prRef: false }, false);
   assert.deepEqual(updates, [{ status: 'in_review' }]);
 });
+
+test('a hooks.pr that prints a number yields a full pr_url, and a printed URL is kept as is (CREW-3255)', async () => {
+  const p = project(YAML('  pr: echo 12\n'));
+  const out = await run(p, [T()], { reviewColumns: { verifiedSha: true, prRef: true, prUrl: true }, forge: { host: 'github.com', remote: 'o/r' } });
+  assert.equal(out.review?.handoffs[0]?.prRef, '12');
+  assert.equal(out.review?.handoffs[0]?.prUrl, 'https://github.com/o/r/pull/12');
+  const q = project(YAML('  pr: echo https://forge.example/pr/12\n'));
+  const out2 = await run(q, [T()], { reviewColumns: { verifiedSha: true, prRef: true, prUrl: true }, forge: { host: 'github.com', remote: 'o/r' } });
+  assert.equal(out2.review?.handoffs[0]?.prUrl, 'https://forge.example/pr/12');
+});
+
+test('applyReview writes pr_url only when the table has the column (CREW-3255)', async () => {
+  const updates: Record<string, unknown>[] = [];
+  const tracker = {
+    updateTicket: async (_id: string, patch: Record<string, unknown>) => { updates.push(patch); return {} as Ticket; },
+    postEvent: async () => {},
+  };
+  const outcome = { handoffs: [{ ticket: T(), pushedAs: 'crew/ISSUE-7', head: 'b'.repeat(40), prRef: '12', prUrl: 'https://github.com/o/r/pull/12' }], requeues: [] };
+  await applyReview(tracker, CONTRACT, outcome, 'origin', emitter(), 'seat-1', { verifiedSha: true, prRef: true, prUrl: true }, false);
+  await applyReview(tracker, CONTRACT, outcome, 'origin', emitter(), 'seat-1', { verifiedSha: true, prRef: true }, false);
+  assert.deepEqual(updates[0], { status: 'in_review', pr_ref: '12', pr_url: 'https://github.com/o/r/pull/12' });
+  assert.deepEqual(updates[1], { status: 'in_review', pr_ref: '12' });
+});

@@ -496,3 +496,24 @@ test('a draft ticket (a periscope): the clean worktree and its branch are left a
   assert.ok(existsSync(wt));
   assert.ok(branchesOf(dir).includes('issue-12'));
 });
+
+test('the ticket is handed to the callback once its pushed branch is deleted from the remote, and not when it is kept (CREW-3255)', async () => {
+  const { dir, g } = repo();
+  const bare = mkdtempSync(join(tmpdir(), 'crew-sweep-bare-'));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: bare, stdio: 'pipe' });
+  g('remote', 'add', 'origin', bare);
+  g('push', '-q', 'origin', 'main');
+  const { target } = withWorktree(dir, g, 21);
+  g('push', '-q', 'origin', 'issue-21');
+  const cleared: string[] = [];
+  const t = ticket({ issue_id: 'ISSUE-21', status: 'closed_deployed' });
+  await applyWorktreeSweep(dir, planWorktreeSweep(target, [t], DEFAULT_CONTRACT), false, silentLog, 'origin', 'main', undefined, async (x) => { cleared.push(x.issue_id); });
+  assert.deepEqual(cleared, ['ISSUE-21']);
+  assert.equal(execFileSync('git', ['branch', '--list', 'issue-21'], { cwd: bare, encoding: 'utf8' }).trim(), '');
+
+  const { target: kept } = withWorktree(dir, g, 22);
+  g('push', '-q', 'origin', 'issue-22');
+  const k = ticket({ issue_id: 'ISSUE-22', status: 'closed_wont_fix' });
+  await applyWorktreeSweep(dir, planWorktreeSweep(kept, [k], DEFAULT_CONTRACT), false, silentLog, 'origin', 'main', undefined, async (x) => { cleared.push(x.issue_id); });
+  assert.deepEqual(cleared, ['ISSUE-21']);
+});

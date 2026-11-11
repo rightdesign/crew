@@ -46,6 +46,7 @@ import type { Comment, RunnerEvent, Ticket, Tracker } from './tracker.ts';
 import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
 import { sandboxOriginFor } from './agent.ts';
+import { branchWebUrl } from './forges.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
 export const HANDOFF_BOUNCED_MARKER = calloutHeader('WARNING', 'Hand-off Bounced');
@@ -234,7 +235,24 @@ export interface HandoffGuardInput {
   since?: string;
   /** CREW-3033: the remote URL to ask instead of `dir`, for a run whose clone lived in a sandbox that is already deleted. */
   origin?: string;
+  /** CREW-3255: where to record the pushed branch's web page; absent when the Issues table has no `branch_url` column. */
+  branchLink?: BranchLink;
   log: HandoffLog;
+}
+
+/** The Issues column that takes the pushed branch's web page, and how to build it (null: leave the column empty). */
+export interface BranchLink { column: string; url(branch: string): string | null }
+
+/** Posts the `pushed` event and, where the table has the column, records the branch's web page beside it. */
+async function postPushed(i: HandoffGuardInput, ticketId: string, sha: string, remote: string, branch: string, log: Record<string, unknown>): Promise<void> {
+  await i.writer.postEvent(ticketId, pushedEventBody(sha, remote, branch), i.seatId, 'pushed');
+  const url = i.branchLink?.url(branch);
+  if (!i.branchLink || !url) return;
+  try {
+    await i.writer.updateTicket(ticketId, { [i.branchLink.column]: url });
+  } catch {
+    i.log.warn(`pushed, but the branch link could not be recorded`, log);
+  }
 }
 
 /** Whether another ship took this ticket over after `since` (CREW-1973). */
@@ -344,7 +362,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       }
     }
     if (v.kind === 'pushed') {
-      await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');
+      await postPushed(i, t.id, v.sha, v.remote, v.branch, log);
       i.log.emit(`${t.issue_id} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
     }
@@ -380,7 +398,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
         pushBranchUpstream(wt?.path ?? i.dir, v.remote, v.branch);
         const again = inspectHandoff(i.dir, i.cfg, t, i.role);
         if (again.kind === 'pushed') {
-          await i.writer.postEvent(t.id, pushedEventBody(again.sha, again.remote, again.branch), i.seatId, 'pushed');
+          await postPushed(i, t.id, again.sha, again.remote, again.branch, log);
           await i.writer.postEvent(t.id,
             `The runner pushed \`${again.branch}\` to \`${again.remote}\` on ${i.shipName ? `${i.shipName}'s` : 'this ship\'s'} behalf: the ${i.role} seat set \`${i.contract.statuses.handoff}\` without pushing. Plain fast-forward push.${i.cfg.hooks.ci_status ? ' The repo\'s `ci_status` hook was NOT run by the hand-off guard, so CI was not checked by the builder.' : ''}`,
             i.seatId, 'pushed_by_runner').catch(() => i.log.warn('pushed, but the note failed to post', log));
@@ -473,6 +491,10 @@ export async function guardRunHandoff(
     const outcome: HandoffOutcome = replayed.includes(workingId) ? { kind: 'pushed', sha: '' } : await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
       seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
+      ...(await branchLinkFor(tracker, {
+        remote: target.remote ?? (t.repo_id ? route.resolved?.repoRemotes?.[t.repo_id] : undefined),
+        forgeHost: target.forgeHost ?? (t.repo_id ? route.resolved?.repoForgeHosts?.[t.repo_id] : undefined),
+      })),
       ...(origin ? { origin } : {}),
     });
     if (origin) {
@@ -491,6 +513,16 @@ export async function guardRunHandoff(
     log.warn(`could not check the hand-off: ${describeGuardError(e, checkoutDir)}`, { step: 'handoff' });
     return null;
   }
+}
+
+/** CREW-3255: the `branchLink` input for a checkout, when the Issues table has the column and the Repos row names a remote. */
+async function branchLinkFor(
+  tracker: Pick<Tracker, 'linkColumns' | 'contract'>, target: { remote?: string; forgeHost?: string },
+): Promise<{ branchLink?: BranchLink }> {
+  try {
+    if (!target.remote || !(await tracker.linkColumns()).branchUrl) return {};
+  } catch { return {}; }
+  return { branchLink: { column: tracker.contract.columns.branchUrl, url: (b) => branchWebUrl(target.forgeHost, target.remote, b) } };
 }
 
 /**

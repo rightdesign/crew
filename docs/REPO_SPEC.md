@@ -230,7 +230,7 @@ release:
 | `docs.designGuide` | no | — | This project's design brief, read by the design seat before it works a surface out. |
 | `hooks.version` | no | reads `versionFiles[0]` | Prints the current version. |
 | `hooks.bump` | no | rewrites `versionFiles` | Applies `CREW_BUMP` (`major`/`minor`/`patch`) and prints the new version. Replaces `versionFiles`. |
-| `hooks.pr` | `external` + a `reviewing` status: after the branch is pushed | — | Opens the pull request. Receives `CREW_TICKET`, `CREW_BRANCH` (the pushed name), `CREW_BASE`, `CREW_TITLE`; what it prints (one line, a URL or number) is stored on the ticket's `pr_ref`. Optional — without it the crew pushes and leaves the PR to a person. |
+| `hooks.pr` | `external` + a `reviewing` status: after the branch is pushed | — | Opens the pull request. Receives `CREW_TICKET`, `CREW_BRANCH` (the pushed name), `CREW_BASE`, `CREW_TITLE`; what it prints (one line, a URL or number) is stored on the ticket's `pr_ref`, and as a full URL on `pr_url`. A pull request a person opens instead is discovered from the forge and recorded in `pr_url` (see `docs/CONTRACT.md`). Optional — without it the crew pushes and leaves the PR to a person. |
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
@@ -481,8 +481,9 @@ branch has not landed:
    fast-forward, never forced; a rejection means a reviewer's commits are
    there, so the ticket stays at `verified` and the log says why.
 2. `hooks.pr`, if defined, opens the pull request. What it prints (a lone
-   line, or the last URL/number) is stored on the ticket as `pr_ref` and
-   handed to `hooks.merged` as `CREW_PR`, since looking a PR up by branch name
+   line, or the last URL/number) is stored on the ticket as `pr_ref` (and, as a full URL, on `pr_url` when
+   that column exists: a printed number is built into a URL for the repo's
+   forge) and handed to `hooks.merged` as `CREW_PR`, since looking a PR up by branch name
    can find the wrong one once a branch is reused. A failing `hooks.pr` does
    not undo the push: the ticket still moves, with a comment saying no PR was
    recorded.

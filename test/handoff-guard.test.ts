@@ -1,3 +1,4 @@
+import { branchWebUrl } from '../src/forges.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -120,6 +121,22 @@ test('enforce: a matching push posts the pushed event and leaves the ticket at f
   assert.deepEqual(h.patches, []);
   assert.deepEqual(h.notes, [pushedEventBody(sh(f.wt, 'rev-parse', 'HEAD'), 'origin', 'crew-9')]);
   assert.match(h.notes[0]!, /^pushed [0-9a-f]{40} to origin\/crew-9$/);
+});
+
+test('enforce: a hand-off records the pushed branch\'s web page when the table has branch_url (CREW-3255)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket());
+  await enforceHandoff({ ...input(f, h), branchLink: { column: 'branch_url', url: (b) => branchWebUrl('github.com', 'o/r', b) } });
+  assert.deepEqual(h.patches, [{ branch_url: 'https://github.com/o/r/tree/crew-9' }]);
+});
+
+test('enforce: a hand-off without the column writes nothing beyond the event (CREW-3255)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket());
+  await enforceHandoff(input(f, h));
+  assert.deepEqual(h.patches, []);
 });
 
 test('enforce: an unpushed fixed ticket whose push is refused goes back to in_progress, held by this ship again, with an event', async () => {

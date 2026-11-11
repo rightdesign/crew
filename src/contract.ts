@@ -106,6 +106,18 @@ export interface ContractColumns {
    */
   prRef: string;
   /**
+   * The forge's web page for the branch crew pushed (`branch_url`, CREW-3255),
+   * written with the `pushed` event and cleared once the remote branch is
+   * deleted after release. Optional like `prRef`.
+   */
+  branchUrl: string;
+  /**
+   * The full URL of the ticket's pull request (`pr_url`, CREW-3255): from
+   * `hooks.pr`, or discovered on the forge for one a person opened. Kept after
+   * release as the record of the review. Optional like `prRef`.
+   */
+  prUrl: string;
+  /**
    * The id a sync (Jira and the like) stamped on a ticket it imported. A row
    * with a value here was not filed by hand, so a missing Repo on it is "not
    * crew work yet", not a filing error. Optional like `prRef`: a workspace
@@ -300,6 +312,8 @@ export const DEFAULT_CONTRACT: Contract = {
     resolutionNote: 'resolution_note',
     verifiedSha: 'verified_sha',
     prRef: 'pr_ref',
+    branchUrl: 'branch_url',
+    prUrl: 'pr_url',
     externalId: 'external_id',
     position: 'position',
     agentRuns: 'agent_runs',

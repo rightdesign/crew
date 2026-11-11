@@ -97,6 +97,7 @@ import { anyRunAcceptsInput, COMMENT_DELIVERY_BACKOFF_MS, runCommentDeliveryPass
 import { startLaunchdDaemon } from './launchd-start.ts';
 import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
+import { discoverForRoute, linkDoctorLines } from './pr-links.ts';
 import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
@@ -234,6 +235,19 @@ const STALE_CYCLES = 3;
  * not-seen-recently, per the ticket's own three-way `crew status` split.
  */
 /** CREW-2871: issues with more than one live Periscopes row on this route, for doctor; empty when the table is absent or unreadable. */
+/**
+ * CREW-3255: clears `branch_url` on a deployed ticket once its remote branch is
+ * gone. `pr_url` stays: it is the record of the review.
+ */
+function clearBranchLink(tracker: Tracker): (t: Ticket) => Promise<void> {
+  return async (t) => {
+    const col = tracker.contract.columns.branchUrl;
+    const v = (t as Record<string, unknown>)[col];
+    if (typeof v !== 'string' || !v.trim()) return;
+    await tracker.updateTicket(t.id, { [col]: null });
+  };
+}
+
 async function duplicateLivePeriscopeProblems(route: Route, ship: ConstructorParameters<typeof Tracker>[1]): Promise<PeriscopeProblem[]> {
   try {
     const tr = new Tracker(route, ship);
@@ -2011,7 +2025,7 @@ async function sweepClosedTickets(
     warnOrphanedWorktreeDirs(orphanDirs, remit, dryRun ? undefined : { state, repo: target.name });
     if (actions.length) {
       remit.enter('worktree');
-      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote, branch.base, { state, repo: target.name });
+      const r = await applyWorktreeSweep(target.dir, actions, dryRun, remit, branch.remote, branch.base, { state, repo: target.name }, clearBranchLink(tracker));
       remit.emit(`swept ${r.removed} worktree(s), kept ${r.keptBranches} branch(es)`, { step: 'worktree' });
       if (!dryRun) reconcileHeldWorktrees(state, target.name, remit, new Set([...r.refused, ...orphanDirs]));
     } else if (!dryRun) reconcileHeldWorktrees(state, target.name, remit, new Set(orphanDirs));
@@ -2361,6 +2375,7 @@ async function releasePhase(
       ...(contractRefusal ? { contractRefusal: (contractRefusal as Error).message } : {}),
       state: state.release(scope),
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
+      forge: { host: target.forgeHost, remote: target.remote },
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',
       // ci_* modes: record the merge on the board when it lands on base,
@@ -2760,6 +2775,11 @@ switch (command) {
         const tracker = new Tracker(e.route, cfg.ship);
         await applyHoldReleases(tracker, e.decision.holdReleases, tracker.contract, emit.forRoute(e.route.route));
       }
+      // CREW-3255: a pull request a person opened is linked on the ticket.
+      for (const e of fleet.entries) {
+        if (dryRun || e.error || !e.decision) continue;
+        await discoverForRoute(e.route, cfg.ship, e.decision.tickets, emit.forRoute(e.route.route));
+      }
 
       for (const e of fleet.entries) {
         if (e.error || !e.decision || !e.decision.sweep.length) continue;
@@ -3037,6 +3057,7 @@ switch (command) {
       const tracker = new Tracker(route, cfg.ship);
       await applyHoldReleases(tracker, decision.holdReleases, tracker.contract, emit);
     }
+    if (!dryRun) await discoverForRoute(route, cfg.ship, decision.tickets, emit);
 
     const role = (value('role') as RoleName | undefined) ?? decision.selection.selected;
     if (command === 'poll') break;
@@ -5326,7 +5347,7 @@ switch (command) {
         continue;
       }
       anything = true;
-      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote, r.config.branch.base, { state, repo: r.name });
+      const res = await applyWorktreeSweep(r.dir, actions, dryRun, emit, r.config.branch.remote, r.config.branch.base, { state, repo: r.name }, clearBranchLink(tracker));
       if (!dryRun) reconcileHeldWorktrees(state, r.name, emit, new Set([...res.refused, ...orphanDirs]));
       emit.emit(
         `swept ${res.removed} worktree(s) for ${r.name}, kept ${res.keptBranches} branch(es)`,
@@ -7203,6 +7224,13 @@ switch (command) {
         ? 'runtime columns: forge_host, kind, instance_class, relay_url present\n'
         : `runtime columns: missing ${missingRuntime.join(', ')} — read as their defaults; update the Issues template\n`,
     );
+    // CREW-3255: the optional branch/pull request link columns, and whether a
+    // forge token exists for discovery to use. Notes only.
+    {
+      const have = await tracker.linkColumns();
+      const lines = linkDoctorLines(have, reposOf(route).map((t) => ({ name: t.name, host: t.forgeHost })), cfg.ship.forges, cfg.ship.stateDir);
+      process.stdout.write(`${lines.join('\n')}\n`);
+    }
     // CREW-1811: informational only — without the column the tracker has no
     // public intake form and nothing to guard against.
     process.stdout.write(

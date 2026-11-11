@@ -49,7 +49,13 @@ export interface ForgeDescriptor {
   sshUrl(host: string, remote: string): string;
   /** The username a personal/project access token is presented with. */
   credentialUsername: string;
+  /** The forge's web page for a branch (CREW-3255); each path segment of the branch is URL-encoded. */
+  branchUrl(host: string, remote: string, branch: string): string;
+  /** The forge's web page for pull/merge request `number` (CREW-3255). */
+  pullUrl(host: string, remote: string, number: number | string): string;
 }
+
+const encodeSegments = (name: string): string => name.split('/').map(encodeURIComponent).join('/');
 
 export const FORGE_DESCRIPTORS: Record<ForgeDescriptor['kind'], ForgeDescriptor> = {
   github: {
@@ -57,12 +63,16 @@ export const FORGE_DESCRIPTORS: Record<ForgeDescriptor['kind'], ForgeDescriptor>
     httpsUrl: (host, remote) => `https://${host}/${remote}.git`,
     sshUrl: (host, remote) => `git@${host}:${remote}.git`,
     credentialUsername: DEFAULT_FORGE_USERNAME,
+    branchUrl: (host, remote, branch) => `https://${host}/${remote}/tree/${encodeSegments(branch)}`,
+    pullUrl: (host, remote, number) => `https://${host}/${remote}/pull/${number}`,
   },
   gitlab: {
     kind: 'gitlab',
     httpsUrl: (host, remote) => `https://${host}/${remote}.git`,
     sshUrl: (host, remote) => `git@${host}:${remote}.git`,
     credentialUsername: 'oauth2',
+    branchUrl: (host, remote, branch) => `https://${host}/${remote}/-/tree/${encodeSegments(branch)}`,
+    pullUrl: (host, remote, number) => `https://${host}/${remote}/-/merge_requests/${number}`,
   },
 };
 
@@ -79,6 +89,26 @@ export function normalizeForgeHost(host: string | null | undefined): string {
 export function forgeDescriptorFor(host: string | null | undefined): ForgeDescriptor {
   return normalizeForgeHost(host).includes('gitlab') ? FORGE_DESCRIPTORS.gitlab : FORGE_DESCRIPTORS.github;
 }
+
+/**
+ * The web page for `branch` on the repo's forge (CREW-3255), or null when the
+ * Repos row names no remote: an empty column is better than a guessed link.
+ */
+export function branchWebUrl(forgeHost: string | null | undefined, remote: string | null | undefined, branch: string): string | null {
+  const r = remote?.trim().replace(/^\/+|\/+$/g, '');
+  if (!r || !branch) return null;
+  const host = normalizeForgeHost(forgeHost);
+  return forgeDescriptorFor(host).branchUrl(host, r, branch);
+}
+
+/** Pull/merge request `number` on the repo's forge, or null without a remote. */
+export function pullWebUrl(forgeHost: string | null | undefined, remote: string | null | undefined, number: number | string): string | null {
+  const r = remote?.trim().replace(/^\/+|\/+$/g, '');
+  if (!r) return null;
+  const host = normalizeForgeHost(forgeHost);
+  return forgeDescriptorFor(host).pullUrl(host, r, number);
+}
+
 export const DEFAULT_KEYCHAIN_SERVICE = 'crew-forge';
 
 /** One way of keeping a token. Add a new entry to `TOKEN_SOURCES` to add a backend. */

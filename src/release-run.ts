@@ -111,6 +111,8 @@ export interface ReleaseRunOptions {
    * recorded — the push and the move to `reviewing` still happen.
    */
   reviewColumns?: ReviewColumns;
+  /** The repo's forge host and `owner/repo` (CREW-3255), to build `pr_url` from a printed pull request number. */
+  forge?: { host?: string; remote?: string };
   /**
    * What QA verified, by ticket id (CREW-1637): a verified ticket whose branch
    * carries work beyond its sha is left out of the release and returned in
@@ -548,6 +550,7 @@ async function reviewHandoff(
   const outcome = await runReview({
     cwd: o.cwd, repo: o.repo, contract: o.contract, emit: o.emit, dryRun: o.dryRun,
     columns: o.reviewColumns ?? { verifiedSha: false, prRef: false },
+    ...(o.forge ? { forge: o.forge } : {}),
     runPrHook: async (env) => {
       const r = await hook(o, 'pr', env);
       return r ? { code: r.code, output: r.output } : null;

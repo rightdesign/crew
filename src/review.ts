@@ -24,6 +24,7 @@
  * push that already landed.
  */
 
+import { prUrlFromRef } from './pr-links.ts';
 import { isAncestor, pushBranch, resolve } from './git.ts';
 import type { Emitter } from './events.ts';
 import type { Contract } from './contract.ts';
@@ -34,7 +35,7 @@ import { displayKey, type Ticket, type Tracker } from './tracker.ts';
 import { lastLines } from './gate-red.ts';
 
 /** Which optional review columns the Issues table carries (`Tracker#reviewColumns`). */
-export interface ReviewColumns { verifiedSha: boolean; prRef: boolean }
+export interface ReviewColumns { verifiedSha: boolean; prRef: boolean; prUrl?: boolean }
 
 export interface ReviewItem {
   ticket: Ticket;
@@ -49,6 +50,8 @@ export interface ReviewHandoff {
   head: string;
   /** What `hooks.pr` printed that looks like a PR reference — a URL or number. */
   prRef?: string;
+  /** CREW-3255: the full URL of that pull request (a printed URL as is, a printed number built from the forge). */
+  prUrl?: string;
   /** Set when `hooks.pr` ran and failed: the branch is pushed, the PR is not. */
   prFailure?: { code: number; tail: string };
 }
@@ -118,6 +121,8 @@ export interface ReviewRun {
   columns: ReviewColumns;
   dryRun?: boolean;
   /** Runs `hooks.pr` with the given environment; null when the repo defines none. */
+  /** The repo's forge host and `owner/repo`, to turn a printed pull request number into a URL (CREW-3255). */
+  forge?: { host?: string; remote?: string };
   runPrHook(env: Record<string, string>): Promise<{ code: number; output: string } | null>;
 }
 
@@ -205,6 +210,10 @@ export async function runReview(r: ReviewRun, verified: ReviewItem[], reviewing:
       if (res && res.code !== 0) handoff.prFailure = { code: res.code, tail: lastLines(res.output, 5).trim() };
       else if (res) handoff.prRef = parsePrRef(res.output);
     }
+    if (handoff.prRef && r.columns.prUrl) {
+      const url = prUrlFromRef(handoff.prRef, r.forge?.host, r.forge?.remote);
+      if (url) handoff.prUrl = url;
+    }
     out.handoffs.push(handoff);
   }
   return out;
@@ -236,6 +245,7 @@ export async function applyReview(
       await tracker.updateTicket(t.id, {
         [contract.columns.status]: reviewing,
         ...(h.prRef && columns.prRef ? { [contract.columns.prRef]: h.prRef } : {}),
+        ...(h.prUrl && columns.prUrl ? { [contract.columns.prUrl]: h.prUrl } : {}),
       }, t.updated_at);
       await tracker.postEvent(t.id, lines.join('\n\n'), seat, 'review');
       emit.emit(`moved to ${reviewing}`, { ticket: t.issue_id });
