@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.143.2] — 2026-11-11
+
+- CREW-3236 A checkout whose built bundle is out of date now says so in crew --version, on stderr for other commands, and in crew doctor.
+- CREW-3237 `crew daemon start` on macOS no longer fails with "Load failed: 5" when the unit is already loaded; it reports the real state and why a daemon did not stay up.
+- CREW-3238 `crew daemon` on a multi-route ship starts when the first route in crew.yaml is disabled but another is enabled, and a refused start is now reported as a ship attention item instead of exiting silently.
+
 ## [0.143.1] — 2026-11-11
 
 - CREW-3235 A hybrid-project ticket that QA verifies is reassigned to the person it returns to (the acceptor, else the filer, else the operator) instead of becoming unassigned and disappearing from their board.
