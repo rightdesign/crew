@@ -162,6 +162,7 @@ import {
 } from './periscope-cmd.ts';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
 import { isCompiledBinary } from './runtime-info.ts';
+import { builtVersion, bundleStaleness, REBUILD_HINT } from './bundle-staleness.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { describeRelayProbe, probeRelayControl } from './relay-probe.ts';
 import { shipIdentityJson } from './ship-status.ts';
@@ -512,11 +513,16 @@ if (helpRequest(argv)) usage(undefined, true);
 const versionReq = versionRequest(argv);
 if (versionReq) {
   const version = crewVersion(CREW_HOME);
+  // CREW-3236: a checkout bundle built from another release says so; --json carries it in `builtVersion`.
+  const stale = bundleStaleness({ built: builtVersion(), current: version, home: CREW_HOME, compiled: isCompiledBinary(import.meta.url) });
   process.stdout.write(versionReq.json
-    ? `${JSON.stringify({ version, home: CREW_HOME, compiled: isCompiledBinary(import.meta.url) })}\n`
-    : `${version}\n`);
+    ? `${JSON.stringify({ version, home: CREW_HOME, compiled: isCompiledBinary(import.meta.url), builtVersion: builtVersion(), stale: stale !== null })}\n`
+    : `${stale ? `${version} (${stale.kind === 'version' ? `running a bundle built from ${stale.builtVersion}` : 'running a bundle older than the source in src/'}; ${REBUILD_HINT})` : version}\n`);
   process.exit(0);
 }
+// CREW-3236: one stderr line, never stdout, never a failure.
+const staleBundle = bundleStaleness({ built: builtVersion(), current: crewVersion(CREW_HOME), home: CREW_HOME, compiled: isCompiledBinary(import.meta.url) });
+if (staleBundle) process.stderr.write(`crew: warning: ${staleBundle.message}\n`);
 const flag = (name: string) => argv.includes(`--${name}`);
 const value = (name: string) => {
   const i = argv.indexOf(`--${name}`);
@@ -6891,6 +6897,7 @@ switch (command) {
         const dp = daemonProblem(daemonLiveness, route.route);
         if (dp) problems.push(dp); else passed++;
       }
+      if (staleBundle) problems.push({ severity: 'blocker', kind: 'stale_bundle', message: staleBundle.message, remedy: 'npm run build' });
       const runtimeDir = runtimeDirWarning(process.platform, process.getuid?.() ?? null, existsSync, userInfo().username);
       if (runtimeDir) problems.push({ severity: 'attention', kind: 'runtime_dir_missing', message: runtimeDir });
       if (!flag('offline')) {
@@ -6937,6 +6944,10 @@ switch (command) {
         `routes:            ${cfg.routes.map((c) => c.route).join(', ')}\n`,
     );
 
+    if (staleBundle) {
+      process.stdout.write(`bundle:            BLOCKER ${staleBundle.message}\n`);
+      process.exitCode = 1;
+    }
     for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
     for (const r of cfg.routes) for (const f of routeAvatarFailures(cfg.ship.stateDir, r.route)) process.stdout.write(`persona avatar:    WARN ${r.route}: ${f.role} avatar failed to upload (${f.detail}); run \`crew agents sync\` again\n`);
 

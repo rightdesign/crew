@@ -1,4 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { build, defineConfig } from 'tsup';
+
+// CREW-3236: the version this bundle was built from, so a checkout pulled but not
+// rebuilt can say so (src/bundle-staleness.ts).
+const builtVersion = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version;
 
 // CREW-2908: esbuild reports a repeated `case` label in one switch as a
 // warning, and a warning does not fail the build. Three `case 'sandbox'`
@@ -7,6 +12,7 @@ import { build, defineConfig } from 'tsup';
 // stop on it. Other esbuild warnings are left as they are.
 export default defineConfig({
   esbuildOptions(options) {
+    options.define = { ...options.define, __CREW_BUILT_VERSION__: JSON.stringify(builtVersion) };
     options.logOverride = { ...options.logOverride, 'duplicate-case': 'error' };
   },
   // CREW-2922: the in-sandbox symbol bridge, one self-contained CommonJS file (the MCP SDK
