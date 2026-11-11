@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels, controlRefusedTunnels, CONTROL_RETRY_MS,
+  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels, controlRefusedTunnels, CONTROL_RETRY_MS, staleTunnelAttentionKeys,
   type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
@@ -514,4 +514,18 @@ test('a tunnel with a control forward that dies before settling is respawned wit
   run(true); // window over: one more attempt with both forwards
   assert.equal(forwards(spawned[2]!), 2);
   assert.deepEqual(controlRefusedTunnels(stateDir), []);
+});
+
+test('staleTunnelAttentionKeys() returns the tunnel items of a workspace that left the plan (CREW-3239)', () => {
+  const keys = ['tunnel_rejected:ws-a', 'relay_control_unsupported:ws-a', 'tunnel_rejected:ws-b', 'relay_control_unsupported:ws-b'];
+  assert.deepEqual(staleTunnelAttentionKeys(keys, new Set(['ws-b'])), ['tunnel_rejected:ws-a', 'relay_control_unsupported:ws-a']);
+});
+
+test('staleTunnelAttentionKeys() keeps items for a workspace that is still planned (CREW-3239)', () => {
+  assert.deepEqual(staleTunnelAttentionKeys(['tunnel_rejected:ws-a', 'relay_control_unsupported:ws-a'], new Set(['ws-a'])), []);
+});
+
+test('staleTunnelAttentionKeys() ignores other kinds and the periscope preview key (CREW-3239)', () => {
+  const keys = ['tunnel_rejected:periscope:CREW-1', 'disk_low:repo', 'workspace_auth:ws-a'];
+  assert.deepEqual(staleTunnelAttentionKeys(keys, new Set()), []);
 });

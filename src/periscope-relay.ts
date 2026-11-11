@@ -112,6 +112,17 @@ export function periscopeTunnelRejectedItem(ticket: string, quickExits: number, 
   };
 }
 
+/**
+ * CREW-3239: the open periscope `tunnel_rejected` keys whose periscope no longer has a tunnel the pass
+ * watches (the sidecar is gone, has no slug, or its tunnel was stopped on purpose). Nothing else clears
+ * them: the pass skips such a periscope, so an item raised before it ended would stay open.
+ */
+export function staleTunnelKeys(openKeys: string[], sidecars: PeriscopeSidecar[]): string[] {
+  const watched = new Set(sidecars.filter((sc) => sc.slug && !sc.tunnelStopped).map((sc) => periscopeTunnelKey(sc.ticket)));
+  const prefix = `${TUNNEL_REJECTED_KEY}:periscope:`;
+  return openKeys.filter((key) => key.startsWith(prefix) && !watched.has(key));
+}
+
 export interface TunnelPassDeps {
   sidecars(): PeriscopeSidecar[];
   isAlive(sc: PeriscopeSidecar): boolean;

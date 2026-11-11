@@ -112,7 +112,7 @@ import { isForbiddenError, forbiddenDetail, seatCannotWriteKey, seatCannotWriteI
 import { raiseShipAttention, clearShipAttention, openShipAttention, workspaceAuthKey, workspaceAllowanceKey, workspaceAllowanceItem, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import { readPeriscopeSidecars, writePeriscopeSidecar, updatePeriscopeSidecar } from './periscope-state.ts';
-import { runPeriscopeTunnelPass, stopRecordedTunnel, isPreviewTunnel } from './periscope-relay.ts';
+import { runPeriscopeTunnelPass, stopRecordedTunnel, isPreviewTunnel, staleTunnelKeys } from './periscope-relay.ts';
 import { startPreviewTunnel } from './tunnel.ts';
 import { ensureShipSshKeypair } from './ssh-keys.ts';
 import { newestWorktreeMtime, runPeriscopeIdlePass } from './periscope-idle.ts';
@@ -789,6 +789,8 @@ async function applyRouteDecision(o: RunOnePassOptions, ctx: RoleAgentContext, d
         openKeys: () => openShipAttention(o.state).filter((i) => i.kind === 'periscope_idle').map((i) => i.key),
         warn: (message) => emit.warn(message, { step: 'sweep' }),
       });
+      // CREW-3239: a periscope that ended (or whose tunnel was stopped) leaves its tunnel_rejected item behind otherwise.
+      for (const key of staleTunnelKeys(openShipAttention(o.state).map((i) => i.key), readPeriscopeSidecars(o.ship.stateDir))) clearShipAttention(o.state, key);
       // CREW-3059: a relayed preview whose tunnel died later (network drop, relay restart) is restarted.
       if (o.ship.relayPreviews && o.ship.relayHost) {
         const ship = o.ship;

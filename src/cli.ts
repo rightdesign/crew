@@ -176,7 +176,7 @@ import {
 import {
   syncPassengerTunnels, startPreviewTunnel, generateTunnelSlug, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
   TUNNEL_REJECTED_KEY, TUNNEL_REJECTED_AFTER, tunnelRejectedMessage, rejectedTunnels,
-  RELAY_CONTROL_UNSUPPORTED_KEY, relayControlUnsupportedMessage, controlRefusedTunnels,
+  RELAY_CONTROL_UNSUPPORTED_KEY, relayControlUnsupportedMessage, controlRefusedTunnels, staleTunnelAttentionKeys,
 } from './tunnel.ts';
 import {
   reconcileEndpoint, unregisterEndpoint, probeEndpointAccess, REGISTER_MCP_ENDPOINTS_HINT,
@@ -1156,6 +1156,11 @@ async function syncShipTunnels(
       apiKeys: passengerApiKeys(apiRoutes),
       controlSocket: controlSocketFor(cfg.ship.stateDir),
       onStatus: (workspaceId, status, info) => {
+        // CREW-3239: a retired workspace has no owning route (its route is disabled), so this must run before the early return below.
+        if (status === 'disconnected' && !planned.has(workspaceId)) {
+          clearShipAttention(state, `${TUNNEL_REJECTED_KEY}:${workspaceId}`);
+          clearShipAttention(state, `${RELAY_CONTROL_UNSUPPORTED_KEY}:${workspaceId}`);
+        }
         const owningRoute = apiRoutes.find((r) => r.resolved?.workspaceId === workspaceId);
         if (!owningRoute) return;
         pending.push(
@@ -1185,6 +1190,8 @@ async function syncShipTunnels(
     for (const plan of containerPlans) pending.push(reconcileEndpoint(plan.workspaceId, reconcile));
     for (const plan of plans) pending.push(reconcileRelayUrl(plan.workspaceId, apiRoutes));
     await Promise.all(pending);
+    // CREW-3239: repairs a ship that already carries items for a workspace it no longer serves.
+    for (const key of staleTunnelAttentionKeys(openShipAttention(state).map((i) => i.key), planned)) clearShipAttention(state, key);
     await reconcilePeriscopeEndpoints();
   } catch (e) {
     emit.warn(`ship tunnel sync failed: ${(e as Error).message}`, { step: 'passengers' });

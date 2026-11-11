@@ -539,6 +539,23 @@ export function tunnelRejectedMessage(workspaceId: string, quickExits: number): 
   return `the relay tunnel for workspace ${workspaceId} exited before settling on ${quickExits} consecutive cycles, which is how a refused claim looks (the relay logs "slug already owned by another workspace/ssh key") — rotate the slug with \`crew rotate-passenger-url\` or check the relay journal. If the relay logged no rejection, a Linux passengers unit without KillMode=process kills the tunnel when the sync exits (CREW-2994): run \`crew install\`, and see \`crew doctor\``;
 }
 
+/**
+ * CREW-3239: the per-workspace tunnel attention keys (`tunnel_rejected:<ws>`, `relay_control_unsupported:<ws>`)
+ * among `openKeys` whose workspace is not in `plannedIds`. Both are raised from the workspace's own tunnel
+ * status and cleared only when that tunnel reports `connected`, so a workspace that left the plan (its route
+ * disabled or removed) would otherwise keep them forever. The periscope preview key
+ * (`tunnel_rejected:periscope:<ticket>`) is not a workspace key and is never returned here.
+ */
+export function staleTunnelAttentionKeys(openKeys: string[], plannedIds: ReadonlySet<string>): string[] {
+  const prefixes = [`${TUNNEL_REJECTED_KEY}:`, `${RELAY_CONTROL_UNSUPPORTED_KEY}:`];
+  return openKeys.filter((key) => {
+    const prefix = prefixes.find((p) => key.startsWith(p));
+    if (!prefix) return false;
+    const id = key.slice(prefix.length);
+    return !id.startsWith('periscope:') && !plannedIds.has(id);
+  });
+}
+
 /** Workspaces whose persisted tunnel has been refused often enough to report. */
 export function rejectedTunnels(stateDir: string): Array<{ workspaceId: string; quickExits: number }> {
   const out: Array<{ workspaceId: string; quickExits: number }> = [];

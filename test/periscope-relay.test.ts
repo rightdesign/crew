@@ -8,7 +8,7 @@ import type { ChildProcess } from 'node:child_process';
 import { bindAddrFor, previewSshArgsFor, startPreviewTunnel, generateTunnelSlug, relayBaseUrlFor, type SpawnFn } from '../src/tunnel.ts';
 import {
   openPreviewTunnel, forwardTarget, isPreviewTunnel, stopRecordedTunnel, runPeriscopeTunnelPass, PREVIEW_TUNNEL_SETTLE_MS,
-  periscopeTunnelKey, type PreviewRelay, type TunnelPassDeps,
+  periscopeTunnelKey, staleTunnelKeys, type PreviewRelay, type TunnelPassDeps,
 } from '../src/periscope-relay.ts';
 import { runPeriscopeUp, runPeriscopeDown, parsePeriscopeUpArgs, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeUpArgs, type PeriscopeRowInfo } from '../src/periscope-cmd.ts';
 import { runPeriscopeResume, type ResumeDeps } from '../src/periscope-resume.ts';
@@ -448,4 +448,11 @@ test('relayBaseUrlFor and generateTunnelSlug give the 12-character public origin
   const slug = generateTunnelSlug();
   assert.match(slug, /^[a-z0-9]{12}$/);
   assert.equal(relayBaseUrlFor(slug, 'crewd@ships.tablation.dev', 443), `https://${slug}.ships.tablation.dev`);
+});
+
+test('staleTunnelKeys() returns the item of a periscope with no watched tunnel, and keeps a watched one (CREW-3239)', () => {
+  const sc = (ticket: string, extra: Partial<PeriscopeSidecar> = {}): PeriscopeSidecar => ({ ticket, slug: SLUG, ...extra } as PeriscopeSidecar);
+  const keys = [periscopeTunnelKey('CREW-1'), periscopeTunnelKey('CREW-2'), periscopeTunnelKey('CREW-3'), periscopeTunnelKey('CREW-4'), 'tunnel_rejected:ws-a'];
+  const sidecars = [sc('CREW-1'), sc('CREW-2', { tunnelStopped: true }), sc('CREW-4', { slug: undefined })];
+  assert.deepEqual(staleTunnelKeys(keys, sidecars), [periscopeTunnelKey('CREW-2'), periscopeTunnelKey('CREW-3'), periscopeTunnelKey('CREW-4')]);
 });
