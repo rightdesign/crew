@@ -3359,7 +3359,19 @@ switch (command) {
       process.stderr.write('crew: daemon does not support --dry-run — it only ever performs real cycles.\n');
       process.exit(2);
     }
-    requireArmed('run the daemon loop');
+    // CREW-3238: the interlock applies to what the daemon will serve. A fleet-wide daemon's `route` is just
+    // `cfg.routes[0]`, so testing it refused a ship whose first route is disabled; the `no enabled routes`
+    // failure below covers the fleet. A named route (or a one-route ship) still refuses, and through
+    // `failDaemonStart` so a supervised relaunch surfaces as an attention item instead of a silent exit 0.
+    if (!fleetWide && !route.enabled) {
+      const reason = `route "${route.route}" is not enabled in ${cfg.configFile} — refusing to run the daemon loop`;
+      process.stderr.write(`crew: ${reason}.\n`);
+      await failDaemonStart({
+        stateDir: cfg.ship.stateDir, reason,
+        fix: `Set \`enabled: true\` on route "${route.route}" in crew.yaml, or name an enabled route in the unit`, code: 1,
+        routes: cfg.routes, ship: cfg.ship, logFile: cfg.ship.logFile,
+      });
+    }
     // CREW-3063: the routes this daemon serves. Named, or a one-route ship: that route. Otherwise every enabled one.
     const daemonRoutes = fleetWide ? cfg.routes.filter((r) => r.enabled) : [route];
     if (!daemonRoutes.length) {
