@@ -18,6 +18,7 @@ import type { State } from './state.ts';
 import type { Emitter } from './events.ts';
 import { decideCycle, type CycleDecision } from './poll.ts';
 import { NOTHING_ACTIONABLE, agedRankScalar } from './priority.ts';
+import { isTransientError } from './outage.ts';
 
 export interface FleetEntry {
   route: Route;
@@ -33,6 +34,8 @@ export interface FleetEntry {
   rank: number;
   role?: RoleName;
   error?: string;
+  /** The error was a tracker/network blip (`isTransientError`), logged at `warn` (CREW-3250). */
+  transient?: boolean;
 }
 
 /**
@@ -117,12 +120,15 @@ export async function decideFleet(o: FleetOptions): Promise<FleetDecision> {
         rank: agedConnectionRank(rawRank, sel.selected, route, decision, o.state, now),
       };
     } catch (e) {
-      return { route, rank: NOTHING_ACTIONABLE, error: (e as Error).message };
+      return { route, rank: NOTHING_ACTIONABLE, error: (e as Error).message, transient: isTransientError(e) };
     }
   }));
 
   for (const e of entries) {
-    if (e.error) o.emit.forRoute(e.route.route).error(`${e.route.route}: ${e.error}`, { step: 'poll' });
+    if (!e.error) continue;
+    // A routine tracker outage is a warning, not a fault (CREW-2383, CREW-3250).
+    const em = o.emit.forRoute(e.route.route);
+    (e.transient ? em.warn : em.error).call(em, `${e.route.route}: ${e.error}`, { step: 'poll' });
   }
 
   const contenders = entries.filter((e) => e.role && e.rank < NOTHING_ACTIONABLE);
