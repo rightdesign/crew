@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.146.2] — 2026-11-11
+
+- CREW-3254 Fixed a flaky release test gate (worktree-sweep live-run test) caused by comparing the test process's real start time with 'now'.
+
 ## [0.146.1] — 2026-11-11
 
 - CREW-3250 A route poll that fails on a transient tracker outage (connection drop, 502/503/504) is now logged as a warning instead of an error.
