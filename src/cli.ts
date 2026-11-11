@@ -92,6 +92,7 @@ import { withRepoMaps, mapFilePath, inspectMapFile } from './repo-map.ts';
 import { notify, describeRelease, recoveredFailureHeadlines } from './notify.ts';
 import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
+import { lastRunsBySeat } from './run-snapshot.ts';
 import { anyRunAcceptsInput, COMMENT_DELIVERY_BACKOFF_MS, runCommentDeliveryPass } from './comment-delivery.ts';
 import { startLaunchdDaemon } from './launchd-start.ts';
 import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
@@ -6623,6 +6624,12 @@ switch (command) {
     // Every live run on this ship, read from the run sidecars (CREW-2822), so
     // it is right across daemon restarts and for one-shot `crew run` processes.
     const runs = liveRuns(cfg.ship.stateDir);
+    // CREW-3247: titles of the tickets those runs are on, so a monitor shows more than the tag.
+    const runTitles = new Map(
+      (await statusTracker.ticketsByIds([...new Set(runs.map((x) => x.ticketRecordId).filter((id): id is string => !!id))]).catch(() => []))
+        .map((t) => [t.id, t.title ?? null] as const),
+    );
+    const lastRuns = lastRunsBySeat(cfg.ship.stateDir);
     const periscopes = await periscopesForStatus(cfg.ship.stateDir);
     if (flag('json')) {
       const nameSync = await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true });
@@ -6656,6 +6663,8 @@ switch (command) {
           personaName,
           // Additive (CREW-2822): how many runs this seat has live right now.
           running: runs.filter((x) => x.role === r && x.route === routeSlug(route.route)).length,
+          // Additive (CREW-3247): this seat's newest finished run on this ship, or null.
+          lastRun: ((l) => (l ? { ticket: l.ticket, startedAt: l.startedAt, finishedAt: l.finishedAt, outcome: l.outcome, exitCode: l.exitCode } : null))(lastRuns.get(`${routeSlug(route.route)}/${r}`)),
         };
       });
       process.stdout.write(`${JSON.stringify({
@@ -6701,7 +6710,7 @@ switch (command) {
           seats,
         },
         // Additive (CREW-2822): every live run on this ship. `version` stays 1.
-        runs: runs.map((x) => describeRun(x, route, seatIds)),
+        runs: runs.map((x) => describeRun(x, route, seatIds, undefined, { titles: runTitles })),
         // Additive (CREW-2857): every live periscope on this ship, from its local record. `version` stays 1.
         periscopes,
         watermark: state.watermark(routeSlug(route.route)),

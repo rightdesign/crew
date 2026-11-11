@@ -92,7 +92,11 @@ test('describeRun reports the status entry, with the seat only for this route', 
     role: 'dev', seat: 'seat-dev', ticket: 'CREW-1', ticketRecordId: 'rec-1', repo: null, worktree: null,
     stream: '/s/a.jsonl', pid: 100, startedAt: '2026-11-01T01:00:00.000Z', deadline: null,
     acceptsInput: false, agentLogId: null,
+    ticketTitle: null, lastEvent: null, attention: null,
   });
+  // CREW-3247: title from the board, and past-deadline attention.
+  const late = describeRun({ ...run, deadline: '2026-11-01T05:00:00.000Z' }, route, {}, undefined, { titles: new Map([['rec-1', 'Fix it']]), now: Date.parse('2026-11-01T06:00:00.000Z') });
+  assert.deepEqual([late.ticketTitle, late.attention], ['Fix it', 'past_deadline']);
   // CREW-3119: open stdin counts only while the process holding it is alive.
   const open = { ...run, acceptsInput: true, agentLogRowId: 'row-1' } as LiveRun;
   assert.deepEqual(

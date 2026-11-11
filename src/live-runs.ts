@@ -20,6 +20,7 @@ import { worktreeForNumber } from './git.ts';
 import type { Emitter } from './events.ts';
 import { runFinished } from './interrupted.ts';
 import type { Tracker } from './tracker.ts';
+import { lastStreamEvent } from './run-snapshot.ts';
 
 export interface LiveRun extends RunSidecar {
   streamPath: string;
@@ -121,6 +122,7 @@ export function describeRun(
   worktreeOf: (repoDir: string, num: string) => string | null = (d, n) => {
     try { return worktreeForNumber(d, n)?.path ?? null; } catch { return null; }
   },
+  o: { titles?: ReadonlyMap<string, string | null>; now?: number } = {},
 ) {
   // The sidecar names the route by slug; a seat id is only known for this route's own runs.
   const ownRoute = run.route === routeSlug(route.route);
@@ -140,5 +142,12 @@ export function describeRun(
     // CREW-3119: the harness still reads notes, and the process holding its stdin is alive.
     acceptsInput: !!run.acceptsInput && pidAlive(run.ownerPid),
     agentLogId: run.agentLogRowId ?? null,
+    // CREW-3247: the ticket's title, from the board (null when it could not be read).
+    ticketTitle: run.ticketRecordId ? o.titles?.get(run.ticketRecordId) ?? null : null,
+    // CREW-3247: this run's own latest text turn, so two runs of one role each have an excerpt.
+    lastEvent: lastStreamEvent(run.streamPath),
+    // CREW-3247: a live run needs attention when it has outlived its wall-clock limit. A run that
+    // failed is finished and reported on its seat's `lastRun` instead.
+    attention: run.deadline && Date.parse(run.deadline) < (o.now ?? Date.now()) ? 'past_deadline' as const : null,
   };
 }
