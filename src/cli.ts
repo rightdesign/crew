@@ -983,6 +983,11 @@ const emit = new Emitter({
   rotateBytes: cfg.ship.eventsRotateBytes,
   logFile: dryRun ? undefined : cfg.ship.logFile,
   console: (l) => process.stderr.write(`${l}\n`),
+  // CREW-3266: a person at a terminal gets terse, untimestamped lines and routine
+  // progress only under --verbose. The daemon and timer units are not a TTY and
+  // keep the full log form.
+  verbose: flag('verbose'),
+  plain: !!process.stderr.isTTY,
 });
 
 /**
@@ -5595,7 +5600,9 @@ switch (command) {
     const planWt = planRunWorktree(repoWt.dir, repoWt.config, ticketWt, roleWt, { resumeInterrupted: resumeWt });
     if (dryRun) { emit.emit(`would ${describeRunWorktreePlan(planWt)}`); break; }
     const pathWt = applyRunWorktree(repoWt.dir, repoWt.config, planWt);
-    emit.emit(describeRunWorktreePlan(planWt));
+    // CREW-3266: the path on stdout is the result; the plan is only worth a line when it cannot be used.
+    if (planIsUsable(planWt)) emit.note(describeRunWorktreePlan(planWt));
+    else emit.warn(describeRunWorktreePlan(planWt));
     // CREW-2912: start the repository's symbol service and hand its URL to the session's `code` bridge.
     // The path stays alone on stdout (callers `cd "$(crew worktree N)"`), so the paragraph goes to the log.
     if (pathWt && planIsUsable(planWt) && wantsCodeBridge(repoWt.config.hooks.intel)) {
@@ -5626,7 +5633,7 @@ switch (command) {
           return script ? runScript(script, { cwd, env, shell: shellWt, timeoutMs: name === 'intel' ? 60_000 : undefined }) : null;
         },
       });
-      emit.emit(paragraph);
+      emit.note(paragraph);
     }
     if (pathWt) process.stdout.write(`${pathWt}\n`);
     if (!planIsUsable(planWt)) process.exitCode = 1;
@@ -6090,6 +6097,9 @@ switch (command) {
     let baseChecked = 0;
     let baseActed = 0;
     let baseUnsafe = 0;
+    // CREW-3266: a series of fast-forwards and stale entries is one summary line, not one line each (--verbose lists them).
+    let fastForwarded = 0;
+    const prunable: string[] = [];
     // Every repository of the route: a reviewer's commits on the second
     // repo's branch are no less stale for being next door (ISSUE-350), and
     // neither is a second repo's own base branch.
@@ -6121,7 +6131,7 @@ switch (command) {
         // registered but has no directory to run git in — skip it rather
         // than letting one stale entry take the whole multi-route sync
         // down (ISSUE-820).
-        if (w.prunable) { emit.warn(`${w.branch}: worktree at ${w.path} no longer exists — skipping (run \`git worktree prune\` in ${r.dir} to clear it)`); continue; }
+        if (w.prunable) { emit.note(`${w.branch}: worktree at ${w.path} no longer exists — skipping`); prunable.push(r.dir); continue; }
         let s2: SyncState;
         try {
           s2 = syncState(w.path, w.branch);
@@ -6137,8 +6147,9 @@ switch (command) {
         tracked++;
         if (s2.canFastForward) {
           acted++;
-          if (dryRun) emit.emit(`would fast-forward ${w.branch}: ${s2.detail}`);
-          else emit.emit(fastForward(w.path, w.branch) ? `fast-forwarded ${w.branch}` : `could not fast-forward ${w.branch}`);
+          if (dryRun) { emit.note(`would fast-forward ${w.branch}: ${s2.detail}`); fastForwarded++; }
+          else if (fastForward(w.path, w.branch)) { emit.note(`fast-forwarded ${w.branch}`); fastForwarded++; }
+          else emit.warn(`could not fast-forward ${w.branch}`);
         } else if (s2.behind > 0 || s2.ahead > 0) {
           acted++;
           emit.warn(`${w.branch}: ${s2.detail}`);
@@ -6147,8 +6158,12 @@ switch (command) {
     }
     // Silence would read as "checked and fine"; say which it was.
     if (baseUnsafe > 0) process.exitCode = 1;
-    if (baseChecked > 0 && baseActed === 0) emit.emit(`${baseChecked} base branch(es) checked, all level with the remote`);
+    if (baseChecked > 0 && baseActed === 0) emit.note(`${baseChecked} base branch(es) checked, all level with the remote`);
+    if (prunable.length > 0) {
+      emit.warn(`${prunable.length} worktree(s) no longer exist on disk and were skipped — run \`git worktree prune\` in ${[...new Set(prunable)].join(', ')} to clear them`);
+    }
     if (tracked === 0) emit.emit('no worktree tracks a remote branch — nothing to sync');
+    else if (fastForwarded > 0) emit.emit(`${dryRun ? 'would fast-forward' : 'fast-forwarded'} ${fastForwarded} of ${tracked} worktree(s)${acted > fastForwarded ? `; ${acted - fastForwarded} need attention` : ''}`);
     else if (acted === 0) emit.emit(`${tracked} worktree(s) tracking a remote, all level with it`);
     break;
   }

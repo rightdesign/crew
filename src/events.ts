@@ -42,6 +42,11 @@ export interface CrewEvent {
   ticket?: string;
   /** Anything structured a view might want: ranks, counts, durations. */
   data?: Record<string, unknown>;
+  /**
+   * Routine progress (CREW-3266): recorded in the event file and the log like
+   * any other event, but only echoed to the console under `--verbose`.
+   */
+  routine?: boolean;
 }
 
 /** The text form, matching the bash log so existing habits still work. */
@@ -52,8 +57,23 @@ export function render(e: CrewEvent): string {
   return `${e.at} ${scope}:${ticket} ${level}${e.message}`;
 }
 
+/**
+ * The console form of an event: no timestamp or step prefix (the log file
+ * keeps those), and the level only when it is not plain info. For a person at
+ * a terminal; the daemon and launchd keep the full `render` line.
+ */
+export function renderPlain(e: CrewEvent): string {
+  const level = e.level === 'info' ? '' : `${e.level === 'warn' ? 'warning' : e.level}: `;
+  const ticket = e.ticket ? `${e.ticket}: ` : '';
+  return `${level}${ticket}${e.message}`;
+}
+
 export interface EmitterOptions {
   route: string;
+  /** Echo routine events to the console too (`--verbose`). Sinks other than the console always get them. */
+  verbose?: boolean;
+  /** Render console lines with `renderPlain` instead of the timestamped log form. */
+  plain?: boolean;
   /** JSONL sink — what a view tails. */
   eventFile?: string;
   /** Text sink — the human log. */
@@ -157,6 +177,7 @@ export class Emitter {
       ...(extra.role ?? this.role ? { role: extra.role ?? this.role } : {}),
       ...(extra.ticket ? { ticket: extra.ticket } : {}),
       ...(extra.data ? { data: extra.data } : {}),
+      ...(extra.routine ? { routine: true } : {}),
     };
     const line = render(e);
     // A sink that cannot be written must never take the cycle down with it:
@@ -166,10 +187,14 @@ export class Emitter {
     } catch { /* ignore */ }
     try { if (this.opts.eventFile) appendFileSync(this.opts.eventFile, `${JSON.stringify(e)}\n`); } catch { /* ignore */ }
     try { if (this.opts.logFile) appendFileSync(this.opts.logFile, `${line}\n`); } catch { /* ignore */ }
-    try { (this.opts.console ?? ((l: string) => process.stderr.write(`${l}\n`)))(line); } catch { /* ignore */ }
+    if (!e.routine || this.opts.verbose) {
+      try { (this.opts.console ?? ((l: string) => process.stderr.write(`${l}\n`)))(this.opts.plain ? renderPlain(e) : line); } catch { /* ignore */ }
+    }
     return e;
   }
 
+  /** Routine progress: logged, but shown on the console only under `--verbose`. */
+  note(message: string, extra: Partial<CrewEvent> = {}) { return this.emit(message, { ...extra, routine: true }); }
   warn(message: string, extra: Partial<CrewEvent> = {}) { return this.emit(message, { ...extra, level: 'warn' }); }
   error(message: string, extra: Partial<CrewEvent> = {}) { return this.emit(message, { ...extra, level: 'error' }); }
 

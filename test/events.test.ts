@@ -134,3 +134,36 @@ test('a dry run writes to the terminal and not to the ship history', () => {
   real.emit('released 1.2.3');
   assert.match(readFileSync(file, 'utf8'), /released 1\.2\.3/);
 });
+
+// CREW-3266: routine progress is logged but only echoed under --verbose; a terminal gets plain lines.
+import { Emitter as Emitter3266, renderPlain as renderPlain3266 } from '../src/events.ts';
+import { test as test3266 } from 'node:test';
+import assert3266 from 'node:assert/strict';
+
+test3266('routine events reach the console only under verbose', () => {
+  for (const verbose of [false, true]) {
+    const shown: string[] = [];
+    const e = new Emitter3266({ route: 'r', verbose, plain: true, console: (l) => shown.push(l) });
+    e.note('fast-forwarded a');
+    e.emit('fast-forwarded 1 of 1 worktree(s)');
+    e.warn('could not fast-forward b');
+    assert3266.deepEqual(shown, verbose
+      ? ['fast-forwarded a', 'fast-forwarded 1 of 1 worktree(s)', 'warning: could not fast-forward b']
+      : ['fast-forwarded 1 of 1 worktree(s)', 'warning: could not fast-forward b']);
+  }
+});
+
+test3266('routine events are still written to the event file', async () => {
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'ev3266-'));
+  const eventFile = join(dir, 'events.jsonl');
+  new Emitter3266({ route: 'r', eventFile, console: () => {} }).note('quiet');
+  assert3266.equal(JSON.parse(readFileSync(eventFile, 'utf8')).routine, true);
+});
+
+test3266('renderPlain drops the timestamp and step', () => {
+  const line = renderPlain3266({ at: 'x', cycle: 'c', route: 'r', step: 'worktree', level: 'error', message: 'boom', ticket: 'ISSUE-1' });
+  assert3266.equal(line, 'error: ISSUE-1: boom');
+});
