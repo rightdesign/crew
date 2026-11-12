@@ -15,7 +15,7 @@ test('a note posted for an idle seat is spooled and the seat\'s next brief carri
   const state = dir();
   const srv = (await startControlServer({
     stateDir: state, state: new State(state), auth: { verify: async () => 'ok' },
-    status: async () => ({}), doctor: async () => ({}), scheduler: () => ({ accepted: false, detail: 'none' }),
+    status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }), scheduler: () => ({ accepted: false, detail: 'none' }),
   }))!;
   t.after(() => srv.close());
   const post = (path: string, body: unknown) => new Promise<{ status: number; json: any }>((resolve, reject) => {

@@ -945,7 +945,7 @@ test('a note posted over the control socket reaches a live Claude run and is mar
 
   const srv = (await startControlServer({
     stateDir: state, state: new State(state), auth: { verify: async () => 'ok' },
-    status: async () => ({}), doctor: async () => ({}), scheduler: () => ({ accepted: false, detail: 'none' }),
+    status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }), scheduler: () => ({ accepted: false, detail: 'none' }),
   }))!;
   t.after(() => srv.close());
   const postNote = (run: string, body: unknown) => new Promise<{ status: number; json: any }>((resolve, reject) => {

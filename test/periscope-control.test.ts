@@ -165,7 +165,7 @@ test('server: periscope paths need the bearer token, 404 with the flag off, and 
     fetch: (async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch,
   });
   const srv = (await startControlServer({
-    stateDir: dir, state, auth, status: async () => ({}), doctor: async () => ({}),
+    stateDir: dir, state, auth, status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }),
     scheduler: () => ({ accepted: false, detail: '' }),
     periscopes: { ...f.h, verifyIn: (t, ws) => auth.verifyIn(t, ws) },
   }))!;
@@ -218,7 +218,7 @@ test('mcp: the control server hands /periscopes/<ticket>/mcp to the handler befo
   const dir = mkdtempSync(join(tmpdir(), 'ctl-'));
   const seen: string[] = [];
   const srv = (await startControlServer({
-    stateDir: dir, state: new State(dir), auth: { verify: async () => 'unauthorized' }, status: async () => ({}), doctor: async () => ({}),
+    stateDir: dir, state: new State(dir), auth: { verify: async () => 'unauthorized' }, status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }),
     scheduler: () => ({ accepted: false, detail: '' }),
     periscopeMcp: async (_req, res, ticket) => { seen.push(ticket); res.writeHead(204).end(); },
   }))!;
@@ -234,7 +234,7 @@ test('mcp: the control server hands /periscopes/<ticket>/mcp to the handler befo
   // Not configured: a plain 404, no tracker check involved.
   const dir2 = mkdtempSync(join(tmpdir(), 'ctl-'));
   const srv2 = (await startControlServer({
-    stateDir: dir2, state: new State(dir2), auth: { verify: async () => 'unauthorized' }, status: async () => ({}), doctor: async () => ({}),
+    stateDir: dir2, state: new State(dir2), auth: { verify: async () => 'unauthorized' }, status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }),
     scheduler: () => ({ accepted: false, detail: '' }),
   }))!;
   try {
@@ -261,7 +261,7 @@ test('tunnel secret: opens periscopes of its own workspace only, 401 on /status,
     fetch: (async () => new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })) as typeof fetch,
   });
   const srv = (await startControlServer({
-    stateDir: dir, state, auth, status: async () => ({}), doctor: async () => ({}),
+    stateDir: dir, state, auth, status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }),
     scheduler: () => ({ accepted: false, detail: '' }),
     periscopes: { ...f.h, verifyIn: (t, ws) => auth.verifyIn(t, ws), previewRepos: (r) => (r === 'ws/issues' ? ['app'] : []) },
   }))!;

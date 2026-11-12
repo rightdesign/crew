@@ -3562,6 +3562,7 @@ switch (command) {
       periscopeMcp: controlRoutes.some((r) => r.enabled && r.hostPeriscopes)
         ? (req, res, ticket) => handlePeriscopeMcp(periscopeMcpDeps(), req, res, ticket)
         : undefined,
+      route: primary.route,
       status: () => crewJson(['status', primary.route, '--json']),
       doctor: () => crewJson(['doctor', primary.route, '--json', '--offline']),
       diagnostics: () => collectDiagnostics({
@@ -3570,7 +3571,7 @@ switch (command) {
         runner: cfg.ship.runner ?? 'host',
         unitStems: detectSystemd() ? (['run', 'release', 'passengers'] as const).map((j) => labelFor(CREW_HOME, j)) : [],
         userScope: process.getuid?.() !== 0,
-        doctor: () => crewJson(['doctor', primary.route, '--json', '--offline']),
+        doctor: async () => { const o = await crewJson(['doctor', primary.route, '--json', '--offline']); return o.ok ? o.doc : null; },
       }),
       scheduler: schedulerHandler(planDaemonControl(CREW_HOME, hostPlatform(), detectSystemd())),
       log: (m) => emit.warn(m),

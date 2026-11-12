@@ -319,10 +319,12 @@ export interface ControlDeps {
   stateDir: string;
   state: State;
   auth: Pick<ControlAuth, 'verify'>;
-  /** `crew status --json` as an object, or null when it could not be produced. */
-  status: () => Promise<Record<string, unknown> | null>;
-  /** `crew doctor --json` as an object, or null when it could not be produced. */
-  doctor: () => Promise<unknown | null>;
+  /** `crew status --json` as an object, or why it could not be produced (CREW-3276). */
+  status: () => Promise<JsonOutcome>;
+  /** `crew doctor --json` as an object, or why it could not be produced. */
+  doctor: () => Promise<JsonOutcome>;
+  /** The route `status` and `doctor` are built for; `/status` names it so doctor can say which route a probe saw. */
+  route?: string;
   /** The redacted diagnostic bundle (CREW-3008); absent: the path is a 404. */
   diagnostics?: () => Promise<Record<string, unknown>>;
   /** Begins the action after the response is sent; false when the host has no service manager to drive. */
@@ -342,6 +344,21 @@ export interface ControlDeps {
 interface Reply { status: number; body: unknown; stream?: (write: (event: unknown) => void) => Promise<void> }
 const reply = (status: number, body: unknown): Reply => ({ status, body });
 const err = (status: number, message: string): Reply => reply(status, { error: message });
+
+/**
+ * The 502 for a document the ship could not build (CREW-3276): the same
+ * `error` text as before plus a `reason` code and a short `detail`, so a
+ * caller (doctor, a monitor) can tell a timeout from a config error. Logged
+ * once at warn level through the daemon's emitter.
+ */
+function failureReply(what: 'status' | 'doctor', f: Extract<JsonOutcome, { ok: false }>, log?: (m: string) => void): Reply {
+  log?.(`control API: could not produce the ${what} document: ${f.reason}: ${f.detail}`);
+  return reply(502, {
+    error: `could not produce the ${what === 'status' ? 'status document' : 'doctor report'}`,
+    reason: f.reason,
+    detail: f.detail,
+  });
+}
 
 function pauseDoc(state: State) {
   return {
@@ -465,10 +482,11 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
   }
 
   if (p === '/status' && get) {
-    const doc = await deps.status();
-    if (!doc) return err(502, 'could not produce the status document');
+    const out = await deps.status();
+    if (!out.ok) return failureReply('status', out, deps.log);
     return reply(200, {
-      ...doc,
+      ...out.doc,
+      ...(deps.route ? { route: deps.route } : {}),
       daemon: {
         alive: true,
         pid: process.pid,
@@ -511,8 +529,8 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
     return r.accepted ? reply(202, { accepted: true, detail: r.detail }) : err(409, r.detail);
   }
   if (p === '/doctor' && get) {
-    const doc = await deps.doctor();
-    return doc ? reply(200, doc) : err(502, 'could not produce the doctor report');
+    const out = await deps.doctor();
+    return out.ok ? reply(200, out.doc) : failureReply('doctor', out, deps.log);
   }
   if (p === '/diagnostics' && get && deps.diagnostics) return reply(200, await deps.diagnostics());
   const known = ['/status', '/events', '/streams', '/pause', '/resume', '/release/pause', '/release/resume', '/doctor', ...(deps.diagnostics ? ['/diagnostics'] : [])];
@@ -630,21 +648,46 @@ export function schedulerHandler(
   };
 }
 
+/** How long `crewJson` lets the subprocess run; doctor's probe waits longer than this (relay-probe.ts). */
+export const CREW_JSON_TIMEOUT_MS = 60_000;
+
+export type JsonOutcome =
+  | { ok: true; doc: Record<string, unknown> }
+  | { ok: false; reason: 'timed_out' | 'exited' | 'bad_output'; detail: string };
+
+/** The last few stderr lines, bounded, with anything shaped like a key or bearer token masked. */
+export function stderrTail(stderr: string, lines = 5, maxChars = 600): string {
+  const tail = stderr.trim().split('\n').slice(-lines).join('\n')
+    .replace(/\bsk_[A-Za-z0-9_-]+/g, 'sk_***')
+    .replace(/(Bearer\s+)\S+/gi, '$1***');
+  return tail.length > maxChars ? `…${tail.slice(-maxChars)}` : tail;
+}
+
 /**
  * Runs this same crew program with `args` and parses its stdout as JSON, so
  * `/status` and `/doctor` return exactly what the CLI prints rather than a
- * second implementation that could drift. Null on a non-JSON answer or a
- * timeout. A non-zero exit is not a failure here: `doctor` exits non-zero
- * when it finds a blocker, and that report is the answer.
+ * second implementation that could drift. A non-zero exit is not a failure
+ * when the output is a JSON object: `doctor` exits non-zero when it finds a
+ * blocker, and that report is the answer. Otherwise the result says why
+ * (CREW-3276): the subprocess timed out, exited non-zero (code and stderr
+ * tail), or printed something that is not a JSON object.
  */
-export function crewJson(args: string[], timeoutMs = 60_000): Promise<Record<string, unknown> | null> {
+export function crewJson(args: string[], timeoutMs = CREW_JSON_TIMEOUT_MS): Promise<JsonOutcome> {
   return new Promise((resolve) => {
     const self = selfLaunch();
-    execFile(self.command, [...self.args, ...args], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (_e, stdout) => {
+    execFile(self.command, [...self.args, ...args], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (e, stdout, stderr) => {
       try {
         const v = JSON.parse(String(stdout)) as unknown;
-        resolve(v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
-      } catch { resolve(null); }
+        if (v && typeof v === 'object' && !Array.isArray(v)) return resolve({ ok: true, doc: v as Record<string, unknown> });
+      } catch { /* classified below */ }
+      const ex = e as (Error & { killed?: boolean; code?: number | string | null; signal?: string | null }) | null;
+      const tail = stderrTail(String(stderr ?? ''));
+      if (ex?.killed || ex?.code === 'ETIMEDOUT') return resolve({ ok: false, reason: 'timed_out', detail: `no JSON within ${Math.round(timeoutMs / 1000)}s${tail ? `; stderr: ${tail}` : ''}` });
+      if (ex) {
+        const how = typeof ex.code === 'number' ? `exit code ${ex.code}` : ex.signal ? `signal ${ex.signal}` : `error ${String(ex.code ?? ex.message)}`;
+        return resolve({ ok: false, reason: 'exited', detail: `${how}${tail ? `; stderr: ${tail}` : ''}` });
+      }
+      resolve({ ok: false, reason: 'bad_output', detail: `exit 0 but stdout is not a JSON object (${String(stdout).length} bytes)${tail ? `; stderr: ${tail}` : ''}` });
     });
   });
 }

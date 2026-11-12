@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
 import {
-  ControlAuth, decodeCursor, readTail, schedulerHandler, startControlServer, type ControlDeps, type RunningControlServer,
+  ControlAuth, crewJson, decodeCursor, readTail, schedulerHandler, startControlServer, type ControlDeps, type RunningControlServer,
 } from '../src/control-api.ts';
 import { State } from '../src/state.ts';
 
@@ -119,8 +119,8 @@ async function harness(over: Partial<ControlDeps> = {}): Promise<Harness> {
   const srv = (await startControlServer({
     stateDir: dir, state,
     auth: auth({ seat: { ws1: 200 }, foreign: { ws1: 403, ws2: 403 } }),
-    status: async () => ({ version: 1, crew: { paused: state.isPaused() } }),
-    doctor: async () => ({ problems: [] }),
+    status: async () => ({ ok: true, doc: { version: 1, crew: { paused: state.isPaused() } } }),
+    doctor: async () => ({ ok: true, doc: { problems: [] } }),
     scheduler: schedulerHandler({ startCommand: ['svc', 'start'], stopCommand: ['svc', 'stop'] }, (c) => { calls.push(JSON.stringify(c)); }),
     ...over,
   }))!;
@@ -220,9 +220,12 @@ test('server: scheduler actions answer 202 and run the planned commands; no serv
 });
 
 test('server: doctor is served read-only; a failure to produce either document is 502', async () => {
-  const h = await harness({ doctor: async () => null });
+  const h = await harness({ doctor: async () => ({ ok: false, reason: 'exited', detail: 'exit code 1; stderr: bad config' }) });
   try {
-    assert.equal((await h.get('/doctor')).status, 502);
+    const r = await h.get('/doctor');
+    assert.equal(r.status, 502);
+    assert.equal(r.json.reason, 'exited');
+    assert.match(r.json.detail, /bad config/);
     assert.equal((await h.post('/doctor')).status, 405);
   } finally { await h.srv.close(); }
 });
@@ -230,7 +233,7 @@ test('server: doctor is served read-only; a failure to produce either document i
 test('server: a socket path too long for a unix socket does not start and does not throw', async () => {
   const dir = join(stateDir(), 'x'.repeat(120));
   const logs: string[] = [];
-  const srv = await startControlServer({ stateDir: dir, state: new State(stateDir()), auth: auth({}), status: async () => null, doctor: async () => null, scheduler: schedulerHandler({ startCommand: null, stopCommand: null }), log: (m) => logs.push(m) });
+  const srv = await startControlServer({ stateDir: dir, state: new State(stateDir()), auth: auth({}), status: async () => ({ ok: false, reason: 'bad_output', detail: 'x' }), doctor: async () => ({ ok: false, reason: 'bad_output', detail: 'x' }), scheduler: schedulerHandler({ startCommand: null, stopCommand: null }), log: (m) => logs.push(m) });
   assert.equal(srv, null);
   assert.match(logs[0]!, /too long/);
 });
@@ -239,7 +242,7 @@ test('GET /diagnostics: needs the bearer token and serves the bundle', async () 
   const dir = stateDir();
   const st = new State(dir);
   const mk = async (diagnostics?: ControlDeps['diagnostics']) => (await startControlServer({
-    stateDir: dir, state: st, auth: auth({}), status: async () => ({}), doctor: async () => ({}), diagnostics,
+    stateDir: dir, state: st, auth: auth({}), status: async () => ({ ok: true, doc: {} }), doctor: async () => ({ ok: true, doc: {} }), diagnostics,
     scheduler: () => ({ accepted: false, detail: '' }),
   }))!;
   const srv = await mk(async () => ({ sections: { tunnel: { ok: true, data: {} } } }));
@@ -255,4 +258,40 @@ test('GET /diagnostics: needs the bearer token and serves the bundle', async () 
     assert.equal(ok.status, 200);
     assert.ok(JSON.parse(ok.body).sections.tunnel.ok);
   } finally { await srv.close(); }
+});
+
+test('server: /status 502 carries reason and detail, logs one warn line; success names the route (CREW-3276)', async () => {
+  const logs: string[] = [];
+  const h = await harness({ status: async () => ({ ok: false, reason: 'exited', detail: 'exit code 2; stderr: no such route' }), log: (m) => logs.push(m) });
+  try {
+    const r = await h.get('/status');
+    assert.equal(r.status, 502);
+    assert.deepEqual(r.json, { error: 'could not produce the status document', reason: 'exited', detail: 'exit code 2; stderr: no such route' });
+    assert.equal(logs.length, 1);
+    assert.match(logs[0]!, /exited/);
+  } finally { await h.srv.close(); }
+  const ok = await harness({ route: 'main' });
+  try { assert.equal((await ok.get('/status')).json.route, 'main'); } finally { await ok.srv.close(); }
+});
+
+test('crewJson(): timeout, non-zero exit and bad output say why; a JSON object wins over exit code (CREW-3276)', async () => {
+  const argv1 = process.argv[1];
+  const dir = mkdtempSync(join(tmpdir(), 'crewjson-'));
+  const script = (name: string, body: string) => { const f = join(dir, name); writeFileSync(f, body); return f; };
+  try {
+    process.argv[1] = script('slow.mjs', 'setTimeout(() => {}, 5000);');
+    const t = await crewJson([], 300);
+    assert.equal(t.ok, false);
+    if (!t.ok) assert.equal(t.reason, 'timed_out');
+    process.argv[1] = script('fail.mjs', 'console.error("boom sk_secret123 Bearer abc"); process.exit(3);');
+    const x = await crewJson([]);
+    assert.equal(x.ok, false);
+    if (!x.ok) { assert.equal(x.reason, 'exited'); assert.match(x.detail, /exit code 3/); assert.match(x.detail, /boom/); assert.ok(!/secret123|abc/.test(x.detail)); }
+    process.argv[1] = script('junk.mjs', 'console.log("not json");');
+    const b = await crewJson([]);
+    assert.equal(b.ok, false);
+    if (!b.ok) assert.equal(b.reason, 'bad_output');
+    process.argv[1] = script('blocker.mjs', 'console.log(JSON.stringify({ problems: 1 })); process.exit(1);');
+    assert.deepEqual(await crewJson([]), { ok: true, doc: { problems: 1 } });
+  } finally { process.argv[1] = argv1!; rmSync(dir, { recursive: true, force: true }); }
 });
