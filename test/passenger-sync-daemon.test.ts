@@ -225,7 +225,7 @@ test('syncPassengerSyncDaemons() spawns a daemon for a newly planned workspace a
   assert.ok(endpoint!.secret.length >= 32);
   assert.equal(calls[0]!.env.PASSENGER_SYNC_SECRET, endpoint!.secret);
   assert.equal(calls[0]!.env.PASSENGER_SYNC_PORT, String(endpoint!.port));
-  assert.equal(calls[0]!.args[1], 'passenger-sync-daemon');
+  assert.equal(calls[0]!.args.at(-1), 'passenger-sync-daemon');
 });
 
 test('syncPassengerSyncDaemons() leaves an alive daemon with unchanged mounts alone — no respawn, same secret', () => {

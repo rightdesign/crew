@@ -71,6 +71,7 @@ import { readDaemonStarted } from './daemon.ts';
 import { secretsMatch } from './secret-compare.ts';
 import type { State } from './state.ts';
 import { handlePeriscopes, isPeriscopePath, type PeriscopeHosting } from './periscope-control.ts';
+import { selfLaunch } from './runtime-info.ts';
 
 /** The roles `crew pause <role>` accepts and the poll honors (`poll.ts` `pausedRoles`). */
 const PAUSABLE: readonly RoleName[] = ['dev', 'design', 'qa'];
@@ -638,7 +639,8 @@ export function schedulerHandler(
  */
 export function crewJson(args: string[], timeoutMs = 60_000): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
-    execFile(process.execPath, [process.argv[1] ?? '', ...args], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (_e, stdout) => {
+    const self = selfLaunch();
+    execFile(self.command, [...self.args, ...args], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (_e, stdout) => {
       try {
         const v = JSON.parse(String(stdout)) as unknown;
         resolve(v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);

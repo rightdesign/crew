@@ -65,6 +65,7 @@ import { syncPassengerCheckout, type PassengerCheckoutOutcome } from './git.ts';
 import { materializeMirrorCheckouts, mirrorOutcome } from './passenger-mirror.ts';
 import { isPidAlive } from './tunnel.ts';
 import { secretsMatch } from './secret-compare.ts';
+import { selfLaunch } from './runtime-info.ts';
 
 export function generateSyncSecret(): string {
   return randomBytes(32).toString('hex');
@@ -344,7 +345,8 @@ export function syncPassengerSyncDaemons(
 
     const secret = existing && existing.mountsHash === plan.mountsHash ? existing.secret : generateSyncSecret();
     const targets = passengerCheckoutSyncSpecs(cfg, plan.workspaceId);
-    const child = spawnFn(process.execPath, [process.argv[1] ?? '', 'passenger-sync-daemon'], {
+    const self = selfLaunch();
+    const child = spawnFn(self.command, [...self.args, 'passenger-sync-daemon'], {
       ...process.env,
       PASSENGER_SYNC_PORT: String(port),
       PASSENGER_SYNC_SECRET: secret,

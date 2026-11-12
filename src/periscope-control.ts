@@ -36,6 +36,7 @@
 
 import { spawn } from 'node:child_process';
 import type { AuthVerdict } from './control-api.ts';
+import { selfLaunch } from './runtime-info.ts';
 
 export interface CliResult { code: number; stdout: string; stderr: string }
 
@@ -286,7 +287,8 @@ export async function handlePeriscopes(h: PeriscopeHosting | undefined, q: Peris
 /** Runs this same crew program with `args`, relaying complete stderr lines as they arrive. */
 export function runCrew(args: string[], onLine: (line: string) => void, timeoutMs = 20 * 60_000): Promise<CliResult> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [process.argv[1] ?? '', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const self = selfLaunch();
+    const child = spawn(self.command, [...self.args, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let pending = '';

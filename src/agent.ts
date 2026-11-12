@@ -49,6 +49,7 @@ import { deadlineFor, msUntilDeadline, resolveMaxRunMinutes, WALL_CLOCK_REASON }
 import { appendAdditions } from './prompt-additions.ts';
 import { readPersonaFile } from './persona-file.ts';
 import { TicketAttributionTracker, isClaimWrite } from './ticket-attribution.ts';
+import { selfLaunch } from './runtime-info.ts';
 
 /**
  * A digest older than this is treated as absent. Acting on a stale queue is
@@ -492,14 +493,15 @@ export function codeBridgeFor(o: PlanOptions, harness: string): CodeBridge | und
   } catch { /* a malformed .crew.yaml is reported where it is read; a route with no checkout has nothing to bridge */ }
   if (!wantsCodeBridge(intel)) return undefined;
   const sandbox = o.ship.runner === 'sandbox';
+  const self = selfLaunch();
   // CREW-2922: inside a sandbox the bridge is the bundled file in the image, started with the image's
   // node, and it starts the service itself (there is no `crew worktree` there to do it).
   const args = sandbox
     ? [SANDBOX_BRIDGE_PATH, '--attach-file', `${SANDBOX_INTEL_DIR}/url`, '--start', intel!.trim(),
        '--clone', o.ship.sandbox?.workDir ?? DEFAULT_SANDBOX_WORKDIR, '--state-dir', dirname(SANDBOX_INTEL_DIR), '--ticket', number,
        ...(seed ? ['--seed-cache', seed] : [])]
-    : [...process.execArgv, process.argv[1] ?? 'crew', 'intel', 'bridge', o.route.route, number, '--state-dir', o.stateDir];
-  const bridge: CodeBridge = { command: sandbox ? 'node' : process.execPath, args };
+    : [...self.args, 'intel', 'bridge', o.route.route, number, '--state-dir', o.stateDir];
+  const bridge: CodeBridge = { command: sandbox ? 'node' : self.command, args };
   if (harness === 'gemini') {
     // Gemini has no per-run server list; a system settings file named by env var is the per-run scope.
     const text = `${JSON.stringify({ mcpServers: { [INTEL_SERVER_NAME]: { command: bridge.command, args } } }, null, 2)}\n`;
