@@ -187,10 +187,32 @@ export class Emitter {
     } catch { /* ignore */ }
     try { if (this.opts.eventFile) appendFileSync(this.opts.eventFile, `${JSON.stringify(e)}\n`); } catch { /* ignore */ }
     try { if (this.opts.logFile) appendFileSync(this.opts.logFile, `${line}\n`); } catch { /* ignore */ }
-    if (!e.routine || this.opts.verbose) {
+    // Only the plain terminal renderer hides routine events: the daemon and
+    // timer units (not a TTY) keep the full log form on their console.
+    if (!e.routine || this.opts.verbose || !this.opts.plain) {
       try { (this.opts.console ?? ((l: string) => process.stderr.write(`${l}\n`)))(this.opts.plain ? renderPlain(e) : line); } catch { /* ignore */ }
     }
     return e;
+  }
+
+  /**
+   * A line for a person at the terminal that is not an event (CREW-3285): the
+   * closing count of a roll-up. Console only, never the event stream or log,
+   * and hidden from a non-terminal console, which has the events it summarizes.
+   */
+  echo(message: string): void {
+    if (!this.opts.plain) return;
+    try { (this.opts.console ?? ((l: string) => process.stderr.write(`${l}\n`)))(message); } catch { /* ignore */ }
+  }
+
+  /**
+   * Show lines already emitted as routine that a failure now makes relevant
+   * (CREW-3285: a failed hook's output). Console only; nothing when the
+   * console already showed them (`--verbose`) or is not a terminal.
+   */
+  replay(lines: string[]): void {
+    if (!this.opts.plain || this.opts.verbose) return;
+    for (const l of lines) this.echo(l);
   }
 
   /** Routine progress: logged, but shown on the console only under `--verbose`. */

@@ -138,7 +138,7 @@ import { checkCapabilities, describeCapability, missLine } from './capability-ch
 import { routeAvatarFailures } from './persona-avatars.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
-import { summarizeOutcomes, summarizeJobs, withFix, type JobResult } from './cli-output.ts';
+import { summarizeOutcomes, summarizeJobs, withFix, describeRunOutcome, type JobResult } from './cli-output.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, formatBeforeEdit, LogbookError } from './logbook.ts';
 import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.ts';
@@ -438,7 +438,7 @@ async function offerTemplateInstall(
 function usage(problem?: string, requested = false): never {
   const text = `crew — a standing team of headless agents
 
-  crew poll [route]              decide a cycle and report it; writes nothing
+  crew poll [route] [--verbose]  decide a cycle and report it; writes nothing; --verbose adds counts and timestamps
   crew run [route] [--role R]    run the winning role's session
   crew release [route]           merge what QA verified, version it, ship it
   crew merge [route]             merge verified branches and stop
@@ -3013,7 +3013,7 @@ switch (command) {
             lock = { release: () => { roleLock?.release(); releaseTicket(); } };
           }
           if (result.contended.length) {
-            wemit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+            wemit.note(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: w.role,
             });
           }
@@ -3051,7 +3051,7 @@ switch (command) {
           fleetTicketRepo = target?.name;
           try {
             if (target && !skipsHostCheckout(cfg.ship) && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
-              wemit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
+              wemit.note(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
             }
           } catch (e) {
             wemit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
@@ -3074,7 +3074,7 @@ switch (command) {
         resolvedAgentId: await resolveAgentId(w.route, w.role, { userAgent: cfg.ship.userAgent }),
       });
       wemit.enter('agent', w.role);
-      wemit.emit(`starting agent run for ${w.route.route}`);
+      wemit.note(`starting agent run for ${w.route.route}`);
       const fleetMemberId = w.route.resolved?.seats[w.role];
       if (fleetMemberId) {
         try {
@@ -3091,8 +3091,9 @@ switch (command) {
       try {
         const runStart = new Date().toISOString();
         await markCrewAssistedAtLaunch(fleetTracker, w.route, w.role, fleetWorkingId ?? null, undefined, (m) => wemit.warn(m, { step: 'agent' }));
-        await spawnAgent(fleetPlan, wemit);
-        await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit, runStart);
+        const fleetRun = await spawnAgent(fleetPlan, wemit);
+        const fleetHandoff = await guardRunHandoff(w.route, cfg.ship, fleetTracker, w.role, fleetWorkingId, wemit, runStart);
+        wemit.echo(describeRunOutcome({ role: w.role, route: w.route.route, ticket: fleetTicketHint, run: fleetRun, handoff: fleetHandoff }));
       } finally {
         dropLock();
         await settleRunEnd({
@@ -3135,7 +3136,7 @@ switch (command) {
       } else {
         const seat = route.resolved?.seats.qa ?? route.resolved?.seats.dev;
         const r = await applySweep(new Tracker(route, cfg.ship), decision.sweep, seat ?? '', emit);
-        emit.emit(
+        emit.note(
           `swept ${r.parked} parked, ${r.restored} restored` +
             `${r.failed ? `, ${r.failed} failed` : ''}${r.contended ? `, ${r.contended} contended` : ''}`,
           { step: 'sweep', data: r },
@@ -3245,7 +3246,7 @@ switch (command) {
             lock = { release: () => { roleLock?.release(); releaseTicket(); } };
           }
           if (result.contended.length) {
-            emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+            emit.note(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
               step: 'select', role: current,
             });
           }
@@ -3286,7 +3287,7 @@ switch (command) {
           ticketRepo = target?.name;
           try {
             if (target && !skipsHostCheckout(cfg.ship) && ensureRepoCheckout(target.dir, target.remote, { scheme: cfg.ship.cloneScheme, host: target.forgeHost })) {
-              emit.emit(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
+              emit.note(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
             }
           } catch (e) {
             emit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
@@ -3326,7 +3327,7 @@ switch (command) {
       }
       const before = snapshot(await tracker2.openTickets());
       emit.enter('agent', current);
-      emit.emit('starting agent run');
+      emit.note('starting agent run');
       const memberId = route.resolved?.seats[current];
       if (memberId) {
         try {
@@ -3343,8 +3344,9 @@ switch (command) {
       try {
         const runStart = new Date().toISOString();
         await markCrewAssistedAtLaunch(tracker2, route, current, workingId ?? null, undefined, (m) => emit.warn(m, { step: 'agent' }));
-        await spawnAgent(plan, emit);
-        await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit, runStart);
+        const agentRun = await spawnAgent(plan, emit);
+        const handoff = await guardRunHandoff(route, cfg.ship, tracker2, current, workingId, emit, runStart);
+        emit.echo(describeRunOutcome({ role: current, route: route.route, ticket: ticketHint, run: agentRun, handoff }));
       } finally {
         dropLock();
         await settleRunEnd({

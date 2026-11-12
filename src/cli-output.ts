@@ -62,3 +62,37 @@ export function summarizeJobs(results: readonly JobResult[], o: { uninstall?: bo
   }
   return lines;
 }
+
+export interface RunOutcomeInput {
+  role: string;
+  route: string;
+  /** The ticket the run worked, when it had one. */
+  ticket?: string | null;
+  /** The harness result (`spawnAgent`). */
+  run: { code: number; handoffPending?: boolean; killed?: { limitMinutes: number } };
+  /** What the hand-off guard found, when it checked. */
+  handoff: { kind: 'not-handed-off' | 'pushed' | 'unverified' | 'bounced' | 'failed'; why?: string } | null;
+}
+
+/**
+ * CREW-3285: the one line `crew run` prints at a terminal when a run ends: handed off,
+ * parked or not handed off with the reason, or failed with the reason and the command
+ * to run next. Console only (`Emitter.echo`): the event stream keeps its own
+ * `agent run finished` event, unchanged.
+ */
+export function describeRunOutcome(o: RunOutcomeInput): string {
+  const who = `${o.role}${o.ticket ? ` on ${o.ticket}` : ''}`;
+  const status = `crew status ${o.route}`;
+  if (o.run.killed) return withFix(`${who}: run stopped at its ${o.run.killed.limitMinutes} min limit`, `\`${status}\``);
+  if (o.run.code !== 0) return withFix(`${who}: run failed (exit ${o.run.code})`, `\`${status}\` and the run's stream under the state directory`);
+  if (o.run.handoffPending) return `${who}: finished; the hand-off write is pending and replays next cycle`;
+  const h = o.handoff;
+  if (!h) return `${who}: finished`;
+  switch (h.kind) {
+    case 'pushed': return `${who}: handed off`;
+    case 'bounced': return `${who}: hand-off bounced, set back to in_progress`;
+    case 'unverified': return `${who}: parked, ${h.why ?? 'hand-off not verified'}`;
+    case 'failed': return withFix(`${who}: hand-off failed, ${h.why ?? 'unknown reason'}`, `\`${status}\``);
+    default: return `${who}: finished without a hand-off`;
+  }
+}

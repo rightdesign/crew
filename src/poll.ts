@@ -127,7 +127,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // CREW-1761: the runner's own directions live in the event log, not Comments.
   const directionEvents = (await Promise.all([...DIRECTION_EVENT_TYPES, ...STATUS_EVENT_TYPES, 'pushed'].map((t) => tracker.events(t)))).flat();
   const statusChanges = await tracker.statusChanges();
-  emit.emit(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
+  emit.note(`${tickets.length} open ticket(s), ${comments.length} comment(s)`, {
     data: { tickets: tickets.length, comments: comments.length },
   });
 
@@ -186,7 +186,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes, stalledEvents);
   const skipped = skippedByMode(tickets, workModes);
   if (skipped.manual || skipped.hybrid) {
-    emit.emit(`sweeps skipped ${skipped.manual} manual/project-less and ${skipped.hybrid} unassigned hybrid ticket(s)`, {
+    emit.note(`sweeps skipped ${skipped.manual} manual/project-less and ${skipped.hybrid} unassigned hybrid ticket(s)`, {
       data: { sweepSkipped: skipped },
     });
   }
@@ -196,9 +196,9 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // cycle is its own event-stream id — a view folding only the latest cycle
   // has nothing to fall back on if a quiet cycle skipped the emit (ISSUE-399).
   const blockedIssues = tickets.filter((t) => blocked.has(t.id)).map((t) => t.issue_id);
-  emit.emit(`${blockedIssues.length} ticket(s) parked as blocked`, { data: { blocked: blockedIssues } });
+  emit.note(`${blockedIssues.length} ticket(s) parked as blocked`, { data: { blocked: blockedIssues } });
   const qaHeld = tickets.filter((t) => t.status === tracker.contract.statuses.verifying).map((t) => t.issue_id);
-  emit.emit(`${qaHeld.length} ticket(s) held in QA`, { data: { qaHeld } });
+  emit.note(`${qaHeld.length} ticket(s) held in QA`, { data: { qaHeld } });
 
   const stranded = strandedNeedsInfo(tickets, blocked, holds);
   for (const t of stranded) {
@@ -212,7 +212,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   };
   for (const r of rollUpParents(tickets, undefined, coordinating)) {
     if (r.complete) {
-      emit.emit(`every child is done — this coordinating ticket is too`, { ticket: r.parent.issue_id });
+      emit.note(`every child is done — this coordinating ticket is too`, { ticket: r.parent.issue_id });
     }
   }
   // CREW-2548: warn when a ticket FIRST becomes unroutable, not every cycle —
@@ -234,9 +234,10 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
       { ticket: t.issue_id },
     );
   }
-  for (const t of gained) emit.emit('now has a repository — no longer unroutable', { ticket: t.issue_id });
+  for (const t of gained) emit.note('now has a repository — no longer unroutable', { ticket: t.issue_id });
   if (unroutableTickets.length) {
-    emit.emit(
+    // CREW-3285: only a ticket that was routable last cycle is news to a person at a terminal.
+    (added.length ? emit.emit : emit.note).call(emit,
       `${unroutableTickets.length} open ticket(s) have no repository and are not routable (${added.length} new since last cycle)`,
       { step: 'sweep', data: { unroutable: unroutableTickets.map((t) => t.issue_id), newUnroutable: added.map((a) => a.ticket.issue_id) } },
     );
@@ -325,7 +326,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // the write, and losing a signal is worse than repeating one.
   const advanced = state.advanceWatermark([...comments, ...tickets], routeSlug(route.route));
   if (advanced !== watermark) {
-    emit.emit(`watermark ${watermark.slice(0, 19)} -> ${advanced.slice(0, 19)}`, {
+    emit.note(`watermark ${watermark.slice(0, 19)} -> ${advanced.slice(0, 19)}`, {
       step: 'poll', data: { from: watermark, to: advanced },
     });
   }
@@ -481,7 +482,7 @@ export function writeDigest(
     const text = own ? `${ownRunBanner(own)}\n\n${body}` : body;
     const path = digestPath(stateDir, routeSlug(o.route.route), role, runId);
     writeFileSync(path, text);
-    o.emit.emit(`queue digest written for ${role} (${Buffer.byteLength(text)} bytes)`, {
+    o.emit.note(`queue digest written for ${role} (${Buffer.byteLength(text)} bytes)`, {
       data: { role, bytes: Buffer.byteLength(text) },
     });
     return true;

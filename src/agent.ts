@@ -1221,7 +1221,7 @@ async function finishRun(
     });
   } catch { /* ditto — the sidecar is a convenience, not load-bearing */ }
   const ms = Date.now() - Date.parse(startedAt);
-  emit.emit(end.interrupted ? 'agent run interrupted' : `agent run finished (${pending ? 'hand-off pending' : `exit ${end.code ?? 'unknown'}`})`, {
+  emit.note(end.interrupted ? 'agent run interrupted' : `agent run finished (${pending ? 'hand-off pending' : `exit ${end.code ?? 'unknown'}`})`, {
     data: {
       ms, code: end.code,
       ...(pending ? { handoff: 'pending' } : {}),

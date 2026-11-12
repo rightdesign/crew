@@ -243,7 +243,7 @@ now on disk. `crew daemon restart` forces this immediately, for a manual
 ## Commands
 
 ```
-crew poll [route]              decide a cycle and report it; writes nothing
+crew poll [route] [--verbose]  decide a cycle and report it; writes nothing; --verbose adds counts and timestamps
 crew run [route] [--role R]    run the winning role's session, then release
 crew daemon [route]                run the persistent supervisor loop in the foreground (every enabled route when none is named)
 crew daemon start|stop|status      control the installed `run` service directly

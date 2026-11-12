@@ -33,8 +33,8 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew poll [route]` | Decide a cycle and report it; writes nothing. |
-| `crew run [route] [--role R]` | Run the winning role's session (`--role` forces one and disables fall-through; `--max-roles N` sets how many to try). |
+| `crew poll [route] [--verbose]` | Decide a cycle and report it; writes nothing. In a terminal it prints the decision, then one line for each ticket waiting on a person or newly unroutable, and every warning or error. `--verbose` adds the counts, sweep tallies, digest notes and timestamps. The event stream, scheduler log and non-terminal output always carry every event. |
+| `crew run [route] [--role R]` | Run the winning role's session (`--role` forces one and disables fall-through; `--max-roles N` sets how many to try). In a terminal it prints the decision line, then one line when the run ends (handed off, parked with the reason, or failed with the reason and a command to try); harness output is never echoed and the rest shows only under `--verbose`. |
 | `crew watch [route]` | Live view (`--role`, `--ticket`, `--level warn`, `--tail N`); space pauses, `q` quits. |
 | `crew log [route]` | Tail the log. |
 | `crew logbook list [route]` | Recent Agent Log entries, filterable by `--role` / `--ticket`. `--before-edit` sorts by text searches made before the run's first edit, most first. |
@@ -44,7 +44,7 @@ It may be omitted when the ship has one route (or the command works fleet-wide).
 
 | Command | What it does |
 | --- | --- |
-| `crew release [route]` | Merge what QA verified, version it, ship it (`--skip-tests` skips the gate). |
+| `crew release [route]` | Merge what QA verified, version it, ship it (`--skip-tests` skips the gate). In a terminal, a route with several repositories prints one line per repository that released or failed and a closing count of those with nothing to release; a failed hook's output is shown and everything else is under `--verbose`. |
 | `crew merge [route]` | Merge verified branches and stop. |
 | `crew deploy [route]` | Release now, even with nothing new to merge. |
 

@@ -40,6 +40,7 @@ import {
 import { GATE_RED_AFTER, lastLines, type GateRed } from './gate-red.ts';
 import { failureSummary, type GateComposition } from './test-evidence.ts';
 import type { Contract } from './contract.ts';
+import { withFix } from './cli-output.ts';
 
 export interface ReleaseRunOptions {
   /** Collects gate flakes across a release's recursive passes (CREW-3220); set by `mergeAndRelease`. */
@@ -344,13 +345,18 @@ export function emitReleaseSummary(emit: Emitter, summaries: RoutedReleaseSummar
     const rows = summaries.filter((s) => s.route === route);
     const remit = emit.forRoute(route);
     remit.enter('release');
-    remit.emit(`release summary — ${rows.length} repo(s):`);
+    // CREW-3285: at a terminal the roll-up is one line per repo that had something
+    // to release (or failed) and one closing count; the full table is `--verbose`.
+    remit.note(`release summary — ${rows.length} repo(s):`);
     for (const s of rows) {
       const testLabel = s.tests === 'pass' ? 'tests passed' : s.tests === 'fail' ? 'tests FAILED' : 'tests skipped';
-      remit.emit(`  ${s.scope}: ${testLabel}, ${s.outcome} — ${s.detail}`, {
-        level: s.outcome === 'error' || s.tests === 'fail' ? 'warn' : 'info',
-      });
+      const failed = s.outcome === 'error' || s.tests === 'fail';
+      const line = `  ${s.scope}: ${testLabel}, ${s.outcome} — ${s.detail}`;
+      if (s.outcome === 'nothing' && !failed) remit.note(line);
+      else remit.emit(line, { level: failed ? 'warn' : 'info' });
     }
+    const idle = rows.filter((s) => s.outcome === 'nothing' && s.tests !== 'fail').length;
+    if (idle > 0) remit.echo(`${idle} of ${rows.length} repo(s) had nothing to release`);
   }
 }
 
@@ -459,12 +465,15 @@ const hook = async (o: ReleaseRunOptions, name: 'setup' | 'test' | 'build' | 'de
                     env: Record<string, string> = {}) => {
   const script = o.repo.hooks[name];
   if (!script) return null;
+  const lines: string[] = [];
   const result = await runScript(script, {
     cwd: o.cwd,
     env,
     shell: resolveShell(o.repo.shell ?? o.shell),
-    onLine: (l) => { if (l.trim()) o.emit.emit(l.trim(), { data: { hook: name } }); },
+    onLine: (l) => { if (l.trim()) { lines.push(l.trim()); o.emit.note(l.trim(), { data: { hook: name } }); } },
   });
+  // CREW-3285: hook output is routine unless the hook failed, then it is the point.
+  if (result.code !== 0) o.emit.replay(lastLines(lines.join('\n'), HOOK_FAILURE_TAIL_LINES).split('\n'));
   if (o.attention && !o.dryRun) {
     const key = `hook_missing:${o.scope ?? 'release'}/${name}`;
     if (result.code === 127) {
@@ -504,7 +513,7 @@ async function detectExternalClosures(
         cwd: o.cwd,
         env,
         shell: resolveShell(o.repo.shell ?? o.shell),
-        onLine: (l) => { if (l.trim()) o.emit.emit(l.trim(), { data: { hook: 'merged' } }); },
+        onLine: (l) => { if (l.trim()) o.emit.note(l.trim(), { data: { hook: 'merged' } }); },
       })).code
     : undefined;
 
@@ -755,7 +764,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     const trailer = tip ? `\n\n${BRANCH_TIP_TRAILER}: ${tip}` : '';
     git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.${trailer}`]);
     const sha = headSha(o.cwd);
-    o.emit.emit(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
+    o.emit.note(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
     clearFailure();
     return { applied: true, sha };
   } catch (e) {
@@ -1026,7 +1035,7 @@ function openReleaseCheckout(o: ReleaseRunOptions): ReleaseCheckout {
   const branch = `crew/release-${Date.now()}`;
   const root = mkdtempSync(join(tmpdir(), 'crew-release-'));
   const dir = join(root, 'checkout');
-  o.emit.emit(`release checkout: ${dir}`, { step: 'release' });
+  o.emit.note(`release checkout: ${dir}`, { step: 'release' });
   const close = () => closeReleaseCheckout(o.cwd, root, dir, branch);
   try {
     git(o.cwd, ['worktree', 'add', '-q', '--no-track', '-b', branch, dir, `${remote}/${base}`]);
@@ -1244,7 +1253,7 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
   if (remoteOf(o.cwd)) {
     const releaseBranch = `crew/release-${Date.now()}`;
     git(o.cwd, ['checkout', '-q', '--no-track', '-b', releaseBranch, remoteRef]);
-    o.emit.emit('release checkout: the release sandbox clone', { step: 'release' });
+    o.emit.note('release checkout: the release sandbox clone', { step: 'release' });
     return mergeAndRelease(o, decision, fresh, releaseBranch);
   }
   // Informational only: the release does not depend on the primary, but an
@@ -1563,7 +1572,7 @@ async function mergeAndReleaseBody(
         stampFrom: re.from, stopped: 'nothing to release', decision,
       };
     }
-    o.emit.emit('nothing to release');
+    o.emit.note('nothing to release');
     return { merged, conflicts, unbuildable, deployed: false, stopped: 'nothing to release', decision };
   }
 
@@ -1647,7 +1656,7 @@ async function mergeAndReleaseBody(
     else {
       const r = await hook(o, 'setup');
       if (r && r.code !== 0) {
-        o.emit.error(`setup FAILED (exit ${r.code}) — not testing or deploying; the target stays on the previous release`);
+        o.emit.error(withFix(`setup FAILED (exit ${r.code}) — not testing or deploying; the target stays on the previous release`, '`crew doctor`'));
         return { merged, conflicts, unbuildable, deployed: false, stopped: 'setup failed', decision, hookFailure: hookFailure(o, 'setup', r.output) };
       }
     }
@@ -1664,7 +1673,7 @@ async function mergeAndReleaseBody(
         else if (out) return out;
       }
       if (r && r.code !== 0) {
-        o.emit.error(`test gate FAILED — not deploying; the target stays on the previous release`);
+        o.emit.error(withFix('test gate FAILED — not deploying; the target stays on the previous release', '`crew doctor`, then fix the failing tests on the branch'));
         const sha = headSha(o.cwd);
         const count = o.state?.noteTestGateFailed?.(sha) ?? 1;
         const gateRed = count >= GATE_RED_AFTER && !o.state?.testGateReported?.(sha)
@@ -1727,7 +1736,7 @@ async function mergeAndReleaseBody(
         else if (out) return out;
       }
       if (r && r.code !== 0) {
-        o.emit.error('build failed — not deploying');
+        o.emit.error(withFix('build failed — not deploying', '`crew doctor`, then run the repo\'s build hook in the release checkout'));
         // The Release commit must not outlive the release it describes: left
         // in place, every failed cycle stacked another bump on the base
         // branch and the eventual real release skipped version numbers. The
@@ -1777,7 +1786,7 @@ async function mergeAndReleaseBody(
     } else {
       try {
         pushBranch(o.cwd, o.repo.branch.remote, releaseBranch ?? o.repo.branch.base, o.repo.branch.base);
-        o.emit.emit(`pushed ${o.repo.branch.base} to ${o.repo.branch.remote}`);
+        o.emit.note(`pushed ${o.repo.branch.base} to ${o.repo.branch.remote}`);
       } catch (e) {
         o.emit.error(
           `failed to push ${o.repo.branch.base} to ${o.repo.branch.remote} — ${(e as GitError).message}; not deploying`,
@@ -1837,7 +1846,7 @@ async function mergeAndReleaseBody(
     const at = o.dryRun ? head : headSha(o.cwd);
     if (o.dryRun) o.emit.emit(`would tag ${tag} at ${at.slice(0, 8)}`);
     else if (tagExists(o.cwd, tag)) o.emit.warn(`tag ${tag} already exists — not retagging`);
-    else { createReleaseTag(o.cwd, tag, at, `Release ${tag}`); o.emit.emit(`tagged ${tag}`); }
+    else { createReleaseTag(o.cwd, tag, at, `Release ${tag}`); o.emit.note(`tagged ${tag}`); }
   }
 
   // For ci_manual/ci_auto the tag push IS the CI trigger, so it has to
@@ -1859,7 +1868,7 @@ async function mergeAndReleaseBody(
     } else {
       try {
         pushTag(o.cwd, o.repo.branch.remote, tag);
-        o.emit.emit(`pushed tag ${tag} to ${o.repo.branch.remote}`);
+        o.emit.note(`pushed tag ${tag} to ${o.repo.branch.remote}`);
       } catch (e) {
         const msg = `failed to push tag ${tag} to ${o.repo.branch.remote} — ${(e as GitError).message}`;
         if (tagIsCiTrigger) {
