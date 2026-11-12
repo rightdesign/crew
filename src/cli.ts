@@ -138,7 +138,7 @@ import { checkCapabilities, describeCapability, missLine } from './capability-ch
 import { routeAvatarFailures } from './persona-avatars.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
-import { summarizeOutcomes, withFix } from './cli-output.ts';
+import { summarizeOutcomes, summarizeJobs, withFix, type JobResult } from './cli-output.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, formatBeforeEdit, LogbookError } from './logbook.ts';
 import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.ts';
@@ -1550,16 +1550,22 @@ async function areaWorktreePrefix(c: typeof route, repoId: string | undefined): 
 async function installScheduler(opts: { replace?: boolean } = {}): Promise<boolean> {
   const host = hostPlatform();
   if (host === 'windows') {
-    process.stderr.write('crew install: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
-    process.exit(2);
+    die('crew install', 'no scheduler support yet for Windows (Task Scheduler is planned, not built)', 'run `crew daemon` in a terminal instead');
   }
+  // CREW-3284: the install log. Per-step progress is a note (shown under
+  // --verbose); a warning ends with the command to run next.
+  const installLog = {
+    emit: (m: string) => emit.note(m),
+    warn: (m: string) => emit.warn(withFix(`crew install: ${m}`, '`crew doctor`')),
+  };
   // launchd units from a different checkout hash (CREW-1376): a stale one
   // whose program is gone is removed, a live other install is refused before
   // anything of this checkout is written, unless --replace.
   if (host === 'macos') {
     const ok = clearForeignLaunchdUnits(CREW_HOME, !!opts.replace, dryRun, {
-      emit: (m) => process.stdout.write(`${m}\n`),
-      warn: (m) => process.stderr.write(`crew install: ${m}\n`),
+      // A removed foreign unit is a real change, so it is shown by default.
+      emit: (m) => emit.emit(m),
+      warn: (m) => emit.warn(withFix(`crew install: ${m}`, '`crew install --replace`')),
     }, undefined, loadedCrewLabels());
     if (!ok) return false;
   }
@@ -1580,16 +1586,17 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
   if (installPathProblem) {
     // The pull below would succeed in this shell and leave the passengers
     // timer a silent no-op (CREW-1375), so fail the way the timer will.
-    process.stderr.write(`crew install: Host Passengers is on but ${installPathProblem}\n`);
+    emit.error(withFix(`crew install: Host Passengers is on but ${installPathProblem}`, '`crew doctor`'));
     process.exitCode = 1;
   } else if (!dryRun && cfg.routes.some((r) => r.enabled && r.hostPassengers) && dockerAvailable()) {
     const image = passengerImageRef(cfg);
     if (imagePresent(image)) {
-      process.stdout.write(`Host Passengers image ${image} is already present\n`);
+      emit.note(`Host Passengers image ${image} is already present`);
     } else {
-      process.stdout.write(`pulling Host Passengers image ${image}\n`);
+      emit.note(`pulling Host Passengers image ${image}`);
       try {
         ensureImage(image);
+        emit.emit(`pulled Host Passengers image ${image}`);
       } catch (e) {
         emit.warn(withFix(`crew install: could not pull Host Passengers image ${image}: ${(e as Error).message}`, '`crew doctor`'));
         process.exitCode = 1;
@@ -1597,14 +1604,18 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
     }
   }
   const hasSystemd = detectSystemd();
+  const results: JobResult[] = [];
   for (const job of ['run', 'release', 'passengers'] as const) {
     const plan = planInstall(cfg.ship, CREW_HOME, host, hasSystemd, job, installContext());
-    process.stdout.write(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
-    await applyInstall(plan, CREW_HOME, dryRun, {
-      emit: (m) => process.stdout.write(`${m}\n`),
-      warn: (m) => process.stderr.write(`crew install: ${m}\n`),
-    });
+    emit.note(`installing ${job} via ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}`);
+    try {
+      const { action } = await applyInstall(plan, CREW_HOME, dryRun, installLog);
+      results.push({ job, mechanism: plan.mechanism, action });
+    } catch (e) {
+      return die('crew install', (e as Error).message.replace(/^crew install:\s*/, ''), '`crew doctor`', 1);
+    }
   }
+  for (const l of summarizeJobs(results, { dryRun, verbose: flag('verbose'), host })) emit.emit(l);
   // Hard cutover (ISSUE-763), systemd only: a host that had `run` on the
   // old service+timer pair now has an orphaned `<label>.timer` once install
   // starts writing only a persistent `.service` for it — same label, same
@@ -1615,8 +1626,8 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
     const label = labelFor(CREW_HOME, 'run');
     const staleTimer = join(homedir(), '.config', 'systemd', 'user', `${label}.timer`);
     if (existsSync(staleTimer)) {
-      process.stdout.write(
-        `removing stale run timer from before the persistent-service cutover: ${staleTimer}${dryRun ? ' (dry run)' : ''}\n`,
+      emit.emit(
+        `removing stale run timer from before the persistent-service cutover: ${staleTimer}${dryRun ? ' (dry run, not applied)' : ''}`,
       );
       if (!dryRun) {
         spawnSync('systemctl', ['--user', 'disable', '--now', `${label}.timer`], { cwd: CREW_HOME, env: withUserBusEnv() });
@@ -6353,24 +6364,29 @@ switch (command) {
   case 'uninstall': {
     const host = hostPlatform();
     if (host === 'windows') {
-      process.stdout.write('nothing installed on Windows\n');
+      emit.emit('nothing installed on Windows');
       break;
     }
+    // CREW-3284: same shape as `crew install` — per-step progress under --verbose, one line per job removed.
+    const uninstallLog = {
+      emit: (m: string) => emit.note(m),
+      warn: (m: string) => emit.warn(withFix(`crew uninstall: ${m}`, '`crew doctor`')),
+    };
+    const results: JobResult[] = [];
     for (const job of ['run', 'release', 'passengers'] as const) {
       const plan = planUninstall(cfg.ship, CREW_HOME, host, detectSystemd(), job);
-      process.stdout.write(`uninstalling ${job} ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}\n`);
-      await applyUninstall(plan, CREW_HOME, dryRun, {
-        emit: (m) => process.stdout.write(`${m}\n`),
-        warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
-      });
+      emit.note(`uninstalling ${job} ${plan.mechanism} for ${host}${dryRun ? ' (dry run)' : ''}`);
+      const { changed } = await applyUninstall(plan, CREW_HOME, dryRun, uninstallLog);
+      results.push({ job, mechanism: plan.mechanism, action: changed ? 'removed' : 'unchanged' });
     }
+    for (const l of summarizeJobs(results, { uninstall: true, dryRun, verbose: flag('verbose'), host })) emit.emit(l);
     // --all (CREW-1376): every com.tablation.crew* launchd unit, whichever
     // checkout's hash it carries — the cleanup for a crew that was moved.
     if (flag('all') && host === 'macos') {
-      process.stdout.write(`uninstalling every crew launchd unit${dryRun ? ' (dry run)' : ''}\n`);
+      emit.note(`uninstalling every crew launchd unit${dryRun ? ' (dry run)' : ''}`);
       removeAllLaunchdUnits(dryRun, {
-        emit: (m) => process.stdout.write(`${m}\n`),
-        warn: (m) => process.stderr.write(`crew uninstall: ${m}\n`),
+        emit: (m) => emit.emit(m),
+        warn: uninstallLog.warn,
       }, undefined, loadedCrewLabels());
     }
     break;

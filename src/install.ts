@@ -697,12 +697,18 @@ function runAll(commands: string[][], cwd: string, log: InstallLog): boolean {
  * re-run changes nothing. A cron plan counts as changed only on a dry run's
  * absence of the line, which is not worth a crontab diff; it reports changed.
  */
-export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<{ changed: boolean }> {
+export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<{ changed: boolean; action: 'installed' | 'replaced' | 'unchanged' }> {
   let changed = plan.crontabLine !== null;
+  // CREW-3284: a unit file that existed and differed is a replacement, one that
+  // did not exist is a first install; the command reports each differently.
+  let replaced = false;
   for (const path of plan.unitPaths) {
     if (dryRun) { log.emit(`would write ${path}`); continue; }
     const before = existsSync(path) ? readFileSync(path, 'utf8') : null;
-    if (before !== plan.unitContent[path]) changed = true;
+    if (before !== plan.unitContent[path]) {
+      changed = true;
+      if (before !== null) replaced = true;
+    }
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, plan.unitContent[path]!);
     log.emit(`wrote ${path}`);
@@ -725,7 +731,7 @@ export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: 
       // is expected, not a failure of this install, so it's only logged,
       // never thrown. See preLoadCommands' own doc comment for why this
       // step exists at all.
-      const ok = runAll(plan.preLoadCommands, crewHome, log);
+      const ok = runAll(plan.preLoadCommands, crewHome, { emit: log.emit.bind(log), warn: (m) => log.emit(m) });
       if (!ok) log.emit('unload before reload failed — likely not loaded yet, continuing');
     }
   }
@@ -753,11 +759,13 @@ export async function applyInstall(plan: InstallPlan, crewHome: string, dryRun: 
 
   log.emit(`crew's own log: ${plan.crewLog}`);
   log.emit(`scheduler log (only what escapes the crew, e.g. a crash before it starts): ${plan.schedulerLog}`);
-  return { changed };
+  return { changed, action: !changed ? 'unchanged' : replaced ? 'replaced' : 'installed' };
 }
 
-export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<void> {
-  if (plan.mechanism === 'none') { log.emit('nothing to uninstall on this platform'); return; }
+/** Returns whether anything was actually removed (a unit file, a loaded job or a crontab entry); a dry run reports false. */
+export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryRun: boolean, log: InstallLog): Promise<{ changed: boolean }> {
+  let changed = false;
+  if (plan.mechanism === 'none') { log.emit('nothing to uninstall on this platform'); return { changed }; }
 
   if (plan.unloadCommands.length) {
     if (dryRun) {
@@ -765,8 +773,9 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
     } else {
       // A unit that was never loaded fails to unload; that is not this
       // command's problem to escalate, only to note.
-      const ok = runAll(plan.unloadCommands, crewHome, log);
-      if (!ok) log.warn('unload command failed — it may not have been loaded; continuing to remove files');
+      // Expected for a unit that was never loaded, so it is a note, not a warning.
+      const ok = runAll(plan.unloadCommands, crewHome, { emit: log.emit.bind(log), warn: (m) => log.emit(m) });
+      if (!ok) log.emit('unload command failed — it may not have been loaded; continuing to remove files');
     }
   }
 
@@ -778,6 +787,7 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
       // loaded, which is the normal case on a clean uninstall. Only a real
       // removal is reported.
       if (spawnSync('launchctl', ['remove', plan.removeLabel], { encoding: 'utf8' }).status === 0) {
+        changed = true;
         log.emit(`removed loaded job ${plan.removeLabel}`);
       }
     }
@@ -787,6 +797,7 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
     if (!existsSync(path)) continue;
     if (dryRun) { log.emit(`would remove ${path}`); continue; }
     unlinkSync(path);
+    changed = true;
     log.emit(`removed ${path}`);
   }
 
@@ -798,9 +809,11 @@ export async function applyUninstall(plan: UninstallPlan, crewHome: string, dryR
       // (see `planUninstall`'s cron branch) — there is no separate line to
       // remove, only the marked block `addCrontabLine` wrote.
       removeCrontabLine(plan.crontabLine);
+      changed = true;
       log.emit('removed crontab entry');
     }
   }
+  return { changed };
 }
 
 /**
@@ -927,8 +940,9 @@ export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dry
       : unit.program === null
       ? 'replacing a unit with no readable ProgramArguments'
       : unit.programExists ? 'replacing a live other install' : 'removing a stale unit whose program is gone';
-    log.emit(`${why}: ${unit.label}`);
-    removeLaunchdUnit(unit, dryRun, log);
+    // One line per unit (CREW-3284): the reason line names it, so removeLaunchdUnit's own line is dropped here.
+    log.emit(`${why}: ${unit.label}${dryRun ? ' (dry run, not applied)' : ''}`);
+    removeLaunchdUnit(unit, dryRun, { emit: () => undefined, warn: log.warn.bind(log) });
   }
   return true;
 }

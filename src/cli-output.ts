@@ -28,3 +28,37 @@ export function summarizeOutcomes<T>(
 export function withFix(message: string, fix: string): string {
   return `${message.replace(/[.\s]+$/, '')} — try: ${fix}`;
 }
+
+export interface JobResult {
+  job: string;
+  mechanism: string;
+  /** What `crew install`/`crew uninstall` did to this scheduler job. */
+  action: 'installed' | 'replaced' | 'removed' | 'unchanged';
+}
+
+/**
+ * CREW-3284: the lines `crew install` / `crew uninstall` print for the scheduler
+ * jobs. A job that changed gets its own line naming the job and mechanism; jobs
+ * that did not collapse into one line (`all 3 jobs already installed`). Under
+ * `--verbose` every job is listed. A dry run lists every job as not applied,
+ * since nothing was compared against disk.
+ */
+export function summarizeJobs(results: readonly JobResult[], o: { uninstall?: boolean; dryRun: boolean; verbose: boolean; host: string }): string[] {
+  const state = o.uninstall ? 'not installed' : 'installed';
+  const mark = o.dryRun ? ' (dry run, not applied)' : '';
+  const line = (r: JobResult): string => {
+    if (o.dryRun) return `would ${o.uninstall ? 'remove' : 'install'} ${r.job} via ${r.mechanism} for ${o.host}${mark}`;
+    if (r.action === 'unchanged') return `${r.job} already ${state} (${r.mechanism})`;
+    return `${r.action} ${r.job} via ${r.mechanism} for ${o.host}`;
+  };
+  if (o.dryRun || o.verbose) return results.map(line);
+  const lines = results.filter((r) => r.action !== 'unchanged').map(line);
+  const same = results.filter((r) => r.action === 'unchanged');
+  if (same.length > 0) {
+    const names = same.map((r) => r.job).join(', ');
+    lines.push(same.length === results.length
+      ? `all ${same.length} jobs already ${state} (${names})`
+      : `${same.length} job${same.length === 1 ? '' : 's'} already ${state} (${names})`);
+  }
+  return lines;
+}
