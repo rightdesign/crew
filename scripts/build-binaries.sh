@@ -63,6 +63,24 @@ else
   echo "note: lipo not found — skipping darwin-universal (needs macOS)"
 fi
 
+# Self-launch check (CREW-3279): the binary for this host must be able to start
+# another copy of itself, the thing ISSUE-3277 broke. No config, key or network.
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) host_dir=darwin-arm64 ;;
+  Darwin-x86_64) host_dir=darwin-x64 ;;
+  Linux-aarch64|Linux-arm64) host_dir=linux-arm64 ;;
+  Linux-x86_64) host_dir=linux-x64 ;;
+  *) host_dir="" ;;
+esac
+if [ -n "$host_dir" ]; then
+  "dist-bin/${host_dir}/crew" self-launch-check
+  if [ -x dist-bin/darwin-universal/crew ]; then
+    dist-bin/darwin-universal/crew self-launch-check
+  fi
+else
+  echo "note: no host binary to run the self-launch check on"
+fi
+
 echo
 echo "built:"
 du -sh dist-bin/*

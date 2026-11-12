@@ -26,6 +26,7 @@ import {
 import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, formatToolCheck, formatPushAuth, probeCredentialHelper, staleOwnLockClaim, formatStaleOwnLock, roleCapWarnings, managedRuntimeWarnings, managedGitIdentityWarnings, readGlobalGitIdentity, runtimeDirWarning, type PushAuthResult, type ToolCheck } from './doctor-checks.ts';
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
+import { runSelfLaunchCheck } from './self-launch-check.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir, userInfo } from 'node:os';
@@ -538,6 +539,14 @@ if (versionReq) {
     ? `${JSON.stringify({ version, home: CREW_HOME, compiled: isCompiledBinary(import.meta.url), builtVersion: builtVersion(), stale: stale !== null })}\n`
     : `${stale ? `${version} (${stale.kind === 'version' ? `running a bundle built from ${stale.builtVersion}` : 'running a bundle older than the source in src/'}; ${REBUILD_HINT})` : version}\n`);
   process.exit(0);
+}
+// CREW-3279: undocumented build-time check, answered before any config is loaded:
+// start a child through selfLaunch() and require it to report this process's own
+// version and compiled flag. scripts/build-binaries.sh runs it on the built binary.
+if (argv[0] === 'self-launch-check') {
+  const verdict = await runSelfLaunchCheck({ version: crewVersion(CREW_HOME), compiled: isCompiledBinary(import.meta.url) });
+  (verdict.ok ? process.stdout : process.stderr).write(`${verdict.message}\n`);
+  process.exit(verdict.ok ? 0 : 1);
 }
 // CREW-3236: one stderr line, never stdout, never a failure.
 const staleBundle = bundleStaleness({ built: builtVersion(), current: crewVersion(CREW_HOME), home: CREW_HOME, compiled: isCompiledBinary(import.meta.url) });
