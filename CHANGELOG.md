@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.150.2] — 2026-11-12
+
+- CREW-3274 crew doctor now reports a stale connect snapshot (a table the workspace has but the snapshot lacks) instead of claiming the table is missing, and --fix refreshes it.
+
 ## [0.150.1] — 2026-11-12
 
 - CREW-3284 `crew install` and `crew uninstall` report one line per job that changed, or a single line when every job is unchanged; the rest shows under `--verbose`.
