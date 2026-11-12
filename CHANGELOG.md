@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.149.2] — 2026-11-12
+
+- CREW-3273 Runs by seat keys now finalize their Agent Log row and ticket spend counters again; a refused report names the request instead of blaming the key's role.
+
 ## [0.149.1] — 2026-11-12
 
 - CREW-3267 `crew agents sync` / `crew skills sync` show rows already in sync as one line (all under `--verbose`), and several command errors now end with a suggested fix.
