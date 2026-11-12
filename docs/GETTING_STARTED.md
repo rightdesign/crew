@@ -474,6 +474,12 @@ absent from the login environment.
 crew doctor my-workspace/my-product
 ```
 
+By default the report leads with what needs attention: a one-line header, then
+only the findings (blockers first, then warnings, then notes), each with the
+fix its check names, then a count of the checks that passed and a closing
+`verdict:` line. The same finding on several repositories prints once, naming
+them. `crew doctor --verbose` prints every check under section headings.
+
 This is entirely read-only. It checks: the config parses, your machine's
 `ship.name` matches a Ships row, the repo checkout(s) for this route exist
 and have working hooks (`.crew.yaml` or the fallback in `crew.yaml`), the
@@ -508,7 +514,9 @@ a checkout and is still `enabled: false` it asks (one yes/no per route) and
 writes just that key; then, if no scheduler is installed for this ship, it
 offers to run `crew install`. Run in a terminal with no flag, `doctor` offers
 the same at the end of its report; piped or scripted, a plain `doctor` never
-prompts and never changes anything. It prints every change it made. A route
+prompts and never changes anything. It prints every change it made; with
+nothing to offer it prints nothing, and `--fix` then says that no automatic fix
+applies (and that any findings above need action). A route
 runs without release hooks (deploy, released, CI): those gaps are listed as
 "release readiness", `--fix` notes them when it enables the route, and a
 release stops at the first missing hook. A route it does not enable is named

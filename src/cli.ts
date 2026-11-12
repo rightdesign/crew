@@ -150,6 +150,7 @@ import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-insta
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
 import { launcherExecutable, readOmlxSettings, interpretOmlxProbe, omlxModelPresent } from './launcher.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
+import { DoctorReport, renderDoctor, fixPhaseNothingToOffer } from './doctor-report.ts';
 import {
   resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
@@ -455,7 +456,7 @@ function usage(problem?: string, requested = false): never {
   crew credential get|store|erase   git credential helper answering from ship.forges (git runs it; not for hand use)
   crew whoami [route] [--json]   the signed-in identity, key role, operator Crew row and credential source per route
   crew reload                    make the running daemon re-read crew.yaml (--now: restart it immediately)
-  crew doctor [route] [--fix] [--offline] [--json]   preflight; --fix enables clean routes and offers crew install;
+  crew doctor [route] [--fix] [--offline] [--verbose] [--json]   preflight: findings first, then a verdict; --verbose lists every check; --fix enables clean routes and offers crew install;
                                  --offline skips push probes; --json prints push-auth and tool checks only
   crew selftest [route] [--toolchain NAME] [--json]   launch each toolchain as a run would and prove it reaches the tracker
   crew sample-ticket [route] [--remove] [--dry-run] [--json]   file one ticket on a throwaway repo that walks the dev, QA and release loop
@@ -1697,7 +1698,7 @@ function doctorMachineId(stateDir: string): string | undefined {
  * writes only the `enabled` key for an accepted route, and prints everything it
  * changed so no edit is silent.
  */
-async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatform> }): Promise<void> {
+async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatform>; fixFlag: boolean; blockers: number; warnings: number }): Promise<void> {
   const routes = await Promise.all(routesInScope(cfg.routes, named).map((c) =>
     gatherHealth({ route: c.route, enabled: c.enabled, hasRepos: reposOf(c).length > 0 }, () => routeProblems(c))));
   const unitExists = (p: string) => existsSync(p);
@@ -1706,11 +1707,12 @@ async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatf
     ? !schedulerInstalled(planInstall(cfg.ship, CREW_HOME, o.host, detectSystemd(), 'run', installContext()), unitExists, crontab)
     : true;
   const plan = planFix({ routes, schedulerAbsent, host: o.host });
-  for (const n of plan.notes) process.stdout.write(`fix: ${n}\n`);
   if (plan.actions.length === 0) {
-    process.stdout.write('fix: nothing to change\n');
+    // CREW-3272: silent unless asked; "nothing to change" after a blocker read as a clean bill of health.
+    for (const l of fixPhaseNothingToOffer({ notes: plan.notes, fixFlag: o.fixFlag, blockers: o.blockers, warnings: o.warnings })) process.stdout.write(`${l}\n`);
     return;
   }
+  for (const n of plan.notes) process.stdout.write(`fix: ${n}\n`);
   const prompter = o.prompt ? terminalPrompter() : undefined;
   const changed: string[] = [];
   const enabledSound = new Set(routes.filter((r) => r.enabled && r.hasRepos && r.problems.length === 0).map((r) => r.route));
@@ -7049,38 +7051,40 @@ switch (command) {
       process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, daemon: daemonLiveness, problems, passed }, null, 2)}\n`);
       break;
     }
-    process.stdout.write(
+    // CREW-3272: every check below hands its line to `R`; the report is printed once, at the end.
+    const R = new DoctorReport();
+    R.line(
       `ship:              ${cfg.ship.name} (${host})\n` +
         `routes:            ${cfg.routes.map((c) => c.route).join(', ')}\n`,
     );
 
     if (staleBundle) {
-      process.stdout.write(`bundle:            BLOCKER ${staleBundle.message}\n`);
+      R.line(`bundle:            BLOCKER ${staleBundle.message}\n`);
       process.exitCode = 1;
     }
     // CREW-3275: one Docker finding; the passengers, sandbox image and relay lines below that fail for it say so.
     const dockerFinding = dockerDaemonFinding({ needed: await shipNeedsDocker(), up: dockerAvailable() });
     const dockerNote = dockerFinding ? ' (consequence of the Docker finding above)' : '';
     if (dockerFinding) {
-      process.stdout.write(`docker:            BLOCKER ${dockerFinding.message} — ${dockerFinding.remedy}\n`);
+      R.line(`docker:            BLOCKER ${dockerFinding.message} — ${dockerFinding.remedy}\n`);
       process.exitCode = 1;
     }
     for (const f of deadTunnelFindings(deadTunnels(cfg.ship.stateDir), Boolean(dockerFinding))) {
-      process.stdout.write(`tunnel:            DEAD ${f.message} — ${f.remedy}\n`);
+      R.line(`tunnel:            DEAD ${f.message} — ${f.remedy}\n`);
     }
-    for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
-    for (const r of cfg.routes) for (const f of routeAvatarFailures(cfg.ship.stateDir, r.route)) process.stdout.write(`persona avatar:    WARN ${r.route}: ${f.role} avatar failed to upload (${f.detail}); run \`crew agents sync\` again\n`);
+    for (const w of roleCapWarnings(cfg.ship)) R.line(`role concurrency: WARN ${w}\n`);
+    for (const r of cfg.routes) for (const f of routeAvatarFailures(cfg.ship.stateDir, r.route)) R.line(`persona avatar:    WARN ${r.route}: ${f.role} avatar failed to upload (${f.detail}); run \`crew agents sync\` again\n`);
 
-    for (const t of rejectedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${tunnelRejectedMessage(t.workspaceId, t.quickExits)}\n`);
-    for (const workspaceId of controlRefusedTunnels(cfg.ship.stateDir)) process.stdout.write(`relay tunnel:      ATTENTION ${relayControlUnsupportedMessage(workspaceId)}\n`);
+    for (const t of rejectedTunnels(cfg.ship.stateDir)) R.line(`relay tunnel:      ATTENTION ${tunnelRejectedMessage(t.workspaceId, t.quickExits)}\n`);
+    for (const workspaceId of controlRefusedTunnels(cfg.ship.stateDir)) R.line(`relay tunnel:      ATTENTION ${relayControlUnsupportedMessage(workspaceId)}\n`);
 
     // EPIC-077: periscopes need a host to send a Passenger to.
-    process.stdout.write(`periscopes:        ${periscopeSummary(cfg)}\n`);
-    process.stdout.write(`key store:         ${describeKeyStore(cfg.ship)}\n`);
+    R.line(`periscopes:        ${periscopeSummary(cfg)}\n`);
+    R.line(`key store:         ${describeKeyStore(cfg.ship)}\n`);
     const previewProblem = await previewHostProblem(cfg);
     if (previewProblem) {
       const blocks = previewHostFinding(previewProblem).severity === 'blocker';
-      process.stdout.write(`                   ${blocks ? 'BLOCKER' : 'ATTENTION'} ${previewProblem}\n`);
+      R.line(`                   ${blocks ? 'BLOCKER' : 'ATTENTION'} ${previewProblem}\n`);
       if (blocks) process.exitCode = 1;
     }
 
@@ -7089,7 +7093,7 @@ switch (command) {
     try {
       const evFile = eventFileFor(cfg.ship.stateDir);
       const evSize = existsSync(evFile) ? statSync(evFile).size : 0;
-      process.stdout.write(
+      R.line(
         evSize > cfg.ship.eventsRotateBytes * 4
           ? `events log:        WARN ${evFile} is ${Math.round(evSize / 1048576)} MB (> 4x eventsRotateBytes); run \`crew reap\` to rotate it\n`
           : 'events log:        ok\n',
@@ -7102,7 +7106,7 @@ switch (command) {
       const unitPlan = planInstall(cfg.ship, CREW_HOME, host, detectSystemd(), 'run', installContext());
       const abandons = unitAbandonsAgents(unitPlan, (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } });
       if (abandons === false) {
-        process.stdout.write(
+        R.line(
           'scheduler unit:    WARN the installed unit does not leave agent runs alone when the daemon restarts ' +
             '(no AbandonProcessGroup / KillMode=process) — a daemon crash or relaunch kills the run in flight; run `crew install`\n',
         );
@@ -7115,7 +7119,7 @@ switch (command) {
       const pPlan = planInstall(cfg.ship, CREW_HOME, host, true, 'passengers', installContext());
       const keeps = unitAbandonsAgents(pPlan, (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } });
       if (keeps === false) {
-        process.stdout.write(
+        R.line(
           'passengers unit:  WARN the installed unit lacks KillMode=process, so systemd kills the relay tunnel each time the sync exits ' +
             '(tunnel never reaches connected); run `crew install`\n',
         );
@@ -7130,7 +7134,7 @@ switch (command) {
       if (ctl.statusCommand && unitPlan.unitPaths.some((p) => existsSync(p))) {
         const st = spawnSync(ctl.statusCommand[0]!, ctl.statusCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
         if (!st.error && st.status !== 0) {
-          process.stdout.write('daemon unit:      WARN installed but not running — no work is picked up; run `crew reload` (or `crew daemon start`), and `crew install` if the unit still says Restart=on-failure\n');
+          R.line('daemon unit:      WARN installed but not running — no work is picked up; run `crew reload` (or `crew daemon start`), and `crew install` if the unit still says Restart=on-failure\n');
         }
       }
     }
@@ -7138,7 +7142,7 @@ switch (command) {
     // CREW-3065: the service manager's view of the daemon comes first; the
     // reload and config checks below mean nothing without a live process.
     if (daemonLiveness) {
-      process.stdout.write(`daemon:            ${daemonLineText(daemonLiveness)}\n`);
+      R.line(`daemon:            ${daemonLineText(daemonLiveness)}\n`);
       if (daemonLiveness.state === 'exited') process.exitCode = 1;
     }
     const daemonDead = daemonKnownDead(daemonLiveness);
@@ -7146,7 +7150,7 @@ switch (command) {
     // CREW-2887: a reload request the running daemon has not yet honored.
     const reloadAt = readReloadRequestedAt(cfg.ship.stateDir);
     if (reloadAt !== null) {
-      process.stdout.write(
+      R.line(
         `reload request:    ${reloadRequestText(Math.max(0, Math.round((Date.now() - reloadAt) / 1000)), daemonLiveness, liveRuns(cfg.ship.stateDir).length)}\n`,
       );
     }
@@ -7157,7 +7161,7 @@ switch (command) {
     if (daemonStartedAt !== null) {
       const changed = configChangedAfter(daemonConfigPaths(cfg), daemonStartedAt);
       if (changed) {
-        process.stdout.write(
+        R.line(
           daemonDead
             ? `daemon config:     WARN ${changed} changed at ${new Date(statSync(changed).mtimeMs).toISOString()} — no daemon is running; the new config applies when it starts\n`
             : `daemon config:     WARN ${changed} changed at ${new Date(statSync(changed).mtimeMs).toISOString()} ` +
@@ -7175,12 +7179,12 @@ switch (command) {
       const have = sentVersion(cfg.ship);
       const floor = await readCrewFloor(route, cfg.ship);
       if (have && floor) {
-        process.stdout.write(
+        R.line(
           `crew version:      ${belowFloor(have, floor) ? 'WARN ' : ''}${have} (workspace requires ${floor})` +
             `${belowFloor(have, floor) ? ' — update crew (the Crew app, or `npm install -g @tablation/crew`)' : ''}\n`,
         );
       } else if (have) {
-        process.stdout.write(`crew version:      ${have}${floor === null ? ' (workspace sets no minimum)' : ''}\n`);
+        R.line(`crew version:      ${have}${floor === null ? ' (workspace sets no minimum)' : ''}\n`);
       }
     }
 
@@ -7188,7 +7192,7 @@ switch (command) {
     // as `approved` that is not in `open`, a `handoff` listed as resolved.
     // Checked here rather than left to fail as odd behaviour later.
     const contractProblems = validateContract(tracker.contract);
-    process.stdout.write(
+    R.line(
       contractProblems.length
         ? `contract:          ${contractProblems.length} problem(s)\n` +
           contractProblems.map((p) => `                   - ${p}\n`).join('')
@@ -7199,8 +7203,10 @@ switch (command) {
     // own contract. `shadowed` was computed and never read by anything until
     // ISSUE-350 — a setting the ship declares and the repo overrides is
     // otherwise invisible, and reads as though it were in use.
+    R.repoNames = reposOf(route).map((t) => t.name);
     for (const r of await resolvedRepos(route)) {
       const { config } = r;
+      R.repo = r.name;
       // Default worktree naming is now `<checkout dir>-<branch>` (ISSUE-969),
       // derived per ticket from its own branch name rather than a repo-wide
       // prefix — an explicit `worktrees.prefix` (repo or ship) still wins and
@@ -7209,7 +7215,7 @@ switch (command) {
         ?? (config.provenance['worktrees.prefix'] !== 'default'
           ? `${config.worktrees.prefix}<number>`
           : `${basename(r.dir.replace(/[/\\]+$/, ''))}-${effectiveBranchTemplate(config, undefined)}`);
-      process.stdout.write(
+      R.line(
         `${`repo ${r.name}:`.padEnd(19)}${r.dir}\n` +
           `                   worktrees at ../${worktreePattern} ` +
           `(${config.provenance['worktrees.name'] ?? config.provenance['worktrees.prefix'] ?? 'default'}), ` +
@@ -7217,39 +7223,41 @@ switch (command) {
           `                   requires ${config.platform} — ${satisfies(host, config.platform) ? 'OK' : 'MISMATCH'}\n`,
       );
       if (config.shadowed.length) {
-        process.stdout.write(
+        R.line(
           `                   this ship declares ${config.shadowed.join(', ')}, ` +
             `and ${r.name} overrides it — the repo wins\n`,
         );
       }
       for (const p2 of validateEffective(config)) {
-        process.stdout.write(`                   - release readiness: ${p2}\n`);
+        R.line(`                   - release readiness: ${p2}\n`);
       }
-      process.stdout.write(`                   release self-repair: ${selfRepairLine(config.release.isolateFailures?.maxCandidates)}\n`);
+      R.line(`                   release self-repair: ${selfRepairLine(config.release.isolateFailures?.maxCandidates)}\n`);
       const dh = doctorBaseReport(r, config.branch.base, baseHealth);
-      process.stdout.write(dh.text);
+      R.line(dh.text);
       if (dh.failed) process.exitCode = 1;
       if (dh.skipRest) continue;
       // Who releases this repo (CREW-1384): the named ship, or a warning when
       // a locally-released repo names none and several ships could race.
       if (config.release.ship) {
-        process.stdout.write(`                   release.ship ${config.release.ship}${config.release.ship === cfg.ship.name ? ' (this ship)' : ''}\n`);
+        R.line(`                   release.ship ${config.release.ship}${config.release.ship === cfg.ship.name ? ' (this ship)' : ''}\n`);
       } else {
         const warn = missingReleaserWarning(r.name, config.release, await tracker.shipRows().catch(() => []));
-        if (warn) process.stdout.write(`                   WARNING ${warn}\n`);
+        if (warn) R.line(`                   WARNING ${warn}\n`);
       }
       // CREW-2412: a stale claim by this ship's own dead process.
       const scope = releaseLockScope(route.route, r.name);
       const lock = await tracker.lockState(scope).catch(() => undefined);
       if (lock?.holder && staleOwnLockClaim(lock.holder, cfg.ship.name)) {
-        process.stdout.write(`                   ${formatStaleOwnLock(scope, lock.holder)}`);
+        R.line(`                   ${formatStaleOwnLock(scope, lock.holder)}`);
       }
     }
+
+    R.repo = undefined;
 
     // Authorship columns (CREW-1371). A missing one is not a fault — the write
     // just leaves it empty — so this reports it without gating `--fix`.
     const missingAuthorship = await tracker.missingAuthorshipColumns();
-    process.stdout.write(
+    R.line(
       missingAuthorship.length === 0
         ? 'authorship:       filed_by_id, ship_id present\n'
         : `authorship:       missing ${missingAuthorship.join(', ')} — update the Issues template\n`,
@@ -7257,7 +7265,7 @@ switch (command) {
     // ISSUE-2791: forge host / ship kind / relay URL columns. Absent reads as
     // the default, so this reports without gating `--fix`.
     const missingRuntime = await tracker.missingRuntimeColumns();
-    process.stdout.write(
+    R.line(
       missingRuntime.length === 0
         ? 'runtime columns: forge_host, kind, instance_class, relay_url present\n'
         : `runtime columns: missing ${missingRuntime.join(', ')} — read as their defaults; update the Issues template\n`,
@@ -7267,17 +7275,17 @@ switch (command) {
     {
       const have = await tracker.linkColumns();
       const lines = linkDoctorLines(have, reposOf(route).map((t) => ({ name: t.name, host: t.forgeHost })), cfg.ship.forges, cfg.ship.stateDir);
-      process.stdout.write(`${lines.join('\n')}\n`);
+      R.line(`${lines.join('\n')}\n`);
     }
     // CREW-1811: informational only — without the column the tracker has no
     // public intake form and nothing to guard against.
-    process.stdout.write(
+    R.line(
       await tracker.hasPublicReplyColumn()
         ? `public replies:  Comments.${tracker.contract.comments.publicReply} present — public reporters are labelled in the digest\n`
         : `public replies:  Comments.${tracker.contract.comments.publicReply} absent — no public intake form, nothing to guard\n`,
     );
     // CREW-3258: informational only — a table without the column has not adopted the marking.
-    process.stdout.write(
+    R.line(
       await tracker.hasCrewAssistedColumn()
         ? `crew assisted:   Issues.${tracker.contract.columns.crewAssisted} present — Dev/QA runs mark the ticket\n`
         : `crew assisted:   Issues.${tracker.contract.columns.crewAssisted} absent — tickets are not marked; update the Issues template to adopt it\n`,
@@ -7293,15 +7301,15 @@ switch (command) {
         route: route.route, hosts: true, tablePresent: periscopes.present,
         repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })),
       })) {
-        process.stdout.write(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
+        R.line(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
       }
       if (!flag('offline')) {
         for (const f of await duplicateLivePeriscopeProblems(route, cfg.ship)) {
-          process.stdout.write(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
+          R.line(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
         }
       }
     }
-    process.stdout.write(
+    R.line(
       !periscopes.present
         ? 'periscopes:      Periscopes table absent — this workspace cannot host periscopes\n'
         : periscopes.missing.length === 0
@@ -7310,7 +7318,7 @@ switch (command) {
     );
     // Release seat (CREW-1371 D5). Absent is not a fault: release comments are
     // credited to the dev seat instead, which is what they were before.
-    process.stdout.write(
+    R.line(
       route.resolved?.releaseSeat
         ? 'release seat:    this ship has its own Release Crew row\n'
         : 'release seat:    none — release comments are credited to the dev seat; run `crew connect` once the Crew table has this ship\'s row\n',
@@ -7320,24 +7328,24 @@ switch (command) {
     // route connected before it was recorded asks `/auth/me` once.
     const keyRole = route.resolved?.role ?? await fetchKeyRole(route, cfg.ship.userAgent);
     const roleRoute: Route = route.resolved && keyRole ? { ...route, resolved: { ...route.resolved, role: keyRole } } : route;
-    process.stdout.write(`api key role:     ${keyRole ?? 'unknown'}\n`);
+    R.line(`api key role:     ${keyRole ?? 'unknown'}\n`);
     // CREW-2240: what the last `crew connect` found this key may not do.
-    for (const m of route.resolved?.capabilityMisses ?? []) process.stdout.write(`capability:       MISSING ${m} (re-run \`crew connect\` once granted)\n`);
+    for (const m of route.resolved?.capabilityMisses ?? []) R.line(`capability:       MISSING ${m} (re-run \`crew connect\` once granted)\n`);
     const canMint = await canMintAgentKeys(roleRoute, { userAgent: cfg.ship.userAgent });
-    process.stdout.write(`can mint agent keys: ${canMint === undefined ? 'unknown' : canMint ? 'yes' : 'no'}\n`);
+    R.line(`can mint agent keys: ${canMint === undefined ? 'unknown' : canMint ? 'yes' : 'no'}\n`);
 
     // CREW-1603: which principal each seat will write as.
     for (const role of SEAT_KEY_ROLES) {
       if (!route.resolved?.seats[role]) continue;
       const id = await resolveSeatKey(roleRoute, role);
-      process.stdout.write(
+      R.line(
         `seat identity:    ${role} writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
       );
     }
 
     if (route.resolved?.releaseSeat) {
       const id = await resolveReleaseKey(roleRoute);
-      process.stdout.write(
+      R.line(
         `seat identity:    release writes as ${id.kind === 'agent' ? `its own agent (${id.agentId})` : `the ship (${id.reason})`}\n`,
       );
     }
@@ -7348,51 +7356,51 @@ switch (command) {
     if (!flag('offline')) {
       for (const p of await probeSeatReads(roleRoute, { userAgent: cfg.ship.userAgent })) {
         if (p.state === 'forbidden') {
-          process.stdout.write(`${describeSeatForbidden(p.role, p.tables)}\n`);
+          R.line(`${describeSeatForbidden(p.role, p.tables)}\n`);
           process.exitCode = 1;
         } else {
-          process.stdout.write(p.state === 'ok' ? `${describeSeatTables(p.role, p.tables)}\n` : `seat read:        ${p.role} could not be checked (${p.detail})\n`);
+          R.line(p.state === 'ok' ? `${describeSeatTables(p.role, p.tables)}\n` : `seat read:        ${p.role} could not be checked (${p.detail})\n`);
         }
       }
       for (const w of await probeSeatWrites(roleRoute, { userAgent: cfg.ship.userAgent })) {
         if (w.state === 'forbidden') {
-          process.stdout.write(`seat write:       ERROR ${seatCannotWriteMessage(w.role, w.tables)} (READ only) — ${SEAT_NO_WRITE_REMEDY}\n`);
+          R.line(`seat write:       ERROR ${seatCannotWriteMessage(w.role, w.tables)} (READ only) — ${SEAT_NO_WRITE_REMEDY}\n`);
           process.exitCode = 1;
-        } else if (w.state === 'ok') process.stdout.write(`seat write:       ${w.role}: ok\n`);
+        } else if (w.state === 'ok') R.line(`seat write:       ${w.role}: ok\n`);
       }
     }
 
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
     if (ships.length === 0) {
-      process.stdout.write('ship record:       this workspace has no Ships table (fine)\n');
+      R.line('ship record:       this workspace has no Ships table (fine)\n');
     } else {
       const matched = matchShipRows(ships, cfg.ship.name, doctorMachineId(cfg.ship.stateDir));
       const mine = matched.rows;
-      process.stdout.write(
+      R.line(
         matched.hasColumn
           ? `ship row:          ${mine.length === 1 ? `matched by ${matched.by === 'machine_id' ? 'machine id' : 'name'}` : 'not matched'}\n`
           : 'ship row:          matched by name only — the Ships table has no machine_id column (update the Issues template)\n',
       );
       if (mine.length === 0) {
-        process.stdout.write(
+        R.line(
           `ship record:       NO row named "${cfg.ship.name}" — ` +
             `have: ${ships.map((s2) => s2.name).join(', ')}\n`,
         );
       } else if (mine.length > 1) {
         // A name is only an identity while it is unique; say so rather than
         // silently picking one.
-        process.stdout.write(`ship record:       ${mine.length} rows named "${cfg.ship.name}" — ambiguous\n`);
+        R.line(`ship record:       ${mine.length} rows named "${cfg.ship.name}" — ambiguous\n`);
       } else {
         const row = mine[0]!;
         const seats = crewRows.filter((c) => (c as { ship_id?: string }).ship_id === row.id);
         const declared = row.platform;
-        process.stdout.write(
+        R.line(
           `ship record:       ${row.name} (${declared ?? 'no platform'})` +
             `${declared && declared !== host ? ` — MISMATCH, this host is ${host}` : ''}\n` +
             `crew manifest:     ${seats.length ? seats.map((c) => c.name).join(', ') : 'none'}\n`,
         );
-        for (const w of managedRuntimeWarnings(row.kind, cfg.ship)) process.stdout.write(`managed runtime:  WARN ${w}\n`);
-        for (const w of managedGitIdentityWarnings(row.kind, readGlobalGitIdentity())) process.stdout.write(`managed git:      WARN ${w}\n`);
+        for (const w of managedRuntimeWarnings(row.kind, cfg.ship)) R.line(`managed runtime:  WARN ${w}\n`);
+        for (const w of managedGitIdentityWarnings(row.kind, readGlobalGitIdentity())) R.line(`managed git:      WARN ${w}\n`);
       }
     }
 
@@ -7404,19 +7412,19 @@ switch (command) {
       const op = route.resolved?.operator;
       const row = op ? crewRows.find((c) => c.id === op) : undefined;
       if (!op) {
-        process.stdout.write('operator identity: no operator on this route — run `crew connect`\n');
+        R.line('operator identity: no operator on this route — run `crew connect`\n');
       } else if (!row) {
-        process.stdout.write(`operator identity: ERROR operator ${op} is not a row of the Crew table\n`);
+        R.line(`operator identity: ERROR operator ${op} is not a row of the Crew table\n`);
         process.exitCode = 1;
       } else if (!row.user_id) {
-        process.stdout.write(
+        R.line(
           `operator identity: ERROR Crew row "${row.name ?? op}" has no user_id — their UI comments will read ` +
             '"(no identity)"; re-run `crew connect` to link it\n',
         );
         process.exitCode = 1;
       } else {
         const resolves = memberByIdentity(buildRoster(configuredMembers(route), crewRows), row.user_id);
-        process.stdout.write(
+        R.line(
           resolves
             ? `operator identity: comments from ${row.name ?? op} resolve to ${crewLabel(resolves)}\n`
             : `operator identity: ERROR user_id ${row.user_id} does not resolve through the roster\n`,
@@ -7430,13 +7438,13 @@ switch (command) {
       try {
         const humanHolds = new Set(holdIds(buildRoster(configuredMembers(route), crewRows)));
         const warnings = holdWarnings(await tracker.openTickets(), ships, tracker.contract, humanHolds);
-        process.stdout.write(
+        R.line(
           warnings.length === 0
             ? 'ship holds:       every in-flight ticket is held by a live ship\n'
             : warnings.map((w) => `ship holds:       WARNING ${w}\n`).join(''),
         );
       } catch (e) {
-        process.stdout.write(`ship holds:       could not check — ${(e as Error).message}\n`);
+        R.line(`ship holds:       could not check — ${(e as Error).message}\n`);
       }
     }
 
@@ -7456,11 +7464,11 @@ switch (command) {
       const binPath = findOnPath(runBin, schedulerPath);
       if (!binPath) allBinsFound = false;
       const label = tc.name === defaultToolchain ? 'agent binary:     ' : `toolchain ${tc.name}:`.padEnd(18);
-      process.stdout.write(
+      R.line(
         `${label} ${runBin} — ${binPath ? `OK (${binPath})` : 'NOT FOUND on the scheduler PATH'}` +
           `${tc.name === defaultToolchain ? '' : ` [${adapter.displayName}]`}\n`,
       );
-      for (const limit of adapter.limitations) process.stdout.write(`                   cannot enforce: ${limit}\n`);
+      for (const limit of adapter.limitations) R.line(`                   cannot enforce: ${limit}\n`);
       // CREW-1522: Ori authenticates with an interactive OAuth login; whether that
       // login is visible to a launchd/systemd job is unverified, so say so rather
       // than imply a PATH hit means a headless run will authenticate.
@@ -7469,7 +7477,7 @@ switch (command) {
         // in oMLX's own settings and is never read here.
         const s = readOmlxSettings();
         if (!s) {
-          process.stdout.write(`                   omlx: ~/.omlx/settings.json not found or has no server.port — cannot check the server\n`);
+          R.line(`                   omlx: ~/.omlx/settings.json not found or has no server.port — cannot check the server\n`);
         } else {
           let status: number | undefined;
           try {
@@ -7478,28 +7486,28 @@ switch (command) {
             status = undefined;
           }
           const probe = interpretOmlxProbe(status);
-          process.stdout.write(`                   omlx server: ${s.host}:${s.port} — ${probe.detail}${probe.up ? '' : ' (start oMLX)'}\n`);
-          process.stdout.write(
+          R.line(`                   omlx server: ${s.host}:${s.port} — ${probe.detail}${probe.up ? '' : ' (start oMLX)'}\n`);
+          R.line(
             `                   omlx model: ${tc.model} — ${omlxModelPresent(tc.model, s.modelDirs) ? 'present' : `NOT FOUND in ${s.modelDirs.join(', ') || 'any model dir'}`}\n`,
           );
         }
-        process.stdout.write(`                   local model: tool-call reliability and prefill speed vary by model\n`);
+        R.line(`                   local model: tool-call reliability and prefill speed vary by model\n`);
       }
       if (isOriLauncher(tc)) {
-        process.stdout.write(`                   ori: headless auth under the scheduler is unverified — run \`ori login\` as the scheduler user, then confirm a run records provider openrouter (see docs/toolchains.md)\n`);
+        R.line(`                   ori: headless auth under the scheduler is unverified — run \`ori login\` as the scheduler user, then confirm a run records provider openrouter (see docs/toolchains.md)\n`);
       }
     }
     // CREW-1529: repos on this route that run a toolchain other than the route's.
     for (const [repoName, ov] of Object.entries(route.repoOverrides)) {
-      if (ov.toolchain) process.stdout.write(`repo toolchain:    ${repoName} → ${ov.toolchain} (binary and MCP checked above, as for every ship toolchain)\n`);
+      if (ov.toolchain) R.line(`repo toolchain:    ${repoName} → ${ov.toolchain} (binary and MCP checked above, as for every ship toolchain)\n`);
     }
     // CREW-3005: with forges configured, git calls crew back as its credential helper; prove that command runs.
-    if (cfg.ship.forges) process.stdout.write(formatPushAuth('credential helper', probeCredentialHelper(crewCommandLine())).replace('push auth credential helper:', 'credential helper:'.padEnd(19)));
-    for (const p of pushAuth) process.stdout.write(formatPushAuth(`${p.repo}`, p.result));
-    for (const t of toolRows) process.stdout.write(formatToolCheck(t));
-    process.stdout.write(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
+    if (cfg.ship.forges) R.line(formatPushAuth('credential helper', probeCredentialHelper(crewCommandLine())).replace('push auth credential helper:', 'credential helper:'.padEnd(19)));
+    for (const p of pushAuth) R.line(formatPushAuth(`${p.repo}`, p.result), { repo: p.repo });
+    for (const t of toolRows) R.line(formatToolCheck(t));
+    R.line(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
     if (!allBinsFound || !gitPath) {
-      process.stdout.write(
+      R.line(
         `                   scheduler PATH is ${schedulerPath} — ` +
           'add the directory holding the missing binary to ship.extraPath in crew.yaml, then re-run `crew doctor`.\n',
       );
@@ -7515,7 +7523,7 @@ switch (command) {
         seenMcp.add(id);
         const adapter = adapterFor(tc.harness);
         const m = adapter.inspectMcp({ bin: tc.bin, url: mcpUrl, key: route.apiKey });
-        process.stdout.write(
+        R.line(
           m.state === 'registered' ? `mcp:               tablation registered (user scope) → ${m.url}\n`
             : m.state === 'no-binary' ? `mcp:               ${tc.bin} not found — ${adapter.displayName} was not checked\n`
             : m.state === 'different' ? `mcp:               tablation registered but not for this route — ${m.detail}\n`
@@ -7528,9 +7536,9 @@ switch (command) {
     for (const h of shipPair(cfg.ship).filter((x) => x !== 'claude')) {
       const inst = pairInstallerFor(h);
       const v = inst.verifyPair({ url: mcpUrlFor(route.baseUrl) });
-      process.stdout.write(`pair ${h}:`.padEnd(19) + (v.ok ? ` installed (${v.detail})\n` : ` NOT installed — ${v.detail}; run crew connect\n`));
+      R.line(`pair ${h}:`.padEnd(19) + (v.ok ? ` installed (${v.detail})\n` : ` NOT installed — ${v.detail}; run crew connect\n`));
       const envWarn = inst.envWarning?.({ url: mcpUrlFor(route.baseUrl) });
-      if (envWarn) process.stdout.write(`pair ${h} env:`.padEnd(19) + ` WARN — ${envWarn}\n`);
+      if (envWarn) R.line(`pair ${h} env:`.padEnd(19) + ` WARN — ${envWarn}\n`);
     }
 
     // CREW-1515: a seat whose persona names a vendor no toolchain on this ship
@@ -7542,10 +7550,10 @@ switch (command) {
         const persona = await fetchSeatPersona(route, role, { userAgent: cfg.ship.userAgent });
         if (persona?.vendor && !shipVendors.has(persona.vendor)) {
           flagged++;
-          process.stdout.write(`seat vendor:       ${role} persona wants "${persona.vendor}" — no toolchain on this ship serves it (have: ${[...shipVendors].join(', ')}); it will run ${resolveSeat(cfg.ship, route, role).toolchain.name} with a warning\n`);
+          R.line(`seat vendor:       ${role} persona wants "${persona.vendor}" — no toolchain on this ship serves it (have: ${[...shipVendors].join(', ')}); it will run ${resolveSeat(cfg.ship, route, role).toolchain.name} with a warning\n`);
         }
       }
-      if (flagged === 0) process.stdout.write('seat vendor:       OK (every persona vendor has a toolchain on this ship)\n');
+      if (flagged === 0) R.line('seat vendor:       OK (every persona vendor has a toolchain on this ship)\n');
     }
 
     // Repo hook commands against the same scheduler PATH (CREW-1373): a hook
@@ -7573,12 +7581,12 @@ switch (command) {
           if (cfg.ship.runner === 'sandbox') {
             const gap = gaps.find((g) => g.hook === name);
             if (!gap) { clearShipAttention(state, key); continue; }
-            process.stdout.write(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND in the sandbox image\n`);
+            R.line(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND in the sandbox image\n`, { repo: r.name });
             await raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, { kind: 'hook_missing', key, message: gap.message, since: new Date().toISOString() });
             continue;
           }
           if (findOnPath(cmd, schedulerPath)) { clearShipAttention(state, key); continue; }
-          process.stdout.write(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND on the scheduler PATH\n`);
+          R.line(`hook ${c.route}/${r.name} ${name}: \`${cmd}\` NOT FOUND on the scheduler PATH\n`, { repo: r.name });
           await raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, {
             kind: 'hook_missing', key,
             message: `${c.route}/${r.name}: the ${name} hook runs \`${cmd}\`, which is not on the scheduler PATH — add its directory to ship.extraPath in crew.yaml`,
@@ -7588,7 +7596,7 @@ switch (command) {
       }
     }
     for (const i of visibleAttention(openShipAttention(state), Boolean(dockerFinding))) {
-      process.stdout.write(`attention:         ${i.kind} — ${i.message} (since ${i.since})\n`);
+      R.line(`attention:         ${i.kind} — ${i.message} (since ${i.since})\n`);
     }
 
     // Foreign launchd units (CREW-1376): another checkout's, or a stale one
@@ -7597,16 +7605,16 @@ switch (command) {
     if (host === 'macos') {
       const foreign = describeForeignLaunchdUnits(CREW_HOME);
       if (foreign.length > 0) {
-        process.stdout.write(`foreign launchd units (not this checkout's — \`crew install\` or \`crew uninstall --all\` clears them):\n${foreign.join('\n')}\n`);
+        R.line(`foreign launchd units: not this checkout's — \`crew install\` or \`crew uninstall --all\` clears them\n${foreign.map((f) => `  ${f.trim()}`).join('\n')}\n`);
       }
     }
 
     // CREW-2793: the sandbox runner needs the OpenShell CLI and a live gateway.
     if (cfg.ship.runner === 'sandbox') {
       const sb = checkSandboxRunner(cfg.ship.sandbox);
-      process.stdout.write(`sandbox runner:    ${sb.ok ? `OK (${sb.detail})` : `NOT READY — ${sb.detail}`}\n`);
+      R.line(`sandbox runner:    ${sb.ok ? `OK (${sb.detail})` : `NOT READY — ${sb.detail}`}\n`);
     } else {
-      process.stdout.write('sandbox runner:    off (ship.runner is host)\n');
+      R.line('sandbox runner:    off (ship.runner is host)\n');
     }
 
     // Host Passengers preflight (ISSUE-553): a route can declare
@@ -7616,13 +7624,13 @@ switch (command) {
     // commands from now.
     const passengerRoutes = cfg.routes.filter((r) => r.enabled && r.hostPassengers);
     if (passengerRoutes.length === 0) {
-      process.stdout.write('host passengers:   off (no enabled route sets hostPassengers: true)\n');
+      R.line('host passengers:   off (no enabled route sets hostPassengers: true)\n');
     } else {
       const dockerOk = dockerAvailable();
       const dockerPathIssue = dockerPathProblem(cfg.ship);
       const dockerKey = 'docker_missing';
       if (dockerPathIssue) {
-        process.stdout.write(`docker on scheduler PATH: NOT FOUND — ${dockerPathIssue}\n`);
+        R.line(`docker on scheduler PATH: NOT FOUND — ${dockerPathIssue}\n`);
         await raiseShipAttention({ state, emit, route: passengerRoutes[0]!, ship: cfg.ship }, {
           kind: 'docker_missing', key: dockerKey,
           message: `Host Passengers is on but ${dockerPathIssue}`,
@@ -7634,7 +7642,7 @@ switch (command) {
       const keygenOk = sshKeygenAvailable();
       const image = passengerImageRef(cfg);
       const imageOk = dockerOk && imagePresent(image);
-      process.stdout.write(
+      R.line(
         `host passengers:   ON for ${passengerRoutes.map((r) => r.route).join(', ')}\n` +
           `                   docker:     ${dockerOk ? 'OK' : `NOT AVAILABLE${dockerNote}`}\n` +
           `                   ssh-keygen: ${keygenOk ? 'OK' : 'NOT AVAILABLE'}\n` +
@@ -7642,14 +7650,14 @@ switch (command) {
           `                   relay host: ${cfg.ship.relayHost ? `${cfg.ship.relayHost}:${cfg.ship.relayPort}` : 'not set (ship.relayHost) — containers will run with no tunnel'}\n`,
       );
       if (!dockerOk) {
-        process.stdout.write(
+        R.line(
           '                   Docker Desktop (or another Docker daemon) is required for Host Passengers — ' +
             'install/start it, then re-run `crew doctor`. The toggle stays armed in crew.yaml but nothing will ' +
             'start until Docker answers `docker info`.\n',
         );
       }
       if (!keygenOk) {
-        process.stdout.write(
+        R.line(
           '                   `ssh-keygen` is required to mint this ship\'s tunnel identity — install OpenSSH, ' +
             'then re-run `crew connect` to sync a key onto this workspace\'s Ships row.\n',
         );
@@ -7660,17 +7668,17 @@ switch (command) {
           const ws = r.resolved?.workspaceId;
           const slug = ws ? readPersistedTunnel(cfg.ship.stateDir, ws)?.slug : undefined;
           if (!ws) continue;
-          process.stdout.write(
+          R.line(
             `                   ${r.route} url: ${slug ? publicUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain) : 'not minted yet (first tunnel cycle creates it)'}\n`,
           );
           const controlUrl = slug && readPersistedTunnel(cfg.ship.stateDir, ws)?.controlSocket
             ? `${relayBaseUrlFor(slug, cfg.ship.relayHost, cfg.ship.relayHttpPort, cfg.ship.relayPublicDomain)}/control`
             : undefined;
-          process.stdout.write(`                   ${r.route} control url: ${controlUrl ?? 'none (the tunnel carries passengers only)'}\n`);
+          R.line(`                   ${r.route} control url: ${controlUrl ?? 'none (the tunnel carries passengers only)'}\n`);
           const api = endpointApiFor([r])(ws);
           if (!api) continue;
           const probe = await probeEndpointAccess(api, ws);
-          process.stdout.write(
+          R.line(
             `                   ${r.route} mcp endpoints: ` +
               (probe === 'ok' ? 'OK (key may register its endpoint)'
                 : probe === 'forbidden' ? `403 — ${REGISTER_MCP_ENDPOINTS_HINT}`
@@ -7680,7 +7688,7 @@ switch (command) {
       }
       for (const r of passengerRoutes) {
         const included = passengerRepoTargets(r);
-        process.stdout.write(
+        R.line(
           `                   ${r.route}: ${included.length ? included.map((t) => t.name).join(', ') : '(no repos included)'}\n`,
         );
       }
@@ -7691,32 +7699,32 @@ switch (command) {
       const stateS = readSandboxState(cfg.ship.stateDir);
       for (const r of declaredS) {
         const st = sandboxImageStatus(stateS, planSandbox(r.name, r.decl, r.warm, r.bridge));
-        process.stdout.write(`sandbox image:    ${r.name}: ${st.status.toUpperCase()} — ${st.detail}${st.status === 'ok' ? '' : dockerNote}\n`);
+        R.line(`sandbox image:    ${r.name}: ${st.status.toUpperCase()} — ${st.detail}${st.status === 'ok' ? '' : dockerNote}\n`);
       }
     }
     // CREW-2862: the MCP endpoints live periscopes have registered in their workspaces.
     for (const e of listPeriscopeEndpoints(cfg.ship.stateDir)) {
       const secret = readPeriscopeSecret(cfg.ship.stateDir, e.ticketRecordId) ? 'live' : 'ended, awaiting removal';
-      process.stdout.write(`periscope mcp:     ${e.ticket} ${e.route} ${e.url} (${secret}, attached only)\n`);
+      R.line(`periscope mcp:     ${e.ticket} ${e.route} ${e.url} (${secret}, attached only)\n`);
     }
     // CREW-2803: the control API over the relay, end to end, for this route's workspace.
     if (cfg.ship.relayHost && !flag('offline')) {
       const relayUrl = routeRelayUrl(route);
       if (!relayUrl) {
-        process.stdout.write('relay control:     no tunnel URL yet (the first `crew passengers` cycle opens it)\n');
+        R.line('relay control:     no tunnel URL yet (the first `crew passengers` cycle opens it)\n');
       } else {
         let key: string | undefined;
         try { key = resolveApiKey(route); } catch { key = undefined; }
         const relayLine = key
           ? describeRelayProbe(relayUrl, await probeRelayControl(relayUrl, key, cfg.ship.userAgent))
           : 'relay control:     could not check (no API key for this route)';
-        process.stdout.write(`${relayLine}${/FAILED/.test(relayLine) ? dockerNote : ''}\n`);
+        R.line(`${relayLine}${/FAILED/.test(relayLine) ? dockerNote : ''}\n`);
       }
     }
     // CREW-2236: the last stored `crew selftest` result per toolchain; doctor
     // reports it and never launches a harness itself.
     for (const l of doctorSelftestLines(readSelftest(cfg.ship.stateDir), shipToolchains(cfg.ship).map((t) => t.name))) {
-      process.stdout.write(`${l}\n`);
+      R.line(`${l}\n`);
     }
     // CREW-2539: which billing path each Claude toolchain resolves to.
     for (const t of shipToolchains(cfg.ship).filter((t) => t.harness === 'claude')) {
@@ -7724,19 +7732,23 @@ switch (command) {
         // CREW-2796: the endpoint host is per route, so one line each.
         for (const r of cfg.routes.filter((r) => r.enabled)) {
           const inference = r.resolved ? { baseUrl: inferenceBaseUrl(r.baseUrl, r.resolved.workspaceId), token: '' } : undefined;
-          process.stdout.write(`auth:              ${t.name}: ${r.route}: ${describeClaudeAuth({ ...t, inference })}\n`);
+          R.line(`auth:              ${t.name}: ${r.route}: ${describeClaudeAuth({ ...t, inference })}\n`);
         }
         continue;
       }
-      process.stdout.write(`auth:              ${t.name}: ${describeClaudeAuth(t)}\n`);
+      R.line(`auth:              ${t.name}: ${describeClaudeAuth(t)}\n`);
     }
     // CREW-1288: the opt-in action phase. `--fix` is itself the consent (so it
     // also works unattended); a plain run only ever offers, and only on a real
     // terminal. A script or non-TTY run without `--fix` never prompts and
     // never changes anything.
     const interactive = !!(process.stdin.isTTY && process.stdout.isTTY);
+    const counts = R.counts();
+    process.stdout.write(renderDoctor(R, [
+      `ship ${cfg.ship.name} (${host}) · route ${route.route} · crew ${sentVersion(cfg.ship) ?? 'unknown version'}${daemonLiveness ? ` · daemon ${daemonLineText(daemonLiveness)}` : ''}`,
+    ], flag('verbose')));
     if (flag('fix') || interactive) {
-      await doctorFix({ prompt: !flag('fix') || interactive, host });
+      await doctorFix({ prompt: !flag('fix') || interactive, host, fixFlag: flag('fix'), blockers: counts.blocker, warnings: counts.warning });
     }
     break;
   }
