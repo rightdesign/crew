@@ -53,7 +53,7 @@ routes:
     child.stderr.on('data', (d: Buffer) => { stderr += d; });
     return { child, out: () => ({ stdout, stderr }) };
   };
-  return { repo, start };
+  return { repo, start, home };
 }
 
 test('--write repo --recipes ID is parsed as a flag value, not a positional', async () => {
@@ -92,9 +92,13 @@ test('--hook key=value overrides the sniffed value, adds new keys and refuses un
 });
 
 test('SIGINT during --agent reports cancelled with a non-zero exit instead of exiting 0 silently', async () => {
-  const s = ship('sleep 30');
+  // Signal only once the fake agent is running (the CLI's SIGINT handler is installed by
+  // then); a fixed sleep let a loaded machine deliver SIGINT first and kill the CLI (code null).
+  const s = ship('touch "$0.started"; sleep 30');
   const p = s.start('--agent', '--json');
-  await new Promise((r) => setTimeout(r, 1500));
+  const marker = join(s.home, 'fake-claude.started');
+  for (let i = 0; i < 300 && !existsSync(marker); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(existsSync(marker), p.out().stderr);
   const t0 = Date.now();
   p.child.kill('SIGINT');
   const [code] = await once(p.child, 'exit');
