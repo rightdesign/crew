@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcess } from 'node:child_process';
 import {
-  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels, controlRefusedTunnels, CONTROL_RETRY_MS, staleTunnelAttentionKeys,
+  sshArgsFor, bindAddrFor, publicUrlFor, relayBaseUrlFor, generateTunnelSlug, rotatePersistedSlug, startTunnel, syncPassengerTunnels, readPersistedTunnel, updatePersistedTunnel, DEFAULT_SPAWN_OPTIONS, rejectedTunnels, deadTunnels, controlRefusedTunnels, CONTROL_RETRY_MS, staleTunnelAttentionKeys,
   type SpawnFn, type TunnelStatus,
 } from '../src/tunnel.ts';
 import type { ContainerPlan } from '../src/passenger-containers.ts';
@@ -528,4 +528,14 @@ test('staleTunnelAttentionKeys() keeps items for a workspace that is still plann
 test('staleTunnelAttentionKeys() ignores other kinds and the periscope preview key (CREW-3239)', () => {
   const keys = ['tunnel_rejected:periscope:CREW-1', 'disk_low:repo', 'workspace_auth:ws-a'];
   assert.deepEqual(staleTunnelAttentionKeys(keys, new Set()), []);
+});
+
+test('CREW-3275: deadTunnels lists a state file that says connected with a process that is gone', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crew-dead-'));
+  mkdirSync(join(dir, 'passengers'));
+  const write = (ws: string, pid: number, status: string) => writeFileSync(join(dir, 'passengers', `${ws}.json`), JSON.stringify({ pid, workspaceId: ws, containerName: '', mountsHash: 'h', startedAt: 'x', status }));
+  write('live', 1, 'connected');
+  write('gone', 2, 'connected');
+  write('off', 3, 'disconnected');
+  assert.deepEqual(deadTunnels(dir, (pid) => pid === 1), [{ workspaceId: 'gone', pid: 2 }]);
 });

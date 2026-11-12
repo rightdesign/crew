@@ -219,3 +219,16 @@ test('recheckEnvironmentStops clears a hook_missing whose command now resolves a
   assert.deepEqual(openShipAttention(state).map((i) => i.key).sort(),
     ['hook_missing:w/p/gone/test', 'hook_missing:x/y/crew/setup', 'role_parked:qa']);
 });
+
+test('CREW-3275: the daemon item is not cleared by the PATH re-check', async () => {
+  const { recheckEnvironmentStops, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } = await import('../src/ship-attention.ts');
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-shipatt-')));
+  const it = dockerDaemonItem();
+  assert.equal(it.kind, 'docker_missing');
+  assert.match(it.message, /Docker Desktop|Docker daemon/);
+  assert.match(DOCKER_REMEDY, /login items/);
+  state.shipAttention().persist([it]);
+  const cleared = recheckEnvironmentStops(state, { route: 'w/p', dir: '/x', repos: {} } as any, { extraPath: [] } as any, { dockerProblem: () => undefined });
+  assert.deepEqual(cleared, []);
+  assert.deepEqual(openShipAttention(state).map((i) => i.key), [DOCKER_DAEMON_KEY]);
+});

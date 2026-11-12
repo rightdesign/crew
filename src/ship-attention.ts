@@ -301,6 +301,14 @@ export function repoStopFor(items: ShipAttentionItem[], route: Route): (t: { rep
   };
 }
 
+/** CREW-3275: the one item for a Docker daemon that does not answer. Distinct from the PATH item (`docker_missing`), which `recheckEnvironmentStops` clears. */
+export const DOCKER_DAEMON_KEY = 'docker_missing:daemon';
+export const DOCKER_REMEDY = 'start the Docker daemon (on macOS open Docker Desktop and add it to login items)';
+
+export function dockerDaemonItem(nowIso = new Date().toISOString()): ShipAttentionItem {
+  return { kind: 'docker_missing', key: DOCKER_DAEMON_KEY, since: nowIso, message: `the Docker daemon does not answer; ${DOCKER_REMEDY}. Sandbox image builds and Host Passengers containers wait; relay tunnels stay up for control` };
+}
+
 /**
  * Re-checks the open missing-tool stops (`hook_missing`, `docker_missing`) and
  * clears those whose command now resolves on the scheduler PATH (ISSUE-1406),
@@ -319,6 +327,7 @@ export function recheckEnvironmentStops(
   const cleared: string[] = [];
   for (const item of state.shipAttention().previous()) {
     if (item.kind === 'docker_missing') {
+      if (item.key === DOCKER_DAEMON_KEY) continue; // cleared by the cycle that sees the daemon answer
       if (!dockerProblem(ship)) { clearShipAttention(state, item.key); cleared.push('docker'); }
       continue;
     }

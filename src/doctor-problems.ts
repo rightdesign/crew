@@ -1,5 +1,5 @@
 import type { ShipAttentionItem } from './ship-attention.ts';
-import { hookCommand } from './ship-attention.ts';
+import { hookCommand, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
 
 /**
  * The structured form of what `crew doctor` finds (CREW-2542), for
@@ -121,9 +121,37 @@ export function repoFindings(o: {
   return { problems, passed };
 }
 
+/**
+ * CREW-3275: a Docker daemon that does not answer, on a ship that needs it, is one blocker with the
+ * remedy; the sandbox image and relay lines that fail for that reason are its consequences.
+ */
+export function dockerDaemonFinding(o: { needed: boolean; up: boolean }): DoctorProblem | null {
+  if (!o.needed || o.up) return null;
+  return {
+    severity: 'blocker', kind: 'docker_daemon_down',
+    message: 'the Docker daemon does not answer `docker info`; Host Passengers containers, sandbox image builds and anything the relay reaches through them cannot work',
+    remedy: DOCKER_REMEDY,
+  };
+}
+
+/** CREW-3275: a tunnel whose state file says connected but whose process is gone. */
+export function deadTunnelFindings(dead: Array<{ workspaceId: string; pid: number }>, dockerDown: boolean): DoctorProblem[] {
+  return dead.map((t) => ({
+    severity: 'attention' as const, kind: 'tunnel_dead',
+    message: `the relay tunnel for workspace ${t.workspaceId} is recorded as connected but its process ${t.pid} is gone`,
+    remedy: dockerDown ? `run \`crew passengers\` to reopen it (control returns even while Docker is down); also: ${DOCKER_REMEDY}` : 'run `crew passengers` to reopen it',
+  }));
+}
+
+/** Open items worth printing on their own: the Docker daemon item is dropped when doctor already prints the Docker finding. */
+export function visibleAttention(items: ShipAttentionItem[], dockerFindingPresent: boolean): ShipAttentionItem[] {
+  return dockerFindingPresent ? items.filter((i) => i.key !== DOCKER_DAEMON_KEY) : items;
+}
+
 /** Open ship-attention items as problems, skipping any a fresh finding already covers (`hook_missing` repeats). */
 export function attentionProblems(items: ShipAttentionItem[], already: DoctorProblem[]): DoctorProblem[] {
   const seen = new Set(already.filter((p) => p.kind === 'hook_missing').map((p) => `hook_missing:${p.route}/${p.repo}/${p.hook}`));
+  if (already.some((p) => p.kind === 'docker_daemon_down')) seen.add(DOCKER_DAEMON_KEY);
   return items
     .filter((i) => !seen.has(i.key))
     .map((i) => ({ severity: 'attention' as const, kind: i.kind, message: i.message }));

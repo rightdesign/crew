@@ -554,6 +554,8 @@ export interface TickDeps extends BuildDeps {
   raise: (item: ShipAttentionItem) => void;
   clear: (key: string) => void;
   log: (message: string) => void;
+  /** CREW-3275: whether the container engine's daemon answers. When it does not, the tick raises this one item instead of a build failure per repository. */
+  daemonDown?: () => ShipAttentionItem | null;
 }
 
 /**
@@ -565,6 +567,12 @@ export interface TickDeps extends BuildDeps {
  */
 export async function sandboxBuildTick(repos: SandboxRepoRef[], deps: TickDeps, force = false): Promise<string | null> {
   const nowMs = (deps.now ?? (() => new Date()))().getTime();
+  const down = repos.length > 0 ? deps.daemonDown?.() : null;
+  if (down) {
+    deps.raise(down);
+    deps.log('sandbox image: not building, the Docker daemon does not answer');
+    return null;
+  }
   for (const r of repos) {
     if (r.unreadable) { deps.log(`sandbox image for ${r.name}: not building, ${r.unreadable}`); continue; }
     const plan = planSandbox(r.name, r.decl, r.warm, r.bridge);

@@ -556,6 +556,16 @@ export function staleTunnelAttentionKeys(openKeys: string[], plannedIds: Readonl
   });
 }
 
+/** CREW-3275: workspaces whose state file says the tunnel is up (`connecting`/`connected`) but whose ssh process is gone. */
+export function deadTunnels(stateDir: string, alive: (pid: number) => boolean = isPidAlive): Array<{ workspaceId: string; pid: number }> {
+  const out: Array<{ workspaceId: string; pid: number }> = [];
+  for (const workspaceId of readAllPersistedWorkspaceIds(stateDir)) {
+    const t = readPersistedTunnel(stateDir, workspaceId);
+    if (t && (t.status === 'connected' || t.status === 'connecting') && !alive(t.pid)) out.push({ workspaceId, pid: t.pid });
+  }
+  return out;
+}
+
 /** Workspaces whose persisted tunnel has been refused often enough to report. */
 export function rejectedTunnels(stateDir: string): Array<{ workspaceId: string; quickExits: number }> {
   const out: Array<{ workspaceId: string; quickExits: number }> = [];

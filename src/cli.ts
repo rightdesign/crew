@@ -16,7 +16,8 @@ import { intelFlavor, wantsCodeBridge, lspFlavor, lspBinaryFound, ensureLspPlugi
 import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, removePeriscopeSidecar, readPeriscopeSidecars as readSidecars, updatePeriscopeSidecar } from './periscope-state.ts';
 import { openPreviewTunnel, stopRecordedTunnel, type PreviewRelay } from './periscope-relay.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
-import { repoFindings, attentionProblems, type DoctorProblem } from './doctor-problems.ts';
+import { dockerGate } from './passengers-cycle.ts';
+import { repoFindings, attentionProblems, visibleAttention, dockerDaemonFinding, deadTunnelFindings, type DoctorProblem } from './doctor-problems.ts';
 import { sandboxHookGaps, imageHasBinary, imageStoreProblem } from './sandbox-hooks.ts';
 import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
@@ -179,7 +180,7 @@ import {
 } from './passenger-containers.ts';
 import {
   syncPassengerTunnels, startPreviewTunnel, generateTunnelSlug, readPersistedTunnel, isPidAlive, publicUrlFor, relayBaseUrlFor, rotatePersistedSlug, updatePersistedTunnel, type TunnelPlan,
-  TUNNEL_REJECTED_KEY, TUNNEL_REJECTED_AFTER, tunnelRejectedMessage, rejectedTunnels,
+  TUNNEL_REJECTED_KEY, TUNNEL_REJECTED_AFTER, tunnelRejectedMessage, rejectedTunnels, deadTunnels,
   RELAY_CONTROL_UNSUPPORTED_KEY, relayControlUnsupportedMessage, controlRefusedTunnels, staleTunnelAttentionKeys,
 } from './tunnel.ts';
 import {
@@ -193,7 +194,7 @@ import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { contractFixers } from './contract-refusal.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
 import {
   runDaemonLoop, runFleetPass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -1068,18 +1069,22 @@ async function syncHostPassengers(): Promise<void> {
   if (passengerRoutes.length === 0) {
     // CREW-2803: no passengers, but a ship with a relay still opens the tunnel for control alone.
     await syncShipTunnels([], new Map(), []);
+    // A stale daemon item would otherwise never clear once passengers are off and no sandbox needs Docker.
+    if (!(await shipNeedsDocker())) clearShipAttention(state, DOCKER_DAEMON_KEY);
     return;
   }
-  if (!dockerAvailable()) {
-    // Under the timer there is no interactive PATH, so look in Docker's usual
-    // directories to tell "docker is not on our PATH" from "the daemon is down".
-    const pathProblem = dockerPathProblem(cfg.ship, COMMON_DOCKER_DIRS);
-    emit.warn(
-      `Host Passengers is on for at least one route but ${pathProblem ?? 'Docker is not available'} — skipping container sync this cycle`,
-      { step: 'passengers' },
-    );
-    return;
-  }
+  // Under the timer there is no interactive PATH, so look in Docker's usual
+  // directories to tell "docker is not on our PATH" from "the daemon is down".
+  const gate = await dockerGate({
+    dockerUp: dockerAvailable(),
+    passengerRoutes,
+    pathProblem: () => dockerPathProblem(cfg.ship, COMMON_DOCKER_DIRS),
+    warn: (message) => emit.warn(message, { step: 'passengers' }),
+    raise: (item, route) => raiseShipAttention({ state, emit, route, ship: cfg.ship }, item),
+    clear: (key) => clearShipAttention(state, key),
+    syncTunnels: (plans, targets, routes) => syncShipTunnels(plans, targets, routes),
+  });
+  if (gate === 'handled') return;
   try {
     // Dedicated checkouts (ISSUE-554, decision 7 in the Map) must be
     // cloned and fast-forwarded to `branch.base` BEFORE the container
@@ -1800,6 +1805,19 @@ async function resolveRoute(c: typeof route) {
 }
 
 /** Every repo of `routes` that declares a `sandbox:` section, once per repo name (CREW-2794). */
+/** CREW-3275: does this ship need a Docker daemon: Host Passengers on, a declared sandbox, or a repository hook that runs `docker`. */
+async function shipNeedsDocker(): Promise<boolean> {
+  const enabled = cfg.routes.filter((r) => r.enabled);
+  if (enabled.some((r) => r.hostPassengers)) return true;
+  if (withShipSandbox(await sandboxReposOf(enabled)).length > 0) return true;
+  for (const c of enabled) {
+    let repos: Awaited<ReturnType<typeof resolvedRepos>>;
+    try { repos = await resolvedRepos(c); } catch { continue; }
+    if (repos.some((r) => Object.values(r.config.hooks).some((h) => typeof h === 'string' && hookCommand(h) === 'docker'))) return true;
+  }
+  return false;
+}
+
 async function sandboxReposOf(routes: Array<typeof route>): Promise<SandboxRepoRef[]> {
   const out = new Map<string, SandboxRepoRef>();
   for (const c of routes) {
@@ -1846,6 +1864,11 @@ function sandboxTickDeps(emit: Emitter, c: typeof route): TickDeps {
     raise: (item) => { void raiseShipAttention({ state, emit, route: c, ship: cfg.ship }, item); },
     clear: (key) => clearShipAttention(state, key),
     log: (m) => emit.emit(m),
+    daemonDown: () => {
+      if (!dockerAvailable()) return dockerDaemonItem();
+      clearShipAttention(state, DOCKER_DAEMON_KEY);
+      return null;
+    },
   };
 }
 
@@ -7021,6 +7044,9 @@ switch (command) {
           }
         } catch { /* the container engine being down is reported by its own check */ }
       }
+      const dockerDownJson = dockerDaemonFinding({ needed: await shipNeedsDocker(), up: dockerAvailable() });
+      if (dockerDownJson) problems.push(dockerDownJson);
+      problems.push(...deadTunnelFindings(deadTunnels(cfg.ship.stateDir), Boolean(dockerDownJson)));
       for (const t of rejectedTunnels(cfg.ship.stateDir)) {
         problems.push({ severity: 'attention', kind: TUNNEL_REJECTED_KEY, message: tunnelRejectedMessage(t.workspaceId, t.quickExits), remedy: 'rotate the slug with `crew rotate-passenger-url`' });
       }
@@ -7048,6 +7074,16 @@ switch (command) {
     if (staleBundle) {
       process.stdout.write(`bundle:            BLOCKER ${staleBundle.message}\n`);
       process.exitCode = 1;
+    }
+    // CREW-3275: one Docker finding; the passengers, sandbox image and relay lines below that fail for it say so.
+    const dockerFinding = dockerDaemonFinding({ needed: await shipNeedsDocker(), up: dockerAvailable() });
+    const dockerNote = dockerFinding ? ' (consequence of the Docker finding above)' : '';
+    if (dockerFinding) {
+      process.stdout.write(`docker:            BLOCKER ${dockerFinding.message} — ${dockerFinding.remedy}\n`);
+      process.exitCode = 1;
+    }
+    for (const f of deadTunnelFindings(deadTunnels(cfg.ship.stateDir), Boolean(dockerFinding))) {
+      process.stdout.write(`tunnel:            DEAD ${f.message} — ${f.remedy}\n`);
     }
     for (const w of roleCapWarnings(cfg.ship)) process.stdout.write(`role concurrency: WARN ${w}\n`);
     for (const r of cfg.routes) for (const f of routeAvatarFailures(cfg.ship.stateDir, r.route)) process.stdout.write(`persona avatar:    WARN ${r.route}: ${f.role} avatar failed to upload (${f.detail}); run \`crew agents sync\` again\n`);
@@ -7568,7 +7604,7 @@ switch (command) {
         }
       }
     }
-    for (const i of openShipAttention(state)) {
+    for (const i of visibleAttention(openShipAttention(state), Boolean(dockerFinding))) {
       process.stdout.write(`attention:         ${i.kind} — ${i.message} (since ${i.since})\n`);
     }
 
@@ -7617,7 +7653,7 @@ switch (command) {
       const imageOk = dockerOk && imagePresent(image);
       process.stdout.write(
         `host passengers:   ON for ${passengerRoutes.map((r) => r.route).join(', ')}\n` +
-          `                   docker:     ${dockerOk ? 'OK' : 'NOT AVAILABLE'}\n` +
+          `                   docker:     ${dockerOk ? 'OK' : `NOT AVAILABLE${dockerNote}`}\n` +
           `                   ssh-keygen: ${keygenOk ? 'OK' : 'NOT AVAILABLE'}\n` +
           `                   image:      ${image} (${imageOk ? 'present' : 'missing'})\n` +
           `                   relay host: ${cfg.ship.relayHost ? `${cfg.ship.relayHost}:${cfg.ship.relayPort}` : 'not set (ship.relayHost) — containers will run with no tunnel'}\n`,
@@ -7672,7 +7708,7 @@ switch (command) {
       const stateS = readSandboxState(cfg.ship.stateDir);
       for (const r of declaredS) {
         const st = sandboxImageStatus(stateS, planSandbox(r.name, r.decl, r.warm, r.bridge));
-        process.stdout.write(`sandbox image:    ${r.name}: ${st.status.toUpperCase()} — ${st.detail}\n`);
+        process.stdout.write(`sandbox image:    ${r.name}: ${st.status.toUpperCase()} — ${st.detail}${st.status === 'ok' ? '' : dockerNote}\n`);
       }
     }
     // CREW-2862: the MCP endpoints live periscopes have registered in their workspaces.
@@ -7688,9 +7724,10 @@ switch (command) {
       } else {
         let key: string | undefined;
         try { key = resolveApiKey(route); } catch { key = undefined; }
-        process.stdout.write(`${key
+        const relayLine = key
           ? describeRelayProbe(relayUrl, await probeRelayControl(relayUrl, key, cfg.ship.userAgent))
-          : 'relay control:     could not check (no API key for this route)'}\n`);
+          : 'relay control:     could not check (no API key for this route)';
+        process.stdout.write(`${relayLine}${/FAILED/.test(relayLine) ? dockerNote : ''}\n`);
       }
     }
     // CREW-2236: the last stored `crew selftest` result per toolchain; doctor

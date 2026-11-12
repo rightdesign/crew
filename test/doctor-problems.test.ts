@@ -58,3 +58,16 @@ test('a file-form map that is not in the checkout is an attention finding (CREW-
   assert.equal(gone.problems[0]!.kind, 'map_file_missing');
   assert.equal(repoFindings({ ...base, mapFile: { path: 'docs/REPO_MAP.md', exists: true, lines: 4, tokens: 20 } }).problems.length, 0);
 });
+
+test('CREW-3275: one Docker blocker with the remedy, only when needed and down; the attention item is not repeated', async () => {
+  const { dockerDaemonFinding, deadTunnelFindings } = await import('../src/doctor-problems.ts');
+  assert.equal(dockerDaemonFinding({ needed: false, up: false }), null);
+  assert.equal(dockerDaemonFinding({ needed: true, up: true }), null);
+  const f = dockerDaemonFinding({ needed: true, up: false })!;
+  assert.equal(f.severity, 'blocker');
+  assert.match(f.remedy!, /Docker Desktop/);
+  const item = { kind: 'docker_missing' as const, key: 'docker_missing:daemon', message: 'm', since: 's' };
+  assert.deepEqual(attentionProblems([item], [f]), []);
+  assert.equal(attentionProblems([item], []).length, 1);
+  assert.match(deadTunnelFindings([{ workspaceId: 'w', pid: 7 }], false)[0]!.remedy!, /crew passengers/);
+});

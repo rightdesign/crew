@@ -347,3 +347,14 @@ test('CREW-3014: a declared repository with no recorded image blocks a run; an u
   assert.equal(sandboxImageMissing({ synthesis: { tags: [{ tag: 'repo:1', builtAt: 'x' }] } }, 'synthesis', true), false);
   assert.equal(sandboxMissingItem('synthesis').key, sandboxFailedKey('synthesis'));
 });
+
+test('CREW-3275: a daemon that does not answer raises its one item, builds nothing and records no failure', async () => {
+  const h = harness();
+  const item = { kind: 'docker_missing' as const, key: 'docker_missing:daemon', message: 'down', since: 's' };
+  const repos = [{ name: 'a', decl: { packages: [], setup: ['ok'] } }, { name: 'b', decl: { packages: [], setup: ['ok'] } }];
+  assert.equal(await sandboxBuildTick(repos, { ...h.deps, daemonDown: () => item }), null);
+  assert.equal(h.builds.length, 0);
+  assert.deepEqual(h.attention.map((i) => i.key), ['docker_missing:daemon']);
+  assert.equal(readSandboxState(h.stateDir).a, undefined);
+  assert.equal(await sandboxBuildTick(repos, { ...h.deps, daemonDown: () => null }), 'a');
+});
