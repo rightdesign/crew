@@ -27,7 +27,7 @@
 
 import { StaleWriteError } from '@tablation/client';
 import type { Ticket } from './tracker.ts';
-import { RESOLVED_STATUSES } from './tracker.ts';
+import { RESOLVED_STATUSES, displayKey } from './tracker.ts';
 import { withinWorkMode, type WorkModes } from './work-mode.ts';
 
 /**
@@ -133,8 +133,8 @@ export function sweepDiagnostics(tickets: Ticket[], info: BlockerInfo): SweepDia
   const selfBlocked: string[] = [];
   for (const t of tickets) {
     for (const id of t.blocked_by ?? []) {
-      if (info[id] === undefined) dangling.push(`${t.issue_id} -> ${id}`);
-      if (id === t.id) selfBlocked.push(t.issue_id);
+      if (info[id] === undefined) dangling.push(`${displayKey(t)} -> ${id}`);
+      if (id === t.id) selfBlocked.push(displayKey(t));
     }
   }
   return { dangling, selfBlocked: [...new Set(selfBlocked)] };
@@ -152,7 +152,7 @@ export interface SweepStep {
 
 const describeBlockers = (t: Ticket, info: BlockerInfo): string =>
   (t.blocked_by ?? [])
-    .map((id) => `${info[id]?.issue_id ?? '?'} (${info[id]?.status ?? 'unknown'})`)
+    .map((id) => `${info[id]?.issue_tag ?? info[id]?.issue_id ?? '?'} (${info[id]?.status ?? 'unknown'})`)
     .join(', ');
 
 /**

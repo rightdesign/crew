@@ -12,7 +12,7 @@
  * Pure: `select.ts` and `claim.ts` decide with these, nothing here writes.
  */
 
-import type { ShipRow, Ticket } from './tracker.ts';
+import { displayKey, type ShipRow, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 
 /**
@@ -252,9 +252,9 @@ export function holdWarnings(
     if (t.assignee_id && humanHolds.has(t.assignee_id)) continue;
     const holder = ticketHolderShipId(t, contract);
     if (!holder) {
-      out.push(`${t.issue_id} (${t.status}) has no ${contract.columns.heldBy} — any ship may take it`);
+      out.push(`${displayKey(t)} (${t.status}) has no ${contract.columns.heldBy} — any ship may take it`);
     } else if (!shipIsAlive(ships.find((s) => s.id === holder), now)) {
-      out.push(`${t.issue_id} (${t.status}) is held by ${shipName(ships, holder)}, which has not been seen for ${SHIP_DEAD_AFTER_CYCLES}+ cycles`);
+      out.push(`${displayKey(t)} (${t.status}) is held by ${shipName(ships, holder)}, which has not been seen for ${SHIP_DEAD_AFTER_CYCLES}+ cycles`);
     }
   }
   return out;

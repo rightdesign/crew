@@ -32,6 +32,13 @@ test('a dangling reference does not block — better than parking forever', () =
   assert.deepEqual(sweepDiagnostics([t], info).dangling, ['ISSUE-1 -> gone']);
 });
 
+test('diagnostics name a ticket by its Issue Tag when it has one', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', issue_tag: 'CREW-1', status: 'accepted', blocked_by: ['gone', 'a'] });
+  const d = sweepDiagnostics([t], blockerInfoMap([t]));
+  assert.deepEqual(d.dangling, ['CREW-1 -> gone']);
+  assert.deepEqual(d.selfBlocked, ['CREW-1']);
+});
+
 test('a self-block parks permanently and is reported once', () => {
   const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', blocked_by: ['a', 'a'] });
   const info = blockerInfoMap([t]);

@@ -27,7 +27,7 @@ import type { Contract } from './contract.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { inspectHandoff, pushedEventBody, type HandoffLog, type HandoffWriter } from './handoff-guard.ts';
 import type { PendingHandoffDraft } from './handoff-transcript.ts';
-import type { Comment } from './tracker.ts';
+import { displayKey, type Comment } from './tracker.ts';
 import { sleepBackoff } from './pending-backoff.ts';
 
 export interface PendingHandoff extends PendingHandoffDraft {
@@ -121,14 +121,14 @@ export async function replayPendingHandoffs(i: ReplayInput): Promise<string[]> {
       const t = await i.writer.ticket(rec.ticketRecordId);
       const st = i.contract.statuses;
       if (!seatId || t.status !== st.building || rec.patch.status !== st.handoff) {
-        i.log.emit(`${t.issue_id}: pending hand-off no longer applies (ticket is at ${t.status}) — dropped`, at);
+        i.log.emit(`${displayKey(t)}: pending hand-off no longer applies (ticket is at ${t.status}) — dropped`, at);
         removePendingHandoff(i.stateDir, rec.ticketRecordId);
         continue;
       }
       const co = i.checkout(t);
       const v = co ? inspectHandoff(co.dir, co.cfg, t, rec.role) : null;
       if (!v || v.kind === 'bounce') {
-        i.log.warn(`${t.issue_id}: pending hand-off dropped — ${v ? v.reason : 'this ship has no checkout of the ticket\'s repo'}`, at);
+        i.log.warn(`${displayKey(t)}: pending hand-off dropped — ${v ? v.reason : 'this ship has no checkout of the ticket\'s repo'}`, at);
         removePendingHandoff(i.stateDir, rec.ticketRecordId);
         continue;
       }
@@ -147,7 +147,7 @@ export async function replayPendingHandoffs(i: ReplayInput): Promise<string[]> {
       await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), seatId, 'pushed');
       await i.writer.updateTicket(t.id, rec.patch);
       removePendingHandoff(i.stateDir, rec.ticketRecordId);
-      i.log.emit(`${t.issue_id}: replayed a pending hand-off at ${v.sha.slice(0, 7)} — handed on to QA`, at);
+      i.log.emit(`${displayKey(t)}: replayed a pending hand-off at ${v.sha.slice(0, 7)} — handed on to QA`, at);
       landed.push(t.id);
     } catch (e) {
       const attempts = rec.attempts + 1;

@@ -39,7 +39,7 @@ import { liveRuns } from './live-runs.ts';
 import { worktreeHoldsUnpushed } from './run-worktree.ts';
 import type { RepoTarget } from './config.ts';
 import type { Contract } from './contract.ts';
-import type { Ticket } from './tracker.ts';
+import { displayKey, type Ticket } from './tracker.ts';
 import type { State } from './state.ts';
 import { noteHeldWorktree } from './ship-attention.ts';
 
@@ -244,7 +244,7 @@ export async function applyWorktreeSweep(
       : 'first';
     if (when) {
       log.warn(
-        `not removing worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}): ${detail}`,
+        `not removing worktree ${a.path} for ${displayKey(a.ticket)} (${a.ticket.status}): ${detail}`,
         { ticket: a.ticket.issue_id, step: 'worktree' },
       );
     }
@@ -258,7 +258,7 @@ export async function applyWorktreeSweep(
     if (!dryRun && base && !a.keepBranch && existsSync(a.path) && isHandBackMerge(a.path, base)) {
       if (gitOk(a.path, ['merge', '--abort']) !== null) {
         log.emit(
-          `abandoned the hand-back merge of ${base} in ${a.path}: ${a.ticket.issue_id} deployed without it`,
+          `abandoned the hand-back merge of ${base} in ${a.path}: ${displayKey(a.ticket)} deployed without it`,
           { ticket: a.ticket.issue_id, step: 'worktree' },
         );
       }
@@ -273,7 +273,7 @@ export async function applyWorktreeSweep(
     const liveRun = !!held && liveRuns(held.state.dir).some((r) => (r.ticket ?? '').replace(/^\D+/, '') === String(n));
     const defer = (): void => {
       log.emit(
-        `leaving ${a.path} for the next cycle: ${liveRun ? `${a.ticket.issue_id} has a run in progress on this ship` : `processes are still inside it (${pids.join(' ')})`}`,
+        `leaving ${a.path} for the next cycle: ${liveRun ? `${displayKey(a.ticket)} has a run in progress on this ship` : `processes are still inside it (${pids.join(' ')})`}`,
         { ticket: a.ticket.issue_id, step: 'worktree' },
       );
     };
@@ -308,7 +308,7 @@ export async function applyWorktreeSweep(
     if (a.keepBranch) keptBranches++;
     if (dryRun) {
       log.emit(
-        `would remove worktree ${a.path} for ${a.ticket.issue_id} (${a.ticket.status}); ${branchNote}`,
+        `would remove worktree ${a.path} for ${displayKey(a.ticket)} (${a.ticket.status}); ${branchNote}`,
         { ticket: a.ticket.issue_id, step: 'worktree' },
       );
       continue;
@@ -331,7 +331,7 @@ export async function applyWorktreeSweep(
       }
     }
     log.emit(
-      `removed worktree for ${a.ticket.issue_id} (${a.ticket.status}); ${branchNote}`,
+      `removed worktree for ${displayKey(a.ticket)} (${a.ticket.status}); ${branchNote}`,
       { ticket: a.ticket.issue_id, step: 'worktree' },
     );
     removed++;

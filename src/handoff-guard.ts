@@ -42,7 +42,7 @@ import { repoTargetFor, routeSlug, type Route, type Ship, type RoleName } from '
 import { replayPendingHandoffs } from './pending-handoff.ts';
 import { ticketHolderShipId } from './ship-affinity.ts';
 import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
-import type { Comment, RunnerEvent, Ticket, Tracker } from './tracker.ts';
+import { displayKey, type Comment, type RunnerEvent, type Ticket, type Tracker } from './tracker.ts';
 import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
 import { sandboxOriginFor } from './agent.ts';
@@ -331,13 +331,13 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     // reads it, so a status past the hand-off means the hand-off already happened.
     const claimed = [st.verifying, st.verified, st.deployed].some((s) => s && t.status === s);
     if (t.status !== st.handoff && !claimed) {
-      i.log.emit(`${t.issue_id} is at ${t.status}, not handed off — nothing to check`, log);
+      i.log.emit(`${displayKey(t)} is at ${t.status}, not handed off — nothing to check`, log);
       return { kind: 'not-handed-off' };
     }
 
     const v = i.origin ? inspectRemoteHandoff(i.origin, i.cfg, t, i.role) : inspectHandoff(i.dir, i.cfg, t, i.role);
     if (v.kind === 'unverified') {
-      i.log.warn(`${t.issue_id} is at ${t.status} but the push was not checked: ${v.why}`, log);
+      i.log.warn(`${displayKey(t)} is at ${t.status} but the push was not checked: ${v.why}`, log);
       return { kind: 'unverified', why: v.why };
     }
     if (v.kind === 'pushed' && !claimed) {
@@ -345,7 +345,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       if (gap) {
         const heldNow = i.hold ? t[i.hold.column] : undefined;
         if ((i.hold && heldNow && heldNow !== i.hold.shipId) || await takenOverSince(i, t.id)) {
-          i.log.warn(`${t.issue_id} is held by another ship now — the acceptance check is stale, left alone`, log);
+          i.log.warn(`${displayKey(t)} is held by another ship now — the acceptance check is stale, left alone`, log);
           return { kind: 'unverified', why: 'ticket is held by another ship' };
         }
         await i.writer.updateTicket(t.id, {
@@ -357,19 +357,19 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
         await i.writer.postEvent(t.id, acceptanceBounceComment(gap.missing, i.shipName, gap.judged, gap.all), i.seatId, 'bounced').catch(() => {
           i.log.warn('bounced, but the note failed to post', log);
         });
-        i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: hand-off comment lacks the acceptance checklist`, log);
+        i.log.warn(`${displayKey(t)} bounced back to ${i.contract.statuses.building}: hand-off comment lacks the acceptance checklist`, log);
         return { kind: 'bounced' };
       }
     }
     if (v.kind === 'pushed') {
       await postPushed(i, t.id, v.sha, v.remote, v.branch, log);
-      i.log.emit(`${t.issue_id} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
+      i.log.emit(`${displayKey(t)} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
     }
 
     // QA owns a claimed ticket: never pull it back to the building lane.
     if (claimed) {
-      i.log.warn(`${t.issue_id} is at ${t.status} but its branch is not on the remote at HEAD: ${v.reason}`, log);
+      i.log.warn(`${displayKey(t)} is at ${t.status} but its branch is not on the remote at HEAD: ${v.reason}`, log);
       return { kind: 'failed', why: v.reason };
     }
 
@@ -380,15 +380,15 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     // was written for is a local tip that is missing from, or ahead of, origin.
     const heldBy = i.hold ? t[i.hold.column] : undefined;
     if (i.hold && heldBy && heldBy !== i.hold.shipId) {
-      i.log.warn(`${t.issue_id} is held by another ship now — this run's hand-off check is stale, left alone`, log);
+      i.log.warn(`${displayKey(t)} is held by another ship now — this run's hand-off check is stale, left alone`, log);
       return { kind: 'unverified', why: 'ticket is held by another ship' };
     }
     if (await takenOverSince(i, t.id)) {
-      i.log.warn(`${t.issue_id} was taken over by another ship during this run — left alone`, log);
+      i.log.warn(`${displayKey(t)} was taken over by another ship during this run — left alone`, log);
       return { kind: 'unverified', why: 'ticket was taken over during this run' };
     }
     if (!v.local && !i.origin) {
-      i.log.warn(`${t.issue_id} has no local branch on this ship, so it is not this ship's hand-off to bounce: ${v.reason}`, log);
+      i.log.warn(`${displayKey(t)} has no local branch on this ship, so it is not this ship's hand-off to bounce: ${v.reason}`, log);
       return { kind: 'unverified', why: 'no local branch on this ship' };
     }
     let pushError: string | undefined;
@@ -402,14 +402,14 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
           await i.writer.postEvent(t.id,
             `The runner pushed \`${again.branch}\` to \`${again.remote}\` on ${i.shipName ? `${i.shipName}'s` : 'this ship\'s'} behalf: the ${i.role} seat set \`${i.contract.statuses.handoff}\` without pushing. Plain fast-forward push.${i.cfg.hooks.ci_status ? ' The repo\'s `ci_status` hook was NOT run by the hand-off guard, so CI was not checked by the builder.' : ''}`,
             i.seatId, 'pushed_by_runner').catch(() => i.log.warn('pushed, but the note failed to post', log));
-          i.log.emit(`${t.issue_id}: pushed ${again.branch} to ${again.remote} on the seat's behalf at ${again.sha.slice(0, 7)} — handed on to QA`, log);
+          i.log.emit(`${displayKey(t)}: pushed ${again.branch} to ${again.remote} on the seat's behalf at ${again.sha.slice(0, 7)} — handed on to QA`, log);
           return { kind: 'pushed', sha: again.sha };
         }
         pushError = `the push succeeded but ${again.kind === 'bounce' ? again.reason : again.why}`;
       } catch (e) {
         pushError = (e as Error).message;
       }
-      i.log.warn(`${t.issue_id}: the runner's own push failed: ${pushError}`, log);
+      i.log.warn(`${displayKey(t)}: the runner's own push failed: ${pushError}`, log);
     }
     await i.writer.updateTicket(t.id, {
       status: i.contract.statuses.building,
@@ -419,7 +419,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     await i.writer.postEvent(t.id, bounceComment(v, i.shipName, pushError), i.seatId, 'bounced').catch(() => {
       i.log.warn('bounced, but the note failed to post', log);
     });
-    i.log.warn(`${t.issue_id} bounced back to ${i.contract.statuses.building}: ${v.reason}`, log);
+    i.log.warn(`${displayKey(t)} bounced back to ${i.contract.statuses.building}: ${v.reason}`, log);
     return { kind: 'bounced' };
   } catch (e) {
     const why = describeGuardError(e, i.dir);
@@ -469,7 +469,7 @@ export async function guardRunHandoff(
     // nothing to hand on: say why once and touch neither the board nor the branch.
     const lost = lostTicketReason(t, tracker.contract, (await tracker.claimAffinity())?.shipId);
     if (lost && role !== 'qa') {
-      log.warn(`${t.issue_id}: run ended without a push — ${lost}`, { ticket: t.issue_id, step: 'handoff' });
+      log.warn(`${displayKey(t)}: run ended without a push — ${lost}`, { ticket: t.issue_id, step: 'handoff' });
       return { kind: 'unverified', why: lost };
     }
     // CREW-1405: QA hands nothing on (it verifies or bounces), and its hard
@@ -484,7 +484,7 @@ export async function guardRunHandoff(
     // CREW-3033: a sandboxed run's clone went with the sandbox, so its push is asked of the remote.
     const origin = ship.runner === 'sandbox' ? sandboxOriginFor(route, target.name) : undefined;
     if (ship.runner === 'sandbox' && !origin) {
-      log.warn(`${t.issue_id}: the push was not checked: this ship cannot place the remote of ${target.name}`, { ticket: t.issue_id, step: 'handoff' });
+      log.warn(`${displayKey(t)}: the push was not checked: this ship cannot place the remote of ${target.name}`, { ticket: t.issue_id, step: 'handoff' });
       return null;
     }
     // The replay just handed this very ticket on and posted its `pushed` event.
@@ -504,7 +504,7 @@ export async function guardRunHandoff(
       // CREW-2528: a run that cut a branch from the base and committed nothing leaves no branch behind.
       const branch = existingBranchForTicket(target.dir, cfg, t, role);
       if (branch && dropEmptyRunBranch(target.dir, cfg, branch)) {
-        log.emit(`${t.issue_id}: dropped ${branch} — the run made no commits beyond ${cfg.branch.base}`, { ticket: t.issue_id, step: 'handoff' });
+        log.emit(`${displayKey(t)}: dropped ${branch} — the run made no commits beyond ${cfg.branch.base}`, { ticket: t.issue_id, step: 'handoff' });
       }
     }
     if (since && !origin) await guardRunStrays(route, ship, tracker, role, workingId, since, log);
@@ -541,12 +541,12 @@ async function retireRunWorktree(
     if (!branch) return;
     const o = await finishRunWorktree(dir, cfg, branch);
     const at = { ticket: t.issue_id, step: 'handoff' };
-    if (o.kind === 'removed') log.emit(`${t.issue_id}: removed the run's worktree ${o.path} — the branch is on ${cfg.branch.remote}`, at);
+    if (o.kind === 'removed') log.emit(`${displayKey(t)}: removed the run's worktree ${o.path} — the branch is on ${cfg.branch.remote}`, at);
     else if (o.kind === 'kept-handoff') {
-      log.emit(`${t.issue_id}: kept worktree ${o.path} — this repo's handoff hook serves from it`, at);
+      log.emit(`${displayKey(t)}: kept worktree ${o.path} — this repo's handoff hook serves from it`, at);
       await tracker.postEvent(t.id, `worktree kept on ship ${shipName} at \`${o.path}\`: the repo's \`handoff\` hook serves from it. QA on another ship cuts its own from \`${cfg.branch.remote}/${branch}\` instead.`, seatId, 'worktree_kept');
-    } else if (o.kind === 'kept-dirty') log.warn(`${t.issue_id}: left worktree ${o.path} — it has uncommitted changes`, at);
-    else if (o.kind === 'kept-unpushed') log.warn(`${t.issue_id}: left worktree ${o.path} — its branch has commits that are not on ${cfg.branch.remote}`, at);
+    } else if (o.kind === 'kept-dirty') log.warn(`${displayKey(t)}: left worktree ${o.path} — it has uncommitted changes`, at);
+    else if (o.kind === 'kept-unpushed') log.warn(`${displayKey(t)}: left worktree ${o.path} — its branch has commits that are not on ${cfg.branch.remote}`, at);
   } catch (e) {
     log.warn(`could not retire the run's worktree: ${(e as Error).message}`, { step: 'handoff' });
   }
@@ -630,16 +630,16 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
         await i.writer.postEvent(t.id,
           `${STRAY_HANDOFF_MARKER}\n\n**Hand-off bounced: this ticket is held by another ship.**\n\n${i.shipName ? `${i.shipName}'s ` : 'A '}${i.role} run set it to \`${st.handoff}\` without having claimed it. Set back to \`${st.building}\`; the holding ship's own hand-off is the one that counts.`,
           i.seatId, 'bounced').catch(() => i.log.warn('bounced, but the note failed to post', at));
-        i.log.warn(`${t.issue_id} was handed off by a run that did not claim it, while held by another ship — bounced to ${st.building}`, at);
+        i.log.warn(`${displayKey(t)} was handed off by a run that did not claim it, while held by another ship — bounced to ${st.building}`, at);
         continue;
       }
       const co = i.checkout(t);
       if (!co || !existingBranchForTicket(co.dir, co.cfg, t, i.role)) {
-        i.log.warn(`${t.issue_id} moved to ${st.handoff} during a run that did not claim it; no local branch to verify, left alone`, at);
+        i.log.warn(`${displayKey(t)} moved to ${st.handoff} during a run that did not claim it; no local branch to verify, left alone`, at);
         continue;
       }
       const v = inspectHandoff(co.dir, co.cfg, t, i.role);
-      i.log.warn(`${t.issue_id} was handed off by a run that did not claim it`, at);
+      i.log.warn(`${displayKey(t)} was handed off by a run that did not claim it`, at);
       if (v.kind === 'pushed') {
         await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');
       } else if (v.kind === 'bounce') {
@@ -648,7 +648,7 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
         // has diverged from) a stale local branch was pushed by another ship's
         // honest hand-off, which clears its hold and so looks unheld here.
         if (v.origin && v.local && !isAncestor(co.dir, v.origin, v.local)) {
-          i.log.warn(`${t.issue_id}: \`${v.remote}/${v.branch}\` is at ${v.origin.slice(0, 7)}, not a tip this checkout built — left alone`, at);
+          i.log.warn(`${displayKey(t)}: \`${v.remote}/${v.branch}\` is at ${v.origin.slice(0, 7)}, not a tip this checkout built — left alone`, at);
           continue;
         }
         await i.writer.updateTicket(t.id, { status: st.building, assignee_id: i.seatId });

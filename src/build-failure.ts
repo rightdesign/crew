@@ -25,7 +25,7 @@ import { StaleWriteError } from '@tablation/client';
 import { worktreeForBranch } from './conflict.ts';
 import type { ConflictWriter, ConflictLog } from './conflict.ts';
 import type { Contract } from './contract.ts';
-import type { Ticket } from './tracker.ts';
+import { displayKey, type Ticket } from './tracker.ts';
 import { calloutHeader } from './callout.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
@@ -226,7 +226,7 @@ export async function applyBuildFailureBounce(
     }
   }
   if (dryRun) {
-    log.emit(`would hand ${b.ticket.issue_id} back to ${contract.statuses.building} — its branch breaks the ${b.hook} hook`, t);
+    log.emit(`would hand ${displayKey(b.ticket)} back to ${contract.statuses.building} — its branch breaks the ${b.hook} hook`, t);
     return { kind: 'handed-back' };
   }
   try {
@@ -247,7 +247,7 @@ export async function applyBuildFailureBounce(
     return { kind: 'handed-back' };
   } catch (e) {
     if (e instanceof StaleWriteError) {
-      log.emit(`${b.ticket.issue_id} changed on the board since this run read it — not handing it back over it`, t);
+      log.emit(`${displayKey(b.ticket)} changed on the board since this run read it — not handing it back over it`, t);
       return { kind: 'stale' };
     }
     return { kind: 'failed', why: (e as Error).message };

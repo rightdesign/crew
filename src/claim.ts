@@ -19,7 +19,7 @@
  */
 
 import { StaleWriteError } from '@tablation/client';
-import type { Ticket } from './tracker.ts';
+import { displayKey, type Ticket } from './tracker.ts';
 
 export interface ClaimableTracker {
   updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<Ticket>;
@@ -290,8 +290,8 @@ export async function claimStillHeld(
   }
   const holder = affinity ? now[affinity.column] : null;
   if (affinity && typeof holder === 'string' && holder && holder !== affinity.shipId) {
-    return `${t.issue_id} is held by another ship now`;
+    return `${displayKey(t)} is held by another ship now`;
   }
-  if (now.status !== buildingStatus) return `${t.issue_id} is at ${now.status}, not ${buildingStatus}`;
+  if (now.status !== buildingStatus) return `${displayKey(t)} is at ${now.status}, not ${buildingStatus}`;
   return null;
 }

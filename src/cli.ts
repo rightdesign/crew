@@ -2681,7 +2681,7 @@ async function releasePhase(
             { count: priorBuildFailures(cu.ticket, prior), operatorId: c.resolved?.operator, previousNote: priorFailureNote(cu.ticket, prior) },
           );
           if (r.kind === 'failed') {
-            remit.warn(`could not hand back ${cu.ticket.issue_id}: ${r.why}`, { step: 'release' });
+            remit.warn(`could not hand back ${displayKey(cu.ticket)}: ${r.why}`, { step: 'release' });
           }
           if (r.kind === 'escalated' && !dryRun) {
             // Loop guard (CREW-2777): the same ticket broke the gate again after
@@ -2696,7 +2696,7 @@ async function releasePhase(
             });
           }
         } catch (e) {
-          remit.warn(`could not hand back ${cu.ticket.issue_id}: ${(e as Error).message}`, { step: 'release' });
+          remit.warn(`could not hand back ${displayKey(cu.ticket)}: ${(e as Error).message}`, { step: 'release' });
         }
       }
     }
@@ -2734,11 +2734,11 @@ async function releasePhase(
           );
           const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
           if (r.kind === 'failed') {
-            remit.warn(`could not hand back ${f.candidate.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+            remit.warn(`could not hand back ${displayKey(f.candidate.ticket)}: ${r.why}`, { step: 'merge' });
           }
         } catch (e) {
           remit.warn(
-            `could not hand back ${f.candidate.ticket.issue_id}: ${(e as Error).message}`,
+            `could not hand back ${displayKey(f.candidate.ticket)}: ${(e as Error).message}`,
             { step: 'merge' },
           );
         }
@@ -2751,10 +2751,10 @@ async function releasePhase(
             tracker, stranded, tracker.contract, c.resolved?.operator, seat, remit, dryRun,
           );
           if (r.kind === 'failed') {
-            remit.warn(`could not flag ${cand.ticket.issue_id}: ${r.why}`, { step: 'merge' });
+            remit.warn(`could not flag ${displayKey(cand.ticket)}: ${r.why}`, { step: 'merge' });
           }
         } catch (e) {
-          remit.warn(`could not flag ${cand.ticket.issue_id}: ${(e as Error).message}`, { step: 'merge' });
+          remit.warn(`could not flag ${displayKey(cand.ticket)}: ${(e as Error).message}`, { step: 'merge' });
         }
       }
     }
@@ -3054,7 +3054,7 @@ switch (command) {
               wemit.note(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: w.role });
             }
           } catch (e) {
-            wemit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
+            wemit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${displayKey(result.ticket)}: ${(e as GitError).message}`);
             if (!skipInlineRelease) await releaseFleet();
             break;
           }
@@ -3290,7 +3290,7 @@ switch (command) {
               emit.note(`cloned ${target.name} into ${target.dir}`, { step: 'select', role: current });
             }
           } catch (e) {
-            emit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ${(e as GitError).message}`);
+            emit.error(`could not check out ${target?.name ?? '(unknown repo)'} for ${displayKey(result.ticket)}: ${(e as GitError).message}`);
             dropLock();
             if (explicitRole) { current = undefined; break; }
             const remaining = nextRoles(decision, [...ran, current]);

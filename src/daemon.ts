@@ -101,7 +101,7 @@ import { withRepoMaps } from './repo-map.ts';
 import { DEFAULT_CONTRACT } from './contract.ts';
 import { settleRunEnd } from './live-runs.ts';
 import { SignedOutError, SIGNED_OUT_PAUSE_MS, streamShowsSignedOut, streamShowsRealTurn, signedOutKey, signedOutItem } from './signed-out.ts';
-import { Tracker, type Ticket } from './tracker.ts';
+import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { reconcileRouteShipName } from './ship-name.ts';
 import { resolveSeatKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { countCommits, ensureRepoCheckout, resolve as gitResolve, status as gitStatus, worktreeForNumber, type GitError } from './git.ts';
@@ -1329,7 +1329,7 @@ async function runRoleAgentLocked(
         }
       } catch (e) {
         emit.error(
-          `could not check out ${target?.name ?? '(unknown repo)'} for ${result.ticket.issue_id}: ` +
+          `could not check out ${target?.name ?? '(unknown repo)'} for ${displayKey(result.ticket)}: ` +
             `${(e as GitError).message}`,
         );
         return;

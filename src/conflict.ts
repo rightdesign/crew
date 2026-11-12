@@ -39,7 +39,7 @@
 import { git, gitOk, worktrees, isAncestor, GitError } from './git.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
-import type { Ticket, RunnerEvent } from './tracker.ts';
+import { displayKey, type Ticket, type RunnerEvent } from './tracker.ts';
 import { calloutHeader } from './callout.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
@@ -267,7 +267,7 @@ export async function applyConflictBounce(
   const absorbed = b.priorBounces > 0 && b.priorBounces < MAX_ABSORBED_HANDBACKS && !!b.priorBaseSha
     && isAncestor(b.worktree ?? b.cwd, b.priorBaseSha, b.branch);
   if (absorbed) {
-    log.emit(`${b.ticket.issue_id} conflicts again, but ${b.base} moved since the hand-back was answered — handing back again`, t);
+    log.emit(`${displayKey(b.ticket)} conflicts again, but ${b.base} moved since the hand-back was answered — handing back again`, t);
   }
 
   if (b.priorBounces > 0 && !absorbed) {
@@ -284,7 +284,7 @@ export async function applyConflictBounce(
       return { kind: 'escalated' };
     } catch (e) {
       if (e instanceof StaleWriteError) {
-        log.emit(`${b.ticket.issue_id} changed on the board since this run read it — not escalating over it`, t);
+        log.emit(`${displayKey(b.ticket)} changed on the board since this run read it — not escalating over it`, t);
         return { kind: 'stale' };
       }
       return { kind: 'failed', why: (e as Error).message };
@@ -314,7 +314,7 @@ export async function applyConflictBounce(
     if (r.behind) {
       // Not a real conflict: the local copy is stale. Leave the ticket at
       // `verified` untouched; the release levels the branch next cycle.
-      log.warn(`not handing ${b.ticket.issue_id} back: ${r.why}`, t);
+      log.warn(`not handing ${displayKey(b.ticket)} back: ${r.why}`, t);
       return { kind: 'failed', why: r.why ?? 'branch behind its remote' };
     }
     merged = r.paths.length > 0;
@@ -348,7 +348,7 @@ export async function applyConflictBounce(
     return { kind: 'handed-back' };
   } catch (e) {
     if (e instanceof StaleWriteError) {
-      log.emit(`${b.ticket.issue_id} changed on the board since this run read it — not handing it back over it`, t);
+      log.emit(`${displayKey(b.ticket)} changed on the board since this run read it — not handing it back over it`, t);
       return { kind: 'stale' };
     }
     return { kind: 'failed', why: (e as Error).message };

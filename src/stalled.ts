@@ -33,7 +33,7 @@
 
 import { calloutHeader, calloutLabelLine } from './callout.ts';
 import type { Contract } from './contract.ts';
-import type { Comment, RunnerEvent, ShipRow, Ticket } from './tracker.ts';
+import { displayKey, type Comment, type RunnerEvent, type ShipRow, type Ticket } from './tracker.ts';
 import { shipName, ticketHolderShipId } from './ship-affinity.ts';
 import { raiseShipAttention, clearShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import type { Emitter } from './events.ts';
@@ -121,7 +121,7 @@ export function stalledComment(s: Stalled, ships: ShipRow[], now: number = Date.
     : `No ship holds it and none is engaged on it. It is waiting for the next ship that polls its lane; its status and assignee are left as they are.`;
   return `${STALLED_MARKER}
 
-**Stalled — no activity on \`${s.ticket.issue_id}\` for ${mins} minutes (\`${s.ticket.status}\`).**
+**Stalled — no activity on \`${displayKey(s.ticket)}\` for ${mins} minutes (\`${s.ticket.status}\`).**
 
 ${who}`;
 }
@@ -163,7 +163,7 @@ export async function applyStalled(
     if (s.holderShipId && s.holderShipId === myShipId) {
       r.attention.push({
         kind: 'stalled', key: stalledKey(s.ticket.issue_id),
-        message: `${s.ticket.issue_id} is held by this ship but has been quiet for ${Math.round((now - s.lastActivityAt) / 60_000)} minutes with nothing engaged on it`,
+        message: `${displayKey(s.ticket)} is held by this ship but has been quiet for ${Math.round((now - s.lastActivityAt) / 60_000)} minutes with nothing engaged on it`,
         since: new Date(s.lastActivityAt + STALLED_AFTER_MS).toISOString(),
       });
     }

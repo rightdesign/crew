@@ -31,7 +31,7 @@ import { locateBranchForTicket, materializeBranchForTicket } from './ticket-bran
 import { movedPastVerified } from './verified-tip.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
-import { referenceKeys, type Ticket } from './tracker.ts';
+import { displayKey, referenceKeys, type Ticket } from './tracker.ts';
 import { planStamp } from './stamp.ts';
 import { pushedBranchForTicket } from './ticket-branch.ts';
 import {
@@ -792,7 +792,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
         void o.attention.raise({
           kind: 'release_merge_failed',
           key: `release_merge_failed:${o.scope ?? 'release'}`,
-          message: `${o.scope ?? 'release'}: could not merge ${c.branch} (${c.ticket.issue_id}) — not a conflict, so the ticket stays verified and is retried: ${message.slice(0, 400)}`,
+          message: `${o.scope ?? 'release'}: could not merge ${c.branch} (${displayKey(c.ticket)}) — not a conflict, so the ticket stays verified and is retried: ${message.slice(0, 400)}`,
           since: new Date().toISOString(),
         });
       }
@@ -1103,8 +1103,8 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
       materializeBranchForTicket(o.cwd, o.repo, t, undefined, (problem) => {
         skipped.add(t.id);
         localRefSkips.push({ ticket: t, problem });
-        o.emit.error(`not releasing ${t.issue_id} this cycle: ${problem}`, { ticket: t.issue_id });
-      }, (note) => o.emit.emit(`${t.issue_id}: ${note}`, { ticket: t.issue_id }));
+        o.emit.error(`not releasing ${displayKey(t)} this cycle: ${problem}`, { ticket: t.issue_id });
+      }, (note) => o.emit.emit(`${displayKey(t)}: ${note}`, { ticket: t.issue_id }));
     }
     if (skipped.size) releasable = o.tickets.filter((t) => !skipped.has(t.id));
   }
@@ -1129,7 +1129,7 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
         : null;
       if (remoteTip && remoteTip !== moved.tip) {
         o.emit.error(
-          `not releasing ${t.issue_id}: local ${branch} at ${moved.tip.slice(0, 8)} is not on ` +
+          `not releasing ${displayKey(t)}: local ${branch} at ${moved.tip.slice(0, 8)} is not on ` +
             `${o.repo.branch.remote}/${branch} (${remoteTip.slice(0, 8)}); not requeuing it`,
           { ticket: t.issue_id },
         );
@@ -1141,7 +1141,7 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
       }
       movedPast.push({ ticket: t, verified: moved.verified, head: moved.tip, branch: pushedBranchForTicket(o.repo, t) });
       o.emit.error(
-        `not releasing ${t.issue_id}: ${branch} is at ${moved.tip.slice(0, 8)}, past the ${moved.verified.slice(0, 8)} QA verified`,
+        `not releasing ${displayKey(t)}: ${branch} is at ${moved.tip.slice(0, 8)}, past the ${moved.verified.slice(0, 8)} QA verified`,
         { ticket: t.issue_id },
       );
     }
