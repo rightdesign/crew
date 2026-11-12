@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.149.0] — 2026-11-12
+
+- CREW-3266 `crew` output is terse by default; routine progress shows under `--verbose` and `crew sync` summarizes its series
+
 ## [0.148.0] — 2026-11-11
 
 - CREW-3258 A ticket's optional `crew_assisted` column is set when a Dev or QA run starts on it; `assistedRoles` on a route changes which roles count.
