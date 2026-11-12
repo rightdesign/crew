@@ -1024,10 +1024,10 @@ function die(command: string, message: string, fix: string, code = 2): never {
  */
 function requireArmed(what: string): void {
   if (dryRun || route.enabled) return;
-  process.stderr.write(
-    `crew: route "${route.route}" is not enabled in ${cfg.configFile} — refusing to ${what}.\n` +
-      `      Add --dry-run to see what it would do.\n`,
-  );
+  emit.warn(withFix(
+    `crew: route "${route.route}" is not enabled in ${cfg.configFile} — refusing to ${what}`,
+    'add --dry-run to see what it would do, or set `enabled: true` on the route',
+  ));
   process.exit(0);
 }
 
@@ -3401,8 +3401,7 @@ switch (command) {
     if (daemonSub === 'start' || daemonSub === 'stop' || daemonSub === 'status' || daemonSub === 'restart') {
       const host = hostPlatform();
       if (host === 'windows') {
-        process.stderr.write('crew daemon: no scheduler support yet for Windows (Task Scheduler is planned, not built)\n');
-        process.exit(2);
+        die('crew daemon', 'no scheduler support yet for Windows (Task Scheduler is planned, not built)', '`crew run <route>` from your own scheduler');
       }
       const control = planDaemonControl(CREW_HOME, host, detectSystemd());
       if (!control.startCommand && !control.stopCommand && !control.statusCommand) {
@@ -3459,7 +3458,7 @@ switch (command) {
           // preLoadCommands give it. Only the start half failing actually
           // means the daemon isn't running afterward.
           if (cmd === control.startCommand && (res.error || res.status !== 0)) {
-            process.stderr.write(`crew daemon restart: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
+            emit.error(withFix(`crew daemon restart: ${cmd.join(' ')} exited ${res.status ?? 'error'}`, '`crew doctor`'));
             failed = true;
           }
         }
@@ -3475,7 +3474,7 @@ switch (command) {
       // systemctl is-active both exit non-zero for "not running") — that is
       // the answer, not a failure of this command.
       if (daemonSub !== 'status' && (res.error || res.status !== 0)) {
-        process.stderr.write(`crew daemon ${daemonSub}: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
+        emit.error(withFix(`crew daemon ${daemonSub}: ${cmd.join(' ')} exited ${res.status ?? 'error'}`, '`crew doctor`'));
         process.exitCode = 1;
       } else {
         process.exitCode = res.status ?? 0;
@@ -3486,8 +3485,7 @@ switch (command) {
     // end-to-end, running in the foreground until the process is killed or
     // (ISSUE-764) it detects the installed tree has changed under it.
     if (dryRun) {
-      process.stderr.write('crew: daemon does not support --dry-run — it only ever performs real cycles.\n');
-      process.exit(2);
+      die('crew', 'daemon does not support --dry-run — it only ever performs real cycles', 'run `crew daemon` without --dry-run, or `crew poll --dry-run` to preview a cycle');
     }
     // CREW-3238: the interlock applies to what the daemon will serve. A fleet-wide daemon's `route` is just
     // `cfg.routes[0]`, so testing it refused a ship whose first route is disabled; the `no enabled routes`
@@ -3495,7 +3493,7 @@ switch (command) {
     // `failDaemonStart` so a supervised relaunch surfaces as an attention item instead of a silent exit 0.
     if (!fleetWide && !route.enabled) {
       const reason = `route "${route.route}" is not enabled in ${cfg.configFile} — refusing to run the daemon loop`;
-      process.stderr.write(`crew: ${reason}.\n`);
+      emit.error(withFix(`crew: ${reason}`, `set \`enabled: true\` on route "${route.route}" in crew.yaml`));
       await failDaemonStart({
         stateDir: cfg.ship.stateDir, reason,
         fix: `Set \`enabled: true\` on route "${route.route}" in crew.yaml, or name an enabled route in the unit`, code: 1,
@@ -3785,12 +3783,11 @@ switch (command) {
           ? findRoute(cfg, positional[3])
           : (routeForDir(cfg, process.cwd()) ?? findRoute(cfg, undefined));
       } catch (e) {
-        if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+        if (e instanceof ConfigError) die('crew', e.message, '`crew doctor`');
         throw e;
       }
       if (!promptTarget.resolved) {
-        process.stderr.write(`crew agents prompt: route "${promptTarget.route}" has no resolved ids — run \`crew connect\` first\n`);
-        process.exit(2);
+        die('crew agents prompt', `route "${promptTarget.route}" has no resolved ids`, '`crew connect`');
       }
       try {
         const prompt = await currentPersonaPrompt(promptTarget, role, { userAgent: cfg.ship.userAgent });
@@ -4053,7 +4050,7 @@ switch (command) {
             for (const [k, v] of Object.entries(agent.hooks)) process.stdout.write(`  ${k}: ${v}${agent.differsFromSniff.includes(k) ? '   (differs from file sniff)' : ''}\n`);
             for (const n of agent.notes) process.stdout.write(`note: ${n}\n`);
           }
-          if (agentError) process.stderr.write(`crew repos: --agent failed (${agentError.reason}): ${agentError.message}\n`);
+          if (agentError) emit.warn(withFix(`crew repos: --agent failed (${agentError.reason}): ${agentError.message}`, '`crew repos hooks --suggest` for the deterministic suggestion'));
           if (cleared) process.stdout.write(cleared.removed.length ? `removed route hooks ${cleared.removed.join(', ')} from ${cleared.file}\n` : 'no route hooks to remove\n');
           if (written) {
             process.stdout.write(`wrote ${written.hooks.join(', ') || 'nothing new'} to ${written.file}\n`);
@@ -4166,7 +4163,7 @@ switch (command) {
           throw new ReposError(`${e.message}${authHint}\n  crew.yaml was not changed`);
         }
         writeFileSync(cfg.configFile, plan.text);
-        if (plan.droppedDir) process.stderr.write(`crew repos: dropped dir: ${plan.droppedDir} from route ${routeName} — it is not a checkout (the clone base); checkouts now live under repos:\n`);
+        if (plan.droppedDir) emit.warn(`crew repos: dropped dir: ${plan.droppedDir} from route ${routeName} — it is not a checkout (the clone base); checkouts now live under repos:`);
         say('attached', { route: routeName, name: plan.name, dir: plan.target, mode: plan.mode }, `cloned and attached ${plan.target} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}`);
         break;
       }
@@ -4178,7 +4175,7 @@ switch (command) {
         text, base, route: routeName!, path: top, origin, resolved: resolvedRemotes, name: value('name') ?? addName,
         nameForExisting: (d) => matchRepoName(originOf(d), resolvedRemotes), isCheckout,
       });
-      if (plan.droppedDir) process.stderr.write(`crew repos: dropped dir: ${plan.droppedDir} from route ${routeName} — it is not a checkout (the clone base); checkouts now live under repos:\n`);
+      if (plan.droppedDir) emit.warn(`crew repos: dropped dir: ${plan.droppedDir} from route ${routeName} — it is not a checkout (the clone base); checkouts now live under repos:`);
       // No Repos row for this checkout: create one (CREW-1310) unless told not to.
       // Everything that can fail on the tracker is done before crew.yaml is
       // written, so a refused create leaves the config alone and the command
@@ -4209,7 +4206,7 @@ switch (command) {
         } catch { /* a malformed .crew.yaml is `crew doctor`'s to report; fall to defaults */ }
         rowPayload = planRepoRow({ name: plan.name, origin, spec, projectId });
       } else if (plan.warning) {
-        process.stderr.write(`crew repos: warning — ${plan.warning}\n`);
+        emit.warn(`crew repos: warning — ${plan.warning}`);
       }
       if (dryRun) {
         process.stdout.write(`${plan.block}\n`);
@@ -4261,7 +4258,7 @@ switch (command) {
     try {
       target = findRoute(cfg, routeArg);
     } catch (e) {
-      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      if (e instanceof ConfigError) die('crew', e.message, '`crew doctor`');
       throw e;
     }
     try {
@@ -4357,8 +4354,7 @@ switch (command) {
     const canAsk = !!(process.stdin.isTTY && process.stdout.isTTY) && !connectEvents.json;
     const stopForChoice = (key: string, message: string, options: ChoiceOption[]): never => {
       connectEvents.emit('choice', message, choiceData(key, options));
-      process.stderr.write(`crew connect: ${message}\n  Re-run with --choose ${key}=<${options.map((o) => o.value).join('|')}>\n`);
-      return process.exit(CHOICE_EXIT_CODE);
+      return die('crew connect', message, `re-run with --choose ${key}=<${options.map((o) => o.value).join('|')}>`, CHOICE_EXIT_CODE);
     };
     const stopWithProblem = (message: string, stage: string): never => {
       connectEvents.emit('problem', message, { stage });
@@ -4503,13 +4499,11 @@ switch (command) {
       } catch (e) {
         process.stderr.write('\n');
         const why = e instanceof DeviceLoginError ? e.message : `device authorization failed — ${(e as Error).message}`;
-        process.stderr.write(`crew connect: ${why}\n`);
         connectEvents.emit('problem', why, { stage: 'device_login' });
-        process.exit(2);
+        die('crew connect', why, '`crew connect` again, or pass --key');
       }
-      process.stderr.write(
-        `\nSigned in as ${result.identity.email} — minted an API key in workspace "${result.workspace.name}".\n`,
-      );
+      process.stderr.write('\n');
+      emit.note(`Signed in as ${result.identity.email} — minted an API key in workspace "${result.workspace.name}".`);
       apiKey = result.apiKey.key;
       mintedFromDevice = true;
       // CREW-2668: `signed_in` is emitted by `runConnect` once `discover` has
@@ -4534,17 +4528,15 @@ switch (command) {
           keychainBacked = true;
           sessionAddress = deviceWorkspace;
           rememberSession(cfg.ship.stateDir, hostFromUrl(baseUrl), deviceWorkspace);
-          process.stderr.write(
-            `API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${deviceWorkspace}.\n`,
-          );
+          emit.note(`API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${deviceWorkspace}.`);
         } catch (e) {
-          process.stderr.write(
-            `(could not store the key in the OS keychain — ${(e as Error).message} — ` +
-            'falling back to a key file)\n',
-          );
+          emit.warn(withFix(
+            `could not store the key in the OS keychain — ${(e as Error).message} — falling back to a key file`,
+            '`crew doctor`',
+          ));
         }
       } else {
-        process.stderr.write('(no OS keychain support on this platform — falling back to a key file)\n');
+        emit.warn('no OS keychain support on this platform — falling back to a key file');
       }
     }
     const authOpts = { baseUrl, apiKey, userAgent: cfg.ship.userAgent };
@@ -4574,7 +4566,7 @@ switch (command) {
       try {
         sshPublicKey = ensureShipSshKeypair(cfg.ship.stateDir).publicKey;
       } catch (e) {
-        process.stderr.write(`(no SSH keypair synced — ${(e as Error).message})\n`);
+        emit.warn(`no SSH keypair synced — ${(e as Error).message}`);
       }
     }
     // ISSUE-2249: a stable hashed machine id, matched before the name. Best-effort
@@ -4583,7 +4575,7 @@ switch (command) {
     try {
       machineId = ensureMachineId(cfg.ship.stateDir, { override: value('machine-id') });
     } catch (e) {
-      process.stderr.write(`(no machine id — ${(e as Error).message})\n`);
+      emit.warn(`no machine id — ${(e as Error).message}`);
     }
     const ship = {
       name: cfg.ship.name, platform: cfg.ship.platform, machineId,
@@ -4641,9 +4633,8 @@ switch (command) {
         }
       }
       if (!found.projectId) {
-        process.stderr.write(`crew connect ${ws}: unresolved —\n`);
-        for (const p of found.problems) { process.stderr.write(`  - ${p}\n`); connectEvents.emit('problem', p, { stage: 'discover' }); }
-        process.exit(2);
+        for (const p of found.problems) connectEvents.emit('problem', p, { stage: 'discover' });
+        die(`crew connect ${ws}`, `unresolved —\n${found.problems.map((p) => `  - ${p}`).join('\n')}`, 'fix the problems above, then run `crew connect` again');
       }
       // CREW-2495: a rename made on the Ships row lands in crew.yaml here too.
       if (found.shipNameAdopted && !dryRun) {
@@ -4678,9 +4669,9 @@ switch (command) {
           .filter((n) => !!n);
         try {
           const made = await provisionReleaseLocks(authOpts, found.locksModelId, route, repoNames);
-          for (const sc of made) process.stderr.write(`created release lock row ${sc}\n`);
+          for (const sc of made) emit.note(`created release lock row ${sc}`);
         } catch (e) {
-          process.stderr.write(`(could not provision release lock rows — ${(e as Error).message})\n`);
+          emit.warn(withFix(`could not provision release lock rows — ${(e as Error).message}`, '`crew doctor`'));
         }
       }
       // `discover()` already tried to match this key's own identity email
@@ -4748,7 +4739,7 @@ switch (command) {
         }
       }
       if (!operator && found.operatorCompared && found.operatorAction !== 'would-create') {
-        process.stderr.write(`crew connect: no Crew row matched you — ${found.operatorCompared}\n`);
+        emit.warn(`crew connect: no Crew row matched you — ${found.operatorCompared}`);
         connectEvents.emit('operator_row', 'no Crew row matched you', { action: 'unmatched', compared: found.operatorCompared });
       }
       if (operator) {
@@ -4783,12 +4774,11 @@ switch (command) {
       // don't turn a routine reconnect into a hard failure over a field nothing
       // new was asked to resolve) — this only refuses a *first* write.
       if (!operator && !hadPreviousFile && !operatorWouldBeCreated) {
-        process.stderr.write(
+        emit.error(withFix(
           `crew connect ${route}: cannot determine the operator — ${found.candidates.length} Crew row(s) ` +
-          `could be it, none matching this key's own email, and there's no terminal to ask.\n` +
-          `  Re-run from a real terminal to pick one, or pass --key for a key whose own\n` +
-          `  identity email matches exactly one Crew row.\n`,
-        );
+          `could be it, none matching this key's own email, and there's no terminal to ask`,
+          'run `crew connect` from a real terminal to pick one, or pass --key for a key whose own identity email matches exactly one Crew row',
+        ));
         stopWithProblem(`cannot determine the operator — ${found.candidates.length} Crew row(s) could be it`, 'operator');
       }
       const alreadyReviewed = new Set(previous?.reviewedStatuses ?? []);
@@ -4890,7 +4880,7 @@ switch (command) {
         const tmpPath = `${resolvedPath}.tmp${process.pid}`;
         writeFileSync(tmpPath, `${JSON.stringify(resolved, null, 2)}\n`);
         renameSync(tmpPath, resolvedPath);
-        process.stderr.write(`Resolved ids written to ${resolvedPath}\n`);
+        emit.note(`Resolved ids written to ${resolvedPath}`);
       }
       // CREW-1603: seats already linked to Agents rows get their agent keys now;
       // a first connect has none linked yet, and `crew agents sync` mints them.
@@ -4898,12 +4888,12 @@ switch (command) {
       if (!dryRun && previous?.agentPersonas && existingRoute?.resolved) {
         try {
           mintOutcomes = await mintMissingSeatKeys(withFoundSeats(existingRoute, found, previous.releaseAgentId), { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
-          for (const o of mintOutcomes) process.stderr.write(`${describeMintOutcome(o)}\n`);
+          for (const o of mintOutcomes) emit.note(describeMintOutcome(o));
           for (const p of await probeSeatReads({ ...existingRoute, resolved: { ...existingRoute.resolved, seats: found.seats } }, { userAgent: cfg.ship.userAgent })) {
-            if (p.state === 'forbidden') process.stderr.write(`${describeSeatForbidden(p.role, p.tables)}\n`);
+            if (p.state === 'forbidden') emit.warn(describeSeatForbidden(p.role, p.tables));
           }
         } catch (e) {
-          process.stderr.write(`seat keys: skipped (${(e as Error).message})\n`);
+          emit.warn(withFix(`seat keys: skipped (${(e as Error).message})`, '`crew agents sync`'));
         }
       }
       for (const sr of found.seatRows ?? []) {
@@ -4928,7 +4918,7 @@ switch (command) {
       // CREW-2910: a managed ship runs its agents in the sandbox image, which carries the harness; the host has none, so a missing `claude` is expected there.
       if (firstRunFromFlags && agentBinSearched && !dryRun && !isManagedShipKind(value('ship-kind'))) {
         const msg = `no agent binary: "claude" was not found on PATH or in ${agentBinSearched.join(', ')} — pass --agent-bin /absolute/path`;
-        process.stderr.write(`crew connect: ${msg}\n`);
+        emit.error(`crew connect: ${msg}`);
         stopWithProblem(msg, 'wizard');
       }
       if ((mintedFromDevice || firstRunFromFlags) && !keychainBacked) {
@@ -4963,7 +4953,7 @@ switch (command) {
       let wroteConfig = false;
       if (writeFirstRun) {
         wroteConfig = writeNewConfig(wizard.configPath, renderFullConfig(wizard.answers, routeBlock));
-        if (!wroteConfig) process.stderr.write(`(${wizard.configPath} appeared while connecting — leaving it alone)\n`);
+        if (!wroteConfig) emit.warn(`${wizard.configPath} appeared while connecting — leaving it alone`);
       }
       // CREW-2558: under `--json` the route block goes to stderr as prose, so say on
       // the event stream whether crew.yaml was written and, if not, why. A dry run
@@ -5009,18 +4999,18 @@ switch (command) {
       // CREW-1390: name every hold resolved, so a missing operator is visible now
       // rather than when a comment from them reads as "(no identity)".
       if (found.holds.length) {
-        process.stderr.write(
-          `\n  Holds resolved (${found.holds.length}): ` +
-          `${found.holds.map((h) => `${h.name || h.id}${h.id === operator ? ' [operator]' : ''}`).join(', ')}\n`,
+        emit.note(
+          `Holds resolved (${found.holds.length}): ` +
+          `${found.holds.map((h) => `${h.name || h.id}${h.id === operator ? ' [operator]' : ''}`).join(', ')}`,
         );
       }
       if (found.provisioning.length) {
-        process.stderr.write(`\n  Provisioned for this machine (${ship.name}):\n`);
-        for (const p of found.provisioning) process.stderr.write(`    - ${p}\n`);
+        emit.note(`Provisioned for this machine (${ship.name}):`);
+        for (const p of found.provisioning) emit.note(`  - ${p}`);
       }
       if (found.problems.length) {
-        process.stderr.write('\n  Unresolved — fix these before arming it:\n');
-        for (const p of found.problems) { process.stderr.write(`    - ${p}\n`); connectEvents.emit('problem', p, { stage: 'discover' }); }
+        emit.warn(`Unresolved — fix these before arming it:\n${found.problems.map((p) => `  - ${p}`).join('\n')}`);
+        for (const p of found.problems) connectEvents.emit('problem', p, { stage: 'discover' });
       }
       if (!canPrompt && !jsonClassified && stillUnrecognized.length > 0) {
         // Nowhere to ask (piped/non-interactive) — same reasoning as the
@@ -5028,10 +5018,10 @@ switch (command) {
         // a blocker sitting at one of these won't be recognised as resolved
         // until a person runs `crew connect` from a real terminal, or adds
         // it to contract.statuses.resolved in resolvedPath by hand.
-        process.stderr.write(
-          `\n  ${stillUnrecognized.length} status value(s) this workspace has that the default contract\n` +
-          `  doesn't know the meaning of (${stillUnrecognized.map((s) => s.value).join(', ')}) — ` +
-          `re-run from a terminal to classify them, or edit ${resolvedPath} by hand.\n`,
+        emit.warn(
+          `${stillUnrecognized.length} status value(s) this workspace has that the default contract ` +
+          `doesn't know the meaning of (${stillUnrecognized.map((s) => s.value).join(', ')}) — ` +
+          `re-run from a terminal to classify them, or edit ${resolvedPath} by hand.`,
         );
       }
       if (wroteConfig) {
@@ -5060,7 +5050,7 @@ switch (command) {
       // exist and is told what an admin still has to do.
       if (!dryRun && !flag('no-agents-sync')) {
         const skip = (why: string) => {
-          process.stderr.write(`\n  agents sync: skipped (${why})\n`);
+          emit.warn(`agents sync: skipped (${why})`);
           connectEvents.emit('agents_synced', `agents sync skipped: ${why}`, { route, skipped: why });
         };
         let syncRoute: Route | undefined;
@@ -5073,22 +5063,20 @@ switch (command) {
         }
         if (syncRoute?.resolved) {
           try {
-            process.stderr.write('\n');
             const run = await runAgentsSync(syncRoute, {
               userAgent: cfg.ship.userAgent, stateDir: cfg.ship.stateDir,
-              say: (l) => process.stderr.write(`  ${l}\n`),
-              warn: (l) => process.stderr.write(`  agents sync: ${l}\n`),
+              say: (l) => emit.note(l),
+              warn: (l) => emit.warn(`agents sync: ${l}`),
             });
             const minted = await mintMissingSeatKeys(syncRoute, { userAgent: cfg.ship.userAgent, shipName: cfg.ship.name });
-            for (const m of minted) process.stderr.write(`  ${describeMintOutcome(m)}\n`);
+            for (const m of minted) emit.note(describeMintOutcome(m));
             for (const p of await probeSeatReads(syncRoute, { userAgent: cfg.ship.userAgent })) {
-              if (p.state === 'forbidden') process.stderr.write(`  ${describeSeatForbidden(p.role, p.tables)}\n`);
+              if (p.state === 'forbidden') emit.warn(describeSeatForbidden(p.role, p.tables));
             }
             if (run.readOnly) {
               const missing = run.personaResult.outcomes.some((p) => p.action === 'missing');
-              process.stderr.write(missing
-                ? "  A workspace admin has to open the Crew app or run `crew agents sync` once before this ship's seats can run.\n"
-                : "  Seats are linked to the workspace's existing personas.\n");
+              if (missing) emit.warn("A workspace admin has to open the Crew app or run `crew agents sync` once before this ship's seats can run.");
+              else emit.note("Seats are linked to the workspace's existing personas.");
             }
             connectEvents.emit('agents_synced', run.readOnly ? 'agents linked (read-only key)' : 'agents synced', {
               route, admin: !run.readOnly, personas: run.personaResult.outcomes,
@@ -5157,11 +5145,8 @@ switch (command) {
             stopForChoice('workspace', `${workspaces.length} workspaces reachable by this key — which one?`,
               workspaces.map((w) => ({ value: w.slug, label: `${w.name} (${w.role})` })));
           }
-          process.stderr.write(
-            `${workspaces.length} workspaces reachable by this key — name one:\n` +
-            workspaces.map((w) => `  ${w.slug.padEnd(24)} ${w.name} (${w.role})\n`).join(''),
-          );
-          process.exit(2);
+          die('crew connect', `${workspaces.length} workspaces reachable by this key — name one:\n` +
+            workspaces.map((w) => `  ${w.slug.padEnd(24)} ${w.name} (${w.role})`).join('\n'), 'run `crew connect <workspace>` with one of the slugs above');
         }
       } else {
         await runConnect(workspace, project);
@@ -5207,11 +5192,11 @@ switch (command) {
         );
       }
       if (ambiguous) {
-        process.stderr.write(
-          `\n  WARNING: "${who}" resolved to different people on different workspaces.\n` +
-          `  A name is a per-workspace label, not an identity — this queue is a mixture.\n` +
-          `  Use an email address to match exactly.\n`,
-        );
+        emit.warn(withFix(
+          `"${who}" resolved to different people on different workspaces. ` +
+          `A name is a per-workspace label, not an identity — this queue is a mixture`,
+          'pass an email address to --member to match exactly',
+        ));
       }
       process.stdout.write('\n');
     }
@@ -5219,7 +5204,7 @@ switch (command) {
       ? [...new Set(resolved.flatMap((r) => r.names))].join(', ') || `"${who}"`
       : undefined;
     process.stdout.write(renderInbox(items, flag('by-route'), subject));
-    for (const e of errors) process.stderr.write(`  (${e.route} unreachable: ${e.error})\n`);
+    for (const e of errors) emit.warn(withFix(`${e.route} unreachable: ${e.error}`, `\`crew doctor ${e.route}\``));
     break;
   }
 
@@ -5288,7 +5273,7 @@ switch (command) {
         try {
           routesS = value('route') ? [findRoute(cfg, value('route'))] : cfg.routes.filter((r) => r.enabled);
         } catch (e) {
-          if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+          if (e instanceof ConfigError) die('crew', e.message, '`crew doctor`');
           throw e;
         }
         const declared = withShipSandbox(await sandboxReposOf(routesS));
@@ -5312,8 +5297,7 @@ switch (command) {
         const only = positional[2];
         const targets = only ? declared.filter((r) => r.name === only) : declared;
         if (targets.length === 0) {
-          process.stderr.write(only ? `crew: no repository "${only}" declares a sandbox: section (${SHIP_SANDBOX_KEY} is the ship's crew layer, built only on a ship.runner: sandbox ship)\n` : 'crew: this ship is not a sandbox ship and no repository declares a sandbox: section in its .crew.yaml\n');
-          process.exit(2);
+          die('crew', only ? `no repository "${only}" declares a sandbox: section (${SHIP_SANDBOX_KEY} is the ship's crew layer, built only on a ship.runner: sandbox ship)` : 'this ship is not a sandbox ship and no repository declares a sandbox: section in its .crew.yaml', 'add a sandbox: section to the repository\'s .crew.yaml, or run `crew sandbox images` to list what is declared');
         }
         const emitS = new Emitter({ route: routesS[0]!.route, eventFile: eventFileFor(cfg.ship.stateDir), rotateBytes: cfg.ship.eventsRotateBytes, logFile: cfg.ship.logFile, console: (l) => process.stderr.write(`${l}\n`) });
         const depsS = sandboxTickDeps(emitS, routesS[0]!);
@@ -5333,7 +5317,7 @@ switch (command) {
       case 'cache': {
         // CREW-2799: the sandbox cache volume of bare mirrors.
         const settings = cacheSettingsOf(cfg.ship.sandbox);
-        if (!settings) { process.stderr.write('crew sandbox cache: ship.sandbox.cacheVolume is not set, so there is no cache volume\n'); process.exit(2); }
+        if (!settings) die('crew sandbox cache', 'ship.sandbox.cacheVolume is not set, so there is no cache volume', 'set ship.sandbox.cacheVolume in crew.yaml');
         const cache = new SandboxCache(settings);
         const served = cfg.routes.flatMap((r) => sandboxCacheRepos(r, cfg.ship));
         try {
@@ -5373,7 +5357,7 @@ switch (command) {
           }
           if (refreshFailed) process.exitCode = 1;
         } catch (e) {
-          process.stderr.write(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}\n`);
+          emit.error(withFix(`crew sandbox cache: ${e instanceof Error ? e.message : String(e)}`, '`crew doctor`'));
           process.exitCode = 1;
         }
         break;
@@ -6089,12 +6073,12 @@ switch (command) {
         const opener = openerFor(process.platform);
         if (opener && shouldOpen({ open: flag('open'), noOpen: flag('no-open'), json: jsonP, terminal })) {
           const r = spawnSync(opener, [res.url], { stdio: 'ignore' });
-          if (r.error || r.status !== 0) process.stderr.write(`crew periscope: could not open ${res.url} with ${opener}\n`);
+          if (r.error || r.status !== 0) emit.warn(withFix(`crew periscope: could not open ${res.url} with ${opener}`, `open ${res.url} yourself`));
         }
       }
     } catch (e) {
       if (e instanceof PeriscopeError || e instanceof ConfigError) {
-        process.stderr.write(`crew periscope: ${e.message}\n`);
+        emit.error(withFix(`crew periscope: ${e.message}`, '`crew periscope list`'));
         if (e instanceof LivePeriscopeError && jsonP) process.stdout.write(`${JSON.stringify(e.data)}\n`);
         process.exit(1);
       }
@@ -6266,11 +6250,11 @@ switch (command) {
     if (!dryRun) {
       for (const r of cfg.routes.filter((x) => x.resolved?.shipsModelId)) {
         await new Tracker(r, cfg.ship).updateRelayUrl(cfg.ship.name, null)
-          .catch((e: Error) => { process.stderr.write(`could not clear relay_url for ${r.route}: ${e.message}\n`); });
+          .catch((e: Error) => { emit.warn(withFix(`could not clear relay_url for ${r.route}: ${e.message}`, '`crew doctor`')); });
       }
     }
     if (!flag('reset') && !deprovisioning) {
-      for (const line of removePairEntries(url, dryRun)) process.stderr.write(`${line}\n`);
+      for (const line of removePairEntries(url, dryRun)) emit.note(line);
       break;
     }
     // CREW-2243: the whole-machine inverse of connect + install. See reset.ts
@@ -6369,7 +6353,7 @@ switch (command) {
       // nothing needs doing.
       const res = spawnSync(control.startCommand[0]!, control.startCommand.slice(1), { cwd: CREW_HOME, encoding: 'utf8' });
       if (res.error || res.status !== 0) {
-        process.stderr.write(`crew reload: ${control.startCommand.join(' ')} exited ${res.status ?? 'error'}\n`);
+        emit.error(withFix(`crew reload: ${control.startCommand.join(' ')} exited ${res.status ?? 'error'}`, '`crew doctor`'));
         process.exitCode = 1;
       } else {
         process.stdout.write('crew reload: the daemon unit was not running — started it, so it reads crew.yaml fresh\n');
@@ -6390,7 +6374,7 @@ switch (command) {
       for (const cmd of [control.stopCommand, control.startCommand]) {
         const res = spawnSync(cmd[0]!, cmd.slice(1), { cwd: CREW_HOME, encoding: 'utf8', env: withUserBusEnv() });
         if (cmd === control.startCommand && (res.error || res.status !== 0)) {
-          process.stderr.write(`crew reload: ${cmd.join(' ')} exited ${res.status ?? 'error'}\n`);
+          emit.error(withFix(`crew reload: ${cmd.join(' ')} exited ${res.status ?? 'error'}`, '`crew doctor`'));
           process.exitCode = 1;
         }
       }
@@ -6584,8 +6568,7 @@ switch (command) {
     const all = shipToolchains(cfg.ship);
     const chosen = wanted ? all.filter((t) => t.name === wanted) : all;
     if (chosen.length === 0) {
-      process.stderr.write(`crew selftest: no toolchain "${wanted}" (have: ${all.map((t) => t.name).join(', ')})\n`);
-      process.exit(2);
+      die('crew selftest', `no toolchain "${wanted}" (have: ${all.map((t) => t.name).join(', ')})`, 'name one of those, or omit it to test them all');
     }
     if (!route.resolved) {
       die('crew selftest', `route ${route.route} is not connected`, '`crew connect`');
