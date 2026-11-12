@@ -17,6 +17,12 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.149.6] — 2026-11-12
+
+- CREW-3276 Tests for the relay control probe's failure classifications (no user-visible change).
+- CREW-3279 The binary build now verifies the compiled binary can launch another copy of itself.
+- CREW-3281 Fixed a flaky test gate: the SIGINT-during-agent test now signals only once the agent is running, not after a fixed 1.5 s sleep (no user-visible change).
+
 ## [0.149.5] — 2026-11-12
 
 - CREW-3270 `crew connect` with a key whose identity has no workspace memberships now says so and suggests minting a key inside a workspace, instead of exiting silently.
