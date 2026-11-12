@@ -992,6 +992,11 @@ const emit = new Emitter({
   plain: !!process.stderr.isTTY,
 });
 
+/** CREW-3270: routine confirmation lines from a command (`connect`, `install`) show only under `--verbose`. */
+function routineLine(line: string): void {
+  if (flag('verbose')) process.stderr.write(`${line}\n`);
+}
+
 /**
  * CREW-3267: a command's own failure, through the Emitter (so it is logged and
  * rendered like every other event) and ending with what to run next. Exits.
@@ -1459,11 +1464,7 @@ async function releaseTargets(
   const targets = reposOf(route);
   const chosen = only ? targets.filter((t) => t.name === only) : targets;
   if (only && chosen.length === 0) {
-    process.stderr.write(
-      `crew: no repo named "${only}" on route "${route.route}" ` +
-        `(have: ${targets.map((t) => t.name).join(', ')})\n`,
-    );
-    process.exit(2);
+    die('crew', `no repo named "${only}" on route "${route.route}" (have: ${targets.map((t) => t.name).join(', ')})`, `\`crew repos\` to list or add one`);
   }
   const summaries: RoutedReleaseSummary[] = [];
   if (!dryRun) state.releaseHeartbeat().touch();
@@ -2751,9 +2752,7 @@ if (!dryRun) {
 if (EXCLUSIVE[command] && !dryRun) {
   const got = state.acquire(EXCLUSIVE[command]!);
   if (!got.ok) {
-    process.stderr.write(
-      `crew: a previous ${command} (pid ${got.heldBy}) is still running — skipping this cycle\n`,
-    );
+    emit.note(`a previous ${command} (pid ${got.heldBy}) is still running — skipping this cycle`);
     process.exit(0);
   }
   lock = got;
@@ -3735,7 +3734,7 @@ switch (command) {
         const prompt = await currentPersonaPrompt(promptTarget, role, { userAgent: cfg.ship.userAgent });
         process.stdout.write(prompt + (role === 'pair' ? harnessPromptNote(value('harness')) : ''));
       } catch (e) {
-        if (e instanceof AgentsSyncError) { process.stderr.write(`crew agents prompt: ${e.message}\n`); process.exit(2); }
+        if (e instanceof AgentsSyncError) { die('crew agents prompt', e.message, '`crew doctor`', 2); }
         throw e;
       }
       break;
@@ -3851,7 +3850,7 @@ switch (command) {
     }
     let newName: string;
     try { newName = validateShipName(positional[2]!); } catch (e) {
-      if (e instanceof ShipNameError) { process.stderr.write(`crew ship: ${e.message}\n`); process.exit(2); }
+      if (e instanceof ShipNameError) { die('crew ship', e.message, '`crew doctor`', 2); }
       throw e;
     }
     const oldName = cfg.ship.name;
@@ -3917,7 +3916,7 @@ switch (command) {
           mapTokenBudget: cfg.ship.mapTokenBudget,
         });
       } catch (e) {
-        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        if (e instanceof ReposError) { die('crew repos', e.message, '`crew doctor`', 2); }
         throw e;
       }
       break;
@@ -4004,7 +4003,7 @@ switch (command) {
         }
         if (agentError) process.exitCode = 1;
       } catch (e) {
-        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        if (e instanceof ReposError) { die('crew repos', e.message, '`crew doctor`', 2); }
         throw e;
       }
       break;
@@ -4018,7 +4017,7 @@ switch (command) {
         const a = parseAddArgs(positional.slice(2), routeNamesOf(configText), (p) => existsSync(resolvePath(p.replace(/^~(?=\/|$)/, homedir()))));
         routeName = a.route; addPath = a.path; addName = a.name;
       } catch (e) {
-        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        if (e instanceof ReposError) { die('crew repos', e.message, '`crew doctor`', 2); }
         throw e;
       }
     }
@@ -4027,7 +4026,7 @@ switch (command) {
         const a = parseCloneArgs(positional.slice(2), routeNamesOf(configText));
         routeName = a.route; addName = a.name;
       } catch (e) {
-        if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+        if (e instanceof ReposError) { die('crew repos', e.message, '`crew doctor`', 2); }
         throw e;
       }
     }
@@ -4169,7 +4168,7 @@ switch (command) {
       writeFileSync(cfg.configFile, plan.text);
       process.stdout.write(`added ${top} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}\n`);
     } catch (e) {
-      if (e instanceof ReposError) { process.stderr.write(`crew repos: ${e.message}\n`); process.exit(2); }
+      if (e instanceof ReposError) { die('crew repos', e.message, '`crew doctor`', 2); }
       throw e;
     }
     break;
@@ -4251,7 +4250,7 @@ switch (command) {
         }
       }
     } catch (e) {
-      if (e instanceof LogbookError) { process.stderr.write(`crew logbook: ${e.message}\n`); process.exit(2); }
+      if (e instanceof LogbookError) { die('crew logbook', e.message, '`crew doctor`', 2); }
       throw e;
     }
     break;
@@ -4357,7 +4356,7 @@ switch (command) {
           apiKey = existing.apiKey;
           keychainBacked = true;
           sessionAddress = found;
-          process.stderr.write(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.\n`);
+          routineLine(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.`);
         }
       } catch {
         // No Secret Service / Credential Manager reachable right now — fall
@@ -4389,7 +4388,7 @@ switch (command) {
         keychainBacked = true;
         sessionAddress = resumed.workspace;
         signInSource = 'keychain';
-        process.stderr.write(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.\n`);
+        routineLine(`Reusing the existing keychain session for ${hostFromUrl(baseUrl)}/${workspace}.`);
       }
     }
     // Set only when THIS run minted the key via device-login and could NOT
@@ -4876,7 +4875,7 @@ switch (command) {
         } else {
           mkdirSync(dirname(apiKeyFile), { recursive: true });
           writeFileSync(apiKeyFile, `${apiKeyVar}=${apiKey}\n`, { mode: 0o600 });
-          process.stderr.write(`API key written to ${apiKeyFile}\n`);
+          routineLine(`API key written to ${apiKeyFile}`);
         }
       }
       // CREW-1286: the first-run wizard writes crew.yaml itself instead of
@@ -4934,14 +4933,14 @@ switch (command) {
           const mcpOpts = { bin: tc.bin, url: mcpUrl, key: apiKey, replace, dryRun, stateDir: cfg.ship.stateDir };
           const { line, action } = adapter.ensureMcpResult ? adapter.ensureMcpResult(mcpOpts) : { line: adapter.ensureMcp(mcpOpts), action: undefined };
           connectEvents.emit('mcp_registered', line, { harness: tc.harness, bin: tc.bin, url: mcpUrl, ...(action ? { action } : {}) });
-          process.stderr.write(`${line}\n`);
+          routineLine(line);
         }
         // CREW-1517: Pair for the other harnesses `ship.pair` lists. Claude's is
         // the registration just done above, so it is not repeated here.
         for (const h of shipPair(cfg.ship).filter((x) => x !== 'claude')) {
           const line = pairInstallerFor(h).installPair({ url: mcpUrlFor(baseUrl), replace, dryRun });
           connectEvents.emit('pair_installed', line, { harness: h });
-          process.stderr.write(`${line}\n`);
+          routineLine(line);
         }
       }
       // CREW-1390: name every hold resolved, so a missing operator is visible now
@@ -5083,8 +5082,8 @@ switch (command) {
           await runConnect(defaulted.slug, project);
         } else
         if (workspaces.length === 0) {
-          process.stderr.write('crew connect: this key\'s identity has no workspace memberships.\n');
-          stopWithProblem('this key\'s identity has no workspace memberships', 'workspace');
+          connectEvents.emit('problem', 'this key\'s identity has no workspace memberships', { stage: 'workspace' });
+          die('crew connect', 'this key\'s identity has no workspace memberships', 'mint a key inside a workspace and re-run with `--key K`');
         } else if (workspaces.length === 1) {
           // Only one candidate — same reasoning as an unnamed route with only
           // one enabled: nothing to disambiguate, so proceed with it directly
@@ -5110,16 +5109,14 @@ switch (command) {
       if (e instanceof ConnectHttpError) {
         connectEvents.emit('problem', e.message, { stage: 'http', status: e.status, path: e.path });
         if (e.status === 401 || e.status === 403) {
-          process.stderr.write(
-            `crew connect: ${e.path} — ${e.status} ${e.status === 401 ? '(bad or expired key)' : '(this key is not a member of that workspace)'}\n` +
-              '  A key only sees the workspace it was minted in, whatever role it holds there\n' +
-              '  (platform admin included) — pass one minted inside the target workspace: --key K\n' +
-              '  (or CREW_CONNECT_KEY).\n',
+          die(
+            'crew connect',
+            `${e.path} — ${e.status} ${e.status === 401 ? '(bad or expired key)' : '(this key is not a member of that workspace)'}. ` +
+              'A key only sees the workspace it was minted in, whatever role it holds there (platform admin included)',
+            'pass a key minted inside the target workspace: `--key K` (or CREW_CONNECT_KEY)',
           );
-        } else {
-          process.stderr.write(`crew connect: ${e.message}\n`);
         }
-        process.exit(2);
+        die('crew connect', e.message, '`crew doctor`');
       }
       throw e;
     }
@@ -5197,13 +5194,11 @@ switch (command) {
         const only = value('route');
         const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
         if (wanted.length !== 1) {
-          process.stderr.write(`crew sandbox policy: ${only ? `no route "${only}"` : 'name the route with --route'} (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
-          process.exit(2);
+          die('crew sandbox policy', `${only ? `no route "${only}"` : 'no route given'} (have: ${cfg.routes.map((r) => r.route).join(', ')})`, '`--route ROUTE`');
         }
         const role = (value('role') ?? 'dev') as RoleName;
         if (!ROLE_NAMES.includes(role)) {
-          process.stderr.write(`crew sandbox policy: --role must be one of ${ROLE_NAMES.join(', ')}\n`);
-          process.exit(2);
+          die('crew sandbox policy', `--role must be one of ${ROLE_NAMES.join(', ')}`, `\`--role ${ROLE_NAMES[0]}\``);
         }
         const r = wanted[0]!;
         const repoName = value('repo');
@@ -5213,8 +5208,7 @@ switch (command) {
           const policy = generateSandboxPolicy({ mirrorDir: cfg.ship.sandbox?.mirrorDir, workDir: cfg.ship.sandbox?.workDir, ...input });
           process.stdout.write(flag('json') ? `${JSON.stringify({ route: r.route, role, input, groups: policy.groups, yaml: policy.yaml }, null, 2)}\n` : policy.yaml);
         } catch (e) {
-          process.stderr.write(`crew sandbox policy: ${(e as Error).message}\n`);
-          process.exit(1);
+          die('crew sandbox policy', (e as Error).message, '`crew doctor`', 1);
         }
         break;
       }
@@ -5437,18 +5431,10 @@ switch (command) {
       .map((r) => ({ repo: r, found: worktreeForNumber(r.dir, n) }))
       .filter((c): c is { repo: typeof repos[number]; found: NonNullable<typeof c.found> } => c.found !== null);
     if (candidates.length === 0) {
-      process.stderr.write(
-        `drop: no worktree for ISSUE-${n} in any of this route's repositories ` +
-          `(looked in: ${repos.map((r) => r.dir).join(', ')})\n`,
-      );
-      process.exit(2);
+      die('crew drop', `no worktree for ISSUE-${n} in any of this route's repositories (looked in: ${repos.map((r) => r.dir).join(', ')})`, '`git worktree list` in the repository');
     }
     if (candidates.length > 1) {
-      process.stderr.write(
-        `drop: ISSUE-${n} has a worktree in more than one repository ` +
-          `(${candidates.map((c) => c.repo.name).join(', ')}) — remove them one at a time by path\n`,
-      );
-      process.exit(2);
+      die('crew drop', `ISSUE-${n} has a worktree in more than one repository (${candidates.map((c) => c.repo.name).join(', ')})`, 'remove them one at a time by path');
     }
     const { repo: target, found } = candidates[0]!;
     const wt = found.path;
@@ -5459,8 +5445,7 @@ switch (command) {
       const trD = new Tracker(route, cfg.ship);
       const tD = (await trD.ticketsByNumbers([n])).find((t) => t.issue_id.replace(/^\D+/, '') === String(num));
       if (tD && tD[trD.contract.columns.status] === trD.contract.statuses.draft) {
-        process.stderr.write(`drop: ${tD.issue_tag ?? tD.issue_id} is a draft ticket — its worktree belongs to a periscope; end it with \`crew periscope down ${num} --keep\` or \`--discard\`\n`);
-        process.exit(2);
+        die('crew drop', `${tD.issue_tag ?? tD.issue_id} is a draft ticket — its worktree belongs to a periscope`, `\`crew periscope down ${num} --keep\` or \`--discard\``);
       }
     } catch { /* tracker unreachable: fall through to the plain drop */ }
     // The branch actually checked out in the worktree we just found — not
@@ -5508,26 +5493,18 @@ switch (command) {
     // SSH keypair is never touched.
     emit.enter('passengers');
     if (!route.hostPassengers) {
-      process.stderr.write(
-        `crew rotate-passenger-url: route "${route.route}" does not have hostPassengers enabled\n`,
-      );
-      process.exit(2);
+      die('crew rotate-passenger-url', `route "${route.route}" does not have hostPassengers enabled`, `set hostPassengers on the route in ${cfg.configFile}`);
     }
     if (!cfg.ship.relayHost) {
-      process.stderr.write('crew rotate-passenger-url: this ship has no relayHost configured — nothing to rotate\n');
-      process.exit(2);
+      die('crew rotate-passenger-url', 'this ship has no relayHost configured — nothing to rotate', `set ship.relayHost in ${cfg.configFile}`);
     }
     const workspaceId = route.resolved?.workspaceId;
     if (!workspaceId) {
-      process.stderr.write(`crew rotate-passenger-url: route "${route.route}" has no resolved ids — run \`crew connect\`\n`);
-      process.exit(2);
+      die('crew rotate-passenger-url', `route "${route.route}" has no resolved ids`, '`crew connect`');
     }
     const plans = planContainers(cfg).filter((p) => p.workspaceId === workspaceId);
     if (!plans.length) {
-      process.stderr.write(
-        `crew rotate-passenger-url: no Host Passengers container is planned for "${route.route}" right now\n`,
-      );
-      process.exit(2);
+      die('crew rotate-passenger-url', `no Host Passengers container is planned for "${route.route}" right now`, '`crew doctor`');
     }
     const existing = readPersistedTunnel(cfg.ship.stateDir, workspaceId);
     const hasLiveTunnel = existing !== undefined && isPidAlive(existing.pid);
@@ -5819,8 +5796,7 @@ switch (command) {
         else process.stdout.write(`${res.ticket} ${res.state}\n`);
       } catch (e) {
         if (e instanceof PeriscopeError || e instanceof ConfigError) {
-          process.stderr.write(`crew periscope: ${e.message}\n`);
-          process.exit(1);
+          die('crew periscope', e.message, '`crew doctor`', 1);
         }
         throw e;
       }
@@ -6082,8 +6058,7 @@ switch (command) {
     const open = await tracker3.openTickets();
     const ticket = open.find((t) => t[c.columns.key] === key);
     if (!ticket) {
-      process.stderr.write(`unassign: no open ticket ${key} on ${route.route} (already resolved, or not this route's)\n`);
-      process.exit(2);
+      die('crew unassign', `no open ticket ${key} on ${route.route} (already resolved, or not this route's)`, '`crew inbox` to list open tickets');
     }
     // Found it — from here on, show its own project tag where it has one
     // (ISSUE-969) rather than the bare `ISSUE-{n}` used to find it. `key`
@@ -6102,8 +6077,7 @@ switch (command) {
       emit.emit(`cleared assignee on ${label} — back up for grabs next cycle`);
     } catch (e) {
       if (e instanceof StaleWriteError) {
-        process.stderr.write(`unassign: ${label} changed on the board since it was read — re-run to retry\n`);
-        process.exit(2);
+        die('crew unassign', `${label} changed on the board since it was read`, `\`crew unassign ${key}\` again`);
       }
       throw e;
     }
@@ -6425,9 +6399,8 @@ switch (command) {
     const say = (event: string, extra: Record<string, unknown>, human: string) =>
       process.stdout.write(json ? `${JSON.stringify({ event, ...extra })}\n` : `${human}\n`);
     const fail = (msg: string): never => {
-      if (json) process.stdout.write(`${JSON.stringify({ event: 'error', message: msg })}\n`);
-      else process.stderr.write(`crew sample-ticket: ${msg}\n`);
-      return process.exit(2);
+      if (json) { process.stdout.write(`${JSON.stringify({ event: 'error', message: msg })}\n`); return process.exit(2); }
+      return die('crew sample-ticket', msg, '`crew doctor`', 2);
     };
     if (!route.resolved) fail(`route ${route.route} is not connected — run \`crew connect\` first`);
     const tracker = new Tracker(route, cfg.ship);
