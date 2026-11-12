@@ -228,9 +228,12 @@ export class AgentLogHttpError extends Error {
   status: number;
   /** True when the refusal was of the Agent Log row itself (not a later cycle post): the tracker is not taking this seat's reports (CREW-2832). */
   row = false;
-  constructor(message: string, status: number) {
+  /** The refused request as "METHOD /path", ids shortened, for the ship attention item (CREW-3273). */
+  request?: string;
+  constructor(message: string, status: number, request?: string) {
     super(message);
     this.status = status;
+    this.request = request;
   }
 }
 
@@ -250,7 +253,7 @@ async function request<T>(target: AgentLogTarget, method: string, path: string, 
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!res.ok) throw new AgentLogHttpError(`${path}: ${res.status} ${res.statusText}`, res.status);
+  if (!res.ok) throw new AgentLogHttpError(`${path}: ${res.status} ${res.statusText}`, res.status, `${method} ${path}`);
   return (await res.json()) as T;
 }
 
@@ -334,7 +337,9 @@ export function beforeFirstEditBody(b: BeforeFirstEdit): Record<string, number |
  * Sets the before-first-edit figures on a new Agent Log row, for the columns
  * the workspace has. Best effort and silent: a workspace without the columns,
  * a key that may not edit the table, or any failure leaves the run's report
- * exactly as it was (CREW-2879).
+ * exactly as it was (CREW-2879). It still goes through the generic records route, which
+ * `PATCH /agents/log/:id` has no fields for, so it lands only for an admin key; a seat key is
+ * refused (403) and the figures are simply absent (CREW-3273).
  */
 async function writeBeforeFirstEdit(target: AgentLogTarget, rowId: string, b: BeforeFirstEdit): Promise<void> {
   try {
@@ -347,9 +352,6 @@ async function writeBeforeFirstEdit(target: AgentLogTarget, rowId: string, b: Be
     await request(target, 'PATCH', `/data-models/${model.id}/records/${rowId}`, body);
   } catch { /* the columns are optional */ }
 }
-
-/** Agent Log column counting the acceptance bounces a run's ticket had taken before this run (CREW-2970). */
-export const HANDOFF_BOUNCES_COLUMN = 'handoff_bounces';
 
 /**
  * How many times the hand-off guard bounced the ticket for a missing acceptance
@@ -368,15 +370,11 @@ export async function countAcceptanceBounces(target: AgentLogTarget, issuesModel
   } catch { return null; }
 }
 
-/** Sets `handoff_bounces` on the new Agent Log row when the workspace's table has the column. Best effort and silent. */
+/** Sets the bounce count on the new Agent Log row through `PATCH /agents/log/:id`. Best effort and silent. */
 async function writeHandoffBounces(target: AgentLogTarget, rowId: string, count: number): Promise<void> {
   try {
-    const model = await request<{ id: string }>(
-      target, 'GET', `/data-models/agent_log?workspaceId=${encodeURIComponent(target.workspaceId)}`,
-    );
-    if (!(await columnsOf(target, model.id)).has(HANDOFF_BOUNCES_COLUMN)) return;
-    await request(target, 'PATCH', `/data-models/${model.id}/records/${rowId}`, { [HANDOFF_BOUNCES_COLUMN]: count });
-  } catch { /* the column is optional */ }
+    await send(target, 'PATCH', `/agents/log/${rowId}`, { handoffBounces: count });
+  } catch { /* an older platform's route does not take the field */ }
 }
 
 async function post<T>(target: AgentLogTarget, path: string, body: unknown): Promise<T> {
@@ -395,7 +393,7 @@ async function send<T>(target: AgentLogTarget, method: 'POST' | 'PATCH', path: s
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new AgentLogHttpError(`${path}: ${res.status} ${res.statusText}`, res.status);
+  if (!res.ok) throw new AgentLogHttpError(`${path}: ${res.status} ${res.statusText}`, res.status, `${method} ${path}`);
   return (await res.json()) as T;
 }
 
@@ -431,9 +429,18 @@ export interface StartedRow {
 export async function startAgentRunRow(target: AgentLogTarget, s: AgentRunStart): Promise<StartedRow | undefined> {
   // Nothing to gain from an early row: no seat to show as the actor and no metered inference to fold under it.
   if (!target.actor && !s.runId) return undefined;
+  // The end-of-run update cannot carry the work item, so it goes up with the row (CREW-3273).
+  let workItem: { workItemTable?: string; workItemRecordId?: string } = {};
+  if (target.tickets && s.ticketReference) {
+    try {
+      const recordId = await findTicketRecord(target, target.tickets, s.ticketReference);
+      if (recordId) workItem = { workItemTable: target.tickets.issuesModelId, workItemRecordId: recordId };
+    } catch { /* the end-of-run post still names it when the row has to be posted whole */ }
+  }
   const body = {
     agentId: target.agentId,
     ticketReference: s.ticketReference,
+    ...workItem,
     startedAt: s.startedAt,
     source: 'client',
     client: 'crew',
@@ -471,43 +478,37 @@ export async function startAgentRunRow(target: AgentLogTarget, s: AgentRunStart)
   }
 }
 
-/** Agent Log columns the end-of-run update of a started row writes (the rest were set at the start). */
-function finishedRowBody(run: AgentRunReport, workItem: { workItemTable?: string; workItemRecordId?: string }): Record<string, unknown> {
+/**
+ * What the end-of-run update of a started row writes, in the body `PATCH .../agents/log/:id` accepts
+ * (TABL-3105). Everything else the row carries (ticket reference, prompt version and sha, harness,
+ * provider, work item) was already posted by `startAgentRunRow`.
+ */
+function finishedRowBody(run: AgentRunReport): Record<string, unknown> {
   const values: Record<string, unknown> = {
-    ticket_reference: run.ticketReference,
     outcome: run.outcome,
-    finished_at: run.finishedAt,
+    finishedAt: run.finishedAt,
     model: run.model,
-    input_tokens: run.tokensIn,
-    output_tokens: run.tokensOut,
-    cache_read_tokens: run.cacheReadTokens,
-    cache_write_tokens: run.cacheWriteTokens,
-    cost_usd: run.costUsd,
-    num_turns: run.numTurns,
-    prefix_tokens: run.prefixTokens,
-    prompt_version: run.promptVersion,
-    prompt_sha: run.promptSha,
-    harness: run.harness,
-    provider: run.provider,
-    work_item_table: workItem.workItemTable,
-    work_item_record_id: workItem.workItemRecordId,
+    tokensIn: run.tokensIn,
+    tokensOut: run.tokensOut,
+    cacheReadTokens: run.cacheReadTokens,
+    cacheWriteTokens: run.cacheWriteTokens,
+    costUsd: run.costUsd,
+    numTurns: run.numTurns,
+    prefixTokens: run.prefixTokens,
   };
   return Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined));
 }
 
 /**
- * Updates the row `startAgentRunRow` posted. Only columns the table has are sent. A 404 (the row
- * was deleted) returns false so the caller posts the row whole; an unanswered request is the same
- * "nothing written, safe to send again" failure as a failed post.
+ * Updates the row `startAgentRunRow` posted through `PATCH /agents/log/:id`, the route the principal
+ * that created the run may call (TABL-3105). The generic records route is not used: a seat's key may
+ * not edit Agent Log rows through it and gets a 403 (CREW-3273). A 404 (the row was deleted) returns
+ * false so the caller posts the row whole; an unanswered request is the same "nothing written, safe
+ * to send again" failure as a failed post.
  */
 async function updateStartedRow(target: AgentLogTarget, rowId: string, body: Record<string, unknown>): Promise<boolean> {
   try {
-    const model = await request<{ id: string }>(
-      target, 'GET', `/data-models/agent_log?workspaceId=${encodeURIComponent(target.workspaceId)}`,
-    );
-    const have = await columnsOf(target, model.id);
-    const values = Object.fromEntries(Object.entries(body).filter(([column]) => have.has(column)));
-    await request(target, 'PATCH', `/data-models/${model.id}/records/${rowId}`, values);
+    await send(target, 'PATCH', `/agents/log/${rowId}`, body);
     return true;
   } catch (e) {
     if (!(e instanceof AgentLogHttpError)) throw new AgentLogUnreachableError((e as Error).message);
@@ -766,7 +767,7 @@ export async function reportAgentRun(
     ? { workItemTable: target.tickets.issuesModelId, workItemRecordId: ticketRecordId }
     : {};
   let entry: { id: string } | undefined;
-  if (run.rowId && (await updateStartedRow(target, run.rowId, finishedRowBody(run, workItem)))) entry = { id: run.rowId };
+  if (run.rowId && (await updateStartedRow(target, run.rowId, finishedRowBody(run)))) entry = { id: run.rowId };
   if (!entry) {
     try {
       entry = await post<{ id: string }>(target, '/agents/log', { ...body, ...(runId ? { runId } : {}), ...workItem, harness: run.harness, provider: run.provider });

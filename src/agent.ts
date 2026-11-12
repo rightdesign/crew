@@ -1301,7 +1301,7 @@ async function finishRun(
       if (e instanceof AgentLogHttpError && e.row && e.status >= 400 && e.status < 500) {
         try {
           await raiseShipAttention({ state: new State(stateDirOfStream(id.streamPath)), emit },
-            agentLogRefusedItem(id.route, id.role, e.status));
+            agentLogRefusedItem(id.route, id.role, e.status, e.request));
         } catch { /* the warn line below still says it */ }
       }
       // A workspace that has never been provisioned/backfilled (ISSUE-465),

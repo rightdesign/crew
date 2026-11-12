@@ -61,7 +61,7 @@ const base = (columns: string[]) => ({
   'GET /api/data-models/iss/records': [{ id: 'row-1' }],
   'GET /api/data-models/agent_log': { id: 'm1' },
   'GET /api/data-models/m1': { fields: columns.map((columnName) => ({ columnName })) },
-  'PATCH /api/data-models/m1/records/log-1': {},
+  'PATCH /api/workspaces/ws-1/agents/log/log-1': {},
   'GET /api/data-models/iss/events': [
     { record_id: 'row-1', event_type: 'bounced', message: `${ACCEPTANCE_BOUNCED_MARKER}\n\nx` },
     { record_id: 'row-1', event_type: 'bounced', message: `${ACCEPTANCE_BOUNCED_MARKER}\n\ny` },
@@ -70,15 +70,15 @@ const base = (columns: string[]) => ({
   ],
 });
 
-test('the run entry records handoff_bounces when the Agent Log has the column', async (t) => {
+test('the run entry records the bounce count through the agents log route', async (t) => {
   resetCounterColumnCache();
   const m = mock(base(['handoff_bounces']));
   t.after(m.restore);
   await reportAgentRun(target, run);
-  assert.deepEqual(m.calls.find((c) => c.key.startsWith('PATCH /api/data-models/m1'))?.body, { handoff_bounces: 2 });
+  assert.deepEqual(m.calls.find((c) => c.key === 'PATCH /api/workspaces/ws-1/agents/log/log-1')?.body, { handoffBounces: 2 });
 });
 
-test('a workspace without the column is left alone', async (t) => {
+test('the bounce count never goes through the records route', async (t) => {
   resetCounterColumnCache();
   const m = mock(base([]));
   t.after(m.restore);

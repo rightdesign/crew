@@ -188,10 +188,12 @@ export const agentLogRefusedKey = (route: string): string => `agent_log_refused:
  * per-run warn line and every run's record and ticket spend is silently lost.
  * Cleared the next time a report for the route is accepted.
  */
-export function agentLogRefusedItem(route: string, role: string, status: number, nowIso = new Date().toISOString()): ShipAttentionItem {
+export function agentLogRefusedItem(route: string, role: string, status: number, request?: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  // Long ids (uuids) are cut to their first eight characters so the item stays readable.
+  const what = request ? request.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, (id) => id.slice(0, 8)) : 'the report';
   return {
     kind: 'agent_log_refused', key: agentLogRefusedKey(route), since: nowIso,
-    message: `${route}: the tracker refused the ${role} seat's run report (${status}) — runs and ticket spend are not being recorded; check the seat key's role`,
+    message: `${route}: the tracker refused ${what} (${status}) for the ${role} seat — runs and ticket spend are not being recorded; update crew if a newer version exists, otherwise report this`,
   };
 }
 

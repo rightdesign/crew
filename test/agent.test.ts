@@ -538,7 +538,7 @@ test('a run with a resolved seat starts its row live with the actor, then finish
     'POST /api/workspaces/ws-1/agents/log': { id: 'log-1' },
     'GET /api/data-models/agent_log': { id: 'al-1' },
     'GET /api/data-models/al-1': { fields: ['outcome', 'finished_at', 'num_turns'].map((columnName) => ({ columnName })) },
-    'PATCH /api/data-models/al-1/records/log-1': {},
+    'PATCH /api/workspaces/ws-1/agents/log/log-1': {},
     'POST /api/workspaces/ws-1/agents/log/log-1/cycles': { id: 'cycle-1' },
   });
   t.after(restore);
@@ -554,7 +554,7 @@ test('a run with a resolved seat starts its row live with the actor, then finish
   assert.equal(start.actorTable, 'crew-model');
   assert.equal(start.actorRecordId, 'seat-1');
   assert.equal(start.actorLabel, 'Developer agent (Studio)');
-  const finish = calls.find((c) => c.key === 'PATCH /api/data-models/al-1/records/log-1');
+  const finish = calls.find((c) => c.key === 'PATCH /api/workspaces/ws-1/agents/log/log-1');
   assert.equal((finish!.body as Record<string, unknown>).outcome, 'success');
   assert.equal(calls.filter((c) => c.key.endsWith('/cycles')).length, 2);
 });
@@ -808,7 +808,7 @@ test('a 4xx Agent Log refusal raises one agent_log_refused item per route, updat
   assert.equal(first.length, 1);
   assert.equal(first[0]!.kind, 'agent_log_refused');
   assert.equal(first[0]!.key, 'agent_log_refused:test-proj');
-  assert.match(first[0]!.message, /test-proj: the tracker refused the dev seat's run report \(403\)/);
+  assert.match(first[0]!.message, /test-proj: the tracker refused POST \/agents\/log \(403\) for the dev seat/);
 
   const second = await runWithAgentLog(state, home, 'c2');
   assert.equal(second.length, 1, 'a second refused run does not add another');
@@ -851,7 +851,7 @@ test('a note returned on a cycle batch is written to a streaming harness, framed
     'PATCH /api/workspaces/ws-1/agents/log/log-1/messages/m-1': {},
     'GET /api/data-models/agent_log': { id: 'al-1' },
     'GET /api/data-models/al-1': { fields: [] },
-    'PATCH /api/data-models/al-1/records/log-1': {},
+    'PATCH /api/workspaces/ws-1/agents/log/log-1': {},
   });
   t.after(restore);
 
@@ -939,7 +939,7 @@ test('a note posted over the control socket reaches a live Claude run and is mar
     'POST /api/workspaces/ws-1/agents/log/log-1/cycles': {},
     'GET /api/data-models/agent_log': { id: 'al-1' },
     'GET /api/data-models/al-1': { fields: [] },
-    'PATCH /api/data-models/al-1/records/log-1': {},
+    'PATCH /api/workspaces/ws-1/agents/log/log-1': {},
   });
   t.after(restore);
 

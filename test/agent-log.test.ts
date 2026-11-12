@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { agentLogRefusedItem } from '../src/ship-attention.ts';
 import { reportAgentRun, startAgentRunRow, LiveRunReporter, markMessage, frameNote, operatorNotesSection, capCycleText, sumInferenceRows, counterIncrements, resetCounterColumnCache, queueTicketCounters, replayQueuedTicketCounters, type AgentLogTarget, type CounterColumns } from '../src/agent-log.ts';
 
 /** Wires a fetch mock keyed by exact pathname+method, ignoring host/baseUrl — same shape as connect.test.ts's mockFetch. */
@@ -424,9 +425,7 @@ test('startAgentRunRow returns undefined when the tracker will not take the row,
 test('a run that started its row updates that row at the end instead of posting a second (CREW-3038)', async (t) => {
   resetCounterColumnCache();
   const { restore, calls } = mockFetch({
-    'GET /api/data-models/agent_log': { id: 'al-1' },
-    'GET /api/data-models/al-1': { fields: ['outcome', 'finished_at', 'num_turns', 'ticket_reference'].map((columnName) => ({ columnName })) },
-    'PATCH /api/data-models/al-1/records/log-s': {},
+    'PATCH /api/workspaces/ws-1/agents/log/log-s': {},
     'POST /api/workspaces/ws-1/agents/log/log-s/cycles': { id: 'c' },
   });
   t.after(restore);
@@ -438,15 +437,14 @@ test('a run that started its row updates that row at the end instead of posting 
   assert.equal(out.agentLogId, 'log-s');
   assert.equal(calls.some((c) => c.key === 'POST /api/workspaces/ws-1/agents/log'), false);
   const patch = calls.find((c) => c.key.startsWith('PATCH'))!;
-  assert.deepEqual(patch.body, { ticket_reference: 'CREW-3038', outcome: 'success', finished_at: '2026-11-03T08:05:00.000Z', num_turns: 12 });
+  assert.deepEqual(patch.body, { outcome: 'success', finishedAt: '2026-11-03T08:05:00.000Z', numTurns: 12 });
+  assert.equal(calls.some((c) => c.key.includes('/data-models/') && c.key.startsWith('PATCH')), false);
   assert.ok(calls.some((c) => c.key === 'POST /api/workspaces/ws-1/agents/log/log-s/cycles'));
 });
 
 test('when the started row is gone (404) the end of the run posts the row whole', async (t) => {
   resetCounterColumnCache();
   const { restore, calls } = mockFetch({
-    'GET /api/data-models/agent_log': { id: 'al-1' },
-    'GET /api/data-models/al-1': { fields: [{ columnName: 'outcome' }] },
     'POST /api/workspaces/ws-1/agents/log': { id: 'log-new' },
   });
   t.after(restore);
@@ -454,7 +452,7 @@ test('when the started row is gone (404) the end of the run posts the row whole'
     outcome: 'success', startedAt: '2026-11-03T08:00:00.000Z', finishedAt: '2026-11-03T08:05:00.000Z', rowId: 'log-gone', cycles: [],
   });
   assert.equal(out.agentLogId, 'log-new');
-  assert.ok(calls.some((c) => c.key === 'PATCH /api/data-models/al-1/records/log-gone'));
+  assert.ok(calls.some((c) => c.key === 'PATCH /api/workspaces/ws-1/agents/log/log-gone'));
 });
 
 const actorTarget: AgentLogTarget = { ...target, actor: { table: 'crew-model', recordId: 'seat-1' } };
@@ -544,9 +542,7 @@ test('LiveRunReporter keeps its buffer through a 5xx and sends it next window (C
 test('the end-of-run report posts only the cycles the live reporter had not delivered (CREW-3116)', async (t) => {
   resetCounterColumnCache();
   const { restore, calls } = mockFetch({
-    'GET /api/data-models/agent_log': { id: 'al-1' },
-    'GET /api/data-models/al-1': { fields: ['outcome', 'finished_at'].map((columnName) => ({ columnName })) },
-    'PATCH /api/data-models/al-1/records/log-s': {},
+    'PATCH /api/workspaces/ws-1/agents/log/log-s': {},
     'POST /api/workspaces/ws-1/agents/log/log-s/cycles': { id: 'c' },
   });
   t.after(restore);
@@ -596,4 +592,37 @@ test('markMessage, frameNote and operatorNotesSection (CREW-3118)', async (t) =>
   assert.match(sec, /Operator notes since the last run/);
   assert.match(sec, /acknowledge/);
   assert.match(sec, /2026-11-08T00:00:00.000Z — Brad: l1\n  l2/);
+});
+
+test('a seat key refused on the records route still finalizes the run through the log route (CREW-3273)', async (t) => {
+  resetCounterColumnCache();
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const key = `${init?.method ?? 'GET'} ${url.pathname}`;
+    calls.push(key);
+    if (url.pathname.includes('/records/')) return new Response('{}', { status: 403, statusText: 'Forbidden' });
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const out = await reportAgentRun(target, {
+    outcome: 'success', startedAt: 'a', finishedAt: 'b', rowId: 'log-s', cycles: [],
+  });
+  assert.equal(out.agentLogId, 'log-s');
+  assert.ok(calls.includes('PATCH /api/workspaces/ws-1/agents/log/log-s'));
+  assert.equal(calls.some((c) => c.startsWith('PATCH') && c.includes('/data-models/')), false);
+});
+
+test('a refused log update names the request and status, with no advice about the key role (CREW-3273)', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('{}', { status: 403, statusText: 'Forbidden' })) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const err = await reportAgentRun(target, { outcome: 'success', startedAt: 'a', finishedAt: 'b', rowId: 'log-s', cycles: [] })
+    .then(() => undefined, (e: unknown) => e as { request?: string; status?: number });
+  assert.equal(err?.status, 403);
+  const item = agentLogRefusedItem('dev', 'dev', 403, err?.request);
+  assert.match(item.message, /PATCH \/agents\/log\/log-s/);
+  assert.match(item.message, /403/);
+  assert.doesNotMatch(item.message, /role/);
 });
