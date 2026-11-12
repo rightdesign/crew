@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.149.5] — 2026-11-12
+
+- CREW-3270 `crew connect` with a key whose identity has no workspace memberships now says so and suggests minting a key inside a workspace, instead of exiting silently.
+
 ## [0.149.4] — 2026-11-12
 
 - CREW-3275 A ship whose Docker daemon is down keeps its relay tunnels and control URLs up, raises one docker_missing item, and `crew doctor` reports the cause once with the remedy.
