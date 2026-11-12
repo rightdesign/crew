@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.151.2] — 2026-11-12
+
+- CREW-3300 Conflict hand-back, pending hand-off, release and blocked-sweep messages name a ticket by its Issue Tag instead of its Issue ID.
+
 ## [0.151.1] — 2026-11-12
 
 - CREW-3286 The crew CLI's remaining error and warning messages (daemon, connect, repos, sandbox, periscope, reload, selftest, inbox) go through the same output path as the rest and end with a suggested next command; confirmations show under --verbose.
