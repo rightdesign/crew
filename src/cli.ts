@@ -122,6 +122,7 @@ import { validateContract, DEFAULT_CONTRACT, EVENT_LOG_STATUS_UNTRACKED } from '
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
+import { renderStatus, type StatusRepo, type StatusLastRun } from './status-render.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
   discover, get as connectGet, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
@@ -443,7 +444,7 @@ function usage(problem?: string, requested = false): never {
   crew deploy [route]            release now, even with nothing new to merge
   crew watch [route]             live view of what the crew is doing
   crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
-  crew status [route] [--json]   paused/running state; --json for a machine reader
+  crew status [route] [--json] [--verbose]   what is running and what needs a person; --verbose adds configuration and full lists; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
   crew provision --key K --route WS[/PROJECT] [--forge-host H] [--ship-name N] [--json]   one non-interactive run: connect, forge tokens,
                                  enable routes, install units with lingering, start the daemon; safe to re-run (CREW_CONNECT_KEY,
@@ -2016,18 +2017,19 @@ async function environmentFor(c: typeof route, ticket?: string | null): Promise<
  */
 async function releaserLine(
   tracker: Tracker, routeName: string, repo: string, release: Parameters<typeof releaserFor>[0],
-): Promise<string> {
+): Promise<{ line: string; lockHeld: boolean }> {
   const who = release.ship ? `released by ${release.ship}` : 'any ship may release';
   let lock: string;
+  let lockHeld = false;
   try {
     const st = await tracker.lockState(releaseLockScope(routeName, repo));
     lock = st === undefined ? 'no Locks table'
       : !st.exists ? 'lock row MISSING (run crew connect)'
-      : st.holder ? `lock held by ${st.holder}` : 'lock row free';
+      : st.holder ? ((lockHeld = true), `lock held by ${st.holder}`) : 'lock row free';
   } catch (e) {
     lock = `lock unreadable (${(e as Error).message})`;
   }
-  return `${who}; ${lock}`;
+  return { line: `${who}; ${lock}`, lockHeld };
 }
 
 /**
@@ -6826,74 +6828,59 @@ switch (command) {
       break;
     }
 
-    const owed = [
-      ...todo.map((i) => `${displayKey(i.ticket)} — ${i.reasons.join(', ')}${i.ticket.title ? ` — ${i.ticket.title}` : ''}`),
-      ...openShipAttention(state).map((i) => `ship ${cfg.ship.name}: ${i.kind} — ${i.message}`),
-      ...shipRows.filter((s) => s.name !== cfg.ship.name)
-        .flatMap((s) => (s.attention ?? []).map((i) => `ship ${s.name}: ${i.kind} — ${i.message}`)),
-    ];
-    if (owed.length) process.stdout.write(`to do (${owed.length}):\n${owed.map((l) => `  ${l}\n`).join('')}\n`);
-    process.stdout.write(
-      `ship:       ${cfg.ship.name} (${cfg.ship.platform})\n` +
-        `route:      ${route.route} -> ${route.dir}\n` +
-        `enabled:    ${route.enabled}\n` +
-        `periscopes: ${periscopeSummary(cfg)}\n` +
-        (routeRelayUrl(route) ? `relay:      ${routeRelayUrl(route)}\n` : '') +
-        periscopes.map((p) => `periscope:  ${p.ticket} ${p.repo} ${p.url} ${p.state}${p.serving ? '' : ' (not serving)'} expires ${p.expiresAt}\n`).join('') +
-        `crew:       ${state.isPaused() ? 'paused' : 'active'}\n` +
-        `release:    ${state.releaseSkipReason() ? 'paused' : 'active'}\n` +
-        `watermark:  ${state.watermark(routeSlug(route.route))}\n`,
-    );
-    for (const r of ['dev', 'design', 'qa'] as RoleName[]) {
-      if (state.isRolePaused(r)) process.stdout.write(`role ${r}: paused\n`);
-    }
-    const reloadWaitingAt = readReloadRequestedAt(cfg.ship.stateDir);
-    if (reloadWaitingAt !== null) {
-      process.stdout.write(`reload:     requested ${Math.max(0, Math.round((Date.now() - reloadWaitingAt) / 1000))}s ago, not yet honored — \`crew reload --now\` forces it\n`);
-    }
-    if (projects.length) process.stdout.write(`projects:   ${projects.map((p) => p.label).join(', ')}\n`);
-    for (const i of openShipAttention(state)) {
-      process.stdout.write(`attention:  ${i.kind} — ${i.message}\n`);
-    }
-    for (const r of await resolvedRepos(route)) {
-      const bh = baseHealth(r);
-      if (bh.unsafe) process.stdout.write(`base:       ${r.name} — UNSAFE, no worktree cuts or releases: ${bh.detail}\n`);
-      process.stdout.write(`releaser:   ${r.name} — ${await releaserLine(statusTracker, route.route, r.name, r.config.release)}\n`);
-    }
+    const shipAttention = openShipAttention(state);
+    let heldReleases: string[] = [];
     // Verified tickets the release is holding back on an unresolved blocker
     // (CREW-1506), so "why hasn't this shipped" is answerable from here.
     try {
       const open = await statusTracker.openTickets();
-      const held = heldByBlockers(
+      heldReleases = describeHeld(heldByBlockers(
         open, statusTracker.contract.statuses.verified,
         blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open))),
-      );
-      for (const line of describeHeld(held)) process.stdout.write(`release:    ${line}\n`);
+      ));
     } catch { /* a tracker blip must not break `status` */ }
-    if (waiting) {
-      process.stdout.write(
-        `waiting:    ${waiting.ticket} for ${since(waiting.since)}` +
-          ` (passed over ${fairness.streak()} cycle${fairness.streak() === 1 ? '' : 's'} running)\n`,
-      );
+    const repoViews: StatusRepo[] = [];
+    for (const r of await resolvedRepos(route)) {
+      const bh = baseHealth(r);
+      const rel = await releaserLine(statusTracker, route.route, r.name, r.config.release);
+      repoViews.push({
+        name: r.name, unsafeDetail: bh.unsafe ? bh.detail : undefined, releaser: rel.line,
+        notable: rel.lockHeld || (!!r.config.release.ship && r.config.release.ship !== cfg.ship.name),
+      });
     }
-
-    for (const x of runs) {
-      process.stdout.write(`running:    ${x.role} — ${x.ticket ?? '(no ticket)'}${x.repo ? ` in ${x.repo}` : ''} (pid ${x.pid}, since ${x.spawnedAt}${x.deadline ? `, deadline ${x.deadline}` : ''})\n`);
-    }
-
-    if (shipRows.length) {
-      // "An engaged ship names what it is working" — resolve the raw
-      // `engaged_ticket_id` references to their `issue_id` label, one call
-      // for every engaged ship rather than one call per ship.
-      process.stdout.write('ships:\n');
-      for (const s of shipRows) {
-        process.stdout.write(`  ${renderShipLine(s, issueLabelById)}\n`);
-        // Other ships' items come from their own Ships rows; this ship's were printed above.
-        if (s.name !== cfg.ship.name) {
-          for (const i of s.attention ?? []) process.stdout.write(`    attention: ${i.kind} — ${i.message}\n`);
-        }
-      }
-    }
+    const reloadWaitingAt = readReloadRequestedAt(cfg.ship.stateDir);
+    const lastRunView: StatusLastRun[] = [...lastRuns.values()]
+      .filter((l) => l.route === routeSlug(route.route))
+      .map((l) => ({ role: l.role, ticket: l.ticket, finishedAt: l.finishedAt, outcome: l.outcome }));
+    for (const line of renderStatus({
+      ship: { name: cfg.ship.name, platform: cfg.ship.platform },
+      route: { name: route.route, dir: route.dir, enabled: route.enabled },
+      crewPaused: state.isPaused(),
+      releasePaused: state.releaseSkipReason() !== null,
+      pausedRoles: (['dev', 'design', 'qa'] as RoleName[]).filter((r) => state.isRolePaused(r)),
+      periscopes: {
+        summary: periscopeSummary(cfg),
+        relayUrl: routeRelayUrl(route) || undefined,
+        live: periscopes.map((p) => `${p.ticket} ${p.repo} ${p.url} ${p.state}${p.serving ? '' : ' (not serving)'} expires ${p.expiresAt}`),
+      },
+      watermark: String(state.watermark(routeSlug(route.route))),
+      projects: projects.map((p) => p.label),
+      reloadRequestedSecondsAgo: reloadWaitingAt === null ? null : Math.max(0, Math.round((Date.now() - reloadWaitingAt) / 1000)),
+      runs: runs.map((x) => ({ role: x.role, ticket: x.ticket, repo: x.repo, pid: x.pid, spawnedAt: x.spawnedAt, deadline: x.deadline })),
+      lastRuns: lastRunView,
+      attention: shipAttention.map((i) => ({ kind: i.kind, message: i.message, since: i.since })),
+      waiting: todo.map((i) => ({
+        key: displayKey(i.ticket), title: i.ticket.title, reasons: i.reasons, updatedAt: i.ticket.updated_at,
+      })),
+      repos: repoViews,
+      heldReleases,
+      starved: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : undefined,
+      ships: shipRows.map((s) => ({
+        name: s.name ?? '(unnamed)',
+        line: renderShipLine(s, issueLabelById),
+        attention: (s.attention ?? []).map((i) => ({ kind: i.kind, message: i.message })),
+      })),
+    }, { verbose: flag('verbose') })) process.stdout.write(`${line}\n`);
     break;
   }
 
