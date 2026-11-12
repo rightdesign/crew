@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { resolveRepoConfig } from '../src/repo-config.ts';
 import {
-  inspectHandoff, inspectRemoteHandoff, describeGuardError, enforceHandoff, acceptanceLines, describeHandoffPush, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
+  EVENT_MESSAGE_LIMIT, boundNote, inspectHandoff, inspectRemoteHandoff, describeGuardError, enforceHandoff, acceptanceLines, describeHandoffPush, guardStrayHandoffs, pushedEventBody, HANDOFF_BOUNCED_MARKER, STRAY_HANDOFF_MARKER,
   type HandoffWriter, type HandoffLog,
 } from '../src/handoff-guard.ts';
 import type { Ticket } from '../src/tracker.ts';
@@ -522,4 +522,72 @@ test('CREW-3037: lostTicketReason names a closed or re-claimed ticket, not a QA 
   assert.match(lostTicketReason(t({ status: 'in_progress', held_by_ship_id: 'other' }), C, 'me')!, /another ship/);
   assert.equal(lostTicketReason(t({ status: 'qa', held_by_ship_id: 'other' }), C, 'me'), null);
   assert.equal(lostTicketReason(t({ status: 'in_progress', held_by_ship_id: 'me' }), C, 'me'), null);
+});
+
+// CREW-3307: a bounce note always lands, or the ticket stays at the hand-off.
+const longAccept = (n: number) => `## Acceptance\n\n${Array.from({ length: n }, (_, k) => `- Line ${k} ${'word '.repeat(60)}`).join('\n')}\n`;
+
+test('enforce: a bounce note for a long Acceptance section stays under the event log limit and lists the lines once (CREW-3307)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = harness(ticket({ description: longAccept(14) }));
+  h.w.comments = async () => [];
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'bounced');
+  assert.ok(h.notes[0]!.length <= EVENT_MESSAGE_LIMIT, `note is ${h.notes[0]!.length} chars`);
+  assert.doesNotMatch(h.notes[0]!, /Not quoted verbatim/);
+  assert.equal(h.notes[0]!.split('- Line 0 ').length - 1, 1);
+  assert.match(h.notes[0]!, /Set back to `in_progress`/);
+  assert.match(h.notes[0]!, /more in the ticket's Acceptance section/);
+});
+
+test('enforce: a short hand-off that quotes none of its lines lists them once (CREW-3307)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = acceptHarness('Done.');
+  await enforceHandoff(input(f, h));
+  assert.equal(h.notes[0]!.split('No section is unaffected.').length - 1, 1);
+});
+
+test('enforce: a refused event is posted as a comment and the log carries the status and reason (CREW-3307)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = acceptHarness('Done.');
+  const comments: string[] = [];
+  h.w.postEvent = async () => { throw new Error('posting a bounced event failed: HTTP 422: message must be shorter than 5000 characters'); };
+  h.w.postComment = async (_id, body) => { comments.push(body); };
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'bounced');
+  assert.equal(comments.length, 1);
+  assert.match(comments[0]!, /Acceptance Checklist Missing/);
+  assert.equal(h.patches[0]!.status, DEFAULT_CONTRACT.statuses.building);
+  assert.ok(h.warns.some((w) => /HTTP 422: message must be shorter than 5000/.test(w) && /as a comment instead/.test(w)));
+});
+
+test('enforce: when neither the event nor the comment lands, the ticket is left at fixed (CREW-3307)', async () => {
+  const f = fixture();
+  sh(f.wt, 'push', '-q', '--set-upstream', 'origin', 'crew-9');
+  const h = acceptHarness('Done.');
+  h.w.postEvent = async () => { throw new Error('posting a bounced event failed: HTTP 500'); };
+  h.w.postComment = async () => { throw new Error('comment refused'); };
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'unverified');
+  assert.deepEqual(h.patches, []);
+  assert.ok(h.warns.some((w) => /HTTP 500/.test(w) && /comment refused/.test(w)));
+});
+
+test('enforce: an unpushed branch whose bounce note cannot be delivered stays at fixed (CREW-3307)', async () => {
+  const f = fixture();
+  const h = harness(ticket());
+  h.w.postEvent = async () => { throw new Error('HTTP 503'); };
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'unverified');
+  assert.deepEqual(h.patches, []);
+});
+
+test('boundNote cuts an over-long note and says so', () => {
+  const out = boundNote('x'.repeat(9000));
+  assert.ok(out.length <= 4800);
+  assert.match(out, /note cut/);
+  assert.equal(boundNote('short'), 'short');
 });

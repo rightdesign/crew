@@ -196,10 +196,54 @@ ${shipName ? `Ship: ${shipName}\n` : ''}Local HEAD: ${v.local ? `\`${v.local}\``
 ${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. ${pushError ? ` The runner tried a plain push and git refused it: \`${pushError}\`.` : ''} Set back to \`in_progress\`, still held by this ship; push with a plain \`git push --set-upstream ${v.remote} <branch>\` (never \`--force\`) and set \`fixed\` again. Your brief authorizes this push: it is the hand-off, not a release, so do it now rather than asking for permission.`;
 }
 
+/** The event log refuses a `message` over this many characters (CREW-3307). */
+export const EVENT_MESSAGE_LIMIT = 5000;
+/** A note is held under this, a margin below the limit. */
+const NOTE_BUDGET = 4800;
+
+/** `note` cut to the budget, with the cut said aloud, for notes that embed text we do not control (git output, ticket text). */
+export function boundNote(note: string, budget = NOTE_BUDGET): string {
+  if (note.length <= budget) return note;
+  const tail = '\n\n(note cut: it was longer than the event log accepts)';
+  return note.slice(0, budget - tail.length) + tail;
+}
+
+/**
+ * CREW-3307: post a guard note to the event log; when that is refused, post it
+ * as a comment from the seat instead. Returns whether either route landed. The
+ * HTTP status and the tracker's reason go to the log either way, so a dropped
+ * note is never a bare "failed to post".
+ */
+async function deliverNote(
+  i: Pick<HandoffGuardInput, 'writer' | 'seatId' | 'log'>, ticketId: string, note: string, type: string, log: Record<string, unknown>,
+): Promise<boolean> {
+  const body = boundNote(note);
+  try {
+    await i.writer.postEvent(ticketId, body, i.seatId, type);
+    return true;
+  } catch (e) {
+    const eventWhy = (e as Error).message;
+    if (!i.writer.postComment) {
+      i.log.warn(`the ${type} note could not be posted: ${eventWhy}`, log);
+      return false;
+    }
+    try {
+      await i.writer.postComment(ticketId, body, i.seatId);
+      i.log.warn(`the ${type} note was refused by the event log (${eventWhy}); posted it as a comment instead`, log);
+      return true;
+    } catch (c) {
+      i.log.warn(`the ${type} note could not be posted as an event (${eventWhy}) or as a comment (${(c as Error).message})`, log);
+      return false;
+    }
+  }
+}
+
 export interface HandoffWriter {
   ticket(id: string): Promise<Ticket>;
   updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
   postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
+  /** CREW-3307: where a bounce note goes when the event log refuses it; absent in a writer that cannot comment. */
+  postComment?(ticketId: string, body: string, memberId: string): Promise<void>;
   /** Event-log reader (CREW-1973); absent in a writer that cannot read it, which then skips the takeover check. */
   events?(type: string): Promise<RunnerEvent[]>;
   /** Comment reader (CREW-2600); absent in a writer that cannot read it, which then skips the acceptance check. */
@@ -306,14 +350,32 @@ async function missingAcceptance(i: HandoffGuardInput, t: Ticket): Promise<Accep
 }
 
 export function acceptanceBounceComment(missing: string[], shipName: string | undefined, judged?: string | null, all: string[] = []): string {
-  return `${ACCEPTANCE_BOUNCED_MARKER}
+  // CREW-3307: the checklist block already names every line, so a hand-off that quoted none does not list them twice.
+  const quotedNone = all.length > 0 && missing.length >= all.length;
+  const build = (cut: number): string => {
+    const shown = (ls: string[]): string[] => {
+      const kept = cut > 0 ? ls.slice(0, Math.max(1, ls.length - cut)).map((l) => (l.length > 200 ? `${l.slice(0, 200)}…` : l)) : ls;
+      return kept.length < ls.length ? [...kept, `(… ${ls.length - kept.length} more in the ticket's Acceptance section)`] : kept;
+    };
+    const head = `${ACCEPTANCE_BOUNCED_MARKER}
 
 **Hand-off bounced: the hand-off comment does not quote every line of the ticket's Acceptance section.**
 
-${shipName ? `Ship: ${shipName}\n\n` : ''}${judged ? `Judged the comment posted at ${judged}; no comment this run quoted every line.\n\n` : 'This seat has no comment on the ticket.\n\n'}Not quoted verbatim:
-${missing.map((l) => `- ${l}`).join('\n')}
-
-Set back to \`in_progress\`. Post a comment that lists every Acceptance line verbatim, each followed by the test, command or manual check that exercised it in this run and its result (a line you could not exercise is listed with the reason, never omitted), then set \`fixed\` again. The branch is already pushed.${all.length > 0 ? `\n\nCopy this block into the comment and fill in each result:\n\n\`\`\`\n${acceptanceChecklistBlock(all)}\n\`\`\`` : ''}`;
+${shipName ? `Ship: ${shipName}\n\n` : ''}${judged ? `Judged the comment posted at ${judged}; no comment this run quoted every line.\n\n` : 'This seat has no comment on the ticket.\n\n'}`;
+    const list = quotedNone ? '' : `Not quoted verbatim:\n${shown(missing).map((l) => `- ${l}`).join('\n')}\n\n`;
+    const act = `Set back to \`in_progress\`. Post a comment that lists every Acceptance line verbatim, each followed by the test, command or manual check that exercised it in this run and its result (a line you could not exercise is listed with the reason, never omitted), then set \`fixed\` again. The branch is already pushed.`;
+    const block = all.length > 0
+      ? `\n\n${quotedNone ? 'No line was quoted. ' : ''}Copy this block into the comment and fill in each result:\n\n\`\`\`\n${acceptanceChecklistBlock(shown(all))}\n\`\`\``
+      : '';
+    return `${head}${list}${act}${block}`;
+  };
+  // Shorten the lists (never the instruction) until the note fits the event log.
+  const most = Math.max(all.length, missing.length);
+  for (let cut = 0; cut < most; cut++) {
+    const note = build(cut === 0 ? 0 : cut);
+    if (note.length <= NOTE_BUDGET) return note;
+  }
+  return boundNote(build(most));
 }
 
 /**
@@ -348,14 +410,17 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
           i.log.warn(`${displayKey(t)} is held by another ship now — the acceptance check is stale, left alone`, log);
           return { kind: 'unverified', why: 'ticket is held by another ship' };
         }
+        // CREW-3307: the explanation lands first. A bounce nobody can read leaves the seat re-dispatched into
+        // the same hand-off, so with no way to say why, the ticket stays at the hand-off for QA.
+        if (!await deliverNote(i, t.id, acceptanceBounceComment(gap.missing, i.shipName, gap.judged, gap.all), 'bounced', log)) {
+          i.log.warn(`${displayKey(t)} lacks the acceptance checklist but the bounce note could not be delivered — left at ${t.status}, guard outcome unverified`, log);
+          return { kind: 'unverified', why: 'the acceptance bounce note could not be posted' };
+        }
         await i.writer.updateTicket(t.id, {
           status: i.contract.statuses.building,
           // CREW-2962: the hand-off may have assigned QA's seat; a bounce is the building seat's again.
           assignee_id: i.seatId,
           ...(i.hold && !heldNow ? { [i.hold.column]: i.hold.shipId } : {}),
-        });
-        await i.writer.postEvent(t.id, acceptanceBounceComment(gap.missing, i.shipName, gap.judged, gap.all), i.seatId, 'bounced').catch(() => {
-          i.log.warn('bounced, but the note failed to post', log);
         });
         i.log.warn(`${displayKey(t)} bounced back to ${i.contract.statuses.building}: hand-off comment lacks the acceptance checklist`, log);
         return { kind: 'bounced' };
@@ -401,7 +466,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
           await postPushed(i, t.id, again.sha, again.remote, again.branch, log);
           await i.writer.postEvent(t.id,
             `The runner pushed \`${again.branch}\` to \`${again.remote}\` on ${i.shipName ? `${i.shipName}'s` : 'this ship\'s'} behalf: the ${i.role} seat set \`${i.contract.statuses.handoff}\` without pushing. Plain fast-forward push.${i.cfg.hooks.ci_status ? ' The repo\'s `ci_status` hook was NOT run by the hand-off guard, so CI was not checked by the builder.' : ''}`,
-            i.seatId, 'pushed_by_runner').catch(() => i.log.warn('pushed, but the note failed to post', log));
+            i.seatId, 'pushed_by_runner').catch((e: unknown) => i.log.warn(`pushed, but the note failed to post: ${(e as Error).message}`, log));
           i.log.emit(`${displayKey(t)}: pushed ${again.branch} to ${again.remote} on the seat's behalf at ${again.sha.slice(0, 7)} — handed on to QA`, log);
           return { kind: 'pushed', sha: again.sha };
         }
@@ -411,13 +476,14 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       }
       i.log.warn(`${displayKey(t)}: the runner's own push failed: ${pushError}`, log);
     }
+    if (!await deliverNote(i, t.id, bounceComment(v, i.shipName, pushError), 'bounced', log)) {
+      i.log.warn(`${displayKey(t)}: ${v.reason}, but the bounce note could not be delivered — left at ${t.status}, guard outcome unverified`, log);
+      return { kind: 'unverified', why: 'the bounce note could not be posted' };
+    }
     await i.writer.updateTicket(t.id, {
       status: i.contract.statuses.building,
       assignee_id: i.seatId,
       ...(i.hold && !heldBy ? { [i.hold.column]: i.hold.shipId } : {}),
-    });
-    await i.writer.postEvent(t.id, bounceComment(v, i.shipName, pushError), i.seatId, 'bounced').catch(() => {
-      i.log.warn('bounced, but the note failed to post', log);
     });
     i.log.warn(`${displayKey(t)} bounced back to ${i.contract.statuses.building}: ${v.reason}`, log);
     return { kind: 'bounced' };
@@ -626,10 +692,11 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
     try {
       const holder = i.myShipId ? ticketHolderShipId(t, i.contract) : null;
       if (holder && holder !== i.myShipId) {
-        await i.writer.updateTicket(t.id, { status: st.building });
-        await i.writer.postEvent(t.id,
+        const said = await deliverNote(i, t.id,
           `${STRAY_HANDOFF_MARKER}\n\n**Hand-off bounced: this ticket is held by another ship.**\n\n${i.shipName ? `${i.shipName}'s ` : 'A '}${i.role} run set it to \`${st.handoff}\` without having claimed it. Set back to \`${st.building}\`; the holding ship's own hand-off is the one that counts.`,
-          i.seatId, 'bounced').catch(() => i.log.warn('bounced, but the note failed to post', at));
+          'bounced', at);
+        if (!said) { i.log.warn(`${displayKey(t)}: stray hand-off not bounced, its note could not be delivered`, at); continue; }
+        await i.writer.updateTicket(t.id, { status: st.building });
         i.log.warn(`${displayKey(t)} was handed off by a run that did not claim it, while held by another ship — bounced to ${st.building}`, at);
         continue;
       }
@@ -651,8 +718,11 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
           i.log.warn(`${displayKey(t)}: \`${v.remote}/${v.branch}\` is at ${v.origin.slice(0, 7)}, not a tip this checkout built — left alone`, at);
           continue;
         }
+        if (!await deliverNote(i, t.id, bounceComment(v, i.shipName), 'bounced', at)) {
+          i.log.warn(`${displayKey(t)}: stray hand-off not bounced, its note could not be delivered`, at);
+          continue;
+        }
         await i.writer.updateTicket(t.id, { status: st.building, assignee_id: i.seatId });
-        await i.writer.postEvent(t.id, bounceComment(v, i.shipName), i.seatId, 'bounced').catch(() => {});
       }
     } catch (e) {
       i.log.warn(`could not check the stray hand-off: ${(e as Error).message}`, at);

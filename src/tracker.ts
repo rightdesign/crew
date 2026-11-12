@@ -864,7 +864,7 @@ export class Tracker {
       ...(auth.shipId || extra ? { metadata: { ...(auth.shipId ? { ship_id: auth.shipId } : {}), ...extra } } : {}),
     });
     if (res.status === 404) throw new ConfigError(EVENT_LOG_MISSING);
-    if (!res.ok) throw new Error(`posting a ${type} event failed: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`posting a ${type} event failed: HTTP ${res.status}${await refusalReason(res)}`);
   }
 
   /** A ticket comment under a seat's identity (CREW-2363: the replayed hand-off comment). */
@@ -1316,5 +1316,22 @@ export class Tracker {
       ...(auth.issueAuthor && memberId ? { [this.contract.columns.author]: memberId } : {}),
       ...(auth.issueShip && auth.shipId ? { [this.contract.columns.ship]: auth.shipId } : {}),
     });
+  }
+}
+
+/** The tracker's own reason for refusing a write (CREW-3307), as `: <text>`; empty when the body says nothing usable. */
+async function refusalReason(res: Response): Promise<string> {
+  try {
+    const text = (await res.text()).trim();
+    if (!text) return '';
+    let msg = text;
+    try {
+      const j = JSON.parse(text) as { message?: unknown };
+      if (typeof j.message === 'string') msg = j.message;
+      else if (Array.isArray(j.message)) msg = j.message.join('; ');
+    } catch { /* not JSON: an HTML or plain-text error page, quoted as is */ }
+    return `: ${msg.replace(/\s+/g, ' ').slice(0, 300)}`;
+  } catch {
+    return '';
   }
 }

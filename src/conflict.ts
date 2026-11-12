@@ -277,8 +277,8 @@ export async function applyConflictBounce(
     }
     try {
       await writer.updateTicket(b.ticket.id, { status: contract.statuses.needsHuman }, b.ticket.updated_at);
-      await writer.postEvent(b.ticket.id, escalateComment(b), memberId, 'conflict_escalated').catch(() => {
-        log.warn('escalated, but the note failed to post', t);
+      await writer.postEvent(b.ticket.id, escalateComment(b), memberId, 'conflict_escalated').catch((e: unknown) => {
+        log.warn(`escalated, but the note failed to post: ${(e as Error).message}`, t);
       });
       log.warn(`conflicts again after a hand-back — escalated to ${contract.statuses.needsHuman}`, t);
       return { kind: 'escalated' };
@@ -337,8 +337,8 @@ export async function applyConflictBounce(
       b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
     );
     await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId, 'conflict_handed_back',
-      b.baseSha ? { base_sha: b.baseSha } : undefined).catch(() => {
-      log.warn('handed back, but the note failed to post', t);
+      b.baseSha ? { base_sha: b.baseSha } : undefined).catch((e: unknown) => {
+      log.warn(`handed back, but the note failed to post: ${(e as Error).message}`, t);
     });
     log.emit(
       `handed back to ${contract.statuses.building} — conflicts with ${b.base}` +
