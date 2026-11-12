@@ -135,6 +135,7 @@ import { checkCapabilities, describeCapability, missLine } from './capability-ch
 import { routeAvatarFailures } from './persona-avatars.ts';
 import { syncPersonas, fetchKeyRole, isAdminRole, isForbidden, personaDefaultPrompt, describeSyncOutcome, describeCrewLink, AgentsSyncError, fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId, currentPersonaPrompt, PERSONA_NAME } from './agents.ts';
 import { runAgentsSync } from './agents-sync-run.ts';
+import { summarizeOutcomes, withFix } from './cli-output.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, formatBeforeEdit, LogbookError } from './logbook.ts';
 import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.ts';
@@ -991,6 +992,15 @@ const emit = new Emitter({
 });
 
 /**
+ * CREW-3267: a command's own failure, through the Emitter (so it is logged and
+ * rendered like every other event) and ending with what to run next. Exits.
+ */
+function die(command: string, message: string, fix: string, code = 2): never {
+  emit.error(withFix(`${command}: ${message}`, fix));
+  return process.exit(code);
+}
+
+/**
  * The interlock. A dry run is exempt because it writes nothing — being able
  * to inspect a disarmed installation is the point of having one.
  */
@@ -1564,7 +1574,7 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
       try {
         ensureImage(image);
       } catch (e) {
-        process.stderr.write(`crew install: could not pull Host Passengers image ${image}: ${(e as Error).message}\n`);
+        emit.warn(withFix(`crew install: could not pull Host Passengers image ${image}: ${(e as Error).message}`, '`crew doctor`'));
         process.exitCode = 1;
       }
     }
@@ -3716,22 +3726,19 @@ switch (command) {
     try {
       target = findSyncRoute(cfg, positional[2]);
     } catch (e) {
-      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      if (e instanceof ConfigError) die('crew agents sync', e.message, '`crew doctor`');
       throw e;
     }
-    if (!target.resolved) {
-      process.stderr.write(`crew agents sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
-      process.exit(2);
-    }
+    if (!target.resolved) die('crew agents sync', `route "${target.route}" has no resolved ids`, '`crew connect`');
     let run: Awaited<ReturnType<typeof runAgentsSync>>;
     try {
       run = await runAgentsSync(target, {
-        userAgent: cfg.ship.userAgent, stateDir: cfg.ship.stateDir, dryRun, force,
+        userAgent: cfg.ship.userAgent, stateDir: cfg.ship.stateDir, dryRun, force, verbose: flag('verbose'),
         say: (l) => process.stdout.write(`${l}\n`),
-        warn: (l) => process.stderr.write(`crew agents sync: ${l}\n`),
+        warn: (l) => emit.warn(`crew agents sync: ${l}`),
       });
     } catch (e) {
-      if (e instanceof AgentsSyncError || e instanceof SkillSyncError) { process.stderr.write(`crew agents sync: ${e.message}\n`); process.exit(2); }
+      if (e instanceof AgentsSyncError || e instanceof SkillSyncError) die('crew agents sync', e.message, '`crew doctor`, then `crew agents sync --verbose`');
       throw e;
     }
     const { personaResult, skillResult } = run;
@@ -3780,23 +3787,20 @@ switch (command) {
     try {
       target = findSyncRoute(cfg, positional[2]);
     } catch (e) {
-      if (e instanceof ConfigError) { process.stderr.write(`crew: ${e.message}\n`); process.exit(2); }
+      if (e instanceof ConfigError) die('crew skills sync', e.message, '`crew doctor`');
       throw e;
     }
-    if (!target.resolved) {
-      process.stderr.write(`crew skills sync: route "${target.route}" has no resolved ids — run \`crew connect\` first\n`);
-      process.exit(2);
-    }
+    if (!target.resolved) die('crew skills sync', `route "${target.route}" has no resolved ids`, '`crew connect`');
     let result: Awaited<ReturnType<typeof syncSkills>>;
     try {
       result = await syncSkills(target, { userAgent: cfg.ship.userAgent, dryRun });
     } catch (e) {
-      if (e instanceof SkillSyncError) { process.stderr.write(`crew skills sync: ${e.message}\n`); process.exit(2); }
+      if (e instanceof SkillSyncError) die('crew skills sync', e.message, '`crew doctor`, then `crew skills sync --verbose`');
       throw e;
     }
     process.stdout.write(`route: ${target.route}\n`);
-    for (const o of result.outcomes) process.stdout.write(`${describeSkillSyncOutcome(o)}\n`);
-    for (const w of result.warnings) process.stderr.write(`warning: ${w}\n`);
+    for (const l of summarizeOutcomes(result.outcomes, describeSkillSyncOutcome, (o) => o.action === 'unchanged', 'skill', flag('verbose'))) process.stdout.write(`${l}\n`);
+    for (const w of result.warnings) emit.warn(w);
     if (!dryRun) {
       // Same merge-not-clobber shape `case 'agents'` uses for its own
       // `agentPersonas` write — a hand-authored `contract` block or another
@@ -5390,7 +5394,7 @@ switch (command) {
     emit.enter('worktree');
     const raw = positional[2] ?? positional[1];
     const n = raw ? parseTicketNumber(raw) : null;
-    if (!n) { process.stderr.write('drop: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
+    if (!n) { die('crew drop', 'need a ticket number (326, ISSUE-326, or TABL-326)', '`crew drop 326`'); }
     const num = Number(n);
     // The messages below stay `ISSUE-{n}` rather than the ticket's own tag
     // (ISSUE-969): everything here works from the bare number the operator
@@ -5555,7 +5559,7 @@ switch (command) {
     emit.enter('worktree');
     const rawWt = worktreeArgs?.ticket;
     const nWt = rawWt ? parseTicketNumber(rawWt) : null;
-    if (!nWt) { process.stderr.write('worktree: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
+    if (!nWt) { die('crew worktree', 'need a ticket number (326, ISSUE-326, or TABL-326)', '`crew worktree 326`'); }
     // No route typed on a multi-route ship: look the ticket up on each enabled
     // route and take the one that has it AND serves its repo (CREW-1551).
     const candidatesWt = !named && cfg.routes.length > 1 ? cfg.routes.filter((r) => r.enabled) : [route];
@@ -5576,12 +5580,12 @@ switch (command) {
       });
     }
     const pickedWt = pickWorktreeRoute(Number(nWt), lookedWt);
-    if ('error' in pickedWt) { process.stderr.write(`worktree: ${pickedWt.error}\n`); process.exit(2); }
+    if ('error' in pickedWt) { die('crew worktree', pickedWt.error, '`crew doctor`'); }
     const routeWt = candidatesWt.find((r) => r.route === pickedWt.route) ?? route;
     ticketWt = hitsWt.get(pickedWt.route);
     if (!ticketWt) process.exit(2);
     const repoWt = (await resolvedRepos(routeWt)).find((r) => r.id === ticketWt.repo_id) ?? (await resolvedRepos(routeWt))[0];
-    if (!repoWt) { process.stderr.write('worktree: this route has no repository\n'); process.exit(2); }
+    if (!repoWt) { die('crew worktree', 'this route has no repository', '`crew repos add`'); }
     const roleWt = positional.find((p) => p === 'dev' || p === 'design' || p === 'qa');
     // CREW-1775: uncommitted changes in this ticket's worktree are not a
     // stranger's when the runner itself recorded that a run on this seat was
@@ -6048,7 +6052,7 @@ switch (command) {
     emit.enter('select');   // closest existing step — this changes selection, not a worktree
     const rawUnassign = positional[2] ?? positional[1];
     const n = rawUnassign ? parseTicketNumber(rawUnassign) : null;
-    if (!n) { process.stderr.write('unassign: need a ticket number (326, ISSUE-326, or TABL-326)\n'); process.exit(2); }
+    if (!n) { die('crew unassign', 'need a ticket number (326, ISSUE-326, or TABL-326)', '`crew unassign 326`'); }
     const tracker3 = new Tracker(route, cfg.ship);
     const c = tracker3.contract;
     const key = `ISSUE-${n}`;
@@ -6520,8 +6524,7 @@ switch (command) {
       process.exit(2);
     }
     if (!route.resolved) {
-      process.stderr.write(`crew selftest: route ${route.route} is not connected — run \`crew connect\` first\n`);
-      process.exit(2);
+      die('crew selftest', `route ${route.route} is not connected`, '`crew connect`');
     }
     const seatKey = await resolveSeatKey(route, 'dev');
     const keychainDown = seatKey.kind === 'ship' && /keychain/i.test(seatKey.reason);
@@ -6570,8 +6573,7 @@ switch (command) {
     const only = value('route') ?? positional[1];
     const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
     if (only && wanted.length === 0) {
-      process.stderr.write(`crew whoami: no route "${only}" (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
-      process.exit(2);
+      die('crew whoami', `no route "${only}" (have: ${cfg.routes.map((r) => r.route).join(', ')})`, '`crew status`');
     }
     const report = await buildWhoami(wanted, {
       userAgent: cfg.ship.userAgent,
@@ -6588,8 +6590,7 @@ switch (command) {
     const only = value('route') ?? positional[1];
     const wanted = only ? cfg.routes.filter((r) => r.route === only) : cfg.routes;
     if (only && wanted.length === 0) {
-      process.stderr.write(`crew projects: no route "${only}" (have: ${cfg.routes.map((r) => r.route).join(', ')})\n`);
-      process.exit(2);
+      die('crew projects', `no route "${only}" (have: ${cfg.routes.map((r) => r.route).join(', ')})`, '`crew status`');
     }
     const report = await buildProjectsReport(
       wanted.map((r) => ({ route: r.route, areaId: r.resolved?.areaId })),

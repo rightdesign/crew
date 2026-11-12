@@ -6,12 +6,15 @@ import {
 } from './agents.ts';
 import { syncPersonaAvatars, describeAvatarOutcome } from './persona-avatars.ts';
 import { syncSkills, skillMarkerWarnings, describeSkillSyncOutcome } from './skills.ts';
+import { summarizeOutcomes } from './cli-output.ts';
 
 export interface AgentsSyncRunOptions {
   userAgent?: string;
   stateDir: string;
   dryRun?: boolean;
   force?: boolean;
+  /** List every row, including those already in sync (`--verbose`); otherwise they collapse to one line. */
+  verbose?: boolean;
   /** Where the outcome lines go: stdout for `crew agents sync`, stderr for `crew connect` (whose stdout is the route block). */
   say: (line: string) => void;
   /** Where a warning goes. */
@@ -54,7 +57,8 @@ export async function runAgentsSync(target: Route, o: AgentsSyncRunOptions): Pro
     personaResult = await runPersonas(true);
   }
   o.say(`route: ${target.route}`);
-  for (const p of personaResult.outcomes) o.say(describeSyncOutcome(p));
+  // CREW-3267: a series of already-in-sync rows is one line unless --verbose.
+  for (const l of summarizeOutcomes(personaResult.outcomes, describeSyncOutcome, (p) => p.action === 'unchanged', 'persona', o.verbose ?? false)) o.say(l);
   for (const l of personaResult.crewLinks) o.say(describeCrewLink(l));
   if (personaResult.releaseNote) o.say(personaResult.releaseNote);
   if (personaResult.chatNote) o.say(personaResult.chatNote);
@@ -73,7 +77,7 @@ export async function runAgentsSync(target: Route, o: AgentsSyncRunOptions): Pro
       else throw e;
     }
   }
-  for (const s of skillResult?.outcomes ?? []) o.say(describeSkillSyncOutcome(s));
+  for (const l of summarizeOutcomes(skillResult?.outcomes ?? [], describeSkillSyncOutcome, (s) => s.action === 'unchanged', 'skill', o.verbose ?? false)) o.say(l);
   for (const w of skillResult?.warnings ?? []) o.warn(`warning: ${w}`);
   // CREW-3117: bundled persona images; a failure is a warning, recorded for `crew doctor`.
   const avatarFailures: Record<string, string> = {};
