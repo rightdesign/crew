@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.150.0] — 2026-11-12
+
+- CREW-3272 crew doctor leads with what needs attention and ends with a verdict; the full report moves under --verbose
+- CREW-3280 `crew status` now prints about a dozen lines by default (what is running, what needs attention once, the five newest tickets waiting on you); `--verbose` shows the configuration and full lists.
+
 ## [0.149.6] — 2026-11-12
 
 - CREW-3276 Tests for the relay control probe's failure classifications (no user-visible change).
