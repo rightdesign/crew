@@ -161,6 +161,8 @@ export interface ResolvedIds {
    * release phase then falls back to the dev seat (see `releaseSeat()`).
    */
   releaseSeat?: string;
+  /** When `crew connect` last wrote this snapshot (ISO time, CREW-3274); doctor prints its age. */
+  connectedAt?: string;
   /**
    * The Agents row backing the release seat's Crew row (CREW-1605), written by
    * `crew agents sync`. It carries no persona prompt: it exists so the release
@@ -1063,6 +1065,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     holds,
     contract: raw.contract ?? undefined,
     ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}),
+    ...(typeof raw.connectedAt === 'string' && raw.connectedAt ? { connectedAt: raw.connectedAt } : {}),
     ...(typeof raw.releaseAgentId === 'string' && raw.releaseAgentId ? { releaseAgentId: raw.releaseAgentId } : {}),
     ...(typeof raw.role === 'string' && raw.role ? { role: raw.role } : {}),
     ...(Array.isArray(raw.capabilityMisses) && raw.capabilityMisses.length > 0

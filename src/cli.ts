@@ -105,7 +105,7 @@ import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemo
 import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { repositoryEnvCount } from './repo-env.ts';
-import { gitCredentialEnv, crewCommandLine, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
+import { gitCredentialEnv, crewCommandLine, isCompiledCrew, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
 import { judgeServable, explainRefusal, lacksCheckout, cacheRepoOfTarget, mirrorRepoOfTarget, readMirrorContract, readMirrorWarmFiles, noCheckoutReleaseNote, releasesFromSandbox, skipsHostCheckout, firstReport, repoContractFor } from './mirror-contract.ts';
 import { openReleaseSandbox } from './release-sandbox.ts';
 import { sandboxImageForRun } from './sandbox-image.ts';
@@ -150,6 +150,7 @@ import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
 import { launcherExecutable, readOmlxSettings, interpretOmlxProbe, omlxModelPresent } from './launcher.ts';
+import { compareSnapshot, isStale, liveReleaseSeat, snapshotAge, staleSnapshotMessage, type SnapshotDiff } from './snapshot-staleness.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import { DoctorReport, renderDoctor, fixPhaseNothingToOffer } from './doctor-report.ts';
 import {
@@ -170,7 +171,7 @@ import {
   periscopeListEntries, formatPeriscopeList, type PeriscopeDeps, type PeriscopeDownDeps, type PeriscopeLimits, type PeriscopeRowInfo,
 } from './periscope-cmd.ts';
 import { dirname as dirOf, resolve as resolvePath } from 'node:path';
-import { isCompiledBinary } from './runtime-info.ts';
+import { isCompiledBinary, selfLaunch } from './runtime-info.ts';
 import { builtVersion, bundleStaleness, REBUILD_HINT } from './bundle-staleness.ts';
 import { ensureShipSshKeypair, sshKeygenAvailable } from './ssh-keys.ts';
 import { describeRelayProbe, probeRelayControl } from './relay-probe.ts';
@@ -1639,11 +1640,35 @@ async function installScheduler(opts: { replace?: boolean } = {}): Promise<boole
 }
 
 /**
+ * CREW-3274: how this route's connect snapshot differs from the workspace now,
+ * with the same lookups `discover()` uses. Undefined when the workspace cannot
+ * be read (offline, or the listing failed): an unchecked snapshot is never
+ * called stale, and never called fresh either.
+ */
+async function snapshotDiffFor(c: Route): Promise<SnapshotDiff | undefined> {
+  const r = c.resolved;
+  if (!r?.projectId || flag('offline')) return undefined;
+  try {
+    const models = await connectGet<Array<{ id: string; name: string }>>(
+      { baseUrl: c.baseUrl, apiKey: resolveApiKey(c), userAgent: cfg.ship.userAgent }, `/data-models?projectId=${r.projectId}`);
+    const tracker = new Tracker(c, cfg.ship);
+    const [ships, crew] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);
+    const matched = matchShipRows(ships, cfg.ship.name, doctorMachineId(cfg.ship.stateDir));
+    const row = matched.rows.length === 1 ? matched.rows[0]! : undefined;
+    return compareSnapshot(r, {
+      models,
+      releaseSeat: liveReleaseSeat(crew, row?.id),
+      shipRowHasMachineId: row && matched.hasColumn ? matched.by === 'machine_id' : undefined,
+    });
+  } catch { return undefined; }
+}
+
+/**
  * Every check `crew doctor` prints for one route, as lines, for `--fix` to
  * decide whether the route is clean. Mirrors the `doctor` report above; a
  * check that cannot even run (a tracker call that throws) counts as failed.
  */
-async function routeProblems(c: Route): Promise<{ problems: string[]; readiness: string[] }> {
+async function routeProblems(c: Route): Promise<{ problems: string[]; readiness: string[]; snapshotStale: boolean }> {
   const host = hostPlatform();
   const problems: string[] = [];
   // Release readiness (CREW-2537) is reported apart: none of it stops a poll
@@ -1687,7 +1712,8 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
   }
   // CREW-3144: the acceptor is read from the event log's status rows.
   if ((await tracker.eventLogTracksStatus()) === false) problems.push(EVENT_LOG_STATUS_UNTRACKED(tracker.contract.columns.status));
-  return { problems, readiness };
+  const diff = await snapshotDiffFor(c);
+  return { problems, readiness, snapshotStale: !!diff && isStale(diff) };
 }
 
 /** CREW-2910: this ship's `Ships.kind` on a route's workspace, null when there is no Ships table, no single matching row or no kind column. Never throws. */
@@ -1730,7 +1756,16 @@ async function doctorFix(o: { prompt: boolean; host: ReturnType<typeof hostPlatf
   const enabledSound = new Set(routes.filter((r) => r.enabled && r.hasRepos && r.problems.length === 0).map((r) => r.route));
   try {
     for (const a of plan.actions) {
-      if (a.kind === 'enable') {
+      if (a.kind === 'refresh-snapshot') {
+        if (prompter && !(await prompter.confirm(`${a.route}: the connect snapshot is out of date — run \`crew connect ${a.route}\` and reload the daemon?`, true))) continue;
+        // Same crew, same CREW_CONFIG (inherited), so the child connects the config this doctor loaded.
+        const self = selfLaunch();
+        const run = (args: string[]) => spawnSync(self.command, [...self.args, ...args], { stdio: 'inherit', cwd: process.cwd(), env: process.env });
+        const conn = run(['connect', a.route]);
+        if (conn.status !== 0) { process.stdout.write(`fix: crew connect ${a.route} exited ${conn.status ?? 'abnormally'} — snapshot not refreshed\n`); continue; }
+        const rel = run(['reload']);
+        changed.push(`refreshed the connect snapshot for ${a.route} (\`crew connect\`)${rel.status === 0 ? ' and reloaded the daemon' : '; `crew reload` failed — run it by hand'}`);
+      } else if (a.kind === 'enable') {
         if (prompter && !(await prompter.confirm(`Route ${a.route} passes every check — set enabled: true in ${cfg.configFile}?`, false))) continue;
         writeFileSync(cfg.configFile, planEnable(readFileSync(cfg.configFile, 'utf8'), a.route));
         enabledSound.add(a.route);
@@ -4817,6 +4852,7 @@ switch (command) {
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes, repoForgeHosts: found.repoForgeHosts,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
         ...(found.releaseSeat ? { releaseSeat: found.releaseSeat } : {}),
+        connectedAt: new Date().toISOString(),
         ...((found.role ?? previous?.role) ? { role: found.role ?? previous?.role } : {}),
         ...(capabilityMisses.length > 0 ? { capabilityMisses } : {}),
         ...(operator ? { operator } : {}),
@@ -7043,10 +7079,13 @@ switch (command) {
       }
       const previewProblem = await previewHostProblem(cfg);
       if (previewProblem) problems.push(previewHostFinding(previewProblem));
+      const jsonDiff = await snapshotDiffFor(route);
+      const jsonStale = jsonDiff ? staleSnapshotMessage(route.route, jsonDiff) : undefined;
+      if (jsonStale) problems.push({ severity: 'attention', kind: 'connect_snapshot_stale', route: route.route, message: jsonStale, remedy: `crew connect ${route.route} && crew reload` });
       if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
         const { settled } = await settleRepos(reposOf(route), (t) => t.name, (t) => resolveOneRepo(route, t));
         const tablePresent = flag('offline') ? undefined : (await new Tracker(route, cfg.ship).periscopesStatus().catch(() => ({ present: true }))).present;
-        problems.push(...routePeriscopeProblems({ route: route.route, hosts: true, repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })), tablePresent }));
+        problems.push(...routePeriscopeProblems({ route: route.route, hosts: true, repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })), tablePresent, snapshotStale: !!jsonDiff && isStale(jsonDiff) }));
         if (!flag('offline')) problems.push(...await duplicateLivePeriscopeProblems(route, cfg.ship));
       }
       problems.push(...attentionProblems(openShipAttention(state), problems));
@@ -7296,12 +7335,20 @@ switch (command) {
     // EPIC-077: the optional Periscopes table. Absent is a legitimate shape;
     // a present table missing a column the crew writes is named by column.
     const periscopes = await tracker.periscopesStatus();
+    // CREW-3274: the periscopes and release-seat lines below read the connect
+    // snapshot. Compare it with the workspace once, so a snapshot that predates
+    // a table is reported as old rather than the workspace as lacking it.
+    const snapDiff = await snapshotDiffFor(route);
+    const snapStale = !!snapDiff && isStale(snapDiff);
+    const offlineNote = flag('offline') ? ' (from the last connect; not checked against the workspace under --offline)' : '';
+    if (flag('verbose')) R.line(`connect snapshot: taken ${snapshotAge(route.resolved?.connectedAt)} ago${offlineNote}\n`);
+    if (snapDiff && snapStale) R.line(`connect snapshot: WARN ${staleSnapshotMessage(route.route, snapDiff)}\n`);
     // CREW-2857: what hosting needs on a route that opted in. A missing table is a
     // blocker for hosting only; the rest of the crew carries on, so no exit code.
     if (cfg.routes.some((x) => x.route === route.route && x.enabled && x.hostPeriscopes)) {
       const { settled } = await settleRepos(reposOf(route), (t) => t.name, (t) => resolveOneRepo(route, t));
       for (const f of routePeriscopeProblems({
-        route: route.route, hosts: true, tablePresent: periscopes.present,
+        route: route.route, hosts: true, tablePresent: flag('offline') ? undefined : periscopes.present, snapshotStale: snapStale,
         repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })),
       })) {
         R.line(`periscopes:      ${f.severity.toUpperCase()} ${f.message}\n`);
@@ -7313,8 +7360,10 @@ switch (command) {
       }
     }
     R.line(
-      !periscopes.present
-        ? 'periscopes:      Periscopes table absent — this workspace cannot host periscopes\n'
+      snapStale && snapDiff!.added.includes('Periscopes')
+        ? 'periscopes:      Periscopes table is in the workspace but not in the connect snapshot — see the connect snapshot line above\n'
+        : !periscopes.present
+        ? `periscopes:      ${flag('offline') ? `no Periscopes table in the snapshot${offlineNote}` : 'Periscopes table absent — this workspace cannot host periscopes'}\n`
         : periscopes.missing.length === 0
           ? `periscopes:      Periscopes table present (${periscopes.modelId})\n`
           : `periscopes:      Periscopes table present (${periscopes.modelId}) but missing ${periscopes.missing.join(', ')} — update the Issues template\n`,
@@ -7324,6 +7373,10 @@ switch (command) {
     R.line(
       route.resolved?.releaseSeat
         ? 'release seat:    this ship has its own Release Crew row\n'
+        : snapDiff?.releaseSeatNew
+          ? 'release seat:    the workspace has this ship\'s Release row but the connect snapshot does not — see the connect snapshot line above\n'
+        : flag('offline')
+          ? `release seat:    none in the snapshot${offlineNote}\n`
         : 'release seat:    none — release comments are credited to the dev seat; run `crew connect` once the Crew table has this ship\'s row\n',
     );
 

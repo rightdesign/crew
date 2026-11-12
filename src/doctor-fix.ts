@@ -26,9 +26,12 @@ export interface RouteHealth {
    * make a route unsound; `planFix` only mentions them.
    */
   readiness?: string[];
+  /** The route's connect snapshot is out of date (CREW-3274); a warning, never one of `problems`. */
+  snapshotStale?: boolean;
 }
 
 export type FixAction =
+  | { kind: 'refresh-snapshot'; route: string }
   | { kind: 'enable'; route: string }
   | { kind: 'install' };
 
@@ -57,6 +60,10 @@ export function planFix(f: FixFacts): FixPlan {
   const actions: FixAction[] = [];
   const notes: string[] = [];
   for (const r of f.routes) {
+    // First, so a route enabled in the same pass is enabled against fresh ids.
+    if (r.snapshotStale) actions.push({ kind: 'refresh-snapshot', route: r.route });
+  }
+  for (const r of f.routes) {
     if (!r.enabled && sound(r)) {
       actions.push({ kind: 'enable', route: r.route });
       const gaps = r.readiness ?? [];
@@ -83,18 +90,22 @@ export function planFix(f: FixFacts): FixPlan {
  */
 export async function gatherHealth(
   c: { route: string; enabled: boolean; hasRepos: boolean },
-  check: () => Promise<string[] | { problems: string[]; readiness: string[] }>,
+  check: () => Promise<string[] | { problems: string[]; readiness: string[]; snapshotStale?: boolean }>,
 ): Promise<RouteHealth> {
   let problems: string[];
   let readiness: string[] = [];
+  let snapshotStale = false;
   try {
     const r = await check();
     if (Array.isArray(r)) problems = r;
-    else ({ problems, readiness } = r);
+    else {
+      ({ problems, readiness } = r);
+      snapshotStale = r.snapshotStale === true;
+    }
   } catch (e) {
     problems = [`checks could not run: ${e instanceof Error ? e.message : String(e)}`];
   }
-  return { route: c.route, enabled: c.enabled, hasRepos: c.hasRepos, problems, readiness };
+  return { route: c.route, enabled: c.enabled, hasRepos: c.hasRepos, problems, readiness, ...(snapshotStale ? { snapshotStale } : {}) };
 }
 
 /** `crew doctor <route> --fix` considers only the named route; with none named, every route. */

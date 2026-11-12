@@ -56,6 +56,8 @@ export function routePeriscopeProblems(o: {
   repos: { name: string; hasPreviewHook: boolean }[];
   /** undefined when the table was not checked (offline). */
   tablePresent?: boolean;
+  /** The connect snapshot is out of date (CREW-3274): `tablePresent` is then not a fact about the workspace, and the stale-snapshot finding speaks instead. */
+  snapshotStale?: boolean;
 }): PeriscopeProblem[] {
   if (!o.hosts) return [];
   const out: PeriscopeProblem[] = [];
@@ -65,9 +67,9 @@ export function routePeriscopeProblems(o: {
         message: `${o.route}/${r.name}: hostPeriscopes is on but ${r.name} declares no \`preview\` hook, so it cannot be opened as a periscope` });
     }
   }
-  if (o.tablePresent === false) {
+  if (o.tablePresent === false && !o.snapshotStale) {
     out.push({ severity: 'blocker', kind: 'periscopes_table_missing', route: o.route,
-      message: `${o.route}: hostPeriscopes is on but this workspace has no Periscopes table — update the Issues template and run \`crew connect\`` });
+      message: `${o.route}: hostPeriscopes is on but this workspace has no Periscopes table (confirmed against the workspace) — a workspace admin updates the Issues app to add it, then run \`crew connect\`` });
   }
   return out;
 }
