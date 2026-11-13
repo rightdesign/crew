@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.153.0] — 2026-11-13
+
+- CREW-3329 Tool events in the mapped stream carry the call's arguments as detail and description.
+
 ## [0.152.4] — 2026-11-13
 
 - CREW-3326 `crew connect` no longer creates a duplicate seat Crew row when a seat's row was renamed.
