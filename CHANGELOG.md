@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.152.1] — 2026-11-13
+
+- CREW-3323 `crew status` shows a running agent's ticket by its tag (TABL-3321) instead of its issue id (ISSUE-3321).
+
 ## [0.152.0] — 2026-11-13
 
 - CREW-3310 `crew repos prompt` prints the repository setup prompt, the docs site serves it as raw text at /repo-setup-prompt.md, and the adopt skill shares its procedure instead of restating it.
