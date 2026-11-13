@@ -94,7 +94,7 @@ test('stream mapping: reasoning, message, command, file change, MCP call, search
   const item = (i: object) => mapCodexLine({ type: 'item.completed', item: i });
   assert.deepEqual(item({ type: 'reasoning', text: 'hm' }), [{ kind: 'thought', text: 'hm' }]);
   assert.deepEqual(item({ type: 'agent_message', text: 'hi' }), [{ kind: 'text', text: 'hi' }]);
-  assert.deepEqual(item({ type: 'command_execution', command: 'git status' }), [{ kind: 'tool', tool: 'command', target: 'git' }]);
+  assert.deepEqual(item({ type: 'command_execution', command: 'git status' }), [{ kind: 'tool', tool: 'command', target: 'git', detail: 'git status' }]);
   assert.deepEqual(item({ type: 'file_change', changes: [{ path: 'a.ts' }] }), [{ kind: 'tool', tool: 'file_change', target: 'a.ts' }]);
   assert.deepEqual(item({ type: 'mcp_tool_call', server: 'tablation', tool: 'records_controller_list' }), [{ kind: 'tool', tool: 'mcp__tablation__records_controller_list' }]);
   assert.deepEqual(item({ type: 'web_search', query: 'q' }), [{ kind: 'tool', tool: 'web_search', target: 'q' }]);

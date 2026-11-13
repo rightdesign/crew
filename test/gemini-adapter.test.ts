@@ -64,7 +64,7 @@ test('fixture stream maps to events and a result', () => {
   events.push(...mapper.flush());
   assert.deepEqual(events, [
     { kind: 'text', text: 'Looking at the repo. ' },
-    { kind: 'tool', tool: 'run_shell_command', target: 'ls' },
+    { kind: 'tool', tool: 'run_shell_command', target: 'ls', detail: 'ls -la' },
     { kind: 'tool', tool: 'read_file', target: 'src/a.ts' },
     { kind: 'text', text: 'All done.' },
   ]);

@@ -18,7 +18,7 @@
 
 import type { RoleName } from '../config.ts';
 import type { StreamKindEvent, StreamResult } from '../stream.ts';
-import { toolTarget } from '../stream.ts';
+import { toolTarget, toolDetail } from '../stream.ts';
 import { ensureGeminiMcp, inspectGeminiMcp } from '../pair-install.ts';
 import type { HarnessAdapter } from '../toolchain.ts';
 import { wrapInvocation } from '../launcher.ts';
@@ -76,7 +76,11 @@ export function mapGeminiLine(line: unknown): StreamKindEvent[] {
   const obj = line as GeminiLine | null;
   if (!obj || typeof obj !== 'object') return [];
   if (obj.type === 'message' && obj.role === 'assistant' && obj.content) return [{ kind: 'text', text: obj.content }];
-  if (obj.type === 'tool_use') return [{ kind: 'tool', tool: obj.tool_name, target: toolTarget(obj.tool_name === 'run_shell_command' ? 'Bash' : obj.tool_name, obj.parameters) }];
+  if (obj.type === 'tool_use') {
+    const shell = obj.tool_name === 'run_shell_command';
+    const target = toolTarget(shell ? 'Bash' : obj.tool_name, obj.parameters);
+    return [{ kind: 'tool', tool: obj.tool_name, target, ...toolDetail(obj.parameters, { shell, target }) }];
+  }
   return [];
 }
 

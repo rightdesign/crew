@@ -1075,7 +1075,7 @@ class RunObserver {
         message: ev.kind === 'tool' ? `${ev.tool ?? 'tool'}${ev.target ? ` ${ev.target}` : ''}` : ev.kind,
         role: plan.role,
         ...(this.liveTicket ? { ticket: this.liveTicket } : {}),
-        data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}) },
+        data: { kind: ev.kind, ...(ev.text ? { text: ev.text } : {}), ...(ev.tool ? { tool: ev.tool } : {}), ...(ev.target ? { target: ev.target } : {}), ...(ev.detail ? { detail: ev.detail } : {}), ...(ev.description ? { description: ev.description } : {}) },
       };
       if (!this.muted) this.eventsSink?.write(`${JSON.stringify(e)}\n`);
       if ((ev.kind === 'thought' || ev.kind === 'text') && ev.text) {

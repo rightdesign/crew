@@ -15,6 +15,7 @@ import { rmSync, writeFileSync } from 'node:fs';
 import type { RoleName } from '../config.ts';
 import { profileFor, type CapabilityProfile } from '../capability.ts';
 import type { StreamKindEvent, StreamResult } from '../stream.ts';
+import { shellTarget, toolDetail, TOOL_DETAIL_MAX } from '../stream.ts';
 import type { HarnessAdapter, McpRegistrationOpts, McpRegistration } from '../toolchain.ts';
 import type { PairInstaller } from '../pair-install.ts';
 import { wrapInvocation, selectsCustomModelProvider } from '../launcher.ts';
@@ -75,7 +76,13 @@ export function commandTarget(command: string | undefined): string | undefined {
   if (!command) return undefined;
   const wrapped = /^(?:\S*\/)?(?:ba|z|da)?sh\s+-\w*c\s+(['"]?)([\s\S]*)\1$/.exec(command.trim());
   const inner = (wrapped ? wrapped[2]! : command).trim();
-  return inner.split(/\s+/)[0] || undefined;
+  return shellTarget(inner);
+}
+
+/** The shell command with any `sh -lc` wrapper removed, for `detail`. */
+function innerCommand(command: string): string {
+  const wrapped = /^(?:\S*\/)?(?:ba|z|da)?sh\s+-\w*c\s+(['"]?)([\s\S]*)\1$/.exec(command.trim());
+  return (wrapped ? wrapped[2]! : command).trim();
 }
 
 /**
@@ -89,8 +96,15 @@ export function mapCodexLine(line: unknown): StreamKindEvent[] {
   switch (it.type) {
     case 'reasoning': return it.text ? [{ kind: 'thought', text: it.text }] : [];
     case 'agent_message': return it.text ? [{ kind: 'text', text: it.text }] : [];
-    case 'command_execution': return [{ kind: 'tool', tool: 'command', target: commandTarget(it.command) }];
-    case 'file_change': return [{ kind: 'tool', tool: 'file_change', target: it.changes?.[0]?.path }];
+    case 'command_execution': {
+      const detail = it.command ? toolDetail({ command: innerCommand(it.command) }, { shell: true }) : {};
+      return [{ kind: 'tool', tool: 'command', target: commandTarget(it.command), ...detail }];
+    }
+    case 'file_change': {
+      const paths = (it.changes ?? []).map((c) => c.path).filter((p): p is string => !!p);
+      const rest = paths.slice(1);
+      return [{ kind: 'tool', tool: 'file_change', target: paths[0], ...(rest.length ? { detail: rest.join('\n').slice(0, TOOL_DETAIL_MAX) } : {}) }];
+    }
     case 'mcp_tool_call': return [{ kind: 'tool', tool: `mcp__${it.server ?? 'mcp'}__${it.tool ?? 'tool'}` }];
     case 'web_search': return [{ kind: 'tool', tool: 'web_search', target: it.query }];
     default: return [];

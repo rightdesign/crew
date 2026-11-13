@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapStreamLine, extractResult, toolTarget, extractTurnTokens } from '../src/stream.ts';
+import { mapStreamLine, extractResult, toolTarget, extractTurnTokens, toolDetail, TOOL_DETAIL_MAX, TOOL_DETAIL_VALUE_MAX } from '../src/stream.ts';
 
 test('a thinking block maps to a thought event, carrying the thinking text verbatim', () => {
   const line = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'hmm' }] } };
@@ -17,7 +17,7 @@ test('a tool_use block carries the tool name and a short target', () => {
     type: 'assistant',
     message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls -la' } }] },
   };
-  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Bash', target: 'ls', input: { command: 'ls -la' } }]);
+  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Bash', target: 'ls', detail: 'ls -la', input: { command: 'ls -la' } }]);
 });
 
 test('an Edit tool_use targets the file path, not the command', () => {
@@ -25,7 +25,7 @@ test('an Edit tool_use targets the file path, not the command', () => {
     type: 'assistant',
     message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/a/b.ts', old_string: 'x' } }] },
   };
-  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Edit', target: '/a/b.ts', input: { file_path: '/a/b.ts', old_string: 'x' } }]);
+  assert.deepEqual(mapStreamLine(line), [{ kind: 'tool', tool: 'Edit', target: '/a/b.ts', detail: 'old_string: x', input: { file_path: '/a/b.ts', old_string: 'x' } }]);
 });
 
 test('a message with several blocks yields several events, in order', () => {
@@ -117,4 +117,37 @@ test('extractPrefixTokens is input plus cache-creation tokens of an assistant li
   assert.equal(extractPrefixTokens(line), 21000);
   assert.equal(extractPrefixTokens({ type: 'assistant', message: { content: [] } }), undefined);
   assert.equal(extractPrefixTokens({ type: 'user', message: { usage: { input_tokens: 5 } } }), undefined);
+});
+
+test('a shell call carries the whole command as detail and its own description', () => {
+  const input = { command: 'cd /repo && git status --short', description: 'Show changes' };
+  const [ev] = mapStreamLine({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input }] } });
+  assert.equal(ev!.target, 'git');
+  assert.equal(ev!.detail, 'cd /repo && git status --short');
+  assert.equal(ev!.description, 'Show changes');
+});
+
+test('a non-shell call renders key: value lines and skips the value target shows', () => {
+  const r = toolDetail({ file_path: '/a.ts', old_string: 'x', replace_all: true }, { target: '/a.ts' });
+  assert.equal(r.detail, 'old_string: x\nreplace_all: true');
+  assert.equal(r.description, undefined);
+  assert.deepEqual(toolDetail({ file_path: '/a.ts' }, { target: '/a.ts' }), {});
+});
+
+test('an oversized argument is cut with an ellipsis and detail never exceeds the cap', () => {
+  const one = toolDetail({ body: 'x'.repeat(5000) }).detail!;
+  assert.equal(one.length, 'body: '.length + TOOL_DETAIL_VALUE_MAX);
+  assert.ok(one.endsWith('…'));
+  const many: Record<string, string> = {};
+  for (let i = 0; i < 10; i++) many[`k${i}`] = 'y'.repeat(2000);
+  const all = toolDetail(many).detail!;
+  assert.equal(all.length, TOOL_DETAIL_MAX);
+  assert.ok(all.endsWith('…'));
+});
+
+test('a shell command starting with a directory change targets the command after it', () => {
+  assert.equal(toolTarget('Bash', { command: 'cd /a/b && pnpm test' }), 'pnpm');
+  assert.equal(toolTarget('Bash', { command: 'cd "/a b"; git log' }), 'git');
+  assert.equal(toolTarget('Bash', { command: 'cd /a && cd /b && ls' }), 'ls');
+  assert.equal(toolTarget('Bash', { command: 'cd /a/b' }), 'cd');
 });
