@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.152.3] — 2026-11-13
+
+- CREW-3327 Fixed a flaky sandbox-runner test that failed the release test gate under load.
+
 ## [0.152.2] — 2026-11-13
 
 - CREW-3318 The crew state folder no longer grows without bound: old event logs and run streams are swept on every fleet release, and ship.stateMaxBytes (default 2 GB) caps what is kept.
