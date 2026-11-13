@@ -104,13 +104,20 @@ test('secrets reach the sandbox through --env-from, never argv', async () => {
 test('the sidecar names the sandbox and a client pid; runner events carry timings', async () => {
   const r = rig();
   const plan = r.plan(LINGER);
-  writeFileSync(join(r.dir, 'never'), '');
   const done = spawnAgent(plan, r.emitter());
-  await new Promise((res) => setTimeout(res, 800));
-  const sc = readRunSidecar(plan.streamPath)!;
-  assert.equal(sc.runner, 'sandbox');
-  assert.match(sc.sandbox!, /^crew-[a-z0-9]{14}$/);
-  assert.ok(sc.pid > 0);
+  try {
+    // The sidecar lands only once the sandbox is created and cloned, which under a loaded gate can
+    // take far longer than any fixed sleep (CREW-3327), so wait for it rather than guess.
+    let sc: RunSidecar | null = null;
+    for (let i = 0; i < 400 && !(sc = readRunSidecar(plan.streamPath)); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.ok(sc, 'the sidecar was written while the run lingered');
+    assert.equal(sc.runner, 'sandbox');
+    assert.match(sc.sandbox!, /^crew-[a-z0-9]{14}$/);
+    assert.ok(sc.pid > 0);
+  } finally {
+    // Release the lingering agent even when an assertion threw, or the run (and the suite) hangs.
+    writeFileSync(join(r.dir, 'never'), '');
+  }
   await done;
 });
 
