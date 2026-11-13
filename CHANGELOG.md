@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.152.0] — 2026-11-13
+
+- CREW-3310 `crew repos prompt` prints the repository setup prompt, the docs site serves it as raw text at /repo-setup-prompt.md, and the adopt skill shares its procedure instead of restating it.
+
 ## [0.151.3] — 2026-11-12
 
 - CREW-3307 A hand-off bounce note is always delivered (shortened to fit, or posted as a comment), and a bounce whose note cannot be delivered leaves the ticket at fixed instead of looping the seat.
