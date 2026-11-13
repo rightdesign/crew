@@ -155,7 +155,7 @@ import { compareSnapshot, isStale, liveReleaseSeat, snapshotAge, staleSnapshotMe
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import { DoctorReport, renderDoctor, fixPhaseNothingToOffer } from './doctor-report.ts';
 import {
-  resolve as gitResolve, worktrees, git, gitOk, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
+  resolve as gitResolve, worktrees, git, gitOk, probeGit, syncState, fastForward, fetchRemote, branchForIssue, worktreeForNumber,
   remoteConfigured, remoteBranchExists, deleteRemoteBranch, findKeyInRange, firstReleaseTagContaining,
   ensureRepoCheckout, acquireCheckoutLock, originUrlOf, setCloneRecorder, setForgeTokenHosts, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
@@ -4186,7 +4186,19 @@ switch (command) {
         break;
       }
       const target = resolvePath(addPath.replace(/^~(?=\/|$)/, homedir()));
-      const top = existsSync(target) ? gitOk(target, ['rev-parse', '--show-toplevel']) : null;
+      if (!existsSync(target)) throw new ReposError(`${target} does not exist`);
+      // CREW-3332: only git's own "not a git repository" answer means the folder
+      // is not a checkout; any other failure (git unrunnable, an ownership or
+      // permission refusal, a broken .git) is git's, and its message is kept.
+      let top: string;
+      try {
+        top = git(target, ['rev-parse', '--show-toplevel']);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (/not a git repository/i.test(msg)) throw new ReposError(`${target} is not a git checkout`);
+        const line = msg.replace(/^git rev-parse --show-toplevel:\s*/, '').split('\n').find((l) => l.trim()) ?? msg;
+        throw new ReposError(`git failed in ${target}, so it could not be checked: ${line.trim()}`);
+      }
       if (!top) throw new ReposError(`${target} is not a git checkout`);
       const origin = originOf(top);
       const plan = planRepoAdd({
@@ -7097,6 +7109,11 @@ switch (command) {
         problems.push(...routePeriscopeProblems({ route: route.route, hosts: true, repos: settled.map((r) => ({ name: r.name, hasPreviewHook: !!r.config.hooks.preview })), tablePresent, snapshotStale: !!jsonDiff && isStale(jsonDiff) }));
         if (!flag('offline')) problems.push(...await duplicateLivePeriscopeProblems(route, cfg.ship));
       }
+      // CREW-3332: git on the scheduler PATH that cannot run (the text report's `git:` line says the same).
+      const jsonGit = findOnPath('git', doctorSchedulerPath) ? probeGit({ ...process.env, PATH: doctorSchedulerPath }) : undefined;
+      if (jsonGit && !jsonGit.ok) {
+        problems.push({ severity: 'blocker', kind: 'git_unrunnable', message: `git failed to run: ${jsonGit.detail}`, remedy: 'fix the git on the scheduler PATH (on macOS, install the Xcode command line tools), then re-run `crew doctor`' });
+      }
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
       process.stdout.write(`${JSON.stringify({ offline: flag('offline'), pushAuth, tools: toolRows, daemon: daemonLiveness, problems, passed }, null, 2)}\n`);
@@ -7570,7 +7587,12 @@ switch (command) {
     if (cfg.ship.forges) R.line(formatPushAuth('credential helper', probeCredentialHelper(crewCommandLine())).replace('push auth credential helper:', 'credential helper:'.padEnd(19)));
     for (const p of pushAuth) R.line(formatPushAuth(`${p.repo}`, p.result), { repo: p.repo });
     for (const t of toolRows) R.line(formatToolCheck(t));
-    R.line(`git:               ${gitPath ? `OK (${gitPath})` : 'NOT FOUND on the scheduler PATH'}\n`);
+    // CREW-3332: finding git on PATH does not mean it runs (a broken macOS shim is found and exits non-zero).
+    const gitProbe = gitPath ? probeGit({ ...process.env, PATH: schedulerPath }) : undefined;
+    const gitBroken = gitProbe && !gitProbe.ok ? gitProbe.detail : undefined;
+    R.line(
+      `git:               ${!gitPath ? 'NOT FOUND on the scheduler PATH' : gitBroken !== undefined ? `FAILED to run (${gitPath}): ${gitBroken}` : `OK (${gitPath})`}\n`,
+    );
     if (!allBinsFound || !gitPath) {
       R.line(
         `                   scheduler PATH is ${schedulerPath} — ` +

@@ -80,6 +80,26 @@ export function gitOk(cwd: string, args: string[]): string | null {
   try { return git(cwd, args); } catch { return null; }
 }
 
+/**
+ * Whether the `git` first on `env.PATH` can run at all (CREW-3332).
+ *
+ * `gitOk` collapses every failure to null, so a git that cannot execute (the
+ * macOS `/usr/bin/git` shim with no working developer tools) looks the same as
+ * "not a repository" and `crew repos add` blamed the folder. `git --version`
+ * needs no repository, so a failure here is the binary's own, and `detail` is
+ * the error text the user needs.
+ */
+export function probeGit(env: NodeJS.ProcessEnv = process.env): { ok: true; version: string } | { ok: false; detail: string } {
+  try {
+    const out = execFileSync('git', ['--version'], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, version: out.trim() };
+  } catch (e) {
+    const err = e as { stderr?: unknown; stdout?: unknown; message: string };
+    const why = [err.stderr, err.stdout].map(streamText).filter(Boolean).join(' / ');
+    return { ok: false, detail: why || err.message.trim() };
+  }
+}
+
 /** The committer date (strict ISO 8601) of `sha`, or null when it can't be read (unknown sha, no checkout). */
 export function commitDate(cwd: string, sha: string): string | null {
   const out = gitOk(cwd, ['show', '-s', '--format=%cI', sha]);
