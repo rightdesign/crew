@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.153.1] — 2026-11-13
+
+- CREW-3332 crew repos add names git's error when git refuses a folder (ownership, permission, broken .git) instead of saying it is not a checkout; crew doctor flags a git that cannot run.
+
 ## [0.153.0] — 2026-11-13
 
 - CREW-3329 Tool events in the mapped stream carry the call's arguments as detail and description.
