@@ -432,6 +432,15 @@ export class Tracker {
     });
   }
 
+  /** Tickets by `issue_id` (CREW-3323: resolving a run's key to its display tag). */
+  async ticketsByKeys(keys: string[]): Promise<Ticket[]> {
+    if (keys.length === 0) return [];
+    return this.client.records.list<Ticket>(this.models.issues, {
+      filters: encodeFilters([{ columnName: this.contract.columns.key, operator: 'IN', value: keys }]),
+      limit: 500,
+    });
+  }
+
   async ticket(id: string): Promise<Ticket> {
     return this.client.records.get<Ticket>(this.models.issues, id);
   }

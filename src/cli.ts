@@ -6708,7 +6708,7 @@ switch (command) {
     const shipRows = await statusTracker.shipRows();
     const engagedTicketIds = shipRows.map((s) => s.engaged_ticket_id).filter((id): id is string => !!id);
     const engagedTickets = engagedTicketIds.length ? await statusTracker.ticketsByIds(engagedTicketIds) : [];
-    const issueLabelById = new Map(engagedTickets.map((t) => [t.id, t.issue_id]));
+    const issueLabelById = new Map(engagedTickets.map((t) => [t.id, displayKey(t)]));
 
     // What a person owes (CREW-1402). A board that cannot be read leaves the
     // block out rather than failing `status`, which is also a health check.
@@ -6727,6 +6727,15 @@ switch (command) {
         .map((t) => [t.id, t.title ?? null] as const),
     );
     const lastRuns = lastRunsBySeat(cfg.ship.stateDir);
+    // CREW-3323: a run's `ticket` is whichever key the agent named (the brief's `ISSUE-NNN`); resolve it to the
+    // display tag (`TABL-NNN`) here, at the status boundary. The sidecar and lookups stay on the issue_id.
+    const wantedKeys = [...new Set([...runs.map((x) => x.ticket), ...[...lastRuns.values()].map((l) => l.ticket)].filter((k): k is string => !!k))];
+    const tagByKey = new Map<string, string>();
+    for (const t of [
+      ...(await statusTracker.ticketsByIds([...new Set(runs.map((x) => x.ticketRecordId).filter((id): id is string => !!id))]).catch(() => [])),
+      ...(await statusTracker.ticketsByKeys(wantedKeys).catch(() => [])),
+    ]) tagByKey.set(t.issue_id, displayKey(t));
+    const tagOf = (k: string | null | undefined): string | null => (k ? tagByKey.get(k) ?? k : null);
     const periscopes = await periscopesForStatus(cfg.ship.stateDir);
     // CREW-3248: a run's preview is its ticket's periscope, when that one is serving.
     const runPreviews = new Map(periscopes.filter((p) => p.serving).map((p) => [p.ticketRecordId, p.url] as const));
@@ -6763,7 +6772,7 @@ switch (command) {
           // Additive (CREW-2822): how many runs this seat has live right now.
           running: runs.filter((x) => x.role === r && x.route === routeSlug(route.route)).length,
           // Additive (CREW-3247): this seat's newest finished run on this ship, or null.
-          lastRun: ((l) => (l ? { ticket: l.ticket, startedAt: l.startedAt, finishedAt: l.finishedAt, outcome: l.outcome, exitCode: l.exitCode } : null))(lastRuns.get(`${routeSlug(route.route)}/${r}`)),
+          lastRun: ((l) => (l ? { ticket: tagOf(l.ticket), startedAt: l.startedAt, finishedAt: l.finishedAt, outcome: l.outcome, exitCode: l.exitCode } : null))(lastRuns.get(`${routeSlug(route.route)}/${r}`)),
         };
       });
       process.stdout.write(`${JSON.stringify({
@@ -6809,7 +6818,7 @@ switch (command) {
           seats,
         },
         // Additive (CREW-2822): every live run on this ship. `version` stays 1.
-        runs: runs.map((x) => describeRun(x, route, seatIds, undefined, { titles: runTitles, previews: runPreviews })),
+        runs: runs.map((x) => describeRun(x, route, seatIds, undefined, { titles: runTitles, previews: runPreviews, tags: tagByKey })),
         // Additive (CREW-2857): every live periscope on this ship, from its local record. `version` stays 1.
         periscopes,
         watermark: state.watermark(routeSlug(route.route)),
@@ -6898,7 +6907,7 @@ switch (command) {
     const reloadWaitingAt = readReloadRequestedAt(cfg.ship.stateDir);
     const lastRunView: StatusLastRun[] = [...lastRuns.values()]
       .filter((l) => l.route === routeSlug(route.route))
-      .map((l) => ({ role: l.role, ticket: l.ticket, finishedAt: l.finishedAt, outcome: l.outcome }));
+      .map((l) => ({ role: l.role, ticket: tagOf(l.ticket), finishedAt: l.finishedAt, outcome: l.outcome }));
     for (const line of renderStatus({
       ship: { name: cfg.ship.name, platform: cfg.ship.platform },
       route: { name: route.route, dir: route.dir, enabled: route.enabled },
@@ -6913,7 +6922,7 @@ switch (command) {
       watermark: String(state.watermark(routeSlug(route.route))),
       projects: projects.map((p) => p.label),
       reloadRequestedSecondsAgo: reloadWaitingAt === null ? null : Math.max(0, Math.round((Date.now() - reloadWaitingAt) / 1000)),
-      runs: runs.map((x) => ({ role: x.role, ticket: x.ticket, repo: x.repo, pid: x.pid, spawnedAt: x.spawnedAt, deadline: x.deadline })),
+      runs: runs.map((x) => ({ role: x.role, ticket: tagOf(x.ticket), repo: x.repo, pid: x.pid, spawnedAt: x.spawnedAt, deadline: x.deadline })),
       lastRuns: lastRunView,
       attention: shipAttention.map((i) => ({ kind: i.kind, message: i.message, since: i.since })),
       waiting: todo.map((i) => ({

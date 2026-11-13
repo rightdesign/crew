@@ -97,6 +97,11 @@ test('describeRun reports the status entry, with the seat only for this route', 
   // CREW-3247: title from the board, and past-deadline attention.
   const late = describeRun({ ...run, deadline: '2026-11-01T05:00:00.000Z' }, route, {}, undefined, { titles: new Map([['rec-1', 'Fix it']]), now: Date.parse('2026-11-01T06:00:00.000Z') });
   assert.deepEqual([late.ticketTitle, late.attention], ['Fix it', 'past_deadline']);
+  // CREW-3323: the run's key resolves to the board's display tag; an unknown key is left alone.
+  assert.deepEqual(
+    [describeRun(run, route, {}, undefined, { tags: new Map([['CREW-1', 'TABL-1']]) }).ticket, describeRun(run, route, {}, undefined, { tags: new Map() }).ticket],
+    ['TABL-1', 'CREW-1'],
+  );
   // CREW-3248: a serving periscope's URL for the run's ticket.
   assert.equal(describeRun(run, route, {}, undefined, { previews: new Map([['rec-1', 'https://p.example']]) }).previewUrl, 'https://p.example');
   // CREW-3119: open stdin counts only while the process holding it is alive.

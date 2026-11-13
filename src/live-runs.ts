@@ -122,7 +122,7 @@ export function describeRun(
   worktreeOf: (repoDir: string, num: string) => string | null = (d, n) => {
     try { return worktreeForNumber(d, n)?.path ?? null; } catch { return null; }
   },
-  o: { titles?: ReadonlyMap<string, string | null>; previews?: ReadonlyMap<string, string>; now?: number } = {},
+  o: { titles?: ReadonlyMap<string, string | null>; previews?: ReadonlyMap<string, string>; tags?: ReadonlyMap<string, string>; now?: number } = {},
 ) {
   // The sidecar names the route by slug; a seat id is only known for this route's own runs.
   const ownRoute = run.route === routeSlug(route.route);
@@ -131,7 +131,8 @@ export function describeRun(
   return {
     role: run.role,
     seat: ownRoute ? seatIds[run.role] ?? null : null,
-    ticket: run.ticket,
+    // CREW-3323: the display tag when the board knows one; `num` and matching stay on the key the run carries.
+    ticket: run.ticket ? o.tags?.get(run.ticket) ?? run.ticket : run.ticket,
     ticketRecordId: run.ticketRecordId,
     repo: run.repo ?? null,
     worktree: repoDir && num ? worktreeOf(repoDir, num) : null,
