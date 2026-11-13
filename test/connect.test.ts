@@ -810,6 +810,35 @@ test('discover() creates a new, ship-scoped Crew row for a lane with no row at a
   assert.deepEqual(createCrew?.body, { name: 'Developer agent', ship_id: 'ship-1', agent_id: 'agent-dev' });
 });
 
+test('discover() keeps a renamed seat row via its agent_id instead of creating a duplicate (CREW-3326)', async (t) => {
+  const { restore, calls } = mockFetchCalls({
+    '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
+      { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }],
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [{ id: 'agent-dev', name: 'Developer' }],
+    '/api/data-models/crew-model/records?limit=200': [
+      { id: 'renamed-dev', name: 'Torchic', ship_id: 'ship-1', agent_id: 'agent-dev' },
+    ],
+    '/api/data-models/crew-model/records': { id: 'seat-new' },
+  });
+  t.after(restore);
+
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar', ship: { name: "Brad's MacBook" },
+  });
+  assert.equal(found.seats.dev, 'renamed-dev');
+  assert.ok(!found.provisioning.includes('created Crew row for the dev seat'));
+  const devCreates = calls.filter((c) => c.method === 'POST' && c.key === '/api/data-models/crew-model/records'
+    && (c.body as { name?: string })?.name === 'Developer agent');
+  assert.equal(devCreates.length, 0);
+});
+
 test('discover() skips all provisioning on a dry run — writes nothing, falls back to the unscoped search (ISSUE-610)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },

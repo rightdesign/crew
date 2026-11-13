@@ -438,9 +438,21 @@ export async function listWorkspaces(o: AuthOptions): Promise<WorkspaceOption[]>
 
 const eq = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.trim().toLowerCase();
 
-/** Names a role by what its Crew row is called, so any naming works. */
-function seatFor(rows: Array<{ id: string; name?: string | null }>, role: string): string | undefined {
-  const r = rows.find((x) => (x.name ?? '').toLowerCase().includes(role.toLowerCase()));
+/**
+ * Names a role's Crew row. A row linked to the role's Agent persona
+ * (`agentId`) wins however it was renamed (CREW-3326: a user renaming a seat
+ * to tell ships apart must not make `connect` create a second one); rows with
+ * no `agent_id` fall back to the name containing the role word.
+ */
+function seatFor(
+  rows: Array<{ id: string; name?: string | null; agent_id?: string | null }>,
+  role: string,
+  agentId?: string,
+): string | undefined {
+  const linked = agentId ? rows.find((x) => x.agent_id === agentId) : undefined;
+  if (linked) return linked.id;
+  const byName = (x: { name?: string | null }) => (x.name ?? '').toLowerCase().includes(role.toLowerCase());
+  const r = rows.find((x) => !x.agent_id && byName(x)) ?? rows.find(byName);
   return r?.id;
 }
 
@@ -853,7 +865,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // agents.ts), not one of this project's own data models, so it is looked
   // up by its fixed tableName rather than through `find()` above.
   let agentIdFor: (role: RoleName) => string | undefined = () => undefined;
-  if (shipRowId) {
+  if (shipRowId || o.ship) {
     try {
       const agentsModel = await get<{ id: string }>(o, `/data-models/agents?workspaceId=${ws.id}`);
       const agentRows = await get<Array<{ id: string; name?: string | null }>>(
@@ -900,17 +912,17 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
 
     for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
       const searchTerm = role === 'dev' ? 'develop' : role;
-      let id = seatFor(scoped, searchTerm);
+      let id = seatFor(scoped, searchTerm, agentIdFor(role));
       let seatAction: 'matched' | 'claimed' | 'created' | 'would-create' = 'matched';
       if (!id && seatShipId && !shipRowId) {
         // Dry run against an existing Ships row: preview what a real run does.
-        const legacyId = seatFor(unclaimed, searchTerm);
+        const legacyId = seatFor(unclaimed, searchTerm, agentIdFor(role));
         if (legacyId) {
           id = legacyId;
           seatAction = 'claimed';
         }
       } else if (!id && shipRowId) {
-        const legacyId = seatFor(unclaimed, searchTerm);
+        const legacyId = seatFor(unclaimed, searchTerm, agentIdFor(role));
         if (legacyId) {
           await patch(o, `/data-models/${out.models.crew}/records/${legacyId}`, { ship_id: shipRowId });
           id = legacyId;
