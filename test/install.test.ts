@@ -22,6 +22,7 @@ const ship = (over: Partial<Ship> = {}): Ship => ({
   periscopeIdleMinutes: 120,
   intelStartupSeconds: 20,
   eventsRotateBytes: 64 * 1024 * 1024,
+  stateMaxBytes: 2 * 1024 * 1024 * 1024,
   relayPort: 2222, relayHttpPort: 443,
   ...over,
 });

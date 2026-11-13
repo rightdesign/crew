@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, existsSync, utimesSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { planStreamSweep, applyStreamSweep, type SweepLog } from '../src/stream-sweep.ts';
+import { planStreamSweep, planSizeCapSweep, applyStreamSweep, type SweepLog } from '../src/stream-sweep.ts';
 
 const silentLog: SweepLog = { emit: () => {}, warn: () => {} };
 const DAY = 24 * 60 * 60 * 1000;
@@ -50,4 +50,28 @@ test('a dry run reports what it would remove and touches nothing', () => {
   const removed = applyStreamSweep(plan, true, silentLog);
   assert.equal(removed, 0);
   assert.ok(existsSync(join(dir, 'proj-dev-old.jsonl')));
+});
+
+test('size cap removes the oldest artifacts first, keeps the live log and anything under a day old (CREW-3318)', () => {
+  const { state, dir } = rig();
+  const big = 'x'.repeat(1000);
+  for (const [name, days] of [['a.jsonl', 5], ['b.jsonl', 3], ['c.jsonl', 2], ['fresh.jsonl', 0]] as const) {
+    writeFileSync(join(dir, name), big);
+    age(join(dir, name), days);
+  }
+  writeFileSync(join(state, 'events.jsonl'), big);
+  age(join(state, 'events.jsonl'), 30);
+  writeFileSync(join(state, 'events.20260101T000000Z.jsonl'), big);
+  age(join(state, 'events.20260101T000000Z.jsonl'), 4);
+
+  assert.deepEqual(planSizeCapSweep(state, 10_000), []);
+  // 5 candidates of 1000 bytes; oldest first: a (5d), rotated events (4d), b (3d).
+  assert.deepEqual(
+    planSizeCapSweep(state, 2500).map((p) => p.replace(state, '')),
+    ['/streams/a.jsonl', '/events.20260101T000000Z.jsonl', '/streams/b.jsonl'],
+  );
+  // A cap nothing can meet stops at the fresh file and never reaches the live log.
+  const all = planSizeCapSweep(state, 1);
+  assert.equal(all.length, 4);
+  assert.ok(!all.some((p) => p.endsWith('fresh.jsonl') || p.endsWith('/events.jsonl')));
 });

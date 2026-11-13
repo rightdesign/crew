@@ -518,6 +518,12 @@ export interface Ship {
    */
   eventsRotateBytes: number;
   /**
+   * Total size cap for the stream artifacts and rotated event logs the
+   * retention sweep keeps (CREW-3318). Beyond `streamRetentionDays`, the
+   * oldest are removed until the total fits. Default 2 GB.
+   */
+  stateMaxBytes: number;
+  /**
    * The Host Passengers relay this ship dials out to (`ssh -R
    * <bindAddr>:0:127.0.0.1:<port> <relayHost>`) — README.md in the
    * crew-relay repo, e.g. `crewd@ships.tablation.dev`. Ship-level, not
@@ -694,7 +700,7 @@ function parseShipForges(v: unknown): ForgesConfig | undefined {
 
 const SHIP_KEYS = new Set([
   'name', 'platform', 'agent', 'toolchains', 'toolchain', 'pair', 'shell', 'extraPath', 'useNvm', 'nvmSh',
-  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes',
+  'stateDir', 'logFile', 'userAgent', 'baseUrl', 'apiKey', 'maxConcurrentAgents', 'roleConcurrency', 'streamRetentionDays', 'eventsRotateBytes', 'stateMaxBytes',
   'reposBasePath', 'relayHost', 'relayPort', 'relayHttpPort', 'relayPublicDomain', 'passengerImage', 'cloneScheme', 'forges',
   'previewHost', 'relayPreviews', 'maxPeriscopes', 'periscopeIdleMinutes', 'intelStartupSeconds', 'mapTokenBudget', 'noopRunRepeats', 'secretStore', 'env', 'runner', 'sandbox',
 ]);
@@ -1152,6 +1158,10 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
   if (!Number.isInteger(streamRetentionDays) || streamRetentionDays < 1) {
     missing.add(`ship.streamRetentionDays must be a positive integer (got "${shipRaw.streamRetentionDays}")`);
   }
+  const stateMaxBytes = shipRaw.stateMaxBytes === undefined ? 2 * 1024 * 1024 * 1024 : Number(shipRaw.stateMaxBytes);
+  if (!Number.isInteger(stateMaxBytes) || stateMaxBytes < 1) {
+    missing.add(`ship.stateMaxBytes must be a positive integer (got "${shipRaw.stateMaxBytes}")`);
+  }
   const maxPeriscopes = shipRaw.maxPeriscopes === undefined ? DEFAULT_MAX_PERISCOPES : Number(shipRaw.maxPeriscopes);
   if (!Number.isInteger(maxPeriscopes) || maxPeriscopes < 1) {
     missing.add(`ship.maxPeriscopes must be a positive integer (got "${shipRaw.maxPeriscopes}")`);
@@ -1273,6 +1283,7 @@ export function loadConfig(crewHome: string, configFile?: string, opts: LoadConf
       roleConcurrency,
       streamRetentionDays,
       eventsRotateBytes,
+      stateMaxBytes,
       relayHost: shipRaw.relayHost ? String(shipRaw.relayHost) : undefined,
       // 2222 matches the relay's own RELAY_SSH_PORT default (crew-relay README).
       relayPort: shipRaw.relayPort !== undefined ? Number(shipRaw.relayPort) : 2222,

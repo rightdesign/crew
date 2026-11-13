@@ -160,7 +160,7 @@ import {
   ensureRepoCheckout, acquireCheckoutLock, originUrlOf, setCloneRecorder, setForgeTokenHosts, status as gitWorkingTreeStatus, pushBranchUpstream, headSha, GitError, refreshBaseBranch, baseBranchUnsafe, describeUnsafeBase, type SyncState,
 } from './git.ts';
 import { planWorktreeSweep, applyWorktreeSweep, planRemoteBranchCleanup, applyRemoteBranchCleanup, planLocalBranchCleanup, applyLocalBranchCleanup, sweepCandidatesExist, worktreeTicketNumbers, draftWorktrees, orphanedWorktreeDirs, warnOrphanedWorktreeDirs, remoteBranchTicketNumbers, localBranchTicketNumbers } from './worktree-sweep.ts';
-import { planStreamSweep, planEventsSweep, applyStreamSweep } from './stream-sweep.ts';
+import { planStateSweep, applyStreamSweep } from './stream-sweep.ts';
 import { realpathSync, readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, unlinkSync, copyFileSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { runScript, resolveShell } from './shell.ts';
@@ -1422,6 +1422,27 @@ function endpointReconcileDeps(routes: Route[], relayHost: string): ReconcileDep
 }
 
 /**
+ * Ship-wide state retention (ISSUE-401, CREW-3318): stream artifacts and
+ * rotated event logs past `streamRetentionDays`, then the oldest of what is
+ * left until the total fits `stateMaxBytes`. Ship-wide, not per-repo, so it
+ * runs once per release cycle. It also runs at the top of `releaseFleet`
+ * (the path the release timer takes), before the paused-ship check: a paused
+ * ship still fills its disk.
+ */
+function sweepStateDir(): void {
+  try {
+    const paths = planStateSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays, cfg.ship.stateMaxBytes);
+    if (paths.length) {
+      emit.enter('worktree');
+      const removed = applyStreamSweep(paths, dryRun, emit);
+      emit.emit(`swept ${removed} stream artifact(s)`, { step: 'worktree' });
+    }
+  } catch (e) {
+    emit.warn(`stream sweep failed: ${(e as Error).message}`, { step: 'worktree' });
+  }
+}
+
+/**
  * Release every route, whoever won the agent slot.
  *
  * The release phase is per route and has nothing to do with which board
@@ -1438,6 +1459,7 @@ function endpointReconcileDeps(routes: Route[], relayHost: string): ReconcileDep
 async function releaseFleet(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
+  sweepStateDir();
   if (releaseRefused()) return;
   precheckTickets.clear();
   const summaries: RoutedReleaseSummary[] = [];
@@ -1494,21 +1516,7 @@ async function releaseTargets(
   emitReleaseSummary(emit, summaries);
   if (!dryRun) state.releaseHeartbeat().touch();
 
-  // Ship-wide, not per-repo — one sweep per release cycle, alongside the
-  // worktree sweep each repo just ran above (ISSUE-401).
-  try {
-    const paths = [
-      ...planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
-      ...planEventsSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
-    ];
-    if (paths.length) {
-      emit.enter('worktree');
-      const removed = applyStreamSweep(paths, dryRun, emit);
-      emit.emit(`swept ${removed} stream artifact(s)`, { step: 'worktree' });
-    }
-  } catch (e) {
-    emit.warn(`stream sweep failed: ${(e as Error).message}`, { step: 'worktree' });
-  }
+  sweepStateDir();
 }
 
 /**
@@ -5450,10 +5458,7 @@ switch (command) {
       const rotated = rotateEventsFile(eventFileFor(cfg.ship.stateDir), cfg.ship.eventsRotateBytes);
       if (rotated) { anything = true; emit.emit(`rotated oversized event log to ${rotated}`, { step: 'worktree' }); }
     }
-    const streamPaths = [
-      ...planStreamSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
-      ...planEventsSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays),
-    ];
+    const streamPaths = planStateSweep(cfg.ship.stateDir, cfg.ship.streamRetentionDays, cfg.ship.stateMaxBytes);
     if (streamPaths.length) {
       anything = true;
       const removed = applyStreamSweep(streamPaths, dryRun, emit);
