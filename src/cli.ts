@@ -141,6 +141,7 @@ import { runAgentsSync } from './agents-sync-run.ts';
 import { summarizeOutcomes, summarizeJobs, withFix, describeRunOutcome, type JobResult } from './cli-output.ts';
 import { syncSkills, fetchSkillOverrides, skillMarkerWarnings, describeSkillSyncOutcome, SkillSyncError } from './skills.ts';
 import { listLogEntries, showLogEntry, formatBeforeEdit, LogbookError } from './logbook.ts';
+import { readRepoSetupPrompt } from './repo-setup-prompt.ts';
 import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.ts';
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
@@ -494,6 +495,7 @@ function usage(problem?: string, requested = false): never {
   crew repos check [PATH]       validate a checkout's .crew.yaml without attaching it (--route ROUTE, --strict, --json)
   crew repos clone [ROUTE] NAME  clone a Repos row's remote into the route directory and attach it (--dir PATH, --dry-run, --json)
   crew repos hooks [ROUTE] NAME suggest test/build hooks for a checkout (--agent, --write route|repo, --recipes, --json)
+  crew repos prompt [--json]    print the repository setup prompt: give it to a coding agent at the root of a repository to write its .crew.yaml
   crew repos list ROUTE         the checkouts a route has, with the tracker's Repos row each matches (--json: every Repos row too)
   crew logbook list [route]     recent Agent Log entries, filterable by --role/--ticket; --before-edit sorts by searches before the first edit, --bounces by acceptance bounces
   crew logbook show [route] ID [--prompt]   one entry; --prompt reconstructs and verifies its prompt
@@ -605,6 +607,14 @@ function runReposCheck(dir: string, ship?: ShipRepoSettings): void {
     process.stdout.write(renderRepoCheck(report));
   }
   process.exitCode = report.exitCode;
+}
+
+// `crew repos prompt` (CREW-3310) prints the repository setup prompt. It reads
+// a file shipped with crew, so it needs no crew.yaml, tracker or checkout.
+if (command === 'repos' && positional[1] === 'prompt') {
+  const prompt = readRepoSetupPrompt(CREW_HOME);
+  process.stdout.write(flag('json') ? `${JSON.stringify({ prompt, version: crewVersion(CREW_HOME) })}\n` : prompt);
+  process.exit(0);
 }
 
 // A bare `repos check [PATH]` names no route, so it must work on a machine
@@ -3952,7 +3962,7 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos check [PATH | --route ROUTE [PATH] | ROUTE NAME] [--strict] [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos check [PATH | --route ROUTE [PATH] | ROUTE NAME] [--strict] [--json]\ncrew repos prompt [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
       process.exit(2);
     };
     if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks' && sub !== 'check') usage();

@@ -26,6 +26,7 @@
     "dist",
     "bin",
     "prompts",
+    "docs/repo-setup-prompt.md",
     "crew.example.yaml",
     "README.md",
     "LICENSE"

@@ -678,6 +678,33 @@ A few things worth knowing before you do this:
   of on one person's machine. The route-level escape hatch exists for repos
   you can't (or haven't yet) sent a PR to.
 
+### Have a coding agent write the file
+
+The [repository setup prompt](/repo-setup-prompt) is a standalone prompt for a
+coding agent. Given at the root of the repository, the agent reads the checkout,
+asks you what the repository cannot prove, writes `.crew.yaml`, runs the hooks in
+a clean worktree and validates the file. It leaves the file uncommitted for you
+to review. Three ways to hand it over:
+
+- **Copy and paste.** Open the [prompt page](/repo-setup-prompt), copy its text
+  and paste it into your agent's first message.
+- **From a shell.** Start the agent with the fetched text as its first message.
+  The raw text is at `https://crew.tablation.dev/repo-setup-prompt.md`:
+
+  ```sh
+  cd path/to/repo
+  claude "$(curl -fsSL https://crew.tablation.dev/repo-setup-prompt.md)"
+  ```
+
+  Any agent CLI that takes an initial message as an argument works the same way.
+- **With crew installed.** `crew repos prompt` prints the prompt that ships with
+  your version of crew, so it matches the `.crew.yaml` your crew accepts, and
+  needs no `crew.yaml` or network:
+
+  ```sh
+  claude "$(crew repos prompt)"
+  ```
+
 ---
 
 ## Advanced: an existing `crew.yaml`

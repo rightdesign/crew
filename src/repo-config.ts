@@ -462,16 +462,19 @@ export function versionFileProblem(name: string, text: string): string | null {
   return null;
 }
 
-const HOOK_NAMES: Array<keyof RepoHooks> = [
+/** The hook names the loader accepts under `hooks` and `labels`. Exported for the prompt drift test (CREW-3310). */
+export const HOOK_NAMES: Array<keyof RepoHooks> = [
   'test', 'build', 'setup', 'deploy', 'ports', 'isolate', 'handoff', 'preview', 'intel', 'map', 'ci_status',
   'version', 'bump', 'pr', 'merged', 'released',
 ];
 /** The values `CREW_BUMP` may take. */
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
 export type BumpSize = (typeof BUMP_SIZES)[number];
-const TOP_LEVEL = new Set([
+export const TOP_LEVEL = new Set([
   'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release', 'sandbox', 'periscope',
 ]);
+/** The keys the loader accepts under `sandbox`. */
+export const SANDBOX_KEYS = new Set(['image', 'packages', 'setup', 'warm', 'hosts', 'toolchains']);
 const BRANCH_KEYS = new Set(['base', 'name', 'push', 'remote', 'lowercase']);
 const PLACEHOLDER = /\{(key|number|slug|role|prefix|tag|issue)\}/g;
 /** What a `worktrees.name` template may use: the branch placeholders plus the two that only make sense for a directory. */
@@ -614,7 +617,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
   rejectUnknown(raw.periscope, new Set(['inspector']), 'periscope', file);
   rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
-  rejectUnknown(raw.sandbox, new Set(['image', 'packages', 'setup', 'warm', 'hosts', 'toolchains']), 'sandbox', file);
+  rejectUnknown(raw.sandbox, SANDBOX_KEYS, 'sandbox', file);
 
   const sandboxNetwork = parseSandboxNetwork(raw.sandbox, file, (m) => new RepoConfigError(m));
 

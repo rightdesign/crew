@@ -1,3 +1,5 @@
+import { copyFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { defineConfig } from 'vitepress'
 
 // The source root is `docs/`. The existing upper-case files keep their names
@@ -9,6 +11,11 @@ export default defineConfig({
   description: 'A standing team of headless agents that works a Tablation board',
   cleanUrls: true,
   srcExclude: ['MIGRATION.md'],
+  // The raw text of the repository setup prompt, byte-identical to the source
+  // page (CREW-3310): generated here so there is no second committed copy.
+  buildEnd(siteConfig) {
+    copyFileSync(join(siteConfig.srcDir, 'repo-setup-prompt.md'), join(siteConfig.outDir, 'repo-setup-prompt.md'))
+  },
   rewrites: {
     'GETTING_STARTED.md': 'getting-started.md',
     'REPO_SPEC.md': 'repo-spec.md',

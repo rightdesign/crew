@@ -31,6 +31,7 @@ for entry in "${targets[@]}"; do
   echo "==> ${dir_name}"
   bun build src/cli.ts --compile --target="${bun_target}" --outfile "${out}/crew"
   cp -R prompts "$out/"
+  mkdir -p "$out/docs" && cp docs/repo-setup-prompt.md "$out/docs/"
   cp package.json crew.example.yaml "$out/"
 done
 
@@ -45,6 +46,7 @@ if command -v lipo >/dev/null 2>&1; then
   mkdir -p "$uni"
   lipo -create -output "$uni/crew" dist-bin/darwin-arm64/crew dist-bin/darwin-x64/crew
   cp -R prompts "$uni/"
+  mkdir -p "$uni/docs" && cp docs/repo-setup-prompt.md "$uni/docs/"
   cp package.json crew.example.yaml "$uni/"
   lipo -info "$uni/crew"
 

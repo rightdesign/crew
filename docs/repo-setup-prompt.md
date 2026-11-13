@@ -2,7 +2,7 @@ Set this repository up to be worked by Crew. The result is one file at the repos
 
 ## What you are configuring
 
-Crew is a runtime that works tickets from a tracker with headless coding agents. For each ticket it cuts a fresh git worktree beside the checkout, runs an agent in it with nobody watching, has a second agent verify the branch, and then releases it. Several worktrees of the same repository are often live on one machine at once, and some machines run each ticket in a sandbox with no network access and no container engine.
+Crew is a runtime that works tickets from a tracker with headless coding agents. For each ticket it cuts a fresh git worktree beside the checkout, runs an agent in it with nobody watching, has a second agent verify the branch, and then releases it. Several worktrees of the same repository are often live on one machine at once.
 
 Crew knows nothing about this repository except what `.crew.yaml` says. The file names the commands ("hooks") that install, test, build, version and release the project, and a few facts about branches and releases. Crew never parses a hook: it hands the text to a shell at the repository root and reads the exit status, and for some hooks the output.
 
@@ -101,8 +101,6 @@ preview: |
 - `hooks.ci_status` (exit 0 when CI is green for `$CREW_BRANCH`) is worth adding when CI runs on pushed branches.
 - `hooks.merged` and `hooks.pr` belong to the `external` release mode below.
 
-**`sandbox`.** A sandboxed run starts from an image with git, curl and the agent tools, and nothing can be downloaded while it runs. If the hooks need a language runtime, a package manager, a compiler or a system library, declare it: `sandbox.packages` for apt packages, `sandbox.setup` for build-time commands that install pinned toolchains, `sandbox.warm` for the lockfiles a setup step needs in order to fill a dependency cache, and `sandbox.toolchains` or `sandbox.hosts` for downloads a run cannot avoid. Pin the versions the repository pins. You cannot test this section from here, so say so in your report. Skip it if I tell you the repository will only ever run on my own machine.
-
 ## Step 3: Ask me what the repository cannot tell you
 
 Ask once, in a single message, with your best reading of the evidence beside each question so that confirming it takes me a word. Always ask the release question, even when the evidence looks conclusive; ask the others only where the answer is not already clear. If a clean install for Step 5 will be slow or large, say so here too.
@@ -116,15 +114,14 @@ Ask once, in a single message, with your best reading of the evidence beside eac
    For `local`, also confirm the exact command I run to ship.
 2. **What single command prints what is live right now**, as a version or a commit sha? A registry query and a health endpoint are the usual answers. The `ci_*` modes cannot work without it, so ask whenever one of them is likely; for the other modes it is optional and not worth a question. It becomes `hooks.released`, with `release.verify.match` set to `version` or `commit` to match, and `release.verify.timeoutSeconds` sized to how long the release pipeline takes.
 3. **Should Crew set versions**, if the evidence was mixed? If a lockfile or second file records the version, confirm it has to stay in step.
-4. **Will this repository run on sandboxed or hosted machines**, or only on your own? This decides whether the `sandbox` section is needed.
-5. Anything from Step 2 you proposed and need agreement on: a ports or isolate script, a preview, the gitignored files to copy into worktrees (list them by name so I can strike any that should not travel), a narrower `platform`.
+4. Anything from Step 2 you proposed and need agreement on: a ports or isolate script, a preview, the gitignored files to copy into worktrees (list them by name so I can strike any that should not travel), a narrower `platform`.
 6. **Code navigation.** `hooks.intel` gives agents symbol lookup. Offer `typescript-lsp` for a TypeScript or JavaScript project (it uses `typescript-language-server` from the project's own dev dependencies, or from the machine's PATH when the project does not have it) or `serena` for other languages (needs a one-time install on each machine). Leave it out unless I say yes.
 
 Wait for my answers before writing the file. If I tell you to go ahead without them, write only what the repository proves. For the release, use `integrate` when nothing in the repository publishes or deploys; otherwise leave the `release` section out and say in your report that the file is not ready to release from.
 
 ## Step 4: Write `.crew.yaml`
 
-Start with `version: 1`. Order the file `platform`, `branch`, `worktrees`, `sandbox`, `hooks`, `labels`, `release`. Always write `release.mode`, even when it is the default, because it is the setting a reader most needs to see. Leave other settings out when the default is what you want. Above every choice that is not obvious, write a short comment saying what justified it, such as the workflow file that publishes on a tag, or the reason a test suite is left out. Someone should be able to audit the file without redoing your investigation. Put the specification URL in a comment on the first line.
+Start with `version: 1`. Order the file `platform`, `branch`, `worktrees`, `hooks`, `labels`, `release`. Always write `release.mode`, even when it is the default, because it is the setting a reader most needs to see. Leave other settings out when the default is what you want. Above every choice that is not obvious, write a short comment saying what justified it, such as the workflow file that publishes on a tag, or the reason a test suite is left out. Someone should be able to audit the file without redoing your investigation. Put the specification URL in a comment on the first line.
 
 Use a YAML block scalar (`|`) for any hook longer than one command. Add a `labels` entry for a hook whose script is more than one line, so logs show a readable name.
 
@@ -161,7 +158,7 @@ Finish with a short report:
 
 ## Reference
 
-Top-level keys: `version`, `platform`, `shell`, `branch`, `worktrees`, `docs`, `hooks`, `labels`, `release`, `sandbox`, `periscope`. Nothing else is accepted. The tables list the settings this task can need. The specification has the rest (branch and worktree naming, `shell`, `periscope`, per-machine release settings); leave those unset unless I ask for them.
+Top-level keys: `version`, `platform`, `shell`, `branch`, `worktrees`, `docs`, `hooks`, `labels`, `release`, `sandbox`, `periscope`. Nothing else is accepted. The tables list the settings this task can need. The specification has the rest (branch and worktree naming, `shell`, `periscope`, `sandbox`, per-machine release settings); leave those unset unless I ask for them.
 
 | Key | Values and meaning |
 | --- | --- |
@@ -206,19 +203,6 @@ Release (keys under `release`):
 | `verify.match` | `commit` (default; `released` prints a sha) or `version`. |
 | `verify.timeoutSeconds`, `verify.intervalSeconds` | How long to wait for `released` to match, and how often to ask. Defaults 600 and 15. |
 
-Sandbox (keys under `sandbox`):
-
-| Key | Meaning |
-| --- | --- |
-| `packages` | apt packages baked into the image, `name` or `name=version`. |
-| `image` | A published image to build on instead. Cannot be combined with `packages`. |
-| `setup` | Commands run at image build time, in order, as an unprivileged user. Caches must go at absolute paths under `/opt/crew`, never under the home directory, and tools should be linked into `/opt/crew/bin`. |
-| `warm` | Repository-relative paths or globs copied from the committed base branch into the build so a `setup` step can fill a cache from them. |
-| `toolchains` | Toolchains allowed to download at run time: `corepack`, `pnpm`, `yarn`, `npm`, `prisma`, `playwright`, `pip`, `cargo`, `go`, `swift`. |
-| `hosts` | Extra hosts a run may reach, `host` or `host:port`. |
-
-There is no container engine inside a sandbox. A service the tests need, such as a database, is installed through `packages` and started as a process by `hooks.setup`.
-
 ### Combinations that are refused
 
 - `ci_manual` or `ci_auto` without `hooks.released`, or without a `release.ci.provider`.
@@ -228,7 +212,6 @@ There is no container engine inside a sandbox. A service the tests need, such as
 - `hooks.bump` together with `release.versionFiles`.
 - `release.versioning: none` together with `hooks.bump` or `release.versionFiles`.
 - `ci_auto` together with a `deploy` hook that also ships, which releases twice.
-- `sandbox.image` together with `sandbox.packages`.
 
 ### A deploy hook that dispatches a pipeline
 
