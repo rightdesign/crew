@@ -30,6 +30,7 @@ export default defineConfig({
       { text: 'Periscope', link: '/periscope' },
       { text: 'Pooled instances', link: '/pool-member' },
       { text: 'The repo spec (.crew.yaml)', link: '/repo-spec' },
+      { text: 'Repository setup prompt', link: '/repo-setup-prompt' },
       { text: 'The contract', link: '/contract' },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/rightdesign/crew' }],
