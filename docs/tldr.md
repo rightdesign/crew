@@ -61,6 +61,26 @@ branches are named, and how to release and deploy. See
 [the repo spec](/repo-spec), or have a coding agent write the file for you with
 the [repository setup prompt](/repo-setup-prompt).
 
+## What it takes to start
+
+There are two sides to a working crew:
+
+1. **The repository** has a `.crew.yaml`. From the repository's directory, a
+   coding agent can write it with you; it asks a few questions about how the
+   repository is tested and released:
+
+   ```sh
+   claude "$(curl -fsSL https://crew.tablation.dev/repo-setup-prompt.md)"
+   ```
+
+2. **The Issues app** has work for it: a project, the repository linked to
+   that project, and a ticket you have approved. In a project whose Work Mode
+   is Automatic, approving the ticket is enough; in a Hybrid project you also
+   assign it to your developer agent.
+
+[Giving the crew its first ticket](/getting-started#giving-the-crew-its-first-ticket)
+has the steps.
+
 ## Watching it work
 
 - **Crew for macOS** sits in the menu bar and shows which agent is working, on

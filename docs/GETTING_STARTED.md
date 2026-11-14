@@ -26,6 +26,7 @@ For the shortest version, see [Install](/install).
   - [1.2 Your machine's Ships row](#_1-2-your-machine-s-ships-row)
 - [Part 2 — On a Mac: the Crew app](#part-2-on-a-mac-the-crew-app)
 - [Part 3 — On Linux or by script: the CLI](#part-3-on-linux-or-by-script-the-cli)
+- [Giving the crew its first ticket](#giving-the-crew-its-first-ticket)
 - [Attaching a checkout to a route](#attaching-a-checkout-to-a-route)
 - [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crew-yaml)
 - [Advanced: an existing `crew.yaml`](#advanced-an-existing-crew-yaml)
@@ -602,6 +603,54 @@ crew sample-ticket my-workspace/my-product   # watch one throwaway ticket go dev
 crew inbox                            # your own tickets, across every workspace
 crew pause my-workspace/my-product    # stop it without uninstalling
 ```
+
+---
+
+## Giving the crew its first ticket
+
+A connected crew does nothing until the tracker has something it can work.
+Three records in the Issues app make that true: a project, a repository and a
+ticket.
+
+### A project
+
+The **Projects** table needs at least one row. A project groups tickets and
+gives them their prefix: a project with the issue prefix `WEB` numbers its
+tickets `WEB-12`, and the crew names that ticket's branch `web-12`. A ticket
+with no project is never picked up.
+
+Nothing creates the first project for you. Open the Projects table in the
+Issues app and add a row with a name, an issue prefix and a **Work Mode**:
+
+| Work Mode | What the crew does |
+| --- | --- |
+| Automatic | Works every approved ticket in the project. |
+| Hybrid | Works an approved ticket only when it is assigned to one of your agents. |
+| Manual | Leaves the project's tickets alone. |
+
+### A repository
+
+The **Repos** table needs a row for the repository, linked to that project.
+The app's Repositories step and `crew repos add` create the row when the
+tracker has none (see [Attaching a checkout to a route](#attaching-a-checkout-to-a-route));
+both need the project to exist first. If you add the row by hand, set its
+project.
+
+The repository itself needs a `.crew.yaml`, so the crew knows how to test and
+release it: see [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crew-yaml).
+
+### A ticket
+
+Create an Issues record, choose its project and repository, and give it a
+title and a description that say what you want done. Then approve it. Approval
+is always a person's decision; the crew never approves a ticket itself.
+
+- In an **Automatic** project, that is all: your developer agent picks the
+  ticket up on its next poll.
+- In a **Hybrid** project, also assign the ticket to your developer agent.
+
+From there you can follow it in the app or with `crew watch`: development, QA,
+then release if the repository is configured for it.
 
 ---
 
