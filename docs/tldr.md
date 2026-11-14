@@ -72,32 +72,44 @@ the [repository setup prompt](/repo-setup-prompt).
 
 ## Gallery
 
-<div class="gallery">
-  <figure>
-    <a href="/screenshots/issues-board-view.png"><img src="/screenshots/issues-board-view.png" alt="The Issues board, with tickets in New, Plan, Dev, QA and Closed columns"></a>
-    <figcaption>The Issues board: tickets move from New to Closed as agents hand them off.</figcaption>
-  </figure>
-  <figure>
-    <a href="/screenshots/issues-calendar-view.png"><img src="/screenshots/issues-calendar-view.png" alt="The Issues calendar in week view, with one entry per release and a ticket open beside it"></a>
-    <figcaption>The Calendar: every release, with the tickets that shipped in it.</figcaption>
-  </figure>
-  <figure>
-    <a href="/screenshots/issues-dashboard-view.png"><img src="/screenshots/issues-dashboard-view.png" alt="The Issues dashboard, with charts of open tickets by area and severity and resolution times"></a>
-    <figcaption>The Dashboard: open work, releases and how long tickets take.</figcaption>
-  </figure>
-  <figure>
-    <a href="/screenshots/macos-menubar-panel.png"><img src="/screenshots/macos-menubar-panel.png" alt="The Crew menu bar panel, listing each agent, the ticket it is working and switches for the crew, runs and releases"></a>
-    <figcaption>Crew for macOS: each agent and its ticket, from the menu bar.</figcaption>
-  </figure>
-  <figure>
-    <a href="/screenshots/macos-agent-chat.png"><img src="/screenshots/macos-agent-chat.png" alt="The Agent window in Crew for macOS, showing a developer agent's steps and messages as it works a ticket"></a>
-    <figcaption>The Agent window: follow a run as it happens, or message the agent.</figcaption>
-  </figure>
-  <figure>
-    <a href="/screenshots/macos-agent-history.png"><img src="/screenshots/macos-agent-history.png" alt="The Recent runs tab of the Agent window, showing a finished design run and its hand-off summary"></a>
-    <figcaption>Recent runs: what each run did, how long it took and what it cost.</figcaption>
-  </figure>
-</div>
+Select a picture to see it larger; the arrow keys move between them.
+
+<script setup>
+const screenshots = [
+  {
+    src: "/screenshots/issues-board-view.png",
+    alt: "The Issues board, with tickets in New, Plan, Dev, QA and Closed columns",
+    caption: "The Issues board: tickets move from New to Closed as agents hand them off.",
+  },
+  {
+    src: "/screenshots/issues-calendar-view.png",
+    alt: "The Issues calendar in week view, with one entry per release and a ticket open beside it",
+    caption: "The Calendar: every release, with the tickets that shipped in it.",
+  },
+  {
+    src: "/screenshots/issues-dashboard-view.png",
+    alt: "The Issues dashboard, with charts of open tickets by area and severity and resolution times",
+    caption: "The Dashboard: open work, releases and how long tickets take.",
+  },
+  {
+    src: "/screenshots/macos-menubar-panel.png",
+    alt: "The Crew menu bar panel, listing each agent, the ticket it is working and switches for the crew, runs and releases",
+    caption: "Crew for macOS: each agent and its ticket, from the menu bar.",
+  },
+  {
+    src: "/screenshots/macos-agent-chat.png",
+    alt: "The Agent window in Crew for macOS, showing a developer agent's steps and messages as it works a ticket",
+    caption: "The Agent window: follow a run as it happens, or message the agent.",
+  },
+  {
+    src: "/screenshots/macos-agent-history.png",
+    alt: "The Recent runs tab of the Agent window, showing a finished design run and its hand-off summary",
+    caption: "Recent runs: what each run did, how long it took and what it cost.",
+  },
+]
+</script>
+
+<Gallery :items="screenshots" />
 
 ## Next
 

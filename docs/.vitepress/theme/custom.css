@@ -40,27 +40,3 @@
 .vp-doc td:not(:first-child) code {
   overflow-wrap: break-word;
 }
-
-/* The screenshot gallery on the "Crew in brief" page: two across, one on a narrow screen. */
-.vp-doc .gallery {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px;
-  margin: 16px 0;
-}
-
-.vp-doc .gallery figure {
-  margin: 0;
-}
-
-.vp-doc .gallery img {
-  width: 100%;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-}
-
-.vp-doc .gallery figcaption {
-  margin-top: 8px;
-  font-size: 14px;
-  color: var(--vp-c-text-2);
-}
