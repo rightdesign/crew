@@ -507,6 +507,21 @@ export class Tracker {
     return this.client.records.list<{ id: string; name?: string; issue_prefix?: string | null }>(model, { limit: 200 });
   }
 
+  /** Create a `Projects` (area) row (CREW-3359). Throws when the workspace has no Projects table. */
+  async createProjectRow(fields: Record<string, unknown>): Promise<{ id: string }> {
+    const model = this.route.resolved?.areaModelId;
+    if (!model) throw new Error('this workspace has no Projects table');
+    return this.client.records.create<{ id: string }>(model, fields);
+  }
+
+  /** Whether the Projects table has the contract's work mode column; true when its columns cannot be read. */
+  async projectHasWorkMode(): Promise<boolean> {
+    const model = this.route.resolved?.areaModelId;
+    if (!model) return false;
+    const cols = await this.columnNames(model);
+    return cols.size === 0 || cols.has(this.contract.columns.workMode);
+  }
+
   /** Every Projects row with its raw `work_mode`, for `crew status`. */
   async projectRowsWithModes(): Promise<Array<{ id: string; name?: string; issue_prefix?: string | null; mode: WorkMode }>> {
     const rows = await this.projectRows();

@@ -156,3 +156,17 @@ export function attentionProblems(items: ShipAttentionItem[], already: DoctorPro
     .filter((i) => !seen.has(i.key))
     .map((i) => ({ severity: 'attention' as const, kind: i.kind, message: i.message }));
 }
+
+/**
+ * CREW-3359: a tracker with no Projects row has nothing a crew can work (a ticket with no
+ * project is manual) and no project for `crew repos add` to link a Repos row to.
+ */
+export const NO_PROJECTS_REMEDY = 'run `crew projects add NAME --prefix PREFIX` (or add a row to the Projects table)';
+export function noProjectsFinding(route: string, projectCount: number): DoctorProblem | null {
+  if (projectCount > 0) return null;
+  return {
+    severity: 'attention', kind: 'no_projects', route,
+    message: `route ${route}: the tracker has no Projects row, so no ticket can be worked and a new Repos row has no project to belong to`,
+    remedy: NO_PROJECTS_REMEDY,
+  };
+}

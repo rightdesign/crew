@@ -619,8 +619,26 @@ gives them their prefix: a project with the issue prefix `WEB` numbers its
 tickets `WEB-12`, and the crew names that ticket's branch `web-12`. A ticket
 with no project is never picked up.
 
-Nothing creates the first project for you. Open the Projects table in the
-Issues app and add a row with a name, an issue prefix and a **Work Mode**:
+Create the first project with `crew projects add`:
+
+```sh
+crew projects add my-workspace/issues "Web" --prefix WEB
+```
+
+The prefix is letters and digits only and is stored upper-cased; a name or
+prefix another project already uses (in any letter case) is refused. The work
+mode is automatic unless you pass `--work-mode hybrid` or `--work-mode manual`.
+The command needs a key that may write the Projects table; with a key that
+may not, a workspace admin has to add the row. You can also add the row by hand
+in the Projects table of the Issues app, with a name, an issue prefix and a
+**Work Mode**.
+
+`crew repos add` offers the same step: when the tracker has no project and
+the Repos row has to be created, in a terminal it asks for a project name and
+prefix, creates the project and links the new Repos row to it. Without a
+terminal (or with `--json`) it stops with the reason code `no_projects` and a
+message naming `crew projects add`. The Repositories step in the Crew app runs
+this command.
 
 | Work Mode | What the crew does |
 | --- | --- |
@@ -633,8 +651,8 @@ Issues app and add a row with a name, an issue prefix and a **Work Mode**:
 The **Repos** table needs a row for the repository, linked to that project.
 The app's Repositories step and `crew repos add` create the row when the
 tracker has none (see [Attaching a checkout to a route](#attaching-a-checkout-to-a-route));
-both need the project to exist first. If you add the row by hand, set its
-project.
+both link it to the project, and offer to create the first project when
+there is none. If you add the row by hand, set its project.
 
 The repository itself needs a `.crew.yaml`, so the crew knows how to test and
 release it: see [Connecting a repo that has no `.crew.yaml`](#connecting-a-repo-that-has-no-crew-yaml).
@@ -777,6 +795,9 @@ is stored in plaintext there.
 - `crew doctor <route>` first, always — it's read-only and points at the
   specific thing that's wrong (bad key, missing Ships row, missing hook,
   unreachable tracker).
+- `crew doctor` lists **no Projects row** (`no_projects` in `--json`) → the
+  tracker has no project, so no ticket can be worked and `crew repos add` has
+  nothing to link a Repos row to. Run `crew projects add NAME --prefix PREFIX`.
 - Config file rejected outright with an "unknown key" error → you likely
   mistyped a field name; check the exact key names in `crew.example.yaml`
   or [the repo spec](/repo-spec).

@@ -17,7 +17,7 @@ import { periscopesForStatus, portListening, urlPort, writePeriscopeSidecar, rem
 import { openPreviewTunnel, stopRecordedTunnel, type PreviewRelay } from './periscope-relay.ts';
 import { SHELLS, shellFor, shellInitScript } from './shell-init.ts';
 import { dockerGate } from './passengers-cycle.ts';
-import { repoFindings, attentionProblems, visibleAttention, dockerDaemonFinding, deadTunnelFindings, type DoctorProblem } from './doctor-problems.ts';
+import { noProjectsFinding, repoFindings, attentionProblems, visibleAttention, dockerDaemonFinding, deadTunnelFindings, type DoctorProblem } from './doctor-problems.ts';
 import { sandboxHookGaps, imageHasBinary, imageStoreProblem } from './sandbox-hooks.ts';
 import {
   planSandbox, shipSandboxRef, SHIP_SANDBOX_KEY, readBridgeBundle, readWarmFiles, type WarmFiles, readSandboxState, sandboxImageFor, sandboxBuildTick, sandboxImageStatus, spawnBuildRunner, engineHasImage, engineRemoveImage,
@@ -102,7 +102,7 @@ import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, relo
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { discoverForRoute, linkDoctorLines } from './pr-links.ts';
 import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
-import { buildProjectsReport, formatProjectsReport } from './projects-cmd.ts';
+import { buildProjectsReport, formatProjectsReport, createProject, offerFirstProject, ProjectsError } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { repositoryEnvCount } from './repo-env.ts';
 import { gitCredentialEnv, crewCommandLine, isCompiledCrew, hasForgeToken, forgeOfRemote, readForgeToken, forgeFor, forgeDescriptorFor } from './forges.ts';
@@ -146,7 +146,7 @@ import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.t
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
-import { parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, cloneBaseOf, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
+import { noProjectsError, parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, cloneBaseOf, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
@@ -448,6 +448,7 @@ function usage(problem?: string, requested = false): never {
   crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
   crew status [route] [--json] [--verbose]   what is running and what needs a person; --verbose adds configuration and full lists; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
+  crew projects add [route] NAME --prefix P [--work-mode automatic|hybrid|manual] [--json] [--dry-run]   create a Projects row
   crew provision --key K --route WS[/PROJECT] [--forge-host H] [--ship-name N] [--json]   one non-interactive run: connect, forge tokens,
                                  enable routes, install units with lingering, start the daemon; safe to re-run (CREW_CONNECT_KEY,
                                  CREW_PROVISION_ROUTES, CREW_SHIP_NAME, CREW_FORGE_TOKEN[_<HOST>] also read)
@@ -3970,7 +3971,7 @@ switch (command) {
     // `cfg.routes`, and that is exactly the route `add` is for.
     const sub = positional[1];
     const usage = () => {
-      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos check [PATH | --route ROUTE [PATH] | ROUTE NAME] [--strict] [--json]\ncrew repos prompt [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
+      process.stderr.write('crew repos add [workspace/project] [name] [path] [--name N] [--project P] [--dry-run] [--no-create] [--json]\ncrew repos clone [workspace/project] <name> [--dir PATH] [--dry-run] [--json]\ncrew repos list <workspace/project> [--json]\ncrew repos check [PATH | --route ROUTE [PATH] | ROUTE NAME] [--strict] [--json]\ncrew repos prompt [--json]\ncrew repos hooks [workspace/project] <name> [--suggest] [--agent] [--write route|repo [--replace]] [--clear route] [--recipes ID,ID] [--hook KEY=CMD ...] [--json]\n');
       process.exit(2);
     };
     if (sub !== 'add' && sub !== 'list' && sub !== 'clone' && sub !== 'hooks' && sub !== 'check') usage();
@@ -4228,7 +4229,28 @@ switch (command) {
           if (e instanceof ConfigError) throw new ReposError(`${e.message}; or pass --no-create`);
           throw e;
         }
-        const projectId = resolveRepoProject(await rowTracker.projectRows(), value('project'), planRoute.resolved?.areaId);
+        const knownProjects = await rowTracker.projectRows();
+        let projectId: string;
+        if (knownProjects.length === 0 && !value('project') && !planRoute.resolved?.areaId) {
+          // CREW-3359: an empty Projects table is the one case `--project` cannot answer.
+          if (dryRun) {
+            process.stdout.write(`${plan.block}\nwould need a project first: the tracker has none (\`crew projects add NAME --prefix PREFIX\`)\n`);
+            break;
+          }
+          if (flag('json') || !(process.stdin.isTTY && process.stdout.isTTY)) throw noProjectsError();
+          const prompter = terminalPrompter();
+          try {
+            const made = await offerFirstProject(prompter, (input) => createProject(rowTracker!, input));
+            if (!made) throw noProjectsError();
+            process.stdout.write(`created project ${made.name} (${made.issuePrefix}, ${made.workMode}) ${made.id}\n`);
+            projectId = made.id;
+          } catch (e) {
+            if (e instanceof ProjectsError) throw new ReposError(e.message, e.code);
+            throw e;
+          } finally { prompter.close(); }
+        } else {
+          projectId = resolveRepoProject(knownProjects, value('project'), planRoute.resolved?.areaId);
+        }
         let spec: Parameters<typeof planRepoRow>[0]['spec'];
         try {
           const rc = loadRepoConfig(top);
@@ -4257,7 +4279,10 @@ switch (command) {
       writeFileSync(cfg.configFile, plan.text);
       process.stdout.write(`added ${top} to ${routeName} as ${plan.mode === 'dir' ? 'dir' : `repos.${plan.name}`} in ${cfg.configFile}\n`);
     } catch (e) {
-      if (e instanceof ReposError) { die('crew repos', e.message, '`crew doctor`', 2); }
+      if (e instanceof ReposError) {
+        if (flag('json') && e.code) { process.stdout.write(`${JSON.stringify({ ok: false, reason: e.code, message: e.message })}\n`); process.exit(2); }
+        die('crew repos', e.message, '`crew doctor`', 2);
+      }
       throw e;
     }
     break;
@@ -6659,6 +6684,36 @@ switch (command) {
   }
 
   case 'projects': {
+    if (positional[1] === 'add') {
+      // CREW-3359: create a Projects row. `crew projects add [route] NAME --prefix P [--work-mode M]`.
+      const rest = positional.slice(2);
+      const names = cfg.routes.map((r) => r.route);
+      let routeName = value('route');
+      if (!routeName && rest.length > 1 && names.includes(rest[0]!)) routeName = rest.shift();
+      if (!routeName && names.length === 1) routeName = names[0];
+      const target = cfg.routes.find((r) => r.route === routeName);
+      const failProject = (e: ProjectsError): never => {
+        if (flag('json')) { process.stdout.write(`${JSON.stringify({ ok: false, reason: e.code, message: e.message })}\n`); return process.exit(2); }
+        return die('crew projects add', e.message, '`crew projects`', 2);
+      };
+      if (!target) {
+        die('crew projects add', routeName ? `no route "${routeName}" (have: ${names.join(', ')})` : `several routes are configured; name one: ${names.join(', ') || 'none'}`, '`crew status`');
+      }
+      try {
+        const { entry, created } = await createProject(
+          new Tracker(target!, cfg.ship),
+          { name: rest.join(' '), prefix: value('prefix'), workMode: value('work-mode') },
+          { dryRun },
+        );
+        if (flag('json')) process.stdout.write(`${JSON.stringify(created ? entry : { ...entry, id: null }, null, 2)}\n`);
+        else if (!created) process.stdout.write(`would create project ${entry.name} (${entry.issuePrefix}, ${entry.workMode}) on route ${target!.route}\n`);
+        else process.stdout.write(`created project ${entry.name} (${entry.issuePrefix}, ${entry.workMode}) ${entry.id}\n`);
+      } catch (e) {
+        if (e instanceof ProjectsError) failProject(e);
+        throw e;
+      }
+      break;
+    }
     // CREW-1502: the Projects rows each route's connection can read. Works
     // across every route unless one is named (`--route R` or positionally).
     const only = value('route') ?? positional[1];
@@ -7059,6 +7114,10 @@ switch (command) {
           } else if (w.state === 'ok') passed++;
         }
       }
+      if (!flag('offline')) {
+        const np = noProjectsFinding(route.route, (await new Tracker(route, cfg.ship).projectRows().catch(() => [null])).length);
+        if (np) problems.push(np); else passed++;
+      }
       for (const message of roleCapWarnings(cfg.ship)) problems.push({ severity: 'note', kind: 'role_cap_above_ship_cap', message });
       // CREW-3117: a bundled persona image that failed to upload is a warning, not a failure.
       for (const f of routeAvatarFailures(cfg.ship.stateDir, route.route)) problems.push({ severity: 'note', kind: 'persona_avatar_upload_failed', route: route.route, message: `${f.role} persona avatar failed to upload: ${f.detail}`, remedy: 'run `crew agents sync` again' });
@@ -7450,6 +7509,13 @@ switch (command) {
           process.exitCode = 1;
         } else if (w.state === 'ok') R.line(`seat write:       ${w.role}: ok\n`);
       }
+    }
+
+    if (!flag('offline')) {
+      // CREW-3359: a read that fails is the seat probes' to report, not a missing project.
+      const projectRows = await tracker.projectRows().catch(() => undefined);
+      const np = projectRows ? noProjectsFinding(route.route, projectRows.length) : null;
+      if (np) R.line(`projects:         WARN ${np.message} — ${np.remedy}\n`);
     }
 
     const [ships, crewRows] = await Promise.all([tracker.shipRows(), tracker.crewRows()]);

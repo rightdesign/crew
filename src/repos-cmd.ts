@@ -17,7 +17,23 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { isMap, isSeq, parseDocument, stringify, type Document, type YAMLMap } from 'yaml';
 
-export class ReposError extends Error {}
+export class ReposError extends Error {
+  /** A stable reason for a `--json` reader, when the failure has one (CREW-3359). */
+  readonly code?: string;
+  constructor(message: string, code?: string) { super(message); this.code = code; }
+}
+
+/** `ReposError.code` for a Repos row that needs a project while the tracker has none. */
+export const NO_PROJECTS_CODE = 'no_projects';
+
+/** The failure when a new Repos row needs a project and the Projects table is empty. */
+export function noProjectsError(): ReposError {
+  return new ReposError(
+    'the tracker has no Projects row, so the new Repos row has no project to belong to — create one with ' +
+      '`crew projects add NAME --prefix PREFIX`, then re-run (or pass --no-create to skip the Repos row)',
+    NO_PROJECTS_CODE,
+  );
+}
 
 /** What the tracker's `Repos` table says about a route, from `crew connect`'s resolved file. */
 export interface RepoRemotes {
