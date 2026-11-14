@@ -24,11 +24,13 @@ export default defineConfig({
   themeConfig: {
     search: { provider: 'local' },
     nav: [
+      { text: 'In brief', link: '/tldr' },
       { text: 'Install', link: '/install' },
       { text: 'Getting started', link: '/getting-started' },
       { text: 'Commands', link: '/commands' },
     ],
     sidebar: [
+      { text: 'Crew in brief', link: '/tldr' },
       { text: 'Install', link: '/install' },
       { text: 'Getting started', link: '/getting-started' },
       { text: 'Command reference', link: '/commands' },

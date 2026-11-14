@@ -9,6 +9,9 @@ hero:
       text: Install
       link: /install
     - theme: alt
+      text: Crew in brief
+      link: /tldr
+    - theme: alt
       text: Get started
       link: /getting-started
     - theme: alt
