@@ -110,3 +110,46 @@ test('a second flag inside the gap waits instead of escalating (CREW-1364)', asy
   const later = await applyStrandedVerified(w, s, DEFAULT_CONTRACT, 'operator-1', 'seat', silent, false, t0 + 31 * 60 * 1000);
   assert.equal(later.kind, 'escalated');
 });
+
+// CREW-3384: a stranded note names a remote branch under another name that carries the key.
+test('the stranded note lists a differently named remote branch and the expected name (CREW-3384)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { resolveRepoConfig } = await import('../src/repo-config.ts');
+  const sh = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const root = mkdtempSync(join(tmpdir(), 'stranded-'));
+  const dir = join(root, 'repo');
+  sh(root, 'init', '-q', '-b', 'main', dir);
+  sh(dir, 'config', 'user.email', 't@example.com');
+  sh(dir, 'config', 'user.name', 't');
+  writeFileSync(join(dir, 'a.txt'), 'a');
+  sh(dir, 'add', '.');
+  sh(dir, 'commit', '-qm', 'base');
+  sh(root, 'init', '-q', '--bare', join(root, 'o.git'));
+  sh(dir, 'remote', 'add', 'origin', join(root, 'o.git'));
+  sh(dir, 'push', '-q', 'origin', 'main');
+  sh(dir, 'checkout', '-q', '-b', 'repo-issue-345');
+  writeFileSync(join(dir, 'b.txt'), 'b');
+  sh(dir, 'add', '.');
+  sh(dir, 'commit', '-qm', 'ISSUE-345 the work');
+  sh(dir, 'push', '-q', 'origin', 'repo-issue-345');
+  sh(dir, 'checkout', '-q', '-b', 'unrelated-345', 'main');
+  writeFileSync(join(dir, 'c.txt'), 'c');
+  sh(dir, 'add', '.');
+  sh(dir, 'commit', '-qm', 'no key here');
+  sh(dir, 'push', '-q', 'origin', 'unrelated-345');
+  sh(dir, 'checkout', '-q', 'main');
+  sh(dir, 'fetch', '-q', 'origin');
+
+  const cfg = resolveRepoConfig(null, undefined, dir);
+  const s = planStrandedVerified(candidate(), 'main', 'origin', [], { dir, cfg });
+  assert.deepEqual(s.nearMisses, [{ branch: 'repo-issue-345', commits: 1 }]);
+  const { flagComment, escalateComment } = await import('../src/stranded-verified.ts');
+  for (const note of [flagComment(s), escalateComment(s)]) {
+    assert.match(note, /`origin\/repo-issue-345`/);
+    assert.match(note, /expected `issue-345`/);
+  }
+  assert.doesNotMatch(flagComment(planStrandedVerified(candidate(), 'main', 'origin', [])), /another name/);
+});

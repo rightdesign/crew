@@ -321,7 +321,11 @@ before going further, and never change a ticket's `report_type` yourself.
    A WORKTREE FROM THIS BASE` that is a hard stop (comment in the "resumes
    automatically" form and end the run); otherwise `git worktree add <dir>
    -b <branch> <remote>/<base>` — from the remote-tracking ref, never the
-   local base. Use the digest's `worktree` and `branch` columns verbatim.
+   local base. Use the digest's `worktree` and `branch` columns verbatim. The
+   `-b <branch>` argument is required: without it git names the branch after
+   the directory, and no later phase can find your work. Before the first
+   commit, check that `git branch --show-current` equals the digest's
+   `branch` column.
    `cd` in and do everything else there. The `Worktree Setup` skill has the
    full behaviour of `crew worktree`, the by-hand steps and the resume rules.
 2. **Make it runnable.** Copy the files the Environment section lists from

@@ -2765,7 +2765,7 @@ async function releasePhase(
 
       for (const cand of outcome.unbuildable ?? []) {
         try {
-          const stranded = planStrandedVerified(cand, repo.branch.base, repo.branch.remote, flagged);
+          const stranded = planStrandedVerified(cand, repo.branch.base, repo.branch.remote, flagged, { dir: target.dir, cfg: repo });
           const r = await applyStrandedVerified(
             tracker, stranded, tracker.contract, c.resolved?.operator, seat, remit, dryRun,
           );

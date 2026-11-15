@@ -45,6 +45,10 @@ person says so. **A missing worktree is never a reason to stop.**
 3. Otherwise `git worktree add <dir> -b <branch> <remote>/<base>` from the
    primary checkout, or `git worktree add <dir> <branch>` when
    `<remote>/<branch>` already exists (git creates the tracking branch).
+   The `-b <branch>` argument is required: omit it and git names the branch
+   after the directory, which QA and the release phase cannot find. Before
+   the first commit, check `git branch --show-current` against the digest's
+   `branch` column.
 4. `cd` into the worktree and do everything else there.
 
 When resuming an existing worktree, run `crew sync` first; if it reports your

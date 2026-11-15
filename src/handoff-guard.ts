@@ -34,9 +34,10 @@
  */
 
 import { closedStatuses, type Contract } from './contract.ts';
-import { existsSync } from 'node:fs';
-import { gitOk, headSha, lsRemoteHeads, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
-import { existingBranchForTicket, branchCandidatesForTicket, type BranchLookupTicket } from './ticket-branch.ts';
+import { existsSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { git, gitOk, headSha, lsRemoteHeads, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
+import { existingBranchForTicket, branchCandidatesForTicket, worktreeForTicket, type BranchLookupTicket } from './ticket-branch.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { repoTargetFor, routeSlug, type Route, type Ship, type RoleName } from './config.ts';
 import { replayPendingHandoffs } from './pending-handoff.ts';
@@ -167,6 +168,78 @@ export function inspectHandoff(
     };
   }
   return { kind: 'pushed', branch, sha: origin, remote };
+}
+
+
+/**
+ * CREW-3384: what the guard found about a ticket whose own worktree is on a branch that is not the contract name.
+ *
+ * A by-hand `git worktree add <dir>` with no `-b` names the branch after the directory, so the run commits and
+ * pushes work no later phase can find (QA reads `MISSING`, the release calls the ticket never-built). When no
+ * contract branch exists for the ticket but the ticket's contract-named worktree holds commits on another branch,
+ * the guard renames that local branch to the contract name (the first non-glob candidate) and carries on with its
+ * ordinary check and plain fast-forward push. A contract-named branch that already exists elsewhere is never
+ * overwritten: that is a refusal, bounced with both names. Nothing here pushes or force-anything.
+ */
+export type BranchRepair =
+  | { kind: 'none' }
+  | { kind: 'renamed'; from: string; to: string }
+  | { kind: 'refused'; from: string; to: string; local: string | null; reason: string };
+
+const sameDir = (a: string, b: string): boolean => {
+  try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
+};
+
+export function repairMisnamedBranch(dir: string, cfg: EffectiveRepoConfig, ticket: BranchLookupTicket, role?: string): BranchRepair {
+  const expected = branchCandidatesForTicket(cfg, ticket, role).find((c) => !c.endsWith('*'));
+  if (!expected) return { kind: 'none' };
+  const wtPath = join(dirname(dir), worktreeForTicket(dir, cfg, ticket, role));
+  const wt = worktrees(dir).find((w) => !w.prunable && sameDir(w.path, wtPath));
+  const from = wt?.branch;
+  if (!wt || !from || from === cfg.branch.base) return { kind: 'none' };
+  const existing = existingBranchForTicket(dir, cfg, ticket, role);
+  if (existing === from) return { kind: 'none' };
+  // A branch with no commits beyond the base is an empty run, not misnamed work.
+  const base = [`${cfg.branch.remote}/${cfg.branch.base}`, cfg.branch.base].find((b) => gitOk(dir, ['rev-parse', '--verify', '-q', b]) !== null);
+  const ahead = base ? Number(gitOk(dir, ['rev-list', '--count', `${base}..${from}`]) ?? '1') : 1;
+  if (ahead === 0) return { kind: 'none' };
+  if (existing) {
+    return {
+      kind: 'refused', from, to: existing, local: headSha(wt.path),
+      reason: `the ticket's worktree is on \`${from}\`, but the contract branch \`${existing}\` already exists and the runner will not overwrite it, so \`${from}\` was left as it is (expected name: \`${expected}\`)`,
+    };
+  }
+  try {
+    git(dir, ['branch', '-m', from, expected]);
+  } catch (e) {
+    return {
+      kind: 'refused', from, to: expected, local: headSha(wt.path),
+      reason: `the ticket's worktree is on \`${from}\`, not the expected \`${expected}\`, and renaming it failed: ${(e as Error).message}`,
+    };
+  }
+  return { kind: 'renamed', from, to: expected };
+}
+
+/**
+ * After a renamed branch is on the remote: say so, and remove the misnamed remote branch only when it sits at
+ * the same tip (a plain `push --delete`, never a force). At a different tip it is left and mentioned.
+ */
+async function announceRename(i: HandoffGuardInput, ticketId: string, r: Extract<BranchRepair, { kind: 'renamed' }>, sha: string, remote: string, log: Record<string, unknown>): Promise<void> {
+  let remoteNote: string;
+  const tip = remoteTip(i.dir, remote, r.from);
+  if (tip === null) remoteNote = `Could not ask \`${remote}\` about \`${r.from}\`, so any copy of it there was left in place.`;
+  else if (!tip) remoteNote = `\`${r.from}\` was never on \`${remote}\`.`;
+  else if (tip === sha) {
+    try {
+      git(i.dir, ['push', remote, '--delete', r.from]);
+      remoteNote = `The misnamed \`${remote}/${r.from}\` was at the same tip and has been deleted.`;
+    } catch (e) {
+      remoteNote = `\`${remote}/${r.from}\` is at the same tip but could not be deleted: ${(e as Error).message}`;
+    }
+  } else remoteNote = `\`${remote}/${r.from}\` is at \`${tip}\`, a different tip than the renamed branch, and was left in place.`;
+  await i.writer.postEvent(ticketId,
+    `The runner renamed the local branch \`${r.from}\` to \`${r.to}\` (the contract name) and pushed it to \`${remote}\` at ${sha}: the ${i.role} run built this ticket on a branch with another name, which QA and the release phase cannot find. ${remoteNote}`,
+    i.seatId, 'renamed_by_runner').catch((e: unknown) => i.log.warn(`renamed, but the note failed to post: ${(e as Error).message}`, log));
 }
 
 /**
@@ -378,6 +451,21 @@ ${shipName ? `Ship: ${shipName}\n\n` : ''}${judged ? `Judged the comment posted 
   return boundNote(build(most));
 }
 
+/** The runner's own plain fast-forward push of a bounced branch, re-checked afterwards. Never forced. */
+function pushForSeat(
+  i: HandoffGuardInput, t: Ticket, v: Extract<HandoffVerdict, { kind: 'bounce' }> & { branch: string },
+): { again?: Extract<HandoffVerdict, { kind: 'pushed' }>; error?: string } {
+  const wt = worktrees(i.dir).find((w) => w.branch === v.branch);
+  try {
+    pushBranchUpstream(wt?.path ?? i.dir, v.remote, v.branch);
+    const again = inspectHandoff(i.dir, i.cfg, t, i.role);
+    if (again.kind === 'pushed') return { again };
+    return { error: `the push succeeded but ${again.kind === 'bounce' ? again.reason : again.why}` };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
 /**
  * Run after a dev/design session ends. A ticket not at `fixed` (or already
  * claimed past it) is none of this guard's business (the session is mid-work, parked at `needs_info`, ...).
@@ -397,7 +485,13 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       return { kind: 'not-handed-off' };
     }
 
-    const v = i.origin ? inspectRemoteHandoff(i.origin, i.cfg, t, i.role) : inspectHandoff(i.dir, i.cfg, t, i.role);
+    // CREW-3384: a worktree built on a branch with the wrong name is renamed to the contract name first.
+    const repair: BranchRepair = i.origin ? { kind: 'none' } : repairMisnamedBranch(i.dir, i.cfg, t, i.role);
+    const renamed = repair.kind === 'renamed' ? repair : null;
+    if (renamed) i.log.warn(`${displayKey(t)}: renamed the misnamed branch ${renamed.from} to ${renamed.to}`, log);
+    const v: HandoffVerdict = repair.kind === 'refused'
+      ? { kind: 'bounce', branch: null, remote: i.cfg.branch.remote, local: repair.local, origin: null, reason: repair.reason }
+      : i.origin ? inspectRemoteHandoff(i.origin, i.cfg, t, i.role) : inspectHandoff(i.dir, i.cfg, t, i.role);
     if (v.kind === 'unverified') {
       i.log.warn(`${displayKey(t)} is at ${t.status} but the push was not checked: ${v.why}`, log);
       return { kind: 'unverified', why: v.why };
@@ -428,12 +522,24 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     }
     if (v.kind === 'pushed') {
       await postPushed(i, t.id, v.sha, v.remote, v.branch, log);
+      if (renamed) await announceRename(i, t.id, renamed, v.sha, v.remote, log);
       i.log.emit(`${displayKey(t)} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
     }
 
     // QA owns a claimed ticket: never pull it back to the building lane.
+    // CREW-3384: a renamed branch still gets its push, claimed or not, but a claimed ticket is never pulled back.
     if (claimed) {
+      if (renamed && pushableBounce(i.dir, v)) {
+        const done = pushForSeat(i, t, v);
+        if (done.again) {
+          await postPushed(i, t.id, done.again.sha, done.again.remote, done.again.branch, log);
+          await announceRename(i, t.id, renamed, done.again.sha, done.again.remote, log);
+          return { kind: 'pushed', sha: done.again.sha };
+        }
+        i.log.warn(`${displayKey(t)} is at ${t.status} and its renamed branch could not be pushed: ${done.error}`, log);
+        return { kind: 'failed', why: done.error ?? v.reason };
+      }
       i.log.warn(`${displayKey(t)} is at ${t.status} but its branch is not on the remote at HEAD: ${v.reason}`, log);
       return { kind: 'failed', why: v.reason };
     }
@@ -458,23 +564,22 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     }
     let pushError: string | undefined;
     if (pushableBounce(i.dir, v)) {
-      const wt = worktrees(i.dir).find((w) => w.branch === v.branch);
-      try {
-        pushBranchUpstream(wt?.path ?? i.dir, v.remote, v.branch);
-        const again = inspectHandoff(i.dir, i.cfg, t, i.role);
-        if (again.kind === 'pushed') {
-          await postPushed(i, t.id, again.sha, again.remote, again.branch, log);
+      const done = pushForSeat(i, t, v);
+      if (done.again) {
+        const again = done.again;
+        // A `pushed` event that cannot be written is a failed hand-off, not a crash: it goes down the bounce path.
+        const posted = await postPushed(i, t.id, again.sha, again.remote, again.branch, log).then(() => null, (e: unknown) => (e as Error).message);
+        if (posted !== null) pushError = posted;
+        else {
           await i.writer.postEvent(t.id,
             `The runner pushed \`${again.branch}\` to \`${again.remote}\` on ${i.shipName ? `${i.shipName}'s` : 'this ship\'s'} behalf: the ${i.role} seat set \`${i.contract.statuses.handoff}\` without pushing. Plain fast-forward push.${i.cfg.hooks.ci_status ? ' The repo\'s `ci_status` hook was NOT run by the hand-off guard, so CI was not checked by the builder.' : ''}`,
             i.seatId, 'pushed_by_runner').catch((e: unknown) => i.log.warn(`pushed, but the note failed to post: ${(e as Error).message}`, log));
+          if (renamed) await announceRename(i, t.id, renamed, again.sha, again.remote, log);
           i.log.emit(`${displayKey(t)}: pushed ${again.branch} to ${again.remote} on the seat's behalf at ${again.sha.slice(0, 7)} — handed on to QA`, log);
           return { kind: 'pushed', sha: again.sha };
         }
-        pushError = `the push succeeded but ${again.kind === 'bounce' ? again.reason : again.why}`;
-      } catch (e) {
-        pushError = (e as Error).message;
-      }
-      i.log.warn(`${displayKey(t)}: the runner's own push failed: ${pushError}`, log);
+      } else pushError = done.error;
+      if (pushError) i.log.warn(`${displayKey(t)}: the runner's own push failed: ${pushError}`, log);
     }
     if (!await deliverNote(i, t.id, bounceComment(v, i.shipName, pushError), 'bounced', log)) {
       i.log.warn(`${displayKey(t)}: ${v.reason}, but the bounce note could not be delivered — left at ${t.status}, guard outcome unverified`, log);

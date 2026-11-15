@@ -36,11 +36,56 @@ import type { Contract } from './contract.ts';
 import type { Ticket, RunnerEvent } from './tracker.ts';
 import type { MergeCandidate } from './release.ts';
 import { calloutHeader } from './callout.ts';
+import { gitOk } from './git.ts';
+import { branchCandidatesForTicket } from './ticket-branch.ts';
+import type { EffectiveRepoConfig } from './repo-config.ts';
 
 /** A marker in the note, so a repeat is recognisable. */
 export const STRANDED_MARKER = calloutHeader('WARNING', 'Stranded Verified');
 
+/**
+ * CREW-3384: a remote branch under another name whose commits name the ticket's key — most likely the ticket's
+ * work, built on a branch the contract name does not match.
+ */
+export interface NearMissBranch { branch: string; commits: number }
+
+/**
+ * Remote branches whose name contains the ticket number and whose commits ahead of the base name the key.
+ * Bounded to branches containing the number so the search stays cheap; reads the remote-tracking refs as this
+ * ship last fetched them. Never throws: no refs or a failed git call is an empty list.
+ */
+export function findNearMissBranches(dir: string, cfg: EffectiveRepoConfig, ticket: Pick<Ticket, 'issue_id' | 'issue_tag' | 'project_issue_prefix'>): NearMissBranch[] {
+  const number = ticket.issue_id.replace(/^\D+/, '');
+  if (!number) return [];
+  const remote = cfg.branch.remote;
+  const prefix = `refs/remotes/${remote}/`;
+  const refs = (gitOk(dir, ['for-each-ref', '--format=%(refname)', prefix]) ?? '').split('\n')
+    .filter((r) => r.startsWith(prefix) && r !== `${prefix}HEAD`)
+    .map((r) => r.slice(prefix.length))
+    .filter((b) => b !== cfg.branch.base && new RegExp(`(^|\\D)${number}(\\D|$)`).test(b));
+  const keys = [...new Set([ticket.issue_id, ticket.issue_tag].filter((k): k is string => !!k))];
+  const keyRe = keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const out: NearMissBranch[] = [];
+  for (const b of refs) {
+    const log = gitOk(dir, ['log', '--format=%H', '-E', '-i', `--grep=(^|[^0-9A-Za-z])(${keyRe})([^0-9]|$)`, `${remote}/${cfg.branch.base}..${prefix}${b}`]);
+    const commits = log ? log.split('\n').filter(Boolean).length : 0;
+    if (commits > 0) out.push({ branch: b, commits });
+  }
+  return out;
+}
+
+/** The sentence the stranded notes add when a near-miss branch exists; empty when none. */
+export function nearMissText(s: Pick<StrandedVerified, 'remote' | 'nearMisses' | 'expectedBranch'>): string {
+  if (!s.nearMisses?.length) return '';
+  const list = s.nearMisses.map((n) => `\`${s.remote}/${n.branch}\` (${n.commits} commit${n.commits === 1 ? '' : 's'} naming the key)`).join(', ');
+  return `\n\n**A branch under another name looks like this ticket's work:** ${list}. The crew expected \`${s.expectedBranch ?? 'the contract branch name'}\`. It was most likely built on a misnamed branch; pushing it under the expected name, or renaming it, lets the release merge it.`;
+}
+
 export interface StrandedVerified {
+  /** CREW-3384: remote branches under other names whose commits name the key. */
+  nearMisses?: NearMissBranch[];
+  /** CREW-3384: the contract branch name the crew looked for. */
+  expectedBranch?: string;
   candidate: MergeCandidate;
   /** The base branch searched, e.g. "main". */
   base: string;
@@ -79,13 +124,17 @@ export const priorStrandedFlags = (ticket: Ticket, events: RunnerEvent[]): numbe
 
 export function planStrandedVerified(
   candidate: MergeCandidate, base: string, remote: string, events: RunnerEvent[],
+  /** CREW-3384: where to look for a differently named branch; omitted, none is searched for. */
+  look?: { dir: string; cfg: EffectiveRepoConfig },
 ): StrandedVerified {
   const stamps = events
     .filter((e) => e.record_id === candidate.ticket.id && e.event_type === 'stranded_flagged')
     .map((e) => Date.parse(e.occurred_at ?? e.created_at ?? ''))
     .filter((n) => !Number.isNaN(n));
+  const nearMisses = look ? findNearMissBranches(look.dir, look.cfg, candidate.ticket) : [];
   return {
     candidate, base, remote,
+    ...(nearMisses.length && look ? { nearMisses, expectedBranch: branchCandidatesForTicket(look.cfg, candidate.ticket).find((c) => !c.endsWith('*')) } : {}),
     priorFlags: priorStrandedFlags(candidate.ticket, events),
     lastFlaggedAt: stamps.length ? Math.max(...stamps) : undefined,
   };
@@ -99,7 +148,7 @@ export function flagComment(s: StrandedVerified): string {
 
 \`${key}\` is \`verified\` with no branch on this ship, and its key names no commit anywhere in this ship's \`${s.base}\` history (searched all of it, local commits included, for a bounded \`${key}\` in a commit subject or body). One of three things is true: it landed under a commit that never named the key, the branch was deleted before it merged, or it was verified in error — the crew cannot tell these apart and will not guess.
 
-If it is still unplaceable next cycle, this ticket is escalated to a person. If the work already landed, closing this ticket by hand now avoids that.`;
+If it is still unplaceable next cycle, this ticket is escalated to a person. If the work already landed, closing this ticket by hand now avoids that.${nearMissText(s)}`;
 }
 
 export function escalateComment(s: StrandedVerified): string {
@@ -110,7 +159,7 @@ export function escalateComment(s: StrandedVerified): string {
 
 \`${key}\` was flagged as stranded at \`verified\` on an earlier cycle and still has no branch on this ship or on \`${s.remote}\` and no commit in this ship's \`${s.base}\` history naming its key (searched all of it, local commits included). This needs a person: either the work landed under a commit that doesn't name the key and this ticket can simply close, or the branch is gone and the work needs redoing.
 
-The crew will not close this on its own.`;
+The crew will not close this on its own.${nearMissText(s)}`;
 }
 
 export interface StrandedWriter {

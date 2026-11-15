@@ -60,7 +60,12 @@ pass.
    ticket on. The digest's `branch` column reads `<name> (on <remote> only)`
    when another ship built it — still testable; only **MISSING** (gone
    locally and on the remote) means there is nothing to test, and that
-   bounces the ticket to `in_progress` with that reason.
+   bounces the ticket to `in_progress` with that reason. **Never verify
+   from a branch a comment names when the digest says MISSING**: crew cannot
+   find that branch, so the release could not merge it. If a branch for the
+   ticket is visible under another name, send the ticket back to
+   `in_progress` with a comment naming it; otherwise follow the wording
+   above.
 
    **Name the sha you test.** Your starting comment states the
    `<remote>/<branch>` tip you fetched. The runner records the pushed tip on
