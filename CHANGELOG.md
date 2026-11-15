@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.154.1] — 2026-11-15
+
+- CREW-3384 A ticket built on a branch with the wrong name is now renamed to its contract name at hand-off, so QA and the release can find it; stranded-verified notes list near-miss branches.
+
 ## [0.154.0] — 2026-11-14
 
 - CREW-3359 `crew projects add` creates a Projects row; `crew repos add` offers to create the first project and `crew doctor` flags a tracker with none.
