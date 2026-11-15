@@ -8,7 +8,7 @@
 
 import type { Route, RoleName, Ship } from './config.ts';
 import { configuredMembers, routeSlug } from './config.ts';
-import { Tracker, ticketBranchContext, type Ticket, type Comment, type ShipRow, type StatusChange } from './tracker.ts';
+import { Tracker, displayKey, ticketBranchContext, type Ticket, type Comment, type ShipRow, type StatusChange } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
@@ -27,6 +27,8 @@ import { acceptanceChecklistBlock, acceptanceLines } from './handoff-guard.ts';
 import { buildingDigest, DIRECTION_EVENT_TYPES, STATUS_EVENT_TYPES, qaDigest, type DigestEvent } from './digest.ts';
 import { loadRepoConfigTolerant, resolveRepoConfig, effectiveBranchTemplate } from './repo-config.ts';
 import { dirForRepo, reposOf } from './config.ts';
+import { planFootprintsFor, readFootprintEvents, type FootprintEvents } from './footprint-run.ts';
+import { footprintDigestSection, footprintOf, type FootprintPlan } from './footprint.ts';
 import { checkCrewFloor } from './crew-floor.ts';
 import { diskFullStop } from './sandbox-hygiene.ts';
 import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
@@ -45,6 +47,9 @@ export interface CycleDecision {
   /** The workspace's Ships rows (CREW-1371), empty when it has no Ships table. */
   ships: ShipRow[];
   blocked: Set<string>;
+  /** Tickets held back for a file shared with active work, and the footprints on record (CREW-3387). */
+  footprints?: FootprintPlan;
+  footprintEvents?: FootprintEvents;
   info: BlockerInfo;
   sweep: SweepStep[];
   /**
@@ -171,6 +176,13 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const extra = await tracker.ticketsByIds(missingBlockerIds(tickets));
   const info = blockerInfoMap(tickets, extra);
   const blocked = computeBlockedIds(tickets, info);
+  // CREW-3387: tickets held back because they would change a file an active
+  // ticket changes. Parked like a dependency-blocked ticket, so they join
+  // `blocked` for selection; a ticket already parked by a dependency takes no
+  // place in line here.
+  const footprintEvents = await optional('footprint events', readFootprintEvents(tracker), { declared: new Map(), pushed: new Map() });
+  const footprintPlan = planFootprintsFor(route, tickets, footprintEvents, new Set(blocked));
+  for (const id of footprintPlan.waits.keys()) blocked.add(id);
 
   emit.enter('sweep');
   const roster = buildRoster(configuredMembers(route), crewRows);
@@ -181,7 +193,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   if (diag.selfBlocked.length) {
     emit.warn(`ticket(s) blocking themselves, parked permanently: ${diag.selfBlocked.join(', ')}`);
   }
-  const sweep = planSweep(tickets, info, blocked, workModes);
+  const sweep = planSweep(tickets, info, blocked, workModes, footprintPlan.waits);
   const holdReleases = planHoldReleases(tickets, tracker.contract);
   const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes, stalledEvents);
   const skipped = skippedByMode(tickets, workModes);
@@ -314,7 +326,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const selection = selectRole(selectionInput);
   const actionable = actionableSummary(selectionInput, selection.pending);
   const decision: CycleDecision = {
-    tickets, comments, roster, ships, blocked, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark, directionEvents, statusChanges,
+    tickets, comments, roster, ships, blocked, footprints: footprintPlan, footprintEvents, info, sweep, epicSync, holdReleases, stalled, stranded, selection, actionable, watermark, directionEvents, statusChanges,
     selectionInput, attention: attentionCurrent, unroutable,
   };
 
@@ -478,7 +490,10 @@ export function writeDigest(
       blocked: d.blocked,
       blockerInfo: d.info,
     };
-    const body = role === 'qa' ? qaDigest(input) : buildingDigest(input);
+    const fp = d.footprintEvents;
+    const recorded = fp ? d.tickets.filter((t) => fp.declared.has(t.id) && !['fixed', 'qa', 'verified'].includes(String(t.status)))
+      .map((t) => ({ ticket: displayKey(t), paths: footprintOf(t, fp.declared, fp.pushed) })) : [];
+    const body = role === 'qa' ? qaDigest(input) : `${buildingDigest(input)}\n\n${footprintDigestSection(recorded)}`;
     const text = own ? `${ownRunBanner(own)}\n\n${body}` : body;
     const path = digestPath(stateDir, routeSlug(o.route.route), role, runId);
     writeFileSync(path, text);

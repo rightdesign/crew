@@ -1,4 +1,5 @@
 import { since } from './fleet.ts';
+import { describeFiles } from './footprint.ts';
 
 /**
  * The text form of `crew status` (CREW-3280). Pure: the command gathers every
@@ -28,6 +29,9 @@ export interface StatusRepo {
   notable: boolean;
 }
 
+/** A ticket waiting for files active work shares (CREW-3387). */
+export interface StatusWait { ticket: string; waitingFor: string[]; files: string[] }
+
 export interface StatusShip {
   name: string;
   /** The ship's one-line description (online/idle/engaged/not seen). */
@@ -55,6 +59,8 @@ export interface StatusView {
   repos: StatusRepo[];
   /** Verified tickets the release is holding back on a blocker. */
   heldReleases: string[];
+  /** Tickets waiting on a shared file; absent or empty when none do. */
+  waits?: StatusWait[];
   /** Verified tickets waiting for a ticket handed back for a merge conflict (CREW-3386). */
   deferredReleases?: string[];
   /** The fairness line: a ticket passed over cycle after cycle. */
@@ -134,6 +140,11 @@ export function renderStatus(v: StatusView, opts: { verbose: boolean; now?: numb
     const shown = verbose ? sorted : sorted.slice(0, WAITING_SHOWN);
     for (const t of shown) out.push(`  ${waitingLine(t)}`);
     if (shown.length < sorted.length) out.push(`  … ${sorted.length - shown.length} more (\`crew status --verbose\` lists all)`);
+  }
+
+  // Footprint waits.
+  for (const w of v.waits ?? []) {
+    out.push(`waiting:   ${w.ticket} — for ${w.waitingFor.join(', ')} on ${describeFiles(w.files)}`);
   }
 
   // Releases.

@@ -21,6 +21,7 @@
  *     owns the ticket.
  */
 
+import { pushedEventExtra } from './footprint-run.ts';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Contract } from './contract.ts';
@@ -144,7 +145,7 @@ export async function replayPendingHandoffs(i: ReplayInput): Promise<string[]> {
         });
         if (!seen) await i.writer.postComment(t.id, text, seatId);
       }
-      await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), seatId, 'pushed');
+      await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), seatId, 'pushed', co ? pushedEventExtra(co.dir, v.remote, co.cfg.branch.base, v.sha) : undefined);
       await i.writer.updateTicket(t.id, rec.patch);
       removePendingHandoff(i.stateDir, rec.ticketRecordId);
       i.log.emit(`${displayKey(t)}: replayed a pending hand-off at ${v.sha.slice(0, 7)} — handed on to QA`, at);

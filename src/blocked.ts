@@ -29,6 +29,7 @@ import { StaleWriteError } from '@tablation/client';
 import type { Ticket } from './tracker.ts';
 import { RESOLVED_STATUSES, displayKey } from './tracker.ts';
 import { withinWorkMode, type WorkModes } from './work-mode.ts';
+import { footprintWaitNote } from './footprint.ts';
 
 /**
  * {ticketId: {issue_id, issue_tag, status, repo_id, merged_at, commit_sha}} —
@@ -148,6 +149,8 @@ export interface SweepStep {
   /** "ISSUE-241 (accepted), ISSUE-9 (unknown)" — every blocker, with status. */
   blockers: string;
   to: 'blocked' | 'accepted';
+  /** Set when the ticket is parked only because it shares files with active work (CREW-3387). */
+  footprint?: { waitingFor: string[]; files: string[] };
 }
 
 const describeBlockers = (t: Ticket, info: BlockerInfo): string =>
@@ -166,11 +169,20 @@ const describeBlockers = (t: Ticket, info: BlockerInfo): string =>
  * restored — those status writes flow back to Jira on a synced project — and
  * hybrid ones only when assigned to an agent. Absent `wm` filters nothing.
  */
-export function planSweep(tickets: Ticket[], info: BlockerInfo, blocked: Set<string>, wm?: WorkModes): SweepStep[] {
+export function planSweep(
+  tickets: Ticket[], info: BlockerInfo, blocked: Set<string>, wm?: WorkModes,
+  footprintWaits?: Map<string, { waitingFor: string[]; files: string[] }>,
+): SweepStep[] {
   const steps: SweepStep[] = [];
   for (const t of withinWorkMode(tickets, wm)) {
     if (t.status === 'accepted' && blocked.has(t.id)) {
-      steps.push({ action: 'park', ticket: t, blockers: describeBlockers(t, info), to: 'blocked' });
+      const fw = footprintWaits?.get(t.id);
+      // A ticket held by a dependency says so; only one held by nothing else names the files.
+      const byFiles = fw && unresolvedBlockers(t, info).length === 0;
+      steps.push({
+        action: 'park', ticket: t, blockers: byFiles ? footprintWaitNote(fw) : describeBlockers(t, info),
+        to: 'blocked', ...(byFiles ? { footprint: { waitingFor: fw.waitingFor, files: fw.files } } : {}),
+      });
     } else if (t.status === 'blocked' && !blocked.has(t.id)) {
       steps.push({ action: 'restore', ticket: t, blockers: describeBlockers(t, info), to: 'accepted' });
     }
@@ -351,11 +363,16 @@ export function unroutableChanges(
  * else" wake signal so the crew does not wake itself.
  */
 export function sweepComment(step: SweepStep): string {
+  if (step.action === 'park' && step.footprint) {
+    return `Parked as **Blocked** by the crew — ${footprintWaitNote(step.footprint)}.
+
+This is automatic and reversible: a ticket that would change a file another active ticket changes waits for it instead of being built in parallel and conflicting at release. The oldest waiting ticket starts first, and this one is restored on the first poll after the tickets it waits for are released, closed or parked for a person. Nothing else about the ticket changes.`;
+  }
   return step.action === 'park'
     ? `Parked as **Blocked** by the crew — waiting on: ${step.blockers}.
 
 This is automatic and reversible: an approved ticket whose \`Blocked by\` entries are not all resolved is parked out of the queue, and restored on the first poll after the last one resolves. Nothing else about the ticket changes. A blocker counts as resolved at \`closed_deployed\`, \`closed_wont_fix\` or \`closed_duplicate\`, or at \`verified\` when it is in a different repository or already merged (\`merged_at\` set) — not at \`fixed\`, which is still an unmerged branch awaiting QA, and not at \`verified\` for a blocker in this ticket's own repository until the release has merged it, so nothing gets built stacked on an unmerged branch.`
-    : `Restored to **Approved** by the crew — every blocker has resolved${step.blockers && step.blockers !== '—' ? ` (${step.blockers})` : ''}.
+    : `Restored to **Approved** by the crew — ${step.blockers ? 'every blocker has resolved' : 'nothing holds it back now (the tickets it waited for no longer hold its files)'}${step.blockers && step.blockers !== '—' ? ` (${step.blockers})` : ''}.
 
 This restores the status it was approved at before being parked; it is back in the queue and a role may pick it up. If a blocker resolved as \`closed_wont_fix\` or \`closed_duplicate\` this ticket may still not be buildable as written — that is a call for a human, not the crew.`;
 }

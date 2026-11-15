@@ -48,6 +48,7 @@ import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
 import { sandboxOriginFor } from './agent.ts';
 import { branchWebUrl } from './forges.ts';
+import { pushedEventExtra } from './footprint-run.ts';
 
 /** A marker so a bounce is recognisable in the comment history. */
 export const HANDOFF_BOUNCED_MARKER = calloutHeader('WARNING', 'Hand-off Bounced');
@@ -314,7 +315,7 @@ async function deliverNote(
 export interface HandoffWriter {
   ticket(id: string): Promise<Ticket>;
   updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
-  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string, extra?: Record<string, unknown>): Promise<void>;
   /** CREW-3307: where a bounce note goes when the event log refuses it; absent in a writer that cannot comment. */
   postComment?(ticketId: string, body: string, memberId: string): Promise<void>;
   /** Event-log reader (CREW-1973); absent in a writer that cannot read it, which then skips the takeover check. */
@@ -362,7 +363,7 @@ export interface BranchLink { column: string; url(branch: string): string | null
 
 /** Posts the `pushed` event and, where the table has the column, records the branch's web page beside it. */
 async function postPushed(i: HandoffGuardInput, ticketId: string, sha: string, remote: string, branch: string, log: Record<string, unknown>): Promise<void> {
-  await i.writer.postEvent(ticketId, pushedEventBody(sha, remote, branch), i.seatId, 'pushed');
+  await i.writer.postEvent(ticketId, pushedEventBody(sha, remote, branch), i.seatId, 'pushed', pushedEventExtra(i.dir, remote, i.cfg.branch.base, sha));
   const url = i.branchLink?.url(branch);
   if (!i.branchLink || !url) return;
   try {
@@ -813,7 +814,7 @@ export async function guardStrayHandoffs(i: StrayGuardInput): Promise<void> {
       const v = inspectHandoff(co.dir, co.cfg, t, i.role);
       i.log.warn(`${displayKey(t)} was handed off by a run that did not claim it`, at);
       if (v.kind === 'pushed') {
-        await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed');
+        await i.writer.postEvent(t.id, pushedEventBody(v.sha, v.remote, v.branch), i.seatId, 'pushed', pushedEventExtra(co.dir, v.remote, co.cfg.branch.base, v.sha));
       } else if (v.kind === 'bounce') {
         // The remote tip is only "ours to bounce" when this checkout's branch is
         // missing from it or strictly ahead of it. A remote that is ahead of (or

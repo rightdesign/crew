@@ -56,7 +56,7 @@ import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBr
 import { resolveTopCandidate } from './claim.ts';
 import { markCrewAssistedAtLaunch } from './crew-assisted.ts';
 import { refreshUnknownRepos, persistRepoRows } from './repo-refresh.ts';
-import { applySweep, blockerInfoMap, missingBlockerIds } from './blocked.ts';
+import { applySweep, blockerInfoMap, computeBlockedIds, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
 import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures, priorFailureNote } from './build-failure.ts';
@@ -123,7 +123,9 @@ import { validateContract, DEFAULT_CONTRACT, EVENT_LOG_STATUS_UNTRACKED } from '
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
-import { renderStatus, type StatusRepo, type StatusLastRun } from './status-render.ts';
+import { renderStatus, type StatusRepo, type StatusLastRun, type StatusWait } from './status-render.ts';
+import { ignoreByRepo, planFootprintsFor, pushedEventExtra, readFootprintEvents } from './footprint-run.ts';
+import { FOOTPRINT_DECLARED_EVENT, countedPaths, footprintVerdictText, mustYieldTo } from './footprint.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
   discover, get as connectGet, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
@@ -479,6 +481,7 @@ function usage(problem?: string, requested = false): never {
   crew shell-init [--shell zsh|bash|fish]   print the periscope shell function (install: eval "\$(crew shell-init)")
   crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
+  crew footprint [route] NNN [path...]   record the files a ticket will change (once), then print PROCEED or YIELD against active work
   crew sandbox cache [--refresh|--prune|--reset] [--json]   list the sandbox cache volume's mirrors; --refresh runs the daemon's cache pass once (creates missing mirrors), --prune drops unserved repositories, --reset recreates the volume
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
   crew pause|resume [route] [R|release]  pause everything, one role, or releases only (merge/deploy/release; passengers keeps running).
@@ -581,7 +584,7 @@ const KNOWN_COMMANDS = new Set([
   'passenger-sync-daemon', 'periscope-proxy', 'intel', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'sandbox', 'selftest', 'shell-init', 'ship', 'skills', 'status',
-  'sync', 'unassign', 'uninstall', 'watch', 'whoami', 'worktree',
+  'sync', 'unassign', 'footprint', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
 // CREW-2866: the shell function needs no config (it is installed from an rc
@@ -5894,7 +5897,7 @@ switch (command) {
             }
             await trD.updateTicket(id, patch);
           },
-          postPushed: (id, sha, rem, branch) => trD.postEvent(id, pushedEventBody(sha, rem, branch), memberD, 'pushed'),
+          postPushed: (id, sha, rem, branch) => trD.postEvent(id, pushedEventBody(sha, rem, branch), memberD, 'pushed', pushedEventExtra(repoD.dir, rem, base, sha)),
           stopTunnel: (id) => {
             const sc = readSidecars(cfg.ship.stateDir).find((x) => x.ticketRecordId === id);
             return sc && stopRecordedTunnel(sc) ? 1 : 0;
@@ -6210,6 +6213,37 @@ switch (command) {
       }
       throw e;
     }
+    break;
+  }
+
+  case 'footprint': {
+    // CREW-3387: the dev lane's declaration step. Records the files a ticket is
+    // expected to change (once), then asks the same pure function the crew uses
+    // whether an active ticket already holds one of them. Both ships racing for
+    // overlapping tickets run this against the same log, so exactly one proceeds.
+    const args = positional.slice(1);
+    const at = args.findIndex((a) => parseTicketNumber(a) !== null);
+    const n = at >= 0 ? parseTicketNumber(args[at]!) : null;
+    if (!n) { die('crew footprint', 'need a ticket number (326, ISSUE-326, or TABL-326)', '`crew footprint 326 src/a.ts src/b.ts`'); }
+    const trF = new Tracker(route, cfg.ship);
+    const cF = trF.contract;
+    const openF = await trF.openTickets();
+    const ticketF = openF.find((t) => t[cF.columns.key] === `ISSUE-${n}`);
+    if (!ticketF) { die('crew footprint', `no open ticket ISSUE-${n} on ${route.route}`, '`crew inbox` to list open tickets'); }
+    let evF = await readFootprintEvents(trF);
+    if (!evF.declared.has(ticketF.id)) {
+      const listed = countedPaths(args.slice(at + 1));
+      if (dryRun) { emit.emit(`would record a footprint of ${listed.length} file(s) on ${displayKey(ticketF)}`); break; }
+      const seatF = route.resolved?.seats.dev ?? route.resolved?.operator ?? '';
+      await trF.postEvent(
+        ticketF.id, `footprint: ${listed.length ? listed.join(', ') : 'none given'}`, seatF, FOOTPRINT_DECLARED_EVENT, { paths: listed },
+      );
+      evF = await readFootprintEvents(trF);
+      // A read that does not see the write yet must not read as "declared nothing".
+      if (!evF.declared.has(ticketF.id)) evF.declared.set(ticketF.id, { paths: listed, at: new Date().toISOString() });
+    }
+    const verdictF = mustYieldTo(ticketF, { tickets: openF, ...evF, ignoreByRepo: ignoreByRepo(route) });
+    process.stdout.write(`${footprintVerdictText(displayKey(ticketF), verdictF)}\n`);
     break;
   }
 
@@ -6988,15 +7022,16 @@ switch (command) {
 
     const shipAttention = openShipAttention(state);
     let heldReleases: string[] = [];
+    let waitViews: StatusWait[] = [];
     let deferredReleases: string[] = [];
     // Verified tickets the release is holding back on an unresolved blocker
     // (CREW-1506), so "why hasn't this shipped" is answerable from here.
     try {
       const open = await statusTracker.openTickets();
-      heldReleases = describeHeld(heldByBlockers(
-        open, statusTracker.contract.statuses.verified,
-        blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open))),
-      ));
+      const blockerInfo = blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open)));
+      heldReleases = describeHeld(heldByBlockers(open, statusTracker.contract.statuses.verified, blockerInfo));
+      waitViews = [...planFootprintsFor(route, open, await readFootprintEvents(statusTracker), computeBlockedIds(open, blockerInfo)).waits.values()]
+        .map((w) => ({ ticket: displayKey(w.ticket), waitingFor: w.waitingFor, files: w.files }));
       // CREW-3386: verified branches waiting for a ticket handed back for a conflict.
       const minutes = Math.min(...(await resolvedRepos(route)).map((r) => r.config.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES), DEFAULT_RIGHT_OF_WAY_MINUTES);
       if (open.some((t) => t.status === statusTracker.contract.statuses.verified)) {
@@ -7041,6 +7076,7 @@ switch (command) {
       })),
       repos: repoViews,
       heldReleases,
+      waits: waitViews,
       deferredReleases,
       starved: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : undefined,
       ships: shipRows.map((s) => ({

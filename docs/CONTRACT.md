@@ -147,6 +147,53 @@ branch and worktree). The poll's sweep parks it at `blocked` and restores it
 once every blocker is in a resolved status. QA bounces a hand-off that names
 needed work no ticket covers.
 
+**Parking on a shared file (CREW-3387).** Tickets that would change the same
+files should not be built at the same time: they conflict one release at a time.
+Nothing is configured for this. Every ticket in flight has a **footprint**, the
+repo-relative files it is expected to change, kept in the Issues event log so
+every ship sees it:
+
+- *Predicted:* before it cuts a worktree, the dev lane reads the ticket and the
+  code and runs `crew footprint NNN <path>...`, which records a
+  `footprint_declared` event once and answers `PROCEED` or `YIELD`. A ticket is
+  not asked again; the lane digest lists the recorded footprints so a resumed run
+  does not declare twice.
+- *Actual:* every `pushed` event records the paths the branch changes against
+  the base (`metadata.paths`, both sides of a rename).
+- *In force:* while `in_progress`, the declared paths plus the newest push's
+  paths; from `fixed` on, the newest push's paths only. The changelog, the
+  version files (`release.changelog`, `release.versionFiles`) and package manager
+  lockfiles never count.
+
+A ticket waits when its footprint shares an exact path (no globs, no
+directories) with an active ticket of the same repository: `in_progress`,
+`fixed`, `qa`, or `verified` and not yet merged. `needs_info`, `blocked`,
+closed and released tickets hold nothing, so tickets waiting on one start on the
+next poll. The lane that gets `YIELD` sets the ticket back to `accepted`, clears
+the assignee and ends the run without a worktree; the poll's sweep then parks it
+at `blocked` with a note naming the ticket and files, exactly as for a
+dependency, and restores it when nothing holds its files. A parked ticket is not
+offered to a lane, so waiting costs one short run per ticket. When several wait on
+the same files the oldest is restored first and the others wait on it. `crew
+status` lists each waiting ticket, what it waits for and the files.
+
+Only starts are held: a ticket in flight is never stopped because a push grows
+into another footprint (right of way after a conflict hand-back, CREW-3386,
+handles that). A ticket with no declaration, an empty one, or one from a ship
+that cannot declare simply runs.
+
+Several ships agree because the decision is a pure function of the board and the
+log. Two ships that pick up overlapping tickets in the same moment both declare
+before either sees the other; `crew footprint` re-reads the log after recording,
+and of two overlapping tickets that are both newly declared (in progress,
+nothing pushed) the later declaration yields, an exact tie going to the lower
+ticket number, so exactly one proceeds.
+
+*Mixed versions:* a ship on a crew without this feature neither declares nor
+yields, and its pushes carry no paths. Its tickets have no footprint until a
+newer ship's push records one, so they are treated as fail-open. Nothing breaks;
+the benefit is partial until every ship is upgraded.
+
 `approved` matters for the opposite reason: the runner must know which status
 it may **never** set, because that is the one where a person authorises work.
 

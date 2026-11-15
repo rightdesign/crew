@@ -84,3 +84,10 @@ test('--verbose carries the configuration the default leaves out', () => {
   assert.match(def, /reload:     requested 5s ago/);
   assert.equal(count(full, 'releaser:'), 9);
 });
+
+test('tickets waiting for files active work shares are listed with what they wait for (CREW-3387)', () => {
+  const v = idle();
+  v.waits = [{ ticket: 'CREW-2', waitingFor: ['CREW-1'], files: ['src/a.ts'] }];
+  assert.match(text(v), /waiting:\s+CREW-2 — for CREW-1 on `src\/a\.ts`/);
+  assert.doesNotMatch(text(idle()), /waiting:/);
+});
