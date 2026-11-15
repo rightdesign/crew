@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.156.0] — 2026-11-15
+
+- CREW-3387 Tickets that would change the same files as work already in flight now wait for it, with nothing to configure; the dev lane declares a footprint, `pushed` events record changed paths, and `crew status` lists waiting tickets.
+
 ## [0.155.0] — 2026-11-15
 
 - CREW-3386 The right of way for a ticket handed back for a merge conflict now also holds when only one other branch is verified.
