@@ -55,6 +55,8 @@ export interface StatusView {
   repos: StatusRepo[];
   /** Verified tickets the release is holding back on a blocker. */
   heldReleases: string[];
+  /** Verified tickets waiting for a ticket handed back for a merge conflict (CREW-3386). */
+  deferredReleases?: string[];
   /** The fairness line: a ticket passed over cycle after cycle. */
   starved?: { ticket: string; since: string; streak: number };
   ships: StatusShip[];
@@ -109,11 +111,13 @@ export function renderStatus(v: StatusView, opts: { verbose: boolean; now?: numb
   const own = byRecent(v.attention, (a) => a.since);
   const others = v.ships.filter((s) => s.name !== v.ship.name && s.attention.length);
   const unsafe = v.repos.filter((r) => r.unsafeDetail);
-  if (own.length || others.length || unsafe.length || v.heldReleases.length || v.starved) {
+  const deferred = v.deferredReleases ?? [];
+  if (own.length || others.length || unsafe.length || v.heldReleases.length || deferred.length || v.starved) {
     out.push('needs attention:');
     for (const i of own) out.push(`  ${i.kind} — ${i.message}`);
     for (const r of unsafe) out.push(`  base ${r.name} — UNSAFE, no worktree cuts or releases: ${r.unsafeDetail}`);
     for (const l of v.heldReleases) out.push(`  release: ${l}`);
+    for (const l of deferred) out.push(`  deferred: ${l}`);
     if (v.starved) {
       out.push(`  waiting: ${v.starved.ticket} for ${since(v.starved.since, now)} (passed over ${plural(v.starved.streak, 'cycle')} running)`);
     }

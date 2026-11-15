@@ -418,6 +418,12 @@ export interface RepoConfig {
      * `DEFAULT_ISOLATE_MAX_CANDIDATES`; 0 turns isolation off.
      */
     isolateFailures?: { maxCandidates: number };
+    /**
+     * How long a ticket handed back for a merge conflict keeps right of way
+     * over the paths it conflicted in (CREW-3386). Unset means
+     * `DEFAULT_RIGHT_OF_WAY_MINUTES`; 0 turns the right of way off.
+     */
+    rightOfWayMinutes?: number;
     versioning: Versioning;
     versionFiles: string[];
     /** null when this repo keeps no changelog — not every project does. */
@@ -507,7 +513,7 @@ export function worktreeNameProblem(template: string): string | null {
   return null;
 }
 const RELEASE_KEYS = new Set([
-  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
+  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
 /** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
 export const VERSIONINGS: Versioning[] = ['auto', 'none'];
@@ -516,6 +522,17 @@ const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
 const ISOLATE_KEYS = new Set(['maxCandidates']);
 /** How many merged branches a failed release build may build one by one. */
 export const DEFAULT_ISOLATE_MAX_CANDIDATES = 4;
+
+/** Minutes a conflict hand-back keeps right of way over its paths (CREW-3386). */
+export const DEFAULT_RIGHT_OF_WAY_MINUTES = 60;
+
+/** `release.rightOfWayMinutes`: a non-negative integer, undefined when not given. */
+export function parseRightOfWayMinutes(raw: unknown, fail: (m: string) => Error): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) throw fail(`release.rightOfWayMinutes must be a non-negative integer (got "${raw}")`);
+  return n;
+}
 
 /** `release.isolateFailures.maxCandidates`: a non-negative integer, undefined when not given. */
 export function parseIsolateMax(raw: unknown, where: string, fail: (m: string) => Error): number | undefined {
@@ -790,6 +807,8 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
     raw.release?.isolateFailures?.maxCandidates, 'release.isolateFailures', (m) => new RepoConfigError(`${file}: ${m}`),
   );
 
+  const rightOfWay = parseRightOfWayMinutes(raw.release?.rightOfWayMinutes, (m) => new RepoConfigError(`${file}: ${m}`));
+
   const versioning = String(raw.release?.versioning ?? 'auto') as Versioning;
   if (!VERSIONINGS.includes(versioning)) {
     throw new RepoConfigError(`${file}: release.versioning must be auto|none (got "${versioning}")`);
@@ -888,6 +907,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       ci: { provider, ref: raw.release?.ci?.ref ? String(raw.release.ci.ref) : undefined },
       verify,
       isolateFailures: isolateMax === undefined ? undefined : { maxCandidates: isolateMax },
+      rightOfWayMinutes: rightOfWay,
       versioning,
       versionFiles,
       tag,
@@ -1191,6 +1211,7 @@ export function resolveRepoConfig(
         maxCandidates: pick('release.isolateFailures.maxCandidates', repo?.release.isolateFailures?.maxCandidates,
           ship?.release?.isolateFailures?.maxCandidates, DEFAULT_ISOLATE_MAX_CANDIDATES),
       },
+      rightOfWayMinutes: repo?.release.rightOfWayMinutes ?? ship?.release?.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES,
       versioning: pick('release.versioning',
         repo?.release.versioning === 'auto' ? undefined : repo?.release.versioning,
         ship?.release?.versioning, DEFAULTS.versioning),

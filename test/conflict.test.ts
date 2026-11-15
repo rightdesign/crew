@@ -289,7 +289,7 @@ test('a second conflict after the lane absorbed the handed-back base is handed b
   assert.equal(patches[0]!.patch.status, DEFAULT_CONTRACT.statuses.building);
   const tip = g('rev-parse', 'main').toString().trim();
   assert.notEqual(tip, sha);
-  assert.deepEqual(metas[0], { base_sha: tip });
+  assert.deepEqual(metas[0], { base_sha: tip, paths: ['f.txt'] });
   assert.match(notes[0]!, new RegExp(`Base tip: \`${tip}\``));
   // The merge is waiting in the worktree for the lane.
   const st = execFileSync('git', ['status', '--porcelain'], { cwd: b.worktree!, stdio: 'pipe' }).toString();

@@ -245,6 +245,7 @@ release:
 | `release.verify.timeoutSeconds` | no | `600` | How long to wait for `released` to match. |
 | `release.verify.intervalSeconds` | no | `15` | How often to ask. |
 | `release.isolateFailures.maxCandidates` | no | `4` | When the release's combined `test`/`build` fails with several branches merged, how many may be built one at a time to find the one that broke it. `0` turns isolation off. See [A failed combined build](#a-failed-combined-build). |
+| `release.rightOfWayMinutes` | no | `60` | How long a ticket handed back for a merge conflict keeps right of way over the files it conflicted in. `0` turns it off. See [Right of way after a conflict](#right-of-way-after-a-conflict). |
 | `release.versionFiles` | no | `[package.json]` | Files the version is written into, when there is no `bump` hook. The built-in handling is npm-shaped — it rewrites a `"version": "…"` field — so any project that is not npm should define `version` and `bump` instead. A listed file that exists must be a JSON object with a string `version`; a plain-text `VERSION` file is refused at config load, by `crew doctor` and by `crew repos check`, naming the file and `hooks.bump`. A listed file that does not exist yet is left alone. |
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
 | `sandbox.hosts` | no | `[]` | Extra hosts (`host` or `host:port`) a sandboxed run may reach, for a test that calls a public API. Everything else, package registries included, is denied. Loopback, private and cloud-metadata addresses are refused. Recorded in the run's event stream. |
@@ -394,6 +395,34 @@ at merge time by the existing conflict hand-back (file list, sibling named); the
 isolation runs reuse the release checkout and create no extra worktrees. `crew
 doctor` prints the bound and the loop guard per repo. QA is told to
 re-verify bounced branches against the current base so this surfaces earlier.
+
+### Right of way after a conflict
+
+When several open tickets edit the same few files, a ticket handed back for a
+merge conflict used to conflict again: other verified branches touching the
+same files were released while it was being repaired and re-verified, so the
+base had moved again by the time it came back.
+
+Now the hand-back records the conflicting paths on its `conflict_handed_back`
+event, and while the hand-back is open the release leaves out any **other**
+verified branch whose diff against the base touches one of those paths. A hand-back
+is open until its ticket is released, escalated or closed. A deferred branch
+stays `verified`, is not handed back, and counts neither as a conflict nor as a
+failure; it is retried every cycle. The release log has one line per deferred
+branch naming the ticket it waits for, the ticket gets a single
+`right_of_way_deferred` event the first time (not one per cycle), and `crew
+status` lists deferred branches under "needs attention". Branches that touch
+none of those paths release as before.
+
+When two open hand-backs overlap in paths, the older goes first and the newer
+waits like any other branch.
+
+**It expires.** If the handed-back ticket has not come back `verified` within
+`release.rightOfWayMinutes` of the hand-back (default 60), the deferral lapses
+and the release logs that it did, so an abandoned ticket cannot hold the repo.
+The decision is read from the board's event log on every release and stored
+nowhere, so any number of ships releasing the same repo agree. Hand-backs
+written before this existed carry no paths and grant nothing.
 
 ### The release lock row
 

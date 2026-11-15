@@ -62,6 +62,7 @@ import { planConflictBounce, applyConflictBounce } from './conflict.ts';
 import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures, priorFailureNote } from './build-failure.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
+import { DEFERRED_EVENT, deferralComment, deferralReported, deferredFromLog } from './right-of-way.ts';
 import { localRefSkipComment, localRefSkipReported } from './local-ref-skip.ts';
 import { checkSandboxRunner } from './runner.ts';
 import { planAgentRun, describePlan, spawnAgent, CREW_LANE_ROLE_VAR, sandboxPolicyInputFor } from './agent.ts';
@@ -81,7 +82,7 @@ import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKin
 import { collectDiagnostics } from './diagnostics.ts';
 import { schedulerLogFor } from './install.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, systemUnitPathFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
-import { REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
+import { DEFAULT_RIGHT_OF_WAY_MINUTES, REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
@@ -2481,8 +2482,20 @@ async function releasePhase(
       }
     }
 
+    // CREW-3386: the hand-backs whose paths a verified branch must wait for. Read from the log every
+    // cycle (never stored), and only when a verified ticket could be affected. A failed read means no
+    // deferral this cycle, which is the behavior from before the right of way existed.
+    let rightOfWayEvents: Awaited<ReturnType<Tracker['events']>> | undefined;
+    if (verifiedTickets.length >= 1 && repo.release.mode !== 'external') {
+      try {
+        rightOfWayEvents = [...await tracker.events('conflict_handed_back'), ...await tracker.events('conflict_escalated')];
+      } catch (e) {
+        remit.warn(`could not read hand-back events; not deferring any branch: ${(e as Error).message}`);
+      }
+    }
+
     const outcome = await runRelease({
-      cwd: target.dir, repo,
+      cwd: target.dir, repo, rightOfWayEvents,
       reloadRepo: (dir) => resolveRepoConfig(loadRepoConfig(dir), {
         hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
         release: mergeRouteRelease(c.release, o?.release),
@@ -2601,6 +2614,23 @@ async function releasePhase(
         }
       } catch (e) {
         remit.warn(`could not note the skipped release on the board: ${(e as Error).message}`, { step: 'merge' });
+      }
+    }
+
+    // A verified branch left out of this cycle for a hand-back's right of way says so on the ticket,
+    // once per hand-back it waits for (CREW-3386); the log line above says it every cycle.
+    if (outcome.rightOfWay?.deferrals.length && !dryRun) {
+      try {
+        const reported = await tracker.events(DEFERRED_EVENT);
+        const seat = releaseSeat(c);
+        const minutes = repo.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES;
+        for (const d of outcome.rightOfWay.deferrals) {
+          if (deferralReported(d, reported)) continue;
+          await tracker.postEvent(d.ticket.id, deferralComment(d, repo.branch.base, minutes), seat, DEFERRED_EVENT,
+            { waiting_for: d.waitingFor.id, paths: d.paths });
+        }
+      } catch (e) {
+        remit.warn(`could not note the deferred release on the board: ${(e as Error).message}`, { step: 'release' });
       }
     }
 
@@ -6958,6 +6988,7 @@ switch (command) {
 
     const shipAttention = openShipAttention(state);
     let heldReleases: string[] = [];
+    let deferredReleases: string[] = [];
     // Verified tickets the release is holding back on an unresolved blocker
     // (CREW-1506), so "why hasn't this shipped" is answerable from here.
     try {
@@ -6966,6 +6997,14 @@ switch (command) {
         open, statusTracker.contract.statuses.verified,
         blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open))),
       ));
+      // CREW-3386: verified branches waiting for a ticket handed back for a conflict.
+      const minutes = Math.min(...(await resolvedRepos(route)).map((r) => r.config.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES), DEFAULT_RIGHT_OF_WAY_MINUTES);
+      if (open.some((t) => t.status === statusTracker.contract.statuses.verified)) {
+        deferredReleases = deferredFromLog(
+          open, [...await statusTracker.events(DEFERRED_EVENT), ...await statusTracker.events('conflict_handed_back'), ...await statusTracker.events('conflict_escalated')],
+          statusTracker.contract, Date.now(), minutes,
+        ).map((d) => `${displayKey(d.ticket)} waits for ${displayKey(d.waitingFor)}, handed back for a merge conflict`);
+      }
     } catch { /* a tracker blip must not break `status` */ }
     const repoViews: StatusRepo[] = [];
     for (const r of await resolvedRepos(route)) {
@@ -7002,6 +7041,7 @@ switch (command) {
       })),
       repos: repoViews,
       heldReleases,
+      deferredReleases,
       starved: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : undefined,
       ships: shipRows.map((s) => ({
         name: s.name ?? '(unnamed)',

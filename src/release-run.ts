@@ -25,13 +25,14 @@ import {
   type MergeCandidate, type ReleaseBlock, type ReleaseDecision, type HeldTicket, describeHeld,
 } from './release.ts';
 import type { EffectiveRepoConfig } from './repo-config.ts';
-import { hookLabel, versionFileProblem, DEFAULT_ISOLATE_MAX_CANDIDATES, REPO_CONFIG_FILENAMES } from './repo-config.ts';
+import { branchPaths, planRightOfWay, type RightOfWayCandidate, type RightOfWayPlan } from './right-of-way.ts';
+import { hookLabel, versionFileProblem, DEFAULT_ISOLATE_MAX_CANDIDATES, DEFAULT_RIGHT_OF_WAY_MINUTES, REPO_CONFIG_FILENAMES } from './repo-config.ts';
 import { failingPaths, culpritByFiles, type BuildCulprit } from './build-failure.ts';
 import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
 import { movedPastVerified } from './verified-tip.ts';
 import { runScript, resolveShell } from './shell.ts';
 import type { Emitter } from './events.ts';
-import { displayKey, referenceKeys, type Ticket } from './tracker.ts';
+import { displayKey, referenceKeys, type RunnerEvent, type Ticket } from './tracker.ts';
 import { planStamp } from './stamp.ts';
 import { pushedBranchForTicket } from './ticket-branch.ts';
 import {
@@ -120,6 +121,14 @@ export interface ReleaseRunOptions {
    * `ReleaseOutcome.movedPast`. A ticket absent from the map is not checked.
    */
   verifiedShas?: ReadonlyMap<string, string>;
+  /**
+   * The `conflict_handed_back` and `conflict_escalated` events (CREW-3386): a
+   * verified branch touching the paths of an open hand-back waits its turn.
+   * Absent reads as none, so nothing is deferred.
+   */
+  rightOfWayEvents?: RunnerEvent[];
+  /** Clock for the right of way's time limit; tests set it. */
+  now?: () => number;
   emit: Emitter;
   /**
    * `route/repo`, prefixed onto a message that would otherwise read the same
@@ -250,6 +259,8 @@ export interface ReleaseOutcome {
    * caller says so on the ticket instead of leaving it to the event log.
    */
   localRefSkips?: LocalRefSkip[];
+  /** Verified branches left out of this cycle for a hand-back's right of way (CREW-3386). */
+  rightOfWay?: RightOfWayPlan;
   /**
    * Consecutive cycles `decision.block` has refused this release, from
    * `state.release(route).noteBlocked()`. Only set when a block just
@@ -1073,15 +1084,19 @@ export interface LocalRefSkip { ticket: Ticket; problem: string }
 export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> {
   const movedPast: ReviewRequeue[] = [];
   const localRefSkips: LocalRefSkip[] = [];
-  const out = await runReleaseCycle(o, movedPast, localRefSkips);
+  const rightOfWay: RightOfWayPlan = { deferrals: [], lapsed: [] };
+  const out = await runReleaseCycle(o, movedPast, localRefSkips, rightOfWay);
   return {
     ...out,
     ...(movedPast.length ? { movedPast } : {}),
     ...(localRefSkips.length ? { localRefSkips } : {}),
+    ...(rightOfWay.deferrals.length || rightOfWay.lapsed.length ? { rightOfWay } : {}),
   };
 }
 
-async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[], localRefSkips: LocalRefSkip[]): Promise<ReleaseOutcome> {
+async function runReleaseCycle(
+  o: ReleaseRunOptions, movedPast: ReviewRequeue[], localRefSkips: LocalRefSkip[], rightOfWay: RightOfWayPlan,
+): Promise<ReleaseOutcome> {
   const scoped = (msg: string) => (o.scope ? `${o.scope}: ${msg}` : msg);
   const tagPattern = o.repo.release.tagPattern ?? 'v*';
 
@@ -1146,6 +1161,44 @@ async function runReleaseCycle(o: ReleaseRunOptions, movedPast: ReviewRequeue[],
       );
     }
     if (drop.size) releasable = releasable.filter((t) => !drop.has(t.id));
+  }
+
+  // CREW-3386: a verified branch that touches the paths of a ticket handed back
+  // for a conflict waits for it, so the base does not move under the repaired
+  // branch again. Left out here, before the decision, so the pair and bisect
+  // search never sees it: it is not a candidate this cycle, not a failure.
+  if (o.rightOfWayEvents?.length && (o.repo.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES) > 0) {
+    const baseRef = remoteBranchExists(o.cwd, o.repo.branch.remote, o.repo.branch.base)
+      ? `${o.repo.branch.remote}/${o.repo.branch.base}` : o.repo.branch.base;
+    const candidates: RightOfWayCandidate[] = [];
+    for (const t of releasable) {
+      if (t.status !== o.contract.statuses.verified) continue;
+      const branch = locateBranchForTicket(o.cwd, o.repo, t)?.branch;
+      if (branch) candidates.push({ ticket: t, paths: branchPaths(o.cwd, baseRef, branch) });
+    }
+    const plan = planRightOfWay(
+      candidates, o.tickets, o.rightOfWayEvents, o.contract, (o.now ?? Date.now)(),
+      o.repo.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES,
+    );
+    rightOfWay.deferrals.push(...plan.deferrals);
+    rightOfWay.lapsed.push(...plan.lapsed);
+    for (const h of plan.lapsed) {
+      o.emit.warn(
+        `${displayKey(h.ticket)}'s right of way over ${h.paths.join(', ')} lapsed after ` +
+          `${o.repo.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES} minutes without it coming back verified — not deferring other branches for it`,
+        { ticket: h.ticket.issue_id, step: 'release' },
+      );
+    }
+    for (const d of plan.deferrals) {
+      o.emit.emit(
+        `not releasing ${displayKey(d.ticket)} this cycle: waiting for ${displayKey(d.waitingFor)}, handed back for a conflict in ${d.paths.join(', ')}`,
+        { ticket: d.ticket.issue_id, step: 'release' },
+      );
+    }
+    if (plan.deferrals.length) {
+      const waiting = new Set(plan.deferrals.map((d) => d.ticket.id));
+      releasable = releasable.filter((t) => !waiting.has(t.id));
+    }
   }
 
   // CREW-2603: a real release runs in a temporary checkout cut from

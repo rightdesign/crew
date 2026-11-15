@@ -337,7 +337,7 @@ export async function applyConflictBounce(
       b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
     );
     await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId, 'conflict_handed_back',
-      b.baseSha ? { base_sha: b.baseSha } : undefined).catch((e: unknown) => {
+      { ...(b.baseSha ? { base_sha: b.baseSha } : {}), ...(b.paths.length ? { paths: b.paths } : {}) }).catch((e: unknown) => {
       log.warn(`handed back, but the note failed to post: ${(e as Error).message}`, t);
     });
     log.emit(

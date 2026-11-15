@@ -1801,3 +1801,27 @@ test('a release whose merge adds .crew.yaml runs under the merged contract (CREW
   assert.equal(out.integrated, true);
   assert.ok(lines.some((l) => /continuing under the merged contract/.test(l)));
 });
+
+test('a lone verified branch waits for a ticket still being repaired after a conflict hand-back (CREW-3386)', async () => {
+  const { dir, repo } = project(LOCAL);
+  // ISSUE-9 was handed back over feature.txt and is back at in_progress, so it is not a
+  // verified candidate: the deferral has to come from the events alone.
+  const handBack = (paths: string[]) => [{
+    record_id: 'ISSUE-9', event_type: 'conflict_handed_back', occurred_at: new Date().toISOString(), metadata: { paths },
+  }];
+  const tickets = [T('ISSUE-7'), T('ISSUE-9', { status: 'in_progress' })];
+
+  const waits = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: true,
+    rightOfWayEvents: handBack(['feature.txt']),
+  });
+  assert.equal(waits.merged.length, 0);
+  assert.deepEqual(waits.rightOfWay?.deferrals.map((d) => [d.ticket.issue_id, d.waitingFor.issue_id]), [['ISSUE-7', 'ISSUE-9']]);
+
+  const unrelated = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: true,
+    rightOfWayEvents: handBack(['other.txt']),
+  });
+  assert.equal(unrelated.merged.length, 1);
+  assert.equal(unrelated.rightOfWay, undefined);
+});
