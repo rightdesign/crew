@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.157.1] — 2026-11-16
+
+- CREW-3448 `crew connect` finds each seat by its Agent link instead of its name, so renamed seats are matched and a row named for a role is no longer mistaken for a seat.
+
 ## [0.157.0] — 2026-11-16
 
 - CREW-3444 A lane's brief now includes the active Map behind a ticket's epic, or says there is none or that the seat cannot read it, so tickets citing "Map v1 §N" no longer send lanes searching the repository.
