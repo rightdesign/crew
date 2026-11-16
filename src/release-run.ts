@@ -10,6 +10,7 @@
  */
 
 import type { ShipAttentionItem } from './ship-attention.ts';
+import { describeCiFailure, type CiProvider, type CiQuery, type CiRunFailure } from './ci-provider.ts';
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { existsAt, readTextAt, remoteOf, writeTextAt } from './remote-dir.ts';
@@ -80,7 +81,16 @@ export interface ReleaseRunOptions {
   attention?: {
     raise(item: ShipAttentionItem): Promise<unknown> | void;
     clear(key: string): void;
+    /** Drops every item of a kind whose key starts with `keyPrefix`; absent in callers that only raise and clear by key. */
+    clearKind?(kind: ShipAttentionItem['kind'], keyPrefix: string): void;
   };
+  /**
+   * The provider behind `release.ci.provider` and where the repository lives
+   * on its forge (CREW-3470). Supplied only for a `ci_*` release whose provider
+   * the crew can query; absent means the release waits on `hooks.released`
+   * alone, exactly as before.
+   */
+  ci?: { provider: CiProvider; host: string; remote: string };
   /**
    * `ci_auto`/`ci_manual` only (CREW-2820): called once the squash merges are
    * on `<remote>/<base>` (or would be, in a dry run), before the wait for CI
@@ -169,7 +179,25 @@ export interface ReleaseRunOptions {
   shell?: string;
 }
 
+/**
+ * CI runs for a release that the provider reported failed (CREW-3470).
+ * `blocking` is true when the release was not live when the wait ended, so the
+ * failed run is the reason it did not ship; false when the version went live
+ * anyway and some other run (the base-branch push's, say) is what is broken.
+ */
+export interface CiReport {
+  failures: CiRunFailure[];
+  blocking: boolean;
+  /** The release commit the runs belong to. */
+  sha: string;
+  tag?: string;
+}
+
 export interface ReleaseOutcome {
+  /** Failed CI runs seen while waiting for this release to go live. */
+  ci?: CiReport;
+  /** The runs were all green (and at least one existed) when the wait ended. */
+  ciGreen?: boolean;
   merged: MergeCandidate[];
   version?: string;
   tag?: string;
@@ -878,7 +906,7 @@ function writeChangelog(o: ReleaseRunOptions, version: string, entries: string[]
  * landed — a restarted-but-stale service is exactly the failure this catches.
  * Unconfirmed is NOT failed: the deploy may simply be slower than the window.
  */
-async function confirm(o: ReleaseRunOptions, expected: string): Promise<boolean | undefined> {
+async function confirm(o: ReleaseRunOptions, expected: string, ci?: CiWatch): Promise<boolean | undefined> {
   if (!o.repo.hooks.released) return undefined;
   const { timeoutSeconds, intervalSeconds, match } = o.repo.release.verify;
   if (o.dryRun) {
@@ -890,13 +918,89 @@ async function confirm(o: ReleaseRunOptions, expected: string): Promise<boolean 
     const r = await hook(o, 'released');
     const live = r?.output.trim().split('\n').filter(Boolean).pop() ?? '';
     const hit = match === 'commit' ? live.startsWith(expected.slice(0, 7)) || expected.startsWith(live.slice(0, 7)) : live === expected;
+    if (ci) await sweepCi(o, ci);
     if (live && hit) { o.emit.emit(`confirmed live: ${live.slice(0, 12)}`); return true; }
+    // The tag's own run failed and the release is not live: it will not become
+    // live by waiting, so stop treating it as slow.
+    if (ci?.failures.some((f) => f.run.ref === 'tag')) {
+      o.emit.warn(`the CI run for ${ci.q.tag ?? 'the release tag'} failed — not waiting out the remaining ${Math.max(0, Math.round((deadline - Date.now()) / 1000))}s`);
+      return false;
+    }
     if (Date.now() >= deadline) {
       o.emit.warn(`not confirmed within ${timeoutSeconds}s — target reports ${live || 'nothing'}`);
       return false;
     }
     await new Promise((r2) => setTimeout(r2, intervalSeconds * 1000));
   }
+}
+
+/**
+ * What the CI provider has said while one `confirm` waited (CREW-3470). The
+ * wait owns it, so a note about an unreadable provider is once per release.
+ */
+interface CiWatch {
+  provider: CiProvider;
+  q: CiQuery;
+  version: string;
+  failures: CiRunFailure[];
+  /** The provider could not be asked; no more requests this wait. */
+  off: boolean;
+  /** Seen at least one run and every run seen has passed. */
+  green: boolean;
+}
+
+function newCiWatch(o: ReleaseRunOptions, sha: string, tag: string | undefined, version: string): CiWatch | undefined {
+  if (!o.ci || o.dryRun) return undefined;
+  return {
+    provider: o.ci.provider, version, failures: [], off: false, green: false,
+    q: { host: o.ci.host, remote: o.ci.remote, sha, tag, base: o.repo.branch.base },
+  };
+}
+
+const ciKeyPrefix = (o: ReleaseRunOptions): string => `ci_run_failed:${o.scope ?? 'release'}/`;
+const ciKey = (o: ReleaseRunOptions, version: string): string => `${ciKeyPrefix(o)}${version}`;
+
+async function sweepCi(o: ReleaseRunOptions, w: CiWatch): Promise<void> {
+  if (w.off) return;
+  const got = await w.provider.runs(w.q);
+  if (!got.ok) {
+    w.off = true;
+    o.emit.warn(`could not read the ${w.provider.name} CI runs for ${w.q.sha.slice(0, 8)} (${got.why}); waiting on the released hook alone`);
+    return;
+  }
+  const failed = got.runs.filter((r) => r.state === 'failed');
+  w.green = got.runs.length > 0 && got.runs.every((r) => r.state === 'passed' || r.state === 'other');
+  if (failed.length === 0) {
+    // A failed run that was re-run and passed is no longer a failure.
+    w.failures = [];
+    o.attention?.clear(ciKey(o, w.version));
+    return;
+  }
+  for (const run of failed) {
+    if (w.failures.some((f) => f.run.id === run.id)) continue;
+    const f = await w.provider.failure(w.q, run);
+    w.failures.push(f);
+    o.emit.error(`CI run failed for ${w.version}: ${describeCiFailure(f)}`, { data: { run: run.id, ref: run.ref } });
+  }
+  w.failures = w.failures.filter((f) => failed.some((r) => r.id === f.run.id));
+  if (o.attention) {
+    await o.attention.raise({
+      kind: 'ci_run_failed',
+      key: ciKey(o, w.version),
+      message: `${o.scope ?? 'release'}: CI failed for ${w.version} — ${w.failures.map(describeCiFailure).join('; ')}`,
+      since: new Date().toISOString(),
+    });
+  }
+}
+
+/** What a finished wait leaves on the outcome: the failures, or that everything passed. */
+function ciOutcome(o: ReleaseRunOptions, w: CiWatch | undefined, confirmed: boolean | undefined): Pick<ReleaseOutcome, 'ci' | 'ciGreen'> {
+  if (!w) return {};
+  if (w.failures.length) {
+    return { ci: { failures: w.failures, blocking: confirmed !== true, sha: w.q.sha, ...(w.q.tag ? { tag: w.q.tag } : {}) } };
+  }
+  if (confirmed === true && w.green) o.attention?.clearKind?.('ci_run_failed', ciKeyPrefix(o));
+  return w.green ? { ciGreen: true } : {};
 }
 
 
@@ -974,7 +1078,7 @@ function refreshBase(o: ReleaseRunOptions): { ok: true; stale?: true } | { ok: f
  */
 async function reconfirmLastRelease(
   o: ReleaseRunOptions, decision: ReleaseDecision,
-): Promise<{ confirmed: boolean; version: string; from: string } | undefined> {
+): Promise<({ confirmed: boolean; version: string; from: string } & Pick<ReleaseOutcome, 'ci' | 'ciGreen'>) | undefined> {
   if (!canReconfirm(o, decision)) return undefined;
   const prevTag = latestReleaseTag(o.cwd, o.repo.release.tagPattern ?? 'v*', `${decision.lastTag}^`);
   const from = prevTag ? tagCommit(o.cwd, prevTag) : null;
@@ -993,12 +1097,13 @@ const canReconfirm = (o: ReleaseRunOptions, decision: ReleaseDecision): boolean 
 
 async function confirmLastRelease(
   o: ReleaseRunOptions, decision: ReleaseDecision,
-): Promise<{ confirmed: boolean; version: string }> {
+): Promise<{ confirmed: boolean; version: string } & Pick<ReleaseOutcome, 'ci' | 'ciGreen'>> {
   const version = decision.lastTag!.replace(/^v/, '');
   const expected = o.repo.release.verify.match === 'version' ? version : decision.lastReleased!;
-  const confirmed = (await confirm(o, expected)) === true;
+  const watch = newCiWatch(o, decision.lastReleased!, decision.lastTag!, version);
+  const confirmed = (await confirm(o, expected, watch)) === true;
   if (!confirmed) o.emit.warn(`${decision.lastTag} is still not confirmed live — tickets stay verified`);
-  return { confirmed, version };
+  return { confirmed, version, ...ciOutcome(o, watch, confirmed) };
 }
 
 /**
@@ -1623,6 +1728,7 @@ async function mergeAndReleaseBody(
       return {
         merged, conflicts, unbuildable, deployed: false, version: re.version, confirmed: re.confirmed || undefined,
         stampFrom: re.from, stopped: 'nothing to release', decision,
+        ...(re.ci ? { ci: re.ci } : {}), ...(re.ciGreen ? { ciGreen: true } : {}),
       };
     }
     o.emit.note('nothing to release');
@@ -1939,11 +2045,12 @@ async function mergeAndReleaseBody(
   // a version (e.g. `npm view <pkg> version`) — never the HEAD sha. Handing it
   // the sha made every ci_* release time out.
   const expected = o.repo.release.verify.match === 'version' && version ? version : o.dryRun ? head : headSha(o.cwd);
-  const confirmed = await confirm(o, expected);
+  const watch = newCiWatch(o, o.dryRun ? head : headSha(o.cwd), tag, version ?? '');
+  const confirmed = await confirm(o, expected, watch);
   o.emit.emit(
     `release ${o.dryRun ? 'plan complete' : 'complete'}: ${merged.length} merged` +
       `${version ? `, ${version}` : ''}${tag ? `, tagged ${tag}` : ''}`,
     { data: { merged: merged.length, version, tag, deployed, integrated, confirmed } },
   );
-  return { merged, conflicts, unbuildable, version, tag, deployed, integrated, confirmed, decision };
+  return { merged, conflicts, unbuildable, version, tag, deployed, integrated, confirmed, decision, ...ciOutcome(o, watch, confirmed) };
 }

@@ -25,7 +25,7 @@ import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefre
 import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing' | 'ci_run_failed';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -527,6 +527,19 @@ export function clearShipAttention(state: State, key: string): void {
   const store = state.shipAttention();
   const previous = store.previous();
   const next = clear(previous, key);
+  if (next.length !== previous.length) store.persist(next);
+}
+
+/**
+ * Drops every item of `kind` whose key starts with `keyPrefix` (CREW-3470: a
+ * confirmed release clears the CI failures of earlier versions of its own
+ * repository). The store is ship-wide, so the prefix is what keeps one
+ * repository's release from closing another's item.
+ */
+export function clearShipAttentionKind(state: State, kind: ShipAttentionKind, keyPrefix: string): void {
+  const store = state.shipAttention();
+  const previous = store.previous();
+  const next = previous.filter((i) => !(i.kind === kind && i.key.startsWith(keyPrefix)));
   if (next.length !== previous.length) store.persist(next);
 }
 

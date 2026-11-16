@@ -236,7 +236,7 @@ release:
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
 | `release.mode` | no | `local` | `local` / `integrate` / `ci_manual` / `ci_auto` / `external` |
 | `release.ship` | no | any ship | The one ship (a `Ships` row name) that runs the release phase for this repo — `local` and `integrate` only; refused for `ci_*`/`external`, which keep multi-ship merging behind the board lock and the fast-forward-only push. Every other ship skips the repo and reports `release for <repo> runs on <ship>`. With none named, `crew doctor` warns when more than one ship has been seen in the last day. `crew status` shows the releaser and the repo's lock row. |
-| `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none`. Validated and recorded, but nothing reads it yet: the tag push is what triggers CI, and `hooks.released` is how the crew learns it finished. |
+| `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none`. `github` is queried (CREW-3470): while a `ci_*` release waits for `hooks.released`, and again on the later-cycle re-check of a release never confirmed live, the crew asks GitHub for every Actions run on the release commit, matched by commit and ref (the run the tag started and the one the push to the base branch started), using the ship's forge credential for the remote's host (`ship.forges`). A failed run stops the wait for a tag run that failed, raises a `ci_run_failed` ship attention item (key `ci_run_failed:<repo>/<version>`) and files one alert ticket per repository and version carrying the failing job, step, log tail and the batch's tickets; the batch stays `verified` unless `released` matches. A failed run while the version did go live is worded as not blocking the release. Green runs change nothing: `hooks.released` stays the authority for stamping. The item clears when the run is re-run and passes or a later release is confirmed live with its runs green. A credential that is missing, lacks permission, is rate limited or a forge that is unreachable is noted once per release and the release waits as before; `crew doctor` reports whether the crew can read each repository's runs. `buildkite` has no implementation yet and behaves like `other`, as does `none`: never queried. |
 | `release.ci.ref` | when not `local` | — | Workflow file or pipeline slug. Same: validated, not yet read. |
 | `release.tag` | no | `v{version}` | Template for the annotated tag the release creates (and, in `ci_*`, pushes). `false` for none. |
 | `release.tagPattern` | no | `v*` | Glob the crew uses to find the last release tag. Must match what `release.tag` produces. |
@@ -555,6 +555,12 @@ release:
 hooks:
   released: npm view <package> version
 ```
+
+With `provider: github` the crew also reads the workflow runs for the release
+commit and tag: a failed publish is reported within one `intervalSeconds`
+(event, `ci_run_failed` attention item, one alert ticket) instead of surfacing as
+a release that merely never confirms. The ship needs a forge token that can read
+the repository's Actions runs; `crew doctor` says whether it can.
 
 Seed `CHANGELOG.md` with a short header explaining the `Bump:` / `Changelog:`
 commit trailers; the first release inserts its section under it. The last

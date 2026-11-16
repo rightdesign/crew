@@ -8,6 +8,7 @@
  */
 
 import { doctorBaseReport } from './doctor-repo.ts';
+import { ciProviderFor, ciRemoteOf, isQueryableCiProvider, describeCiFailure } from './ci-provider.ts';
 import { periscopeSummary, previewHostProblem, previewHostFinding, routePeriscopeProblems, duplicateLivePeriscopes, type PeriscopeProblem } from './periscopes.ts';
 import { prepareDropFile, readPointedAt } from './periscope-pointed.ts';
 import { registerCodeServer } from './intel-register.ts';
@@ -203,7 +204,7 @@ import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { contractFixers } from './contract-refusal.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, clearShipAttentionKind, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
 import {
   runDaemonLoop, runFleetPass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -2514,6 +2515,14 @@ async function releasePhase(
       state: state.release(scope),
       reviewColumns: repo.release.mode === 'external' ? await tracker.reviewColumns() : undefined,
       forge: { host: target.forgeHost, remote: target.remote },
+      ci: (() => {
+        if (!isQueryableCiProvider(repo.release.ci.provider) || (repo.release.mode !== 'ci_auto' && repo.release.mode !== 'ci_manual')) return undefined;
+        const where = ciRemoteOf(gitOk(target.dir, ['remote', 'get-url', repo.branch.remote]));
+        const provider = ciProviderFor(repo.release.ci.provider, {
+          token: (h) => { try { return readForgeToken(cfg.ship.forges, h, cfg.ship.stateDir); } catch { return null; } },
+        });
+        return where && provider ? { provider, ...where } : undefined;
+      })(),
       dryRun, skipTests: flag('skip-tests'), shell: cfg.ship.shell,
       mergeOnly: command === 'merge',
       // ci_* modes: record the merge on the board when it lands on base,
@@ -2533,6 +2542,7 @@ async function releasePhase(
       attention: {
         raise: (item) => raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, item),
         clear: (key) => clearShipAttention(state, key),
+        clearKind: (kind, keyPrefix) => clearShipAttentionKind(state, kind, keyPrefix),
       },
     });
     const summary = summarizeOutcome(outcome, scope, !!repo.hooks.test && !flag('skip-tests'));
@@ -2703,6 +2713,47 @@ async function releasePhase(
           remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
       }
+    }
+
+    // CREW-3470: a CI run the provider reported failed. One ticket per repository and
+    // version (the headline carries both); a later cycle comments on it instead of filing again.
+    const ciHeadlines = (version: string): { blocking: string; live: string } => ({
+      blocking: `${scope}: CI failed for ${version} — the release did not ship`,
+      live: `${scope}: a CI run failed for ${version} — the release is live`,
+    });
+    if (outcome.ci && !dryRun) {
+      const ci = outcome.ci;
+      const version = outcome.version ?? ci.tag ?? ci.sha.slice(0, 8);
+      const batch = [...(outcome.merged.length ? outcome.merged.map((m) => displayKey(m.ticket)) : tickets
+        .filter((t) => t.status === verifiedStatus).map((t) => displayKey(t)))];
+      const runs = ci.failures.map((f) => {
+        const lines = [`- ${describeCiFailure(f)}`];
+        if (f.logTail) lines.push('', '  ```', ...f.logTail.split('\n').map((l) => `  ${l}`), '  ```');
+        return lines.join('\n');
+      }).join('\n');
+      const news = {
+        level: ci.blocking ? 'fail' as const : 'warn' as const,
+        headline: ci.blocking ? ciHeadlines(version).blocking : ciHeadlines(version).live,
+        detail: (ci.blocking
+          ? `The release of ${version} did not ship: a CI run for ${ci.tag ?? ci.sha.slice(0, 8)} failed, and the released hook does not report it live. The tickets stay at verified.`
+          : `${version} is live and its tickets are stamped, but a different CI run for the same commit failed, so something else is broken.`) +
+          `\n\nFailed run(s):\n${runs}\n\nTickets in the batch: ${batch.length ? batch.join(', ') : 'none named'}.`,
+        head: ci.sha,
+      };
+      const notified = await notify(c, cfg.ship, news, remit, dryRun);
+      if (!notified) {
+        await applyFailureAlert(tracker, news, scope, all, releaseSeat(c), remit, dryRun, await alertPlacement()).catch((e) => {
+          remit.warn(`could not file/update a CI failure ticket: ${(e as Error).message}`, { step: 'release' });
+        });
+      }
+    } else if (outcome.ciGreen && outcome.confirmed && outcome.version && !dryRun) {
+      // Confirmed live with every run green: an alert for this version is over.
+      const h = ciHeadlines(outcome.version);
+      await applyFailureRecovery(
+        tracker, [h.blocking, h.live], all, tracker.contract, releaseSeat(c), `${scope} ${outcome.version} is live and its CI runs passed`, remit, dryRun,
+      ).catch((e) => {
+        remit.warn(`could not resolve CI failure tickets: ${(e as Error).message}`, { step: 'release' });
+      });
     }
 
     // The other direction (CREW-2211): a stage this release got past is a
@@ -7493,6 +7544,23 @@ switch (command) {
       } else {
         const warn = missingReleaserWarning(r.name, config.release, await tracker.shipRows().catch(() => []));
         if (warn) R.line(`                   WARNING ${warn}\n`);
+      }
+      // CREW-3470: can the crew read this repository's CI runs? Only for a provider it can query.
+      if (isQueryableCiProvider(config.release.ci.provider) && (config.release.mode === 'ci_auto' || config.release.mode === 'ci_manual')) {
+        const where = ciRemoteOf(gitOk(r.dir, ['remote', 'get-url', config.branch.remote]));
+        const provider = where && ciProviderFor(config.release.ci.provider, {
+          token: (h) => { try { return readForgeToken(cfg.ship.forges, h, cfg.ship.stateDir); } catch { return null; } },
+        });
+        if (!where || !provider) {
+          R.line(`                   ci runs: WARN remote "${config.branch.remote}" is not a ${config.release.ci.provider} repository the crew can name — failed runs will not be reported\n`);
+        } else if (flag('offline')) {
+          R.line(`                   ci runs: ${provider.name}, not checked under --offline\n`);
+        } else {
+          const probe = await provider.runs({ host: where.host, remote: where.remote, sha: gitOk(r.dir, ['rev-parse', 'HEAD']) ?? '', base: config.branch.base });
+          R.line(probe.ok
+            ? `                   ci runs: ${provider.name} — the crew can read ${where.remote}'s runs\n`
+            : `                   ci runs: WARN ${provider.name} — ${probe.why}; a failed release run will not be reported (the release waits on the released hook alone)\n`);
+        }
       }
       // CREW-2412: a stale claim by this ship's own dead process.
       const scope = releaseLockScope(route.route, r.name);

@@ -1825,3 +1825,130 @@ test('a lone verified branch waits for a ticket still being repaired after a con
   assert.equal(unrelated.merged.length, 1);
   assert.equal(unrelated.rightOfWay, undefined);
 });
+
+// --- CREW-3470: failed CI runs are reported instead of waited out ---------
+
+import type { CiProvider, CiRun, CiQueryOutcome } from '../src/ci-provider.ts';
+import type { ShipAttentionItem } from '../src/ship-attention.ts';
+
+const CI_FILE_RELEASE = (file: string, timeout = 3) => `version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  released: cat ${file} 2>/dev/null || true
+release:
+  mode: ci_auto
+  ci: { provider: github }
+  verify: { match: version, timeoutSeconds: ${timeout}, intervalSeconds: 1 }
+`;
+
+const fakeCi = (answer: () => CiQueryOutcome, calls: { runs: number } = { runs: 0 }): CiProvider => ({
+  name: 'fake',
+  async runs() { calls.runs++; return answer(); },
+  async failure(_q, run) { return { run, job: 'test', step: 'Run tests', logTail: 'not ok 1' }; },
+});
+const run = (over: Partial<CiRun>): CiRun => ({ id: '1', name: 'Publish', url: 'https://ci/1', state: 'failed', ref: 'tag', ...over });
+
+function attentionRecorder() {
+  const raised: ShipAttentionItem[] = [];
+  const cleared: string[] = []; const clearedKinds: string[] = [];
+  return { raised, cleared, clearedKinds, attention: {
+    raise: (i: ShipAttentionItem) => { raised.push(i); },
+    clear: (k: string) => { cleared.push(k); },
+    clearKind: (k: string, prefix: string) => { clearedKinds.push(`${k}|${prefix}`); },
+  } };
+}
+
+async function ciRelease(version: string, provider: CiProvider, timeout = 3) {
+  const bare = bareRemote();
+  const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+  writeFileSync(file, `${version}\n`);
+  const { dir, repo } = projectWithRemote(CI_FILE_RELEASE(file, timeout), bare);
+  const rec = attentionRecorder();
+  const t0 = Date.now();
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    ci: { provider, host: 'github.com', remote: 'acme/widgets' }, attention: rec.attention,
+  });
+  return { out, rec, elapsed: Date.now() - t0, dir, file };
+}
+
+test('a failed run for the release tag stops the wait and is reported, blocking', async () => {
+  const { out, rec, elapsed } = await ciRelease('1.2.3', fakeCi(() => ({ ok: true, runs: [run({})] })), 30);
+  assert.equal(out.confirmed, false);
+  assert.ok(elapsed < 10_000, 'did not wait out the 30s timeout');
+  assert.equal(out.ci?.blocking, true);
+  assert.equal(out.ci?.failures[0]?.job, 'test');
+  assert.equal(out.ci?.tag, 'v1.3.0');
+  assert.equal(rec.raised.length, 1);
+  assert.equal(rec.raised[0]!.kind, 'ci_run_failed');
+  assert.equal(rec.raised[0]!.key, 'ci_run_failed:release/1.3.0');
+  assert.ok(lines.some((l) => /CI run failed for 1\.3\.0: Publish — job "test", step "Run tests"/.test(l)));
+});
+
+test('a failed base-push run while the tag run passed and the release is live is non-blocking', async () => {
+  const { out, rec } = await ciRelease('1.3.0', fakeCi(() => ({ ok: true, runs: [
+    run({ id: '1', state: 'passed' }), run({ id: '2', name: 'Docs', ref: 'base', state: 'failed' }),
+  ] })));
+  assert.equal(out.confirmed, true);
+  assert.equal(out.ci?.blocking, false);
+  assert.equal(out.ci?.failures[0]?.run.name, 'Docs');
+  assert.equal(rec.raised.length, 1);
+  assert.deepEqual(rec.clearedKinds, [], 'a failure is not cleared by the same release');
+});
+
+test('all runs green: nothing reported, the old items are cleared', async () => {
+  const { out, rec } = await ciRelease('1.3.0', fakeCi(() => ({ ok: true, runs: [run({ state: 'passed' }), run({ id: '2', ref: 'base', state: 'passed' })] })));
+  assert.equal(out.confirmed, true);
+  assert.equal(out.ci, undefined);
+  assert.equal(out.ciGreen, true);
+  assert.equal(rec.raised.length, 0);
+  assert.deepEqual(rec.clearedKinds, ['ci_run_failed|ci_run_failed:release/'], 'scoped to this repository');
+});
+
+test('an unreadable provider is noted once and the release waits on the released hook as before', async () => {
+  const calls = { runs: 0 };
+  const { out, rec } = await ciRelease('1.2.3', fakeCi(() => ({ ok: false, why: 'no readable forge credential for github.com' }), calls), 3);
+  assert.equal(out.confirmed, false);
+  assert.equal(calls.runs, 1, 'asked once, not every interval');
+  assert.equal(out.ci, undefined);
+  assert.equal(rec.raised.length, 0);
+  assert.equal(lines.filter((l) => /could not read the fake CI runs/.test(l)).length, 1);
+});
+
+test('a failed run that is re-run and passes drops the item and the failure', async () => {
+  let n = 0;
+  const { out, rec } = await ciRelease('1.2.3', fakeCi(() => ({ ok: true, runs: [run({ ref: 'base', state: ++n === 1 ? 'failed' : 'passed' })] })), 3);
+  assert.equal(out.ci, undefined);
+  assert.equal(rec.raised.length, 1);
+  assert.ok(rec.cleared.includes('ci_run_failed:release/1.3.0'));
+});
+
+test('a later cycle re-checks the last release and reports a failed run without waiting', async () => {
+  const bare = bareRemote();
+  const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+  writeFileSync(file, '1.2.3\n');
+  const { dir, repo } = projectWithRemote(CI_FILE_RELEASE(file, 1), bare);
+  const tickets = [T('ISSUE-7')];
+  await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: false });
+  const rec = attentionRecorder();
+  const later = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets, emit: emitter(), dryRun: false,
+    ci: { provider: fakeCi(() => ({ ok: true, runs: [run({})] })), host: 'github.com', remote: 'acme/widgets' }, attention: rec.attention,
+  });
+  assert.equal(later.confirmed, undefined);
+  assert.equal(later.ci?.blocking, true);
+  assert.equal(later.version, '1.3.0');
+  assert.equal(rec.raised[0]!.key, 'ci_run_failed:release/1.3.0');
+});
+
+test('without a ci option the release behaves as before', async () => {
+  const bare = bareRemote();
+  const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+  writeFileSync(file, '1.3.0\n');
+  const { dir, repo } = projectWithRemote(CI_FILE_RELEASE(file), bare);
+  const out = await runRelease({ cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false });
+  assert.equal(out.confirmed, true);
+  assert.equal(out.ci, undefined);
+  assert.equal(out.ciGreen, undefined);
+});

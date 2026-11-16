@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   upsert, clear, transitions, staleRelease, openShipAttention, hookCommand,
-  raiseShipAttention, clearShipAttention, baseAttention, baseUnsafeKey, RELEASE_STALE_AFTER_INTERVALS, type ShipAttentionItem,
+  raiseShipAttention, clearShipAttention, clearShipAttentionKind, baseAttention, baseUnsafeKey, RELEASE_STALE_AFTER_INTERVALS, type ShipAttentionItem,
 } from '../src/ship-attention.ts';
 import { Emitter, eventFileFor } from '../src/events.ts';
 import { State } from '../src/state.ts';
@@ -231,4 +231,17 @@ test('CREW-3275: the daemon item is not cleared by the PATH re-check', async () 
   const cleared = recheckEnvironmentStops(state, { route: 'w/p', dir: '/x', repos: {} } as any, { extraPath: [] } as any, { dockerProblem: () => undefined });
   assert.deepEqual(cleared, []);
   assert.deepEqual(openShipAttention(state).map((i) => i.key), [DOCKER_DAEMON_KEY]);
+});
+
+test('clearShipAttentionKind with a key prefix leaves another repository\'s item of the same kind (CREW-3470)', () => {
+  const state = new State(mkdtempSync(join(tmpdir(), 'crew-shipatt-')));
+  state.shipAttention().persist([
+    item('ci_run_failed:repoA/1.4.0', { kind: 'ci_run_failed' }),
+    item('ci_run_failed:repoB/2.0.0', { kind: 'ci_run_failed' }),
+    item('role_parked:qa'),
+  ]);
+  clearShipAttentionKind(state, 'ci_run_failed', 'ci_run_failed:repoB/');
+  assert.deepEqual(state.shipAttention().previous().map((i) => i.key), ['ci_run_failed:repoA/1.4.0', 'role_parked:qa']);
+  clearShipAttentionKind(state, 'ci_run_failed', 'ci_run_failed:repoA/');
+  assert.deepEqual(state.shipAttention().previous().map((i) => i.key), ['role_parked:qa']);
 });
