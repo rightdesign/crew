@@ -519,7 +519,9 @@ export type CrewLinkAction = 'linked' | 'already_linked' | 'no_seat' | 'persona_
   /** CREW-1797: the Crew table has no `Agent` field and this key may not add one. */
   | 'no_agent_field'
   /** CREW-1797: no Agents row exists for this role to link (read-only sync). */
-  | 'no_agents_row';
+  | 'no_agents_row'
+  /** CREW-3389: the configured seat's Crew row no longer exists (deleted in the UI), so there is nothing to link. */
+  | 'seat_missing';
 
 export interface CrewLinkOutcome {
   role: RoleName;
@@ -829,9 +831,26 @@ async function linkReleaseSeat(
     if (e instanceof CrewAgentFieldMissing) return { note: `Release: ${CREW_FIELD_MISSING_NOTE}` };
     throw e;
   }
-  const seatRow = await client.records.get<CrewRow>(crewModelId, seatId);
+  const seatRow = await getSeatRow(client, crewModelId, seatId);
+  if (!seatRow) return { note: `Release: ${SEAT_MISSING_NOTE}` };
   if (seatRow[CREW_AGENT_COLUMN] !== agentId) await client.records.update<CrewRow>(crewModelId, seatId, { [columnName]: agentId });
   return { agentId };
+}
+
+const SEAT_MISSING_NOTE = 'the configured Crew row no longer exists (deleted?) — re-run `crew connect` to pick a seat';
+
+/**
+ * A seat id in the route config can outlive its Crew row (CREW-3389: an
+ * auto-created agent row deleted in the UI). A 404 is a reported state, not a
+ * failure of the whole sync; any other error still throws.
+ */
+async function getSeatRow(client: TablationClient, crewModelId: string, seatId: string): Promise<CrewRow | null> {
+  try {
+    return await client.records.get<CrewRow>(crewModelId, seatId);
+  } catch (e) {
+    if (e instanceof TablationApiError && e.status === 404) return null;
+    throw e;
+  }
 }
 
 const NO_WRITE_NOTE = 'this key has no write access to the Agents table';
@@ -888,7 +907,8 @@ async function linkCrewSeats(
     if (!seatId) { outcomes.push({ role, action: 'no_seat' }); continue; }
     if (!agentId) { outcomes.push({ role, action: readOnly ? 'no_agents_row' : 'persona_diverged' }); continue; }
 
-    const seatRow = await client.records.get<CrewRow>(crewModelId, seatId);
+    const seatRow = await getSeatRow(client, crewModelId, seatId);
+    if (!seatRow) { outcomes.push({ role, action: 'seat_missing' }); continue; }
     if (seatRow[CREW_AGENT_COLUMN] === agentId) { outcomes.push({ role, action: 'already_linked' }); continue; }
 
     await client.records.update<CrewRow>(crewModelId, seatId, { [columnName]: agentId });
@@ -971,6 +991,7 @@ export function describeCrewLink(o: CrewLinkOutcome): string {
     case 'no_seat': return `${label}: no seat configured for this role — skipped linking`;
     case 'no_agent_field': return `${label}: ${CREW_FIELD_MISSING_NOTE}`;
     case 'no_agents_row': return `${label}: no Agents row to link yet — a workspace admin's \`crew agents sync\` creates it; run it here afterwards to link this seat`;
+    case 'seat_missing': return `${label}: ${SEAT_MISSING_NOTE}`;
     case 'persona_diverged': return `${label}: persona has local edits and was not synced this pass — skipped linking until it's resolved`;
   }
 }

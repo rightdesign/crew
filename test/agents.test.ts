@@ -388,6 +388,27 @@ test('an existing Agent field is reused (no field-types lookup, no POST), and an
   assert.equal(describeCrewLink(dev), 'Developer: Crew row already references its Agents row');
 });
 
+test('CREW-3389: a seat whose Crew row was deleted is reported seat_missing instead of throwing', async (t) => {
+  const promptsDir = makePromptsDir();
+  let patchCalled = false;
+  const { restore } = mockFetch({
+    'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 200, body: AGENTS_MODEL }),
+    'GET /api/data-models/agents-model-1/records?limit=200': unchangedAgentsRowsHandler(promptsDir),
+    'GET /api/data-models/crew-model': () => ({ status: 200, body: CREW_MODEL_WITH_FIELD }),
+    'GET /api/data-models/crew-model/records/seat-dev': () => ({ status: 404, body: { message: 'Record seat-dev not found', statusCode: 404 } }),
+    'PATCH /api/data-models/crew-model/records/seat-dev': () => { patchCalled = true; return { status: 200, body: {} }; },
+  });
+  t.after(restore);
+
+  const route = makeRoute(undefined, { dev: 'seat-dev' }, promptsDir);
+  const result = await syncPersonas(route, {});
+
+  assert.equal(patchCalled, false);
+  const dev = result.crewLinks.find((o) => o.role === 'dev')!;
+  assert.equal(dev.action, 'seat_missing');
+  assert.match(describeCrewLink(dev), /Crew row no longer exists/);
+});
+
 test('roles with no configured seat are reported no_seat and never touch the Crew table', async (t) => {
   const promptsDir = makePromptsDir();
   const { restore } = mockFetch({
