@@ -153,7 +153,7 @@ export function attentionProblems(items: ShipAttentionItem[], already: DoctorPro
   const seen = new Set(already.filter((p) => p.kind === 'hook_missing').map((p) => `hook_missing:${p.route}/${p.repo}/${p.hook}`));
   if (already.some((p) => p.kind === 'docker_daemon_down')) seen.add(DOCKER_DAEMON_KEY);
   return items
-    .filter((i) => !seen.has(i.key))
+    .filter((i) => !seen.has(i.key) && i.kind !== 'seat_missing') // seat_missing is its own blocker finding (CREW-3449)
     .map((i) => ({ severity: 'attention' as const, kind: i.kind, message: i.message }));
 }
 

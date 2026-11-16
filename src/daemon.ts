@@ -112,6 +112,7 @@ import { runKilledComment } from './run-limit.ts';
 import { fetchPersonaPrompt, personaPromptOptions, fetchSeatPersona, resolveAgentId } from './agents.ts';
 import { fetchSkillOverrides } from './skills.ts';
 import { isForbiddenError, forbiddenDetail, seatCannotWriteKey, seatCannotWriteItem, seatWriteStillRefused } from './seat-read-probe.ts';
+import { probeSeats, reconcileSeatAttention, missingRoles, SEAT_MISSING_REMEDY } from './seat-missing.ts';
 import { raiseShipAttention, clearShipAttention, openShipAttention, workspaceAuthKey, workspaceAllowanceKey, workspaceAllowanceItem, seatKeyUnreadableItem, seatKeyUnreadableKey } from './ship-attention.ts';
 import { INTERVAL_SECONDS } from './install.ts';
 import { readPeriscopeSidecars, writePeriscopeSidecar, updatePeriscopeSidecar } from './periscope-state.ts';
@@ -656,9 +657,37 @@ async function runOnePassUnguarded(o: RunOnePassOptions): Promise<PassResult> {
   const { ctx } = await prepareRoutePass(o);
   const decision = await (o.decide ?? decideCycle)(ctx);
   await applyRouteDecision(o, ctx, decision);
-  const { started, skipped } = await fillSlots(o, [{ ctx, decision, roles: decision.selection.pending }]);
+  const pending = await dropRolesWithMissingSeat(o, ctx, decision.selection.pending);
+  const { started, skipped } = await fillSlots(o, [{ ctx, decision, roles: pending }]);
   await publishShipAttention(o.state, o.route, o.ship);
-  return { pending: decision.selection.pending, started, skipped };
+  return { pending, started, skipped };
+}
+
+/**
+ * CREW-3449: a role whose configured seat has no Crew row can never match a
+ * ticket's assignee, so it is left out of this pass's slots, said once on the
+ * event stream, and kept as a `seat_missing` attention item until the seat
+ * resolves again. Other roles carry on. A read that cannot decide (network,
+ * permission) neither skips a role nor changes the item.
+ */
+async function dropRolesWithMissingSeat(o: RunOnePassOptions, ctx: RoleAgentContext, pending: RoleName[]): Promise<RoleName[]> {
+  if (!o.route.resolved) return pending;
+  try {
+    const tracker = new Tracker(o.route, o.ship);
+    const probes = await probeSeats(o.route, (id) => tracker.crewRow(id));
+    await reconcileSeatAttention(o.route, probes, {
+      raise: (item) => raiseShipAttention({ state: o.state, emit: ctx.emit, route: o.route, ship: o.ship }, item),
+      clear: (key) => clearShipAttention(o.state, key),
+    });
+    const missing = new Set(missingRoles(probes));
+    for (const role of missing) {
+      ctx.emit.warn(`${role} skipped this cycle: its configured seat's Crew row no longer exists (${SEAT_MISSING_REMEDY})`, { step: 'select', role: role === 'release' ? undefined : role });
+    }
+    return pending.filter((r) => !missing.has(r));
+  } catch (e) {
+    ctx.emit.warn(`could not check the configured seats: ${(e as Error).message}`, { step: 'select' });
+    return pending;
+  }
 }
 
 /**

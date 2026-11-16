@@ -115,6 +115,7 @@ import { SandboxCache, type CacheRepo, cacheSettingsOf, makeCachePass, unmirrore
 import { buildWhoami, formatWhoami } from './whoami.ts';
 import { projectModeLabels, withoutManualVerified } from './work-mode.ts';
 import { operatorTodo } from './attention.ts';
+import { probeSeats, mergeSeatAttention, seatMissingProblems, type SeatProbe } from './seat-missing.ts';
 import { probeSeatWrites, seatCannotWriteMessage, SEAT_NO_WRITE_REMEDY, probeSeatReads, describeSeatForbidden, describeSeatTables, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
 import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
@@ -6887,6 +6888,9 @@ switch (command) {
       // reads the Crew rows fresh rather than trusting anything cached.
       const seatIds = route.resolved?.seats ?? {};
       const crewRows = Object.keys(seatIds).length ? await statusTracker.crewRows() : [];
+      // CREW-3449: a stored seat id whose Crew row is gone (a definite 404, not a failed read).
+      const seatProbes = await probeSeats(route, (id) => statusTracker.crewRow(id));
+      const seatProbeOf = (role: string): SeatProbe | undefined => seatProbes.find((p) => p.role === role);
       const crewRowById = new Map(crewRows.map((c) => [c.id, c]));
       const agentPersonas = route.resolved?.agentPersonas ?? {};
       // 'pair' never has a Crew-table seat (it's an interactive persona, not
@@ -6904,6 +6908,8 @@ switch (command) {
           role: r,
           label: ROLE_LABEL[r],
           crewId: seatId ?? null,
+          // Additive (CREW-3449): true only when the tracker answered 404 for this seat's Crew row.
+          missing: seatProbeOf(r)?.state === 'missing',
           name: crewRow?.name ?? null,
           personaName,
           // Additive (CREW-2822): how many runs this seat has live right now.
@@ -6935,7 +6941,7 @@ switch (command) {
           eventFile: eventFileFor(cfg.ship.stateDir),
           // Additive (CREW-1373): open ship-level items, including the
           // derived `release_stale`. `version` stays 1.
-          attention: openShipAttention(state),
+          attention: mergeSeatAttention(openShipAttention(state), route, seatProbes),
           // Additive (CREW-2495): this ship's Ships-row name and whether it has drifted from `name`.
           rowName: nameSync.rowName ?? null,
           nameDrift: nameSync.drift,
@@ -7021,7 +7027,7 @@ switch (command) {
       break;
     }
 
-    const shipAttention = openShipAttention(state);
+    const shipAttention = mergeSeatAttention(openShipAttention(state), route, await probeSeats(route, (id) => statusTracker.crewRow(id)));
     let heldReleases: string[] = [];
     let waitViews: StatusWait[] = [];
     let deferredReleases: string[] = [];
@@ -7249,6 +7255,9 @@ switch (command) {
       const jsonGit = findOnPath('git', doctorSchedulerPath) ? probeGit({ ...process.env, PATH: doctorSchedulerPath }) : undefined;
       if (jsonGit && !jsonGit.ok) {
         problems.push({ severity: 'blocker', kind: 'git_unrunnable', message: `git failed to run: ${jsonGit.detail}`, remedy: 'fix the git on the scheduler PATH (on macOS, install the Xcode command line tools), then re-run `crew doctor`' });
+      }
+      if (!flag('offline') && route.resolved) {
+        problems.push(...seatMissingProblems(route, await probeSeats(route, (id) => new Tracker(route, cfg.ship).crewRow(id))));
       }
       problems.push(...attentionProblems(openShipAttention(state), problems));
       if (problems.some((p) => p.severity === 'blocker')) process.exitCode = 1;
@@ -7825,7 +7834,19 @@ switch (command) {
         }
       }
     }
-    for (const i of visibleAttention(openShipAttention(state), Boolean(dockerFinding))) {
+    if (!flag('offline')) {
+      for (const r of cfg.routes) {
+        if (!r.resolved) continue;
+        try {
+          const tracker = new Tracker(r, cfg.ship);
+          for (const p of seatMissingProblems(r, await probeSeats(r, (id) => tracker.crewRow(id)))) {
+            R.line(`seat:              BLOCKER ${p.message} — ${p.remedy}\n`);
+            process.exitCode = 1;
+          }
+        } catch { /* a route with no usable key is reported elsewhere */ }
+      }
+    }
+    for (const i of visibleAttention(openShipAttention(state), Boolean(dockerFinding)).filter((x) => x.kind !== 'seat_missing')) {
       R.line(`attention:         ${i.kind} — ${i.message} (since ${i.since})\n`);
     }
 

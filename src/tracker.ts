@@ -9,7 +9,7 @@
  */
 
 import { hostname } from 'node:os';
-import { TablationClient } from '@tablation/client';
+import { TablationApiError, TablationClient } from '@tablation/client';
 import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
 import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, PERISCOPE_COLUMNS, closedStatuses, resolveContract, type Contract } from './contract.ts';
@@ -448,6 +448,16 @@ export class Tracker {
 
   async comments(limit = 500): Promise<Comment[]> {
     return this.client.records.list<Comment>(this.models.comments, { limit });
+  }
+
+  /** One Crew row, or null when the tracker answers 404 (CREW-3449). Any other failure throws. */
+  async crewRow(id: string): Promise<CrewRow | null> {
+    try {
+      return await this.client.records.get<CrewRow>(this.models.crew, id);
+    } catch (e) {
+      if (e instanceof TablationApiError && e.status === 404) return null;
+      throw e;
+    }
   }
 
   async crewRows(): Promise<CrewRow[]> {
