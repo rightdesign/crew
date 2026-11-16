@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.159.1] — 2026-11-16
+
+- CREW-3475 The ci_run_failed ship attention item now carries the failing run's URL and whether the release is blocked as structured `ci` fields, in `crew status --json` and the Ships row.
+
 ## [0.159.0] — 2026-11-16
 
 - CREW-3452 A member key that cannot sync personas and skills is reported as information, not a missing capability, unless the workspace has no persona rows.
