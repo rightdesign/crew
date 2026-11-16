@@ -129,7 +129,7 @@ import { ignoreByRepo, planFootprintsFor, pushedEventExtra, readFootprintEvents 
 import { FOOTPRINT_DECLARED_EVENT, countedPaths, footprintVerdictText, mustYieldTo } from './footprint.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
 import {
-  discover, get as connectGet, listWorkspaces, renderConnection, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
+  discover, get as connectGet, listWorkspaces, renderConnection, renderExistingRouteReport, ConnectHttpError, provisionReleaseLocks, linkOperatorRow, createOperatorRow,
   listLibraryTemplates, previewTemplateInstall, installTemplate, ISSUES_TEMPLATE_IDENTIFIERS, resolveIssuesTemplateKeys,
 } from './connect.ts';
 import {
@@ -5010,10 +5010,31 @@ switch (command) {
         emit.error(`crew connect: ${msg}`);
         stopWithProblem(msg, 'wizard');
       }
-      if ((mintedFromDevice || firstRunFromFlags) && !keychainBacked) {
+      // CREW-3451: a key handed in by flag or environment goes into the key store
+      // the same way a device sign-in's does, so the route needs no key lines.
+      const keyFromFlag = givenKeySource === 'flag' && !mintedFromDevice && !!apiKey;
+      if (keyFromFlag && !keychainBacked && store) {
+        if (dryRun) {
+          keychainBacked = true;
+          routineLine(`(dry run) would store the key in the OS keychain for ${hostFromUrl(baseUrl)}/${found.workspaceSlug}`);
+        } else {
+          try {
+            await store.set(hostFromUrl(baseUrl), found.workspaceSlug, {
+              apiKey: apiKey!, workspaceId: found.workspaceId, identityId: found.meId ?? '', createdAt: new Date().toISOString(),
+            });
+            keychainBacked = true;
+            sessionAddress = found.workspaceSlug;
+            rememberSession(cfg.ship.stateDir, hostFromUrl(baseUrl), found.workspaceSlug);
+            routineLine(`API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${found.workspaceSlug}.`);
+          } catch (e) {
+            emit.warn(withFix(`could not store the key in the OS keychain — ${(e as Error).message} — falling back to a key file`, '`crew doctor`'));
+          }
+        }
+      }
+      if ((mintedFromDevice || firstRunFromFlags || keyFromFlag) && !keychainBacked) {
         apiKeyFile = apiKeyPathFor(cfg.ship.stateDir, route);
         if (dryRun) {
-          process.stderr.write(`(dry run) would write the minted API key to ${apiKeyFile}\n`);
+          process.stderr.write(`(dry run) would write the API key to ${apiKeyFile}\n`);
         } else {
           mkdirSync(dirname(apiKeyFile), { recursive: true });
           writeFileSync(apiKeyFile, `${apiKeyVar}=${apiKey}\n`, { mode: 0o600 });
@@ -5033,10 +5054,10 @@ switch (command) {
       const routeDir = value('dir');
       const routeBlock = renderConnection(
         found, route,
-        routeDir ?? (writeFirstRun ? null : 'REPLACE — the local checkout this route works'),
+        routeDir ?? null,
         {
-          area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked,
-          ...(writeFirstRun ? { baseUrl, hostPassengers: wizard.answers.hostPassengers } : {}),
+          area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked, baseUrl,
+          ...(writeFirstRun ? { hostPassengers: wizard.answers.hostPassengers } : {}),
         },
       );
       let wroteConfig = false;
@@ -5059,7 +5080,14 @@ switch (command) {
         }
       }
       // Under `--json` stdout is the event stream; the block goes to stderr with the rest of the prose.
-      if (!wroteConfig) (connectEvents.json ? process.stderr : process.stdout).write(routeBlock);
+      // CREW-3451: a route crew.yaml already has gets a report of this run, not a block to paste.
+      const routeInConfig = cfg.routes.some((r) => r.route === route);
+      const existingReport = routeInConfig ? renderExistingRouteReport({
+        route, configFile: cfg.configFile, resolvedPath: resolvedPath, dryRun, found,
+        keys: mintOutcomes.map((m) => ({ role: m.role, action: m.action })),
+      }) : '';
+      if (routeInConfig) (connectEvents.json ? process.stderr : process.stdout).write(existingReport);
+      else if (!wroteConfig) (connectEvents.json ? process.stderr : process.stdout).write(routeBlock);
       // CREW-1378: give interactive Claude Code sessions the tablation MCP tools.
       if (!flag('no-mcp') && apiKey) {
         const replace = value('mcp') === 'replace';
@@ -5119,10 +5147,12 @@ switch (command) {
           route, configPath: wizard!.configPath, platform: cfg.ship.platform, needsRepos: !value('dir'),
         }));
         if (!operator) process.stderr.write(`  Also set operator in ${resolvedPath} before arming it.\n`);
+      } else if (routeInConfig) {
+        // The report above already ends with the next step.
+        if (!operator) emit.warn(`no operator resolved: set it in ${resolvedPath} before arming this route`);
       } else if (operator) {
         process.stderr.write(
-          `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there already), then: ` +
-            `crew doctor ${route}\n`,
+          `\n  Paste the block above under routes: in crew.yaml, then: crew doctor ${route}\n`,
         );
       } else {
         // Nothing to infer this from (no email match) and nowhere to ask
@@ -5130,8 +5160,8 @@ switch (command) {
         // this is left for a person to decide once, by hand, in the state
         // file `resolvedPath` names above.
         process.stderr.write(
-          `\n  Paste the block above under routes: in crew.yaml (if "${route}" isn't there\n` +
-          `  already), set operator in ${resolvedPath}, then: crew doctor ${route}\n`,
+          `\n  Paste the block above under routes: in crew.yaml, set operator in\n` +
+          `  ${resolvedPath}, then: crew doctor ${route}\n`,
         );
       }
       // CREW-2241: a fresh workspace has no Agents rows until `agents sync`

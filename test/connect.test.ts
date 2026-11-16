@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  discover, listWorkspaces, renderConnection, type Discovered,
+  discover, listWorkspaces, renderConnection, renderExistingRouteReport, type Discovered,
   listLibraryTemplates, previewTemplateInstall, installTemplate, provisionReleaseLocks,
 } from '../src/connect.ts';
 
@@ -1110,10 +1110,6 @@ test('renderConnection() prints real apiKeyFile/apiKeyVar when a device-login ke
   });
   assert.ok(block.includes('apiKeyFile: "/tmp/state/keys/issues/issues.env"'));
   assert.ok(block.includes('apiKeyVar: CREW_API_KEY'));
-  // Only the apiKey placeholders are resolved by a device-login run — the
-  // route's baseUrl placeholder is unrelated (ISSUE-966 doesn't thread
-  // baseUrl through renderConnection) and stays a REPLACE for the operator
-  // to fill in, same as every other connect flavor.
   assert.ok(!block.includes('REPLACE — a file holding'));
   assert.ok(!block.includes('REPLACE_KEY_VAR'));
 });
@@ -1131,15 +1127,52 @@ test('renderConnection() omits apiKeyFile/apiKeyVar entirely for a keychain-back
   assert.doesNotMatch(block, /keychain|apiKey/);
 });
 
-test('renderConnection() still shows the paste-your-own-key placeholder for a plain --key connect (no device login, no keychain)', () => {
-  const d: Discovered = {
-    workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
-    projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
-    models: { issues: 'i', comments: 'c', crew: 'm' }, seats: {}, holds: [], candidates: [], problems: [], provisioning: [],
-  };
-  const block = renderConnection(d, 'issues/issues', '/tmp/synthesis');
-  assert.ok(block.includes('REPLACE — a file holding'));
-  assert.ok(block.includes('REPLACE_KEY_VAR'));
+const reportFixture = (): Discovered => ({
+  workspaceId: 'ws-1', workspaceSlug: 'issues', workspaceName: 'Issue Tracker',
+  projectId: 'p-1', projectSlug: 'issues', projectName: 'Issues',
+  models: { issues: 'i', comments: 'c', crew: 'm' }, seats: { dev: 'row-dev', qa: 'row-qa', pair: 'row-pair' }, holds: [], candidates: [], problems: [], provisioning: [],
+  seatRows: [{ role: 'dev', id: 'row-dev', action: 'matched' }, { role: 'qa', id: 'row-qa', action: 'claimed' }],
+  releaseSeat: 'row-rel', releaseSeatAction: 'created',
+});
+
+test('renderConnection() never prints a REPLACE placeholder, with or without a key store (CREW-3451)', () => {
+  const d = reportFixture();
+  for (const opts of [{}, { keychainBacked: true }, { apiKeyFile: '/s/k.env', apiKeyVar: 'CREW_API_KEY' }]) {
+    assert.doesNotMatch(renderConnection(d, 'issues/issues', null, opts), /REPLACE/);
+  }
+});
+
+test('renderConnection(): a key-store route carries no key lines, a file fallback carries real ones (CREW-3451)', () => {
+  const d = reportFixture();
+  const store = renderConnection(d, 'issues/issues', null, { keychainBacked: true, apiKeyFile: '/s/k.env', apiKeyVar: 'CREW_API_KEY' });
+  assert.doesNotMatch(store, /apiKeyFile|apiKeyVar/);
+  const file = renderConnection(d, 'issues/issues', null, { apiKeyFile: '/s/k.env', apiKeyVar: 'CREW_API_KEY' });
+  assert.match(file, /apiKeyFile: "\/s\/k.env"/);
+  assert.match(file, /apiKeyVar: CREW_API_KEY/);
+  assert.doesNotMatch(file, /dir:/);
+});
+
+test('renderConnection(): no baseUrl line on the default server, the real URL on another (CREW-3451)', () => {
+  const d = reportFixture();
+  assert.doesNotMatch(renderConnection(d, 'issues/issues', null, { keychainBacked: true, baseUrl: 'https://app.tablation.com/' }), /baseUrl/);
+  assert.match(renderConnection(d, 'issues/issues', null, { keychainBacked: true, baseUrl: 'https://other.example' }), /baseUrl: "https:\/\/other.example"/);
+});
+
+test('renderExistingRouteReport(): says crew.yaml was unchanged, lists each seat, prints no YAML block (CREW-3451)', () => {
+  const text = renderExistingRouteReport({
+    route: 'issues/issues', configFile: '/h/crew.yaml', resolvedPath: '/s/resolved/issues/issues.json', dryRun: false,
+    found: reportFixture(), keys: [{ role: 'dev', action: 'minted' }],
+  });
+  assert.match(text, /\/h\/crew.yaml already has the route "issues\/issues"; it was not changed/);
+  assert.match(text, /Resolved ids written to \/s\/resolved\/issues\/issues.json/);
+  assert.match(text, /dev +Crew row row-dev — matched; key minted/);
+  assert.match(text, /qa +Crew row row-qa — claimed/);
+  assert.match(text, /design +no Crew row — unresolved/);
+  assert.match(text, /pair +Crew row row-pair — matched/);
+  assert.match(text, /release +Crew row row-rel — created/);
+  assert.match(text, /Next: crew doctor issues\/issues/);
+  assert.doesNotMatch(text, /REPLACE|enabled:|route:|paste/i);
+  assert.match(renderExistingRouteReport({ route: 'a/b', configFile: '/c', resolvedPath: '/r', dryRun: true, found: reportFixture() }), /\(dry run\) would write \/r/);
 });
 
 /** A Ships-provisioning fixture for the owner_id tests (CREW-1286); `shipsRows` and `shipsModel` vary per test. */

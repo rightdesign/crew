@@ -186,6 +186,8 @@ export interface Discovered {
   seats: Record<string, string>;
   /** This ship's "Release" Crew row (CREW-1371) — see `ResolvedIds.releaseSeat`. */
   releaseSeat?: string;
+  /** Whether this run found the release row or made it (absent: none, e.g. a dry run). */
+  releaseSeatAction?: 'matched' | 'created';
   /** The Crew row that is the human running this — auto-matched by email
    * against `meEmail` when possible. Left unset when no hold's email matches
    * (or none is on file): the caller decides then, by asking. */
@@ -1012,13 +1014,14 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // machine reconnecting with no stored state therefore creates a new one.
     if (shipRowId) {
       const releaseId = stored?.releaseSeat && scoped.some((r) => r.id === stored.releaseSeat) ? stored.releaseSeat : undefined;
-      if (releaseId) out.releaseSeat = releaseId;
+      if (releaseId) { out.releaseSeat = releaseId; out.releaseSeatAction = 'matched'; }
       else {
         const created = await post<{ id: string }>(o, `/data-models/${out.models.crew}/records`, {
           name: 'Release agent',
           ship_id: shipRowId,
         });
         out.releaseSeat = created.id;
+        out.releaseSeatAction = 'created';
         provisioning.push('created Crew row for the release seat');
       }
     }
@@ -1186,23 +1189,52 @@ export function renderConnection(
   // value — printed verbatim instead of the usual paste-your-own-key
   // placeholder, since a person supplying `--key` by hand never gets one
   // written for them and still has to say where their key lives.
-  const apiKeyFileLine = opts.keychainBacked
-    ? ''
-    : opts.apiKeyFile
-      ? `    apiKeyFile: "${opts.apiKeyFile}"`
-      : `    apiKeyFile: "REPLACE — a file holding this workspace's key"`;
-  const apiKeyVarLine = opts.keychainBacked
-    ? ''
-    : opts.apiKeyVar
-      ? `\n    apiKeyVar: ${opts.apiKeyVar}`
-      : `\n    apiKeyVar: REPLACE_KEY_VAR`;
-  // A default baseUrl is left out of a file a person maintains; `loadConfig` falls back to it.
-  const baseUrlLine = opts.baseUrl
-    ? opts.baseUrl.replace(/\/+$/, '') === DEFAULT_BASE_URL ? '' : `    baseUrl: "${opts.baseUrl}"\n`
-    : '    baseUrl: "REPLACE — the same baseUrl as your other routes"\n';
+  // A route with nothing to say about its key (key store, or a key that came
+  // from the ship's own config) gets no key lines: never a placeholder.
+  const apiKeyFileLine = !opts.keychainBacked && opts.apiKeyFile ? `    apiKeyFile: "${opts.apiKeyFile}"` : '';
+  const apiKeyVarLine = !opts.keychainBacked && opts.apiKeyFile && opts.apiKeyVar ? `\n    apiKeyVar: ${opts.apiKeyVar}` : '';
+  // The default server is left out; any other is printed as this run reached it.
+  const baseUrlLine = opts.baseUrl && opts.baseUrl.replace(/\/+$/, '') !== DEFAULT_BASE_URL ? `    baseUrl: "${opts.baseUrl}"\n` : '';
   const keyLines = [apiKeyFileLine, apiKeyVarLine.replace(/^\n/, '')].filter(Boolean).join('\n');
   return `  - route: ${route}
     enabled: false          # set to true once \`crew doctor\` is green
 ${opts.area ? `    area: "${opts.area}"\n` : ''}${dir === null ? '' : `    dir: "${dir}"\n`}${baseUrlLine}${opts.hostPassengers ? '    hostPassengers: true\n' : ''}${keyLines ? keyLines + '\n' : ''}`;
 }
 
+
+/** One seat's outcome for the report of a connect run on a route crew.yaml already has. */
+export type SeatReportLine = { role: string; id?: string; outcome: string; key?: string };
+
+/**
+ * What a re-run of `crew connect` did for a route crew.yaml already carries
+ * (CREW-3451): no route block to paste, just where the ids went and which Crew
+ * row each seat ended on.
+ */
+export function renderExistingRouteReport(o: {
+  route: string; configFile: string; resolvedPath: string | null; dryRun: boolean; found: Discovered;
+  keys?: Array<{ role: string; action: string }>;
+}): string {
+  const seatRows = new Map((o.found.seatRows ?? []).map((r) => [r.role, r]));
+  const keyOf = (role: string) => o.keys?.find((k) => k.role === role)?.action;
+  const lines: SeatReportLine[] = [];
+  for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
+    const row = seatRows.get(role);
+    lines.push(row
+      ? { role, ...(row.id ? { id: row.id } : {}), outcome: row.action, key: keyOf(role) }
+      : o.found.seats[role] ? { role, id: o.found.seats[role], outcome: 'matched', key: keyOf(role) }
+      : { role, outcome: 'unresolved' });
+  }
+  lines.push(o.found.seats.pair ? { role: 'pair', id: o.found.seats.pair, outcome: 'matched' } : { role: 'pair', outcome: 'unresolved' });
+  lines.push(o.found.releaseSeat
+    ? { role: 'release', id: o.found.releaseSeat, outcome: o.found.releaseSeatAction ?? 'matched' }
+    : { role: 'release', outcome: 'unresolved' });
+  const out = [
+    `${o.configFile} already has the route "${o.route}"; it was not changed.`,
+    o.resolvedPath ? `${o.dryRun ? '(dry run) would write' : 'Resolved ids written to'} ${o.resolvedPath}` : '',
+    'Seats:',
+    ...lines.map((l) => `  ${l.role.padEnd(8)} ${l.id ? `Crew row ${l.id}` : 'no Crew row'} — ${l.outcome}${l.key && l.key !== 'none' ? `; key ${l.key}` : ''}`),
+    '',
+    `Next: crew doctor ${o.route}`,
+  ].filter((l, i, a) => l !== '' || i === a.length - 2);
+  return `${out.join('\n')}\n`;
+}

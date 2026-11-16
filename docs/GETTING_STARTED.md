@@ -287,10 +287,14 @@ confirms the `claude` it found on your `PATH` (or asks for one), works out
 machine should [host Passengers](/host-passengers). After signing in and
 resolving the workspace it writes `~/.config/crew/crew.yaml` (mode 0600) with
 the `ship:` block and the route, `enabled: false`, then prints what to do
-next. An existing `crew.yaml` is never rewritten — `connect` prints the route
-block for you to paste instead — and neither is a non-terminal run. If the
-credential could not be stored in the keychain or a key file (a plain `--key`
-connect), it prints the block instead of writing a file with no key in it.
+next. An existing `crew.yaml` is never rewritten, and neither is one on a
+non-terminal run: `connect` prints a route block for you to paste instead. The
+block holds only lines you need, each with a real value: no `baseUrl` on the
+default server (the real URL on another), no `dir` unless you passed `--dir`,
+and no key lines when the key is in the OS key store. A key given with `--key`
+or `CREW_CONNECT_KEY` is stored there like a device sign-in's; `apiKeyFile` and
+`apiKeyVar` appear, with the real path, only when the key store was unavailable
+or refused the key and `connect` wrote a key file instead.
 
 `connect` also makes sure you have your own Crew row, linked to the account you
 signed in with (`user_id`, and `email` when blank), so your comments in the app
@@ -778,8 +782,13 @@ to review. Three ways to hand it over:
 
 The wizard only runs when no `crew.yaml` exists. If you already have one (a
 second workspace, a config copied from another machine, or a hand-written
-file), `crew connect <workspace>` resolves the ids and prints the route block
-for you to paste under `routes:`, with `enabled: false`. Everything the file
+file), `crew connect <workspace>` resolves the ids. When `crew.yaml` already
+has the route, `connect` leaves the file alone, says so, and reports what the
+run did: where the resolved ids were written and, for each seat (`dev`,
+`design`, `qa`, `triage`, `pair`, release), the Crew row it ended on and whether
+it was matched, claimed, created or left unresolved. It ends with
+`crew doctor <route>`. When the route is not in the file yet, it prints the
+route block to paste under `routes:`, with `enabled: false`. Everything the file
 may contain is commented in `crew.example.yaml`; unknown keys are a hard error,
 not a warning.
 
