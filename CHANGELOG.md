@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.156.1] — 2026-11-16
+
+- CREW-3389 `crew agents sync` reports a deleted Crew seat instead of failing with a 404 stack trace.
+
 ## [0.156.0] — 2026-11-15
 
 - CREW-3387 Tickets that would change the same files as work already in flight now wait for it, with nothing to configure; the dev lane declares a footprint, `pushed` events record changed paths, and `crew status` lists waiting tickets.
