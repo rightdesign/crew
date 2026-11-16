@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.158.3] — 2026-11-16
+
+- CREW-3446 A help flag after a literal -- is passed through, not treated as a help request.
+
 ## [0.158.2] — 2026-11-16
 
 - CREW-3468 The connect tests force the key store's outcome on every host, connect names the store it used, and ticket branches now run the suite on Linux before release.
