@@ -58,3 +58,25 @@ test('a route with a missing key file exits the daemon with a daemon_start_faile
   const parsed = JSON.parse(status.stdout) as { attention: Array<{ kind: string }> };
   assert.ok(parsed.attention.some((i) => i.kind === 'daemon_start_failed'), status.stdout);
 });
+
+// CREW-3475: a `ci_run_failed` item's structured `ci` fields reach `crew status --json` intact, and stay absent on other kinds.
+test('crew status --json carries ci on a ci_run_failed attention item and leaves other kinds unchanged', () => {
+  const { cfg, home } = config(false); // no key: `status` takes its local-attention path
+  writeFileSync(join(home, 'state', '.ship-attention.json'), JSON.stringify([
+    { kind: 'ci_run_failed', key: 'ci_run_failed:release/1.3.0', message: 'CI failed (https://ci/1)', since: '2026-11-16T10:00:00.000Z',
+      ci: { url: 'https://ci/1', blocking: false, repo: 'release', version: '1.3.0' } },
+    { kind: 'ci_run_failed', key: 'ci_run_failed:other/2.0.0', message: 'CI failed', since: '2026-11-16T10:00:00.000Z',
+      ci: { blocking: true, repo: 'other', version: '2.0.0' } },
+    { kind: 'daemon_start_failed', key: 'daemon_start_failed', message: 'x', since: '2026-11-16T10:00:00.000Z' },
+  ]));
+  const env: NodeJS.ProcessEnv = { ...process.env, ...CREW_ENV, CREW_CONFIG: cfg, HOME: mkdtempSync(join(tmpdir(), 'crew-ci-home-')) };
+  delete env.CREW_API_KEY;
+  const status = spawnSync(process.execPath, [CREW, 'status', '--json'], { env, encoding: 'utf8', timeout: 30_000 });
+  const parsed = JSON.parse(status.stdout) as { attention: Array<{ kind: string; key: string; ci?: Record<string, unknown> }> };
+  const byKey = new Map(parsed.attention.map((i) => [i.key, i]));
+  assert.deepEqual(byKey.get('ci_run_failed:release/1.3.0')?.ci, { url: 'https://ci/1', blocking: false, repo: 'release', version: '1.3.0' }, status.stdout);
+  const noUrl = byKey.get('ci_run_failed:other/2.0.0')?.ci;
+  assert.deepEqual(noUrl, { blocking: true, repo: 'other', version: '2.0.0' });
+  assert.ok(!('url' in (noUrl ?? {})));
+  assert.ok(!('ci' in (byKey.get('daemon_start_failure') ?? byKey.get('daemon_start_failed') ?? {})));
+});

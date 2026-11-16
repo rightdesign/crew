@@ -1883,6 +1883,7 @@ test('a failed run for the release tag stops the wait and is reported, blocking'
   assert.equal(rec.raised.length, 1);
   assert.equal(rec.raised[0]!.kind, 'ci_run_failed');
   assert.equal(rec.raised[0]!.key, 'ci_run_failed:release/1.3.0');
+  assert.deepEqual(rec.raised[0]!.ci, { url: 'https://ci/1', blocking: true, repo: 'release', version: '1.3.0' });
   assert.ok(lines.some((l) => /CI run failed for 1\.3\.0: Publish — job "test", step "Run tests"/.test(l)));
 });
 
@@ -1895,6 +1896,37 @@ test('a failed base-push run while the tag run passed and the release is live is
   assert.equal(out.ci?.failures[0]?.run.name, 'Docs');
   assert.equal(rec.raised.length, 1);
   assert.deepEqual(rec.clearedKinds, [], 'a failure is not cleared by the same release');
+  assert.equal(rec.raised[0]!.ci?.blocking, false);
+  assert.equal(rec.raised[0]!.ci?.url, 'https://ci/1');
+});
+
+test('a failing run without a provider URL leaves ci.url absent', async () => {
+  const { rec } = await ciRelease('1.2.3', fakeCi(() => ({ ok: true, runs: [run({ url: '' })] })), 30);
+  const ci = rec.raised[0]!.ci!;
+  assert.equal('url' in ci, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(rec.raised[0])).ci, { blocking: true, repo: 'release', version: '1.3.0' });
+});
+
+test('blocking flips to false on the same key once released matches, since kept by the store', async () => {
+  let n = 0;
+  const bare = bareRemote();
+  const file = join(mkdtempSync(join(tmpdir(), 'crew-live-')), 'live');
+  writeFileSync(file, '0.0.1\n');
+  const { dir, repo } = projectWithRemote(CI_FILE_RELEASE(file, 10), bare);
+  const rec = attentionRecorder();
+  const provider = fakeCi(() => {
+    if (++n === 2) writeFileSync(file, '1.3.0\n');
+    return { ok: true, runs: [run({ id: '1', state: 'passed' }), run({ id: '2', ref: 'base', state: 'failed' })] };
+  });
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    ci: { provider, host: 'github.com', remote: 'acme/widgets' }, attention: rec.attention,
+  });
+  assert.equal(out.confirmed, true);
+  const flags = rec.raised.map((i) => i.ci?.blocking);
+  assert.equal(flags[0], true);
+  assert.equal(flags[flags.length - 1], false);
+  assert.equal(new Set(rec.raised.map((i) => i.key)).size, 1, 'one item throughout');
 });
 
 test('all runs green: nothing reported, the old items are cleared', async () => {

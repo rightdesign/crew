@@ -41,6 +41,12 @@ export interface ShipAttentionItem {
   lastReapedAt?: string;
   /** Present on `worktree_held` items: the refused worktree, for `crew status --json`. */
   held?: HeldWorktree;
+  /**
+   * Present on `ci_run_failed` items (CREW-3475), so a client need not parse `message`.
+   * `blocking` is true while `released` has not reported the version, false once it has;
+   * `url` is the failing run's URL and absent when the provider gave none.
+   */
+  ci?: { url?: string; blocking: boolean; repo: string; version: string };
 }
 
 /** A worktree the sweep refused to remove (CREW-2051). */

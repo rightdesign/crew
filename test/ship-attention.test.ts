@@ -245,3 +245,12 @@ test('clearShipAttentionKind with a key prefix leaves another repository\'s item
   clearShipAttentionKind(state, 'ci_run_failed', 'ci_run_failed:repoA/');
   assert.deepEqual(state.shipAttention().previous().map((i) => i.key), ['role_parked:qa']);
 });
+
+test('CREW-3475: upsert flips ci.blocking on the same ci_run_failed key and keeps `since`', () => {
+  const key = 'ci_run_failed:release/1.3.0';
+  const raised = upsert([], { kind: 'ci_run_failed', key, message: 'CI failed', since: '2026-11-16T10:00:00.000Z', ci: { url: 'https://ci/1', blocking: true, repo: 'release', version: '1.3.0' } });
+  const flipped = upsert(raised, { kind: 'ci_run_failed', key, message: 'CI failed', since: '2026-11-16T11:00:00.000Z', ci: { url: 'https://ci/1', blocking: false, repo: 'release', version: '1.3.0' } });
+  assert.equal(flipped.length, 1);
+  assert.equal(flipped[0]!.since, '2026-11-16T10:00:00.000Z');
+  assert.equal(flipped[0]!.ci?.blocking, false);
+});

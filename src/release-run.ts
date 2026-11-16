@@ -918,7 +918,7 @@ async function confirm(o: ReleaseRunOptions, expected: string, ci?: CiWatch): Pr
     const r = await hook(o, 'released');
     const live = r?.output.trim().split('\n').filter(Boolean).pop() ?? '';
     const hit = match === 'commit' ? live.startsWith(expected.slice(0, 7)) || expected.startsWith(live.slice(0, 7)) : live === expected;
-    if (ci) await sweepCi(o, ci);
+    if (ci) await sweepCi(o, ci, Boolean(live && hit));
     if (live && hit) { o.emit.emit(`confirmed live: ${live.slice(0, 12)}`); return true; }
     // The tag's own run failed and the release is not live: it will not become
     // live by waiting, so stop treating it as slow.
@@ -960,7 +960,7 @@ function newCiWatch(o: ReleaseRunOptions, sha: string, tag: string | undefined, 
 const ciKeyPrefix = (o: ReleaseRunOptions): string => `ci_run_failed:${o.scope ?? 'release'}/`;
 const ciKey = (o: ReleaseRunOptions, version: string): string => `${ciKeyPrefix(o)}${version}`;
 
-async function sweepCi(o: ReleaseRunOptions, w: CiWatch): Promise<void> {
+async function sweepCi(o: ReleaseRunOptions, w: CiWatch, live: boolean): Promise<void> {
   if (w.off) return;
   const got = await w.provider.runs(w.q);
   if (!got.ok) {
@@ -984,11 +984,13 @@ async function sweepCi(o: ReleaseRunOptions, w: CiWatch): Promise<void> {
   }
   w.failures = w.failures.filter((f) => failed.some((r) => r.id === f.run.id));
   if (o.attention) {
+    const url = w.failures.find((f) => f.run.url)?.run.url;
     await o.attention.raise({
       kind: 'ci_run_failed',
       key: ciKey(o, w.version),
       message: `${o.scope ?? 'release'}: CI failed for ${w.version} — ${w.failures.map(describeCiFailure).join('; ')}`,
       since: new Date().toISOString(),
+      ci: { ...(url ? { url } : {}), blocking: !live, repo: o.scope ?? 'release', version: w.version },
     });
   }
 }
