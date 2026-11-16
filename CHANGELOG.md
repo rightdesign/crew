@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.158.1] — 2026-11-16
+
+- CREW-3469 The docs site builds again after an unescaped placeholder in CONTRACT.md broke it, and the test suite now builds the docs so the same mistake fails on the branch.
+
 ## [0.158.0] — 2026-11-16
 
 - CREW-3453 Lanes keep seeing actionable tickets and hold answers on boards with more than 500 open tickets; the poll pages its ticket and comment reads and fetches only what a lane can act on.
