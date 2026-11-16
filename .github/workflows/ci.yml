@@ -1,0 +1,27 @@
+# Runs the suite on Linux for every ticket branch push, so a test that only
+# passes on macOS (CREW-3468: the connect tests assumed the key store refuses
+# the key) fails on the branch, before the release phase merges and tags it.
+# The publish workflow runs the same commands, but only after the tag exists.
+name: CI
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test

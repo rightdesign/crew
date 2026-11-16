@@ -156,25 +156,66 @@ async function mockTracker(o: { projects: string[]; role?: string; holds?: Array
 
 interface Run { code: number | null; events: Array<Record<string, any>>; stdout: string; stderr: string; dir: string }
 
+/**
+ * How the child's key store behaves (CREW-3468). The store a connect writes to depends on the host:
+ * macOS shells out to `security`, Linux to `secret-tool` (when a session bus looks reachable, else
+ * crew uses its own file store). A test that leaves that to the platform passes on one and fails on
+ * the other, so every run forces an outcome with stub binaries for BOTH tools and a session bus
+ * address that makes the Linux one count as reachable:
+ *   refuses: every read finds nothing and every write fails, so connect falls back to a key file;
+ *   accepts: a flat file under HOME holds what was written and hands it back.
+ */
+type KeyStore = 'refuses' | 'accepts';
+
+function writeStoreStubs(stubs: string, dir: string, store: KeyStore): void {
+  const stash = join(dir, 'fake-store.json');
+  const files: Record<string, string> = store === 'refuses'
+    ? {
+      security: '#!/bin/sh\nexit 44\n',
+      // `store` drains stdin first: a client writing the session JSON to a store that exited without
+      // reading gets EPIPE, which kills the child on Linux (the real secret-tool reads it). Other
+      // subcommands send nothing and never close stdin, so draining there would hang.
+      'secret-tool': '#!/bin/sh\n[ "$1" = store ] && cat >/dev/null\necho "Cannot autolaunch D-Bus" >&2\nexit 1\n',
+    }
+    : {
+      security: `#!/bin/sh
+case "$1" in
+  find-generic-password) [ -f "${stash}" ] || exit 44; cat "${stash}" ;;
+  add-generic-password) while [ $# -gt 0 ]; do [ "$1" = -w ] && { printf '%s' "$2" > "${stash}"; exit 0; }; shift; done; exit 1 ;;
+  delete-generic-password) rm -f "${stash}" ;;
+esac
+`,
+      'secret-tool': `#!/bin/sh
+case "$1" in
+  lookup) [ -f "${stash}" ] || exit 1; cat "${stash}" ;;
+  store) cat > "${stash}" ;;
+  clear) rm -f "${stash}" ;;
+esac
+`,
+    };
+  for (const [name, body] of Object.entries(files)) {
+    writeFileSync(join(stubs, name), body);
+    chmodSync(join(stubs, name), 0o755);
+  }
+}
+
 /** `crew connect` as a child process with no TTY and an empty HOME, so no config exists. */
-async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew-json-')), pathEnv = process.env.PATH ?? ''): Promise<Run> {
+async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew-json-')), pathEnv = process.env.PATH ?? '', store: KeyStore = 'refuses'): Promise<Run> {
   const fakeClaude = join(dir, 'claude');
   writeFileSync(fakeClaude, '#!/bin/sh\nexit 1\n');
   chmodSync(fakeClaude, 0o755);
-  // A stub `security` first on PATH (CREW-2524). @tablation/client shells out to the real macOS
-  // `security` to store the key, with no timeout; against a throwaway HOME on a Mac with a
-  // locked or prompting login keychain it blocks forever at 0% CPU. "No keychain" is what
-  // these tests assume, so make that true: item-not-found on read, failure on write. It sits
-  // in its own directory so it does not put the fake `claude` on PATH.
+  // Stub key-store binaries first on PATH (CREW-2524, CREW-3468). @tablation/client shells out to
+  // the real macOS `security` with no timeout; against a throwaway HOME on a Mac with a locked or
+  // prompting login keychain it blocks forever at 0% CPU. They sit in their own directory so they
+  // do not put the fake `claude` on PATH.
   const stubs = join(dir, 'stubs');
   mkdirSync(stubs, { recursive: true });
-  writeFileSync(join(stubs, 'security'), '#!/bin/sh\nexit 44\n');
-  chmodSync(join(stubs, 'security'), 0o755);
+  writeStoreStubs(stubs, dir, store);
   // Likewise `docker` (CREW-2544): a wedged Docker Desktop daemon blocks `docker info`; tests assume none.
   writeFileSync(join(stubs, 'docker'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(stubs, 'docker'), 0o755);
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'cli.ts'), 'connect', ...args.map((a) => a.replace('$CLAUDE', fakeClaude))], {
-    env: { PATH: `${stubs}:${pathEnv}`, HOME: dir, CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
+    env: { PATH: `${stubs}:${pathEnv}`, HOME: dir, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent-crew-test-bus', CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = ''; let stderr = '';
@@ -218,6 +259,27 @@ test('a full first-run connect with flags and --json, no TTY: events in order, c
     assert.match(readFileSync(yaml, 'utf8'), /route: ws\/issues/);
     // The key had no keychain to live in, so it went to a key file the config names.
     assert.match(readFileSync(yaml, 'utf8'), /apiKeyFile/);
+    assert.ok(r.events.some((e) => e.event === 'warning' || /could not store the key/.test(r.stderr)), 'a refused store is warned about');
+  } finally { await m.close(); }
+});
+
+test('connect with a key store that accepts the key: crew.yaml names no key file, and a later command resolves the key (CREW-3468)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    const args = ['ws', '--key', 'k1', '--base-url', m.url, '--json', '--ship-name', 'test-ship', '--agent-bin', '$CLAUDE', '--no-mcp', '--dir', '/tmp/crew-json-checkout'];
+    const r = await runConnect(args, dir, undefined, 'accepts');
+    assert.equal(r.code, 0, r.stderr);
+    const yaml = readFileSync(join(dir, 'crew.yaml'), 'utf8');
+    assert.doesNotMatch(yaml, /apiKeyFile|apiKeyVar/);
+    // The key really is in the store, not merely absent from the file.
+    const stash = join(dir, 'fake-store.json');
+    assert.ok(existsSync(stash), 'the stub store received the key');
+    assert.match(readFileSync(stash, 'utf8'), /"apiKey":"k1"/);
+    const later = await runConnect(['--base-url', m.url, '--json', '--no-wizard', '--dry-run', '--no-mcp'], dir, undefined, 'accepts');
+    assert.equal(later.code, 0, later.stderr);
+    assert.equal(later.events[0]!.event, 'signed_in');
+    assert.equal(later.events[0]!.session, 'config');
   } finally { await m.close(); }
 });
 

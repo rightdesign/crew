@@ -136,7 +136,7 @@ import {
   hostFromUrl, loginWithDeviceCode, DeviceLoginError,
   type SessionStore,
 } from '@tablation/client';
-import { getSessionStore, describeKeyStore } from './secret-store.ts';
+import { getSessionStore, describeKeyStore, describeSecretStore } from './secret-store.ts';
 import { mintMissingSeatKeys, describeMintOutcome, type MintOutcome, revokeSeatKeys, describeRevokeOutcome, canMintAgentKeys, withFoundSeats, resolveSeatKey, resolveReleaseKey, SEAT_KEY_ROLES } from './seat-keys.ts';
 import { checkCapabilities, describeCapability, missLine } from './capability-check.ts';
 import { routeAvatarFailures } from './persona-avatars.ts';
@@ -5012,11 +5012,15 @@ switch (command) {
       }
       // CREW-3451: a key handed in by flag or environment goes into the key store
       // the same way a device sign-in's does, so the route needs no key lines.
+      const storeLabel = (): string => {
+        const r = describeSecretStore();
+        return r.kind === 'file' && r.dir ? `the key store under ${r.dir}` : 'the OS keychain';
+      };
       const keyFromFlag = givenKeySource === 'flag' && !mintedFromDevice && !!apiKey;
       if (keyFromFlag && !keychainBacked && store) {
         if (dryRun) {
           keychainBacked = true;
-          routineLine(`(dry run) would store the key in the OS keychain for ${hostFromUrl(baseUrl)}/${found.workspaceSlug}`);
+          routineLine(`(dry run) would store the key in ${storeLabel()} for ${hostFromUrl(baseUrl)}/${found.workspaceSlug}`);
         } else {
           try {
             await store.set(hostFromUrl(baseUrl), found.workspaceSlug, {
@@ -5025,9 +5029,9 @@ switch (command) {
             keychainBacked = true;
             sessionAddress = found.workspaceSlug;
             rememberSession(cfg.ship.stateDir, hostFromUrl(baseUrl), found.workspaceSlug);
-            routineLine(`API key stored in the OS keychain for ${hostFromUrl(baseUrl)}/${found.workspaceSlug}.`);
+            routineLine(`API key stored in ${storeLabel()} for ${hostFromUrl(baseUrl)}/${found.workspaceSlug}.`);
           } catch (e) {
-            emit.warn(withFix(`could not store the key in the OS keychain — ${(e as Error).message} — falling back to a key file`, '`crew doctor`'));
+            emit.warn(withFix(`could not store the key in ${storeLabel()} — ${(e as Error).message} — falling back to a key file`, '`crew doctor`'));
           }
         }
       }
