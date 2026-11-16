@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.159.0] — 2026-11-16
+
+- CREW-3452 A member key that cannot sync personas and skills is reported as information, not a missing capability, unless the workspace has no persona rows.
+- CREW-3470 The release phase checks the CI runs for the commit and tag it pushed, and reports a failed run instead of waiting out the timeout
+
 ## [0.158.3] — 2026-11-16
 
 - CREW-3446 A help flag after a literal -- is passed through, not treated as a help request.
