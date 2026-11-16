@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { helpRequest } from '../src/argv.ts';
+import { helpRequest, commandHelpRequest } from '../src/argv.ts';
 import { CREW, CREW_ENV } from './helpers/crew-bin.ts';
 
 // CI has no crew.yaml; point the config search at a file that does not exist so these
@@ -55,4 +55,33 @@ test('KNOWN_COMMANDS lists every command the dispatch handles (CREW-2492)', () =
   const cases = [...dispatch.matchAll(/^  case '([^']+)':/gm)].map((m) => m[1]!);
   assert.ok(cases.length > 20);
   for (const c of cases) assert.ok(set.has(c), `${c} missing from KNOWN_COMMANDS`);
+});
+
+test('commandHelpRequest finds a help flag after the command, not as a flag value (CREW-3446)', () => {
+  assert.equal(commandHelpRequest(['poll', '--help']), true);
+  assert.equal(commandHelpRequest(['worktree', '-h']), true);
+  assert.equal(commandHelpRequest(['run', '--role', 'dev', '--help']), true);
+  assert.equal(commandHelpRequest(['run', '--role', '--help']), false);
+  assert.equal(commandHelpRequest(['poll']), false);
+  assert.equal(commandHelpRequest(['run', '--', '--help']), false);
+});
+
+test('crew <command> --help and -h print usage, exit 0, and write no event (CREW-3446)', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'src', 'cli.ts'), 'utf8');
+  const set = [...src.match(/const KNOWN_COMMANDS = new Set\(\[([^\]]*)\]/)![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  const state = mkdtempSync(join(tmpdir(), 'crew-helpstate-'));
+  for (const c of set) {
+    for (const flag of ['--help', '-h']) {
+      const r = spawnSync(CREW, [c, flag], { encoding: 'utf8', env: { ...process.env, ...CREW_ENV, CREW_CONFIG: NO_CONFIG, CREW_STATE_DIR: state } });
+      assert.equal(r.status, 0, `${c} ${flag}`);
+      assert.match(r.stdout, /crew poll/, `${c} ${flag}`);
+      assert.equal(r.stderr, '', `${c} ${flag}`);
+    }
+  }
+  assert.equal(existsSync(join(state, 'events.jsonl')), false);
+});
+
+test('a command with a missing argument and no help flag still fails (CREW-3446)', () => {
+  const r = run(['worktree']);
+  assert.notEqual(r.status, 0);
 });

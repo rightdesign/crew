@@ -101,8 +101,23 @@ export function versionRequest(argv: readonly string[]): { json: boolean } | nul
 
 /**
  * `crew --help` / `-h` / `help` (CREW-2410): a requested usage, which succeeds.
- * Only the first argument counts, so `crew poll --help` is not a help request.
+ * Only the first argument counts here; `crew poll --help` is `commandHelpRequest` (CREW-3446).
  */
 export function helpRequest(argv: readonly string[]): boolean {
   return argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help';
+}
+
+/**
+ * `crew <command> --help` / `-h` (CREW-3446): a help flag anywhere after the
+ * command asks for usage instead of running the command. A value-taking flag's
+ * value is skipped, so `--name --help` is still a name. Anything after a literal `--` is not a help request.
+ */
+export function commandHelpRequest(argv: readonly string[]): boolean {
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i] as string;
+    if (a === '--') return false;
+    if (a === '--help' || a === '-h') return true;
+    if (a.startsWith('--') && !a.includes('=') && VALUE_FLAGS.has(a.slice(2))) i++;
+  }
+  return false;
 }

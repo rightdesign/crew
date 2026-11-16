@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { hostname, homedir, userInfo } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parse as parseYaml } from 'yaml';
-import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs } from './argv.ts';
+import { pickWorktreeRoute, positionalArgs, helpRequest, versionRequest, splitConnectArg, splitWorktreeArgs, commandHelpRequest } from './argv.ts';
 import {
   loadConfig, findConfigFile, findRoute, routeForDir, locateDir, resolveApiKey, hydrateApiKeys, reposOf, repoIdForName, shipWorktreePrefixFor,
   ticketsByRepo, configuredMembers, crewVersion, routeSlug,
@@ -588,6 +588,9 @@ const KNOWN_COMMANDS = new Set([
   'sync', 'unassign', 'footprint', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
+// CREW-3446: `crew <command> --help` is a usage request, answered before the command
+// validates its arguments (which would `die` into the event stream) or does any work.
+if (commandHelpRequest(argv)) usage(undefined, true);
 // CREW-2866: the shell function needs no config (it is installed from an rc
 // file, before or without a ship), so it is answered before one is loaded.
 if (command === 'shell-init') {
