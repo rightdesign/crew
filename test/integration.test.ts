@@ -430,3 +430,20 @@ test('CREW-1255: a real cycle marks an epic done, reopens one, and counts ticket
     assert.equal(t.writes.filter((w) => w.model === EPICS).length, 2);
   } finally { await t.stop(); }
 });
+
+test('CREW-3453: the dev lane starts its ticket though 1100 newer `new` tickets fill the first pages', async () => {
+  const t = new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [
+      ...Array.from({ length: 1100 }, (_, i) => ticket({ id: `imp${i}`, issue_id: `ISSUE-${1000 + i}`, status: 'new' })),
+      ticket({ id: 'real', issue_id: 'ISSUE-1', status: 'accepted' }),
+    ]);
+  t.pageCap = 500;
+  await t.start();
+  try {
+    await ship(t).run('run', 'test/proj', '--role', 'dev');
+    const claim = t.writes.find((w) => w.model === MODELS.issues && w.id === 'real');
+    assert.equal(claim?.body.status, 'in_progress');
+    assert.equal(claim?.body.assignee_id, SEATS.dev);
+  } finally { await t.stop(); }
+});

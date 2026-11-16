@@ -8,7 +8,7 @@
 
 import type { Route, RoleName, Ship } from './config.ts';
 import { configuredMembers, routeSlug } from './config.ts';
-import { Tracker, displayKey, ticketBranchContext, type Ticket, type Comment, type ShipRow, type StatusChange } from './tracker.ts';
+import { Tracker, displayKey, type TicketScope, ticketBranchContext, type Ticket, type Comment, type ShipRow, type StatusChange } from './tracker.ts';
 import { buildRoster, holdIds, rosterMarkdown, type Roster } from './roster.ts';
 import {
   blockerInfoMap, missingBlockerIds, computeBlockedIds, planSweep,
@@ -16,7 +16,7 @@ import {
   type BlockerInfo, type SweepStep,
   unroutableChanges,
 } from './blocked.ts';
-import { agentAssigneeIds, skippedByMode, withinWorkMode, type WorkModes } from './work-mode.ts';
+import { agentAssigneeIds, withinWorkMode, type WorkMode, type WorkModes } from './work-mode.ts';
 import {
   selectRole, sliceFor, triageSlice, actionableSummary, type Selection, type ActionableSummary, type SelectionInput,
 } from './select.ts';
@@ -31,7 +31,7 @@ import { planFootprintsFor, readFootprintEvents, type FootprintEvents } from './
 import { footprintDigestSection, footprintOf, type FootprintPlan } from './footprint.ts';
 import { checkCrewFloor } from './crew-floor.ts';
 import { diskFullStop } from './sandbox-hygiene.ts';
-import { openShipAttention, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
+import { openShipAttention, clearShipAttention, raiseShipAttention, listTruncatedItem, listTruncatedKey, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -120,15 +120,25 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
       return fallback;
     }
   };
-  const [tickets, comments, crewRows, epicRows, ships, projectModes, stalledEvents] = await Promise.all([
-    tracker.openTickets(),
-    tracker.comments(200),
+  // CREW-3453: the ticket query is built from the work modes and the Crew rows,
+  // so those are read first (both are small) and the tickets after.
+  const [crewRows, projectModes] = await Promise.all([
     tracker.crewRows(),
+    optional('project work modes', tracker.projectWorkModes(), new Map()),
+  ]);
+  const scopeHolds = new Set(holdIds(buildRoster(configuredMembers(route), crewRows)));
+  const scope: TicketScope = {
+    modes: projectModes,
+    agentAssignees: agentAssigneeIds(crewRows, (id) => scopeHolds.has(id)),
+    triageSeat: route.resolved?.seats.triage,
+  };
+  const [tickets, epicRows, ships, stalledEvents] = await Promise.all([
+    tracker.openTickets(scope),
     optional('epics', tracker.epicRows(), []),
     optional('ships', tracker.shipRows(), []),
-    optional('project work modes', tracker.projectWorkModes(), new Map()),
     tracker.events('stalled'),
   ]);
+  const comments = await tracker.commentsForTickets(tickets.map((t) => t.id));
   // CREW-1761: the runner's own directions live in the event log, not Comments.
   const directionEvents = (await Promise.all([...DIRECTION_EVENT_TYPES, ...STATUS_EVENT_TYPES, 'pushed'].map((t) => tracker.events(t)))).flat();
   const statusChanges = await tracker.statusChanges();
@@ -175,6 +185,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
 
   const extra = await tracker.ticketsByIds(missingBlockerIds(tickets));
   const info = blockerInfoMap(tickets, extra);
+  await reportTruncated(tracker, route.route, state, emit);
   const blocked = computeBlockedIds(tickets, info);
   // CREW-3387: tickets held back because they would change a file an active
   // ticket changes. Parked like a dependency-blocked ticket, so they join
@@ -196,7 +207,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const sweep = planSweep(tickets, info, blocked, workModes, footprintPlan.waits);
   const holdReleases = planHoldReleases(tickets, tracker.contract);
   const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes, stalledEvents);
-  const skipped = skippedByMode(tickets, workModes);
+  const skipped = await skippedCounts(tracker, tickets, projectModes);
   if (skipped.manual || skipped.hybrid) {
     emit.note(`sweeps skipped ${skipped.manual} manual/project-less and ${skipped.hybrid} unassigned hybrid ticket(s)`, {
       data: { sweepSkipped: skipped },
@@ -513,4 +524,41 @@ export function writeDigest(
 /** The roster block the winning seat is handed. */
 export function rosterFor(d: CycleDecision, route: Route, role: RoleName): string {
   return rosterMarkdown(d.roster, route.resolved!.seats[role] ?? null);
+}
+
+/**
+ * CREW-3453: the sweep summary's skipped-by-mode counts, from the count endpoint
+ * (the narrowed ticket query no longer downloads those tickets). A count that
+ * cannot be read reads as zero, which omits the note.
+ */
+async function skippedCounts(
+  tracker: Tracker, tickets: Ticket[], modes: Map<string, WorkMode>,
+): Promise<{ manual: number; hybrid: number }> {
+  if (modes.size === 0) return { manual: 0, hybrid: 0 };
+  const c = tracker.contract;
+  const idsOf = (m: WorkMode): string[] => [...modes].filter(([, v]) => v === m).map(([id]) => id);
+  const manualIds = idsOf('manual');
+  const hybridIds = idsOf('hybrid');
+  const col = c.columns.slice;
+  const [none, manual, hybrid] = await Promise.all([
+    tracker.countOpenTickets([{ columnName: col, operator: 'IS_NULL' }]),
+    manualIds.length ? tracker.countOpenTickets([{ columnName: col, operator: 'IN', value: manualIds }]) : Promise.resolve(0),
+    hybridIds.length ? tracker.countOpenTickets([{ columnName: col, operator: 'IN', value: hybridIds }]) : Promise.resolve(0),
+  ]);
+  const hybridFetched = tickets.filter((t) => t.project_id && hybridIds.includes(t.project_id)).length;
+  return { manual: (none ?? 0) + (manual ?? 0), hybrid: Math.max(0, (hybrid ?? 0) - hybridFetched) };
+}
+
+/** Raises an attention item (and announces it) for each list the tracker cut off this cycle; clears the ones that no longer are. */
+export async function reportTruncated(tracker: Tracker, route: string, state: State, emit: Emitter): Promise<void> {
+  const prefix = listTruncatedKey(route, '');
+  const live = new Set<string>();
+  for (const [what, limit] of tracker.truncated) {
+    const item = listTruncatedItem(route, what, limit);
+    live.add(item.key);
+    await raiseShipAttention({ state, emit }, item);
+  }
+  for (const i of openShipAttention(state)) {
+    if (i.kind === 'list_truncated' && i.key.startsWith(prefix) && !live.has(i.key)) clearShipAttention(state, i.key);
+  }
 }

@@ -24,6 +24,10 @@ export class FakeTracker {
   /** Every event posted to a ticket's event log (CREW-1574), in order. */
   readonly events: Array<{ model: string; recordId: string; body: Record<string, unknown> }> = [];
   port = 0;
+  /** Like the real route's cap on a page (`MAX_LIST_LIMIT`); a request for more gets this many. */
+  pageCap = Infinity;
+  /** Every `GET .../records` the crew made, as `{ model, limit, offset, filters }`. */
+  readonly listCalls: Array<{ model: string; limit?: number; offset?: number; filters?: string }> = [];
   /**
    * Fired once, right after the NEXT `GET .../records` for `model` is
    * answered — for simulating a race (ISSUE-395): another ship's write
@@ -95,12 +99,19 @@ export class FakeTracker {
             if (n.operator === 'IN') return (n.value as unknown[]).includes(v);
             if (n.operator === 'NOT_IN') return !(n.value as unknown[]).includes(v);
             if (n.operator === 'EQ') return v === n.value;
+            if (n.operator === 'IS_NULL') return v === null || v === undefined;
+            if (n.operator === 'IS_NOT_NULL') return v !== null && v !== undefined;
             return true;
           };
           const parsedFilters = JSON.parse(raw) as Node | Node[];
           const tree: Node = Array.isArray(parsedFilters) ? { combinator: 'AND', conditions: parsedFilters } : parsedFilters;
           out = out.filter((r) => matches(r, tree));
         }
+        if (parts[4] === 'count') return send(200, { count: out.length });
+        const limit = url.searchParams.get('limit');
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        this.listCalls.push({ model, ...(limit ? { limit: Number(limit) } : {}), offset, ...(raw ? { filters: raw } : {}) });
+        if (limit || offset) out = out.slice(offset, offset + Math.min(limit ? Number(limit) : Infinity, this.pageCap));
         send(200, out);
         const hook = this.raceHooks.get(model);
         if (hook) { this.raceHooks.delete(model); hook(); }

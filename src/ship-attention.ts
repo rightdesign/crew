@@ -25,7 +25,7 @@ import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefre
 import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'seat_missing';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -194,6 +194,16 @@ export function agentLogRefusedItem(route: string, role: string, status: number,
   return {
     kind: 'agent_log_refused', key: agentLogRefusedKey(route), since: nowIso,
     message: `${route}: the tracker refused ${what} (${status}) for the ${role} seat — runs and ticket spend are not being recorded; update crew if a newer version exists, otherwise report this`,
+  };
+}
+
+/** CREW-3453: a tracker list a decision depends on came back full and could not be read past. */
+export const listTruncatedKey = (route: string, what: string): string => `list_truncated:${route}:${what}`;
+
+export function listTruncatedItem(route: string, what: string, limit: number, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'list_truncated', key: listTruncatedKey(route, what), since: nowIso,
+    message: `${route}: the ${what} list came back full at ${limit} rows and may be missing more — decisions made from it can skip tickets; report this`,
   };
 }
 

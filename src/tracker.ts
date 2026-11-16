@@ -232,11 +232,77 @@ export interface ShipRow {
  */
 export const RESOLVED_STATUSES = new Set(DEFAULT_CONTRACT.statuses.resolved);
 
-type Filter = { columnName: string; operator: string; value: unknown };
+export type Filter = { columnName: string; operator: string; value?: unknown };
 const encodeFilters = (f: Filter[]): string => JSON.stringify(f);
 
 type Sort = { columnName: string; direction: 'asc' | 'desc' };
 const encodeSort = (s: Sort[]): string => JSON.stringify(s);
+
+/** The server caps a page at 1000; 500 keeps a response small. */
+const LIST_PAGE_SIZE = 500;
+/** A backstop on a runaway list (a million rows), after which the list is reported as cut off. */
+const LIST_MAX_PAGES = 200;
+const LIST_SORT = encodeSort([{ columnName: 'id', direction: 'asc' }]);
+type RecordListParams = NonNullable<Parameters<TablationClient['records']['list']>[1]>;
+
+/**
+ * What the poll asks the tracker for (CREW-3453): the work modes, the Crew rows
+ * that count as agents, and whether this ship crews a triage seat.
+ */
+export interface TicketScope {
+  modes: Map<string, WorkMode>;
+  agentAssignees: Set<string>;
+  triageSeat?: string;
+}
+
+/** Statuses a lane acts on; every other open status is a ticket still awaiting acceptance. */
+export function actionableStatuses(c: Contract): string[] {
+  const s = c.statuses;
+  const named = [s.approved, s.parked, s.building, s.handoff, s.verifying, s.verified, s.needsHuman, ...(s.reviewing ? [s.reviewing] : [])];
+  return [...new Set(named.filter((x) => c.statuses.open.includes(x)))];
+}
+
+/**
+ * The fixed, small set of requests that covers what a lane can act on, from
+ * the work modes (CREW-3453):
+ *
+ * - automatic projects (project set and not a manual or hybrid id, so an
+ *   unknown project stays automatic as `modeOf` has it): the actionable
+ *   statuses; plus the pre-acceptance ones assigned to the triage seat when
+ *   this ship has one;
+ * - hybrid projects: the actionable statuses assigned to a Crew row linked to an
+ *   agent, and verified tickets whoever holds them (a release treats them like
+ *   an automatic one);
+ * - manual projects and tickets with no project: never.
+ *
+ * The in-memory work-mode checks in select.ts remain the second line.
+ */
+export function scopedTicketQueries(c: Contract, scope: TicketScope): Filter[][] {
+  const status = c.columns.status;
+  const project = c.columns.slice;
+  const assignee = c.columns.assignee;
+  const manual = [...scope.modes].filter(([, m]) => m === 'manual').map(([id]) => id);
+  const hybrid = [...scope.modes].filter(([, m]) => m === 'hybrid').map(([id]) => id);
+  const actionable = actionableStatuses(c);
+  const pre = c.statuses.open.filter((x) => !actionable.includes(x));
+  const automatic: Filter[] = [{ columnName: project, operator: 'IS_NOT_NULL' }];
+  if (manual.length + hybrid.length > 0) automatic.push({ columnName: project, operator: 'NOT_IN', value: [...manual, ...hybrid] });
+  const out: Filter[][] = [[...automatic, { columnName: status, operator: 'IN', value: actionable }]];
+  if (scope.triageSeat && pre.length > 0) {
+    out.push([...automatic, { columnName: status, operator: 'IN', value: pre }, { columnName: assignee, operator: 'EQ', value: scope.triageSeat }]);
+  }
+  if (hybrid.length > 0) {
+    if (scope.agentAssignees.size > 0) {
+      out.push([
+        { columnName: project, operator: 'IN', value: hybrid },
+        { columnName: status, operator: 'IN', value: actionable },
+        { columnName: assignee, operator: 'IN', value: [...scope.agentAssignees] },
+      ]);
+    }
+    out.push([{ columnName: project, operator: 'IN', value: hybrid }, { columnName: status, operator: 'EQ', value: c.statuses.verified }]);
+  }
+  return out;
+}
 
 /**
  * One tracker, for one route. A ship holds several of these — one per
@@ -347,25 +413,85 @@ export class Tracker {
   }
 
   /**
-   * Every non-terminal ticket for this route's area, in one call.
+   * Every non-terminal ticket for this route's area, paged to the end
+   * (CREW-3453: one `limit: 500` request silently dropped everything past the
+   * newest 500 once a bulk import filled the board with `new` tickets).
    *
    * The area filter is what keeps two routes on one tracker out of each
    * other's queue: a ship working `synthesis` and `tablation-js` from the same
    * Issues project must not have either seat pick up the other's tickets. A
    * route with no area sees everything, which is right for a tracker
    * nobody has sliced yet.
+   *
+   * With a `scope` (the poll's), only what a lane can act on is asked for; see
+   * `TicketScope`. Without one, every open ticket comes back, which is what the
+   * operator-facing views (`status`, `inbox`, `doctor`) want.
    */
-  async openTickets(): Promise<Ticket[]> {
+  async openTickets(scope?: TicketScope): Promise<Ticket[]> {
     const c = this.contract;
-    const filters: Filter[] = [
-      { columnName: c.columns.status, operator: 'IN', value: c.statuses.open },
-    ];
+    const base: Filter[] = [];
     const areaId = this.route.resolved?.areaId;
-    if (areaId) filters.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
-    return this.client.records.list<Ticket>(this.models.issues, {
-      filters: encodeFilters(filters),
-      limit: 500,
-    });
+    if (areaId) base.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
+    const queries = scope && scope.modes.size > 0 ? scopedTicketQueries(c, scope) : [[{ columnName: c.columns.status, operator: 'IN', value: c.statuses.open } as Filter]];
+    const seen = new Map<string, Ticket>();
+    for (const q of queries) {
+      for (const t of await this.listAll<Ticket>(this.models.issues, 'open tickets', encodeFilters([...base, ...q]))) seen.set(t.id, t);
+    }
+    return [...seen.values()];
+  }
+
+  /**
+   * How many open tickets match `extra` (a `crew status` number or the sweep
+   * summary's skipped-by-mode count), from the count endpoint rather than
+   * downloaded rows. `undefined` when the count cannot be read.
+   */
+  async countOpenTickets(extra: Filter[]): Promise<number | undefined> {
+    const c = this.contract;
+    const conds: Filter[] = [{ columnName: c.columns.status, operator: 'IN', value: c.statuses.open }, ...extra];
+    const areaId = this.route.resolved?.areaId;
+    if (areaId) conds.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
+    try {
+      const res = await this.eventsFetch('GET', `/records/count?filters=${encodeURIComponent(encodeFilters(conds))}`);
+      if (!res.ok) return undefined;
+      const body = (await res.json()) as { count?: unknown };
+      return typeof body.count === 'number' ? body.count : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Lists the tracker has handed back full and this process had no way to
+   * read past, by what they were (CREW-3453). A decision made from a cut-off
+   * list is wrong without saying so, so every reader that can be cut off calls
+   * `noteTruncated`, and the poll turns what is here into an attention item.
+   */
+  readonly truncated = new Map<string, number>();
+
+  /** The page backstop `listAll` stops at; a variable only so a test can reach it without a hundred thousand rows. */
+  static maxPages = LIST_MAX_PAGES;
+
+  /** Records that the list `what` hit `limit` rows and may be missing more. */
+  noteTruncated(what: string, limit: number): void {
+    this.truncated.set(what, limit);
+  }
+
+  /**
+   * Every row of `model` matching `filters`, paged until a short page. Sorted by
+   * `id` so the offset windows neither skip nor repeat a row while the table
+   * changes under the read.
+   */
+  async listAll<T>(model: string, what: string, filters?: string): Promise<T[]> {
+    const out: T[] = [];
+    for (let page = 0; page < Tracker.maxPages; page++) {
+      const rows = await this.client.records.list<T>(model, {
+        ...(filters ? { filters } : {}), limit: LIST_PAGE_SIZE, offset: page * LIST_PAGE_SIZE, sort: LIST_SORT,
+      } as RecordListParams);
+      out.push(...rows);
+      if (rows.length < LIST_PAGE_SIZE) return out;
+    }
+    this.noteTruncated(what, LIST_PAGE_SIZE * Tracker.maxPages);
+    return out;
   }
 
   /**
@@ -374,10 +500,10 @@ export class Tracker {
    */
   async handedOffSince(since: string, exceptId: string): Promise<Ticket[]> {
     const c = this.contract;
-    const rows = await this.client.records.list<Ticket>(this.models.issues, {
-      filters: encodeFilters([{ columnName: c.columns.status, operator: 'EQ', value: c.statuses.handoff }]),
-      limit: 100,
-    });
+    const rows = await this.listAll<Ticket>(
+      this.models.issues, 'handed-off tickets',
+      encodeFilters([{ columnName: c.columns.status, operator: 'EQ', value: c.statuses.handoff }]),
+    );
     const from = Date.parse(since);
     return rows.filter((t) => t.id !== exceptId && Date.parse(t.updated_at) >= from);
   }
@@ -426,24 +552,45 @@ export class Tracker {
    * from the open set. Bounded to the ids actually referenced.
    */
   async ticketsByIds(ids: string[]): Promise<Ticket[]> {
-    if (ids.length === 0) return [];
-    return this.client.records.list<Ticket>(this.models.issues, {
-      filters: encodeFilters([{ columnName: 'id', operator: 'IN', value: ids }]),
-      limit: 500,
-    });
+    return this.ticketsByIn('id', ids);
   }
 
   /** Tickets by `issue_id` (CREW-3323: resolving a run's key to its display tag). */
   async ticketsByKeys(keys: string[]): Promise<Ticket[]> {
-    if (keys.length === 0) return [];
-    return this.client.records.list<Ticket>(this.models.issues, {
-      filters: encodeFilters([{ columnName: this.contract.columns.key, operator: 'IN', value: keys }]),
-      limit: 500,
-    });
+    return this.ticketsByIn(this.contract.columns.key, keys);
+  }
+
+  /** IN lists go in the URL, so each request carries at most 100 values; every request is paged. */
+  private async ticketsByIn(column: string, values: string[]): Promise<Ticket[]> {
+    const out: Ticket[] = [];
+    for (let i = 0; i < values.length; i += 100) {
+      out.push(...await this.listAll<Ticket>(
+        this.models.issues, 'tickets by lookup',
+        encodeFilters([{ columnName: column, operator: 'IN', value: values.slice(i, i + 100) }]),
+      ));
+    }
+    return out;
   }
 
   async ticket(id: string): Promise<Ticket> {
     return this.client.records.get<Ticket>(this.models.issues, id);
+  }
+
+  /**
+   * Every comment on the given tickets, paged (CREW-3453). The poll feeds hold
+   * answers, the new-comment signal and the digest from this, so a fixed window
+   * of the newest rows would drop an older ticket's answer once the board's
+   * comments outgrow it. IN lists carry at most 100 ids per request.
+   */
+  async commentsForTickets(ticketIds: string[]): Promise<Comment[]> {
+    const out: Comment[] = [];
+    for (let i = 0; i < ticketIds.length; i += 100) {
+      out.push(...await this.listAll<Comment>(
+        this.models.comments, 'comments',
+        encodeFilters([{ columnName: this.contract.comments.parent, operator: 'IN', value: ticketIds.slice(i, i + 100) }]),
+      ));
+    }
+    return out;
   }
 
   async comments(limit = 500): Promise<Comment[]> {
@@ -461,7 +608,7 @@ export class Tracker {
   }
 
   async crewRows(): Promise<CrewRow[]> {
-    return this.client.records.list<CrewRow>(this.models.crew, { limit: 200 });
+    return this.listAll<CrewRow>(this.models.crew, 'Crew rows');
   }
 
   /**
@@ -504,7 +651,7 @@ export class Tracker {
     const model = this.route.resolved?.areaModelId;
     if (!model) return new Map();
     try {
-      const rows = await this.client.records.list<Record<string, unknown> & { id: string }>(model, { limit: 200 });
+      const rows = await this.listAll<Record<string, unknown> & { id: string }>(model, 'Projects');
       return projectWorkModes(rows, this.contract);
     } catch {
       return new Map();
@@ -515,7 +662,7 @@ export class Tracker {
   async projectRows(): Promise<Array<{ id: string; name?: string; issue_prefix?: string | null }>> {
     const model = this.route.resolved?.areaModelId;
     if (!model) return [];
-    return this.client.records.list<{ id: string; name?: string; issue_prefix?: string | null }>(model, { limit: 200 });
+    return this.listAll<{ id: string; name?: string; issue_prefix?: string | null }>(model, 'Projects');
   }
 
   /** Create a `Projects` (area) row (CREW-3359). Throws when the workspace has no Projects table. */
@@ -551,14 +698,14 @@ export class Tracker {
   async repoRows(): Promise<Array<{ id: string; name?: string }>> {
     const model = this.route.resolved?.reposModelId;
     if (!model) return [];
-    return this.client.records.list<{ id: string; name?: string }>(model, { limit: 200 });
+    return this.listAll<{ id: string; name?: string }>(model, 'Repos');
   }
 
   /** Every `Repos` row with the columns the resolved file mirrors (CREW-2885). */
   async repoRowsForMap(): Promise<Array<{ id: string; name?: string | null; remote?: string | null; forge_host?: string | null }>> {
     const model = this.route.resolved?.reposModelId;
     if (!model) return [];
-    return this.client.records.list<{ id: string; name?: string | null; remote?: string | null; forge_host?: string | null }>(model, { limit: 200 });
+    return this.listAll<{ id: string; name?: string | null; remote?: string | null; forge_host?: string | null }>(model, 'Repos');
   }
 
   /** Delete a `Repos` row (`crew sample-ticket --remove`). */
@@ -570,10 +717,10 @@ export class Tracker {
 
   /** Every ticket filed against one `Repos` row, any status. */
   async ticketsForRepo(repoId: string): Promise<Ticket[]> {
-    return this.client.records.list<Ticket>(this.models.issues, {
-      filters: encodeFilters([{ columnName: this.contract.columns.repo, operator: 'EQ', value: repoId }]),
-      limit: 200,
-    });
+    return this.listAll<Ticket>(
+      this.models.issues, 'tickets of a repo',
+      encodeFilters([{ columnName: this.contract.columns.repo, operator: 'EQ', value: repoId }]),
+    );
   }
 
   /**
@@ -586,7 +733,7 @@ export class Tracker {
     const model = this.route.resolved?.shipsModelId;
     if (!model) return [];
     try {
-      return await this.client.records.list<ShipRow>(model, { limit: 200 });
+      return await this.listAll<ShipRow>(model, 'Ships');
     } catch {
       return [];   // the table may be absent or unreadable; neither is fatal
     }
@@ -787,7 +934,7 @@ export class Tracker {
     const model = this.route.resolved?.epicsModelId;
     if (!model) return [];
     try {
-      return await this.client.records.list<EpicRow>(model, { limit: 500 });
+      return await this.listAll<EpicRow>(model, 'Epics');
     } catch {
       return [];   // the table may be absent or unreadable; neither is fatal
     }
