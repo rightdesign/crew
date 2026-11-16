@@ -14,6 +14,7 @@ import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
 import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, PERISCOPE_COLUMNS, closedStatuses, resolveContract, type Contract } from './contract.ts';
 import type { EpicRow } from './epics.ts';
+import type { MapRow } from './map-brief.ts';
 import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
@@ -780,6 +781,39 @@ export class Tracker {
     } catch {
       return [];   // the table may be absent or unreadable; neither is fatal
     }
+  }
+
+  /** One Epics row, or `undefined` when the workspace has no Epics table or the row is gone (CREW-3444). */
+  async epicRow(id: string): Promise<EpicRow | undefined> {
+    const model = this.route.resolved?.epicsModelId;
+    if (!model) return undefined;
+    try {
+      return await this.client.records.get<EpicRow>(model, id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Every Maps row of one epic, whatever its status (CREW-3444). **Throws**,
+   * unlike `epicRows()`: a brief must tell "this seat may not read Maps" from
+   * "the epic has none", and swallowing the 403 would turn the first into
+   * the second. Callers classify the error.
+   */
+  async mapRows(epicId: string): Promise<MapRow[]> {
+    const model = this.route.resolved?.mapsModelId;
+    if (!model) return [];
+    return this.client.records.list<MapRow>(model, {
+      filters: encodeFilters([{ columnName: this.contract.maps.epicColumn, operator: 'EQ', value: epicId }]),
+      limit: 100,
+    });
+  }
+
+  /** One Maps row in full, for the document's text. Throws like `mapRows`. */
+  async mapRow(id: string): Promise<MapRow> {
+    const model = this.route.resolved?.mapsModelId;
+    if (!model) throw new ConfigError(`route "${this.route.route}" has no Maps table`);
+    return this.client.records.get<MapRow>(model, id);
   }
 
   /**

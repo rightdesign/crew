@@ -226,6 +226,31 @@ An epic with no tickets, a `cancelled` one, one at a status not named here,
 and one whose remaining tickets are open but untouched are all left as they
 are. See `src/epics.ts`.
 
+### The optional Maps table (CREW-3444)
+
+An epic's requirements document ("Map") is a row of a `Maps` table linked to
+the epic. A ticket filed from it cites it ("Map v1 §11"), and the document is
+in no repository, so the run's brief carries it: after the ticket banner, a
+"Map for <epic>" section. `crew connect` finds the table by name like Epics;
+a workspace without it, and a ticket without an epic, get the same brief as
+before.
+
+| column | default | meaning |
+| --- | --- | --- |
+| `maps.epicColumn` | `epic_id` | the epic's row id, matching the ticket's `columns.epic` |
+| `maps.titleColumn` | `title` | |
+| `maps.contentColumn` | `content` | the document, Markdown |
+| `maps.conversationColumn` | `conversation` | the interview record; pointed at, never included |
+| `maps.statusColumn` | `status` | |
+| `maps.versionColumn` | `version` | the highest active version wins |
+| `maps.activeStatus` | `active` | the one status whose document is supplied |
+
+Only the active Map is supplied: an epic with only draft or superseded Maps is
+told it has no active Map, and a seat the tracker refuses (403) is told it may
+not read it. A document over 20,000 characters is cut to the sections the
+ticket cites (headings numbered `## 11.` or `## §11`), an outline, and the
+`records_controller_find_one` call that reads the rest. See `src/map-brief.ts`.
+
 ### The optional Periscopes table (EPIC-077)
 
 A workspace may have a table named `Periscopes`, found by name the way `Epics`

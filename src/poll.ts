@@ -377,6 +377,8 @@ export const digestPath = (stateDir: string, route: string, role: RoleName, runI
 export interface OwnRun {
   ticket: { id: string; issue_id: string; description?: unknown };
   inFlight: (ticketId: string) => boolean;
+  /** The Map behind the ticket's epic, rendered for the brief (CREW-3444); absent when the section does not apply. */
+  mapBrief?: string | null;
 }
 
 /** Drops every ticket another live run on this ship holds; the run's own ticket stays. */
@@ -390,7 +392,8 @@ export function ownRunBanner(own: OwnRun): string {
     `on this ship is already working has been left out of this digest: it belongs to that run.`;
   // CREW-2970: the hand-off guard wants every Acceptance line quoted; hand the seat the block to copy.
   const block = acceptanceChecklistBlock(acceptanceLines(own.ticket.description));
-  return block ? `${banner}\n\n\`\`\`\n${block}\n\`\`\`` : banner;
+  const withBlock = block ? `${banner}\n\n\`\`\`\n${block}\n\`\`\`` : banner;
+  return own.mapBrief ? `${withBlock}\n\n${own.mapBrief}` : withBlock;
 }
 
 /**

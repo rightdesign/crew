@@ -17,6 +17,7 @@ export const SNAPSHOT_TABLES = [
   { key: 'periscopesModelId', name: 'Periscopes' },
   { key: 'shipsModelId', name: 'Ships' },
   { key: 'epicsModelId', name: 'Epics' },
+  { key: 'mapsModelId', name: 'Maps' },
   { key: 'locksModelId', name: 'Locks' },
   { key: 'reposModelId', name: 'Repos' },
   { key: 'areaModelId', name: 'Projects' },

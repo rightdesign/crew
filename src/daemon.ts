@@ -78,6 +78,7 @@ import { State } from './state.ts';
 import { Emitter } from './events.ts';
 import { isUpgradeRequired, raiseFromUpgradeRequired } from './crew-floor.ts';
 import { discoverForRoute } from './pr-links.ts';
+import { briefMapFor } from './map-brief.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
@@ -1313,9 +1314,13 @@ async function runRoleAgentLocked(
         if (idx >= 0) decision.tickets[idx] = result.ticket;
         writeDigest({ route, ship, state: ctx.state, emit }, decision, role, ship.stateDir);
       }
+      // CREW-3444: the Map behind the ticket's epic, for every building and QA seat.
+      const mapBrief = await briefMapFor(tracker, result.ticket, route.resolved?.mapsModelId, contract)
+        .catch(() => null);
       writeDigest({ route, ship, state: ctx.state, emit }, decision, role, ship.stateDir, runId, {
         ticket: result.ticket,
         inFlight: (id) => ctx.state.ticketInFlight(id),
+        mapBrief,
       });
       hooks?.ready(true);
       ticketHint = result.ticket.issue_id;

@@ -4927,7 +4927,7 @@ switch (command) {
       const resolved = {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
-        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, periscopesModelId: found.periscopesModelId, locksModelId: found.locksModelId,
+        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, mapsModelId: found.mapsModelId, periscopesModelId: found.periscopesModelId, locksModelId: found.locksModelId,
         recordLinkViewId: found.recordLinkViewId,
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes, repoForgeHosts: found.repoForgeHosts,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),

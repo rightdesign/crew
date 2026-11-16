@@ -168,6 +168,8 @@ export interface Discovered {
   repoForgeHosts?: Record<string, string>;
   shipsModelId?: string;
   epicsModelId?: string;
+  /** The optional `Maps` table (CREW-3444). */
+  mapsModelId?: string;
   /** The optional `Periscopes` table (EPIC-077); its columns are checked by `crew doctor`. */
   periscopesModelId?: string;
   locksModelId?: string;
@@ -624,6 +626,8 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // Optional, like Ships: an unmodified Issue Tracker template has no Epics
   // table, and that is a legitimate shape, not a problem to report.
   out.epicsModelId = find('Epics');
+  // Optional, like Epics: without it no brief carries a Map.
+  out.mapsModelId = find('Maps');
   // Optional too: a workspace without it cannot host periscopes (EPIC-077).
   out.periscopesModelId = find('Periscopes');
   // Optional, like Ships and Epics: a workspace that has not adopted a

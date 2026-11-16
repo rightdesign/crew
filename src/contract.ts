@@ -253,11 +253,31 @@ export interface ContractEpics {
   };
 }
 
+/**
+ * The `Maps` table: an epic's requirements document, which a ticket filed
+ * from it cites ("Map v1 §11"). Optional — a workspace with no Maps table
+ * never reads this section (CREW-3444).
+ */
+export interface ContractMaps {
+  /** The Maps column holding the epic's row id, matching the ticket's `columns.epic`. */
+  epicColumn: string;
+  titleColumn: string;
+  /** The requirements document itself, Markdown. */
+  contentColumn: string;
+  /** The interview record behind the decisions; never put in a brief, only pointed at. */
+  conversationColumn: string;
+  statusColumn: string;
+  versionColumn: string;
+  /** The one status whose document is the epic's current plan. Every other status is not. */
+  activeStatus: string;
+}
+
 export interface Contract {
   columns: ContractColumns;
   comments: ContractComments;
   statuses: ContractStatuses;
   epics: ContractEpics;
+  maps: ContractMaps;
   /** Most urgent first. Cannot be inferred from the values themselves. */
   priorityOrder: string[];
   severityOrder: string[];
@@ -367,6 +387,15 @@ export const DEFAULT_CONTRACT: Contract = {
     keyColumn: 'epic_id',
     statuses: { planned: 'planned', building: 'in_progress', done: 'done', cancelled: 'cancelled' },
   },
+  maps: {
+    epicColumn: 'epic_id',
+    titleColumn: 'title',
+    contentColumn: 'content',
+    conversationColumn: 'conversation',
+    statusColumn: 'status',
+    versionColumn: 'version',
+    activeStatus: 'active',
+  },
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
@@ -400,6 +429,7 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
       ...override.epics,
       statuses: { ...DEFAULT_CONTRACT.epics.statuses, ...override.epics?.statuses },
     },
+    maps: { ...DEFAULT_CONTRACT.maps, ...override.maps },
     priorityOrder: override.priorityOrder ?? DEFAULT_CONTRACT.priorityOrder,
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,

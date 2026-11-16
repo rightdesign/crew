@@ -137,6 +137,28 @@ fetch the tracker yourself exactly as Steps 1 and 2 describe. Everything below
 works either way: the digest changes where the list comes from, never what
 you do with it.
 
+## A ticket's Map
+
+A ticket filed from an epic's planning document cites it by name and section,
+such as "Map v1 §11". That document is the epic's **Map**: a record in the
+tracker's Maps table, linked to the epic, never a file in any repository. Do
+not search the checkout for it.
+
+When the ticket belongs to an epic and the workspace keeps Maps, your brief
+ends its ticket banner with a "Map for <epic>" section. It holds the epic's
+active Map, whole, or, when the document is too long, the sections the ticket
+cites in full, an outline of every heading and the tracker call that reads the
+rest. It may instead say the epic has no active Map, or that your seat may not
+read it; believe that and carry on from the ticket. A draft or superseded Map
+is never supplied in place of the active one.
+
+The Map is the planning decision the ticket was derived from, so read the
+sections the ticket cites before you scope the work. **The ticket wins:** where
+the Map differs from the ticket's own text or from a later comment on the
+ticket, follow the ticket and its comments. The Map's interview record is not
+in the brief; read it (the Map's `conversation` field) only when you need the
+reasoning behind a decision.
+
 ## Step 1 — check your own open tickets first
 
 Before picking up anything new, take the digest's "Step 1" table or, absent a

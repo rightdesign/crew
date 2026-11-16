@@ -128,6 +128,8 @@ export interface ResolvedIds {
   shipsModelId?: string;
   /** The `Epics` table, when this workspace has one (ISSUE-384). */
   epicsModelId?: string;
+  /** The `Maps` table, when this workspace has one (CREW-3444): an epic's requirements document. */
+  mapsModelId?: string;
   /**
    * The `Periscopes` table, when this workspace has one (EPIC-077). Optional
    * like Epics: a workspace without it cannot host periscopes, nothing else
@@ -1054,6 +1056,7 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     areaId: raw.areaId,
     shipsModelId: raw.shipsModelId,
     epicsModelId: raw.epicsModelId,
+    mapsModelId: raw.mapsModelId,
     periscopesModelId: raw.periscopesModelId,
     locksModelId: raw.locksModelId,
     recordLinkViewId: raw.recordLinkViewId,
