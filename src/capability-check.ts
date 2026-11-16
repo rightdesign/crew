@@ -5,9 +5,15 @@
  */
 
 import { get, type AuthOptions, type Discovered } from './connect.ts';
-import { isAdminRole } from './agents.ts';
+import { PERSONA_NAME, isAdminRole } from './agents.ts';
+import { ROLE_NAMES } from './config.ts';
 
-export type CapabilityStatus = 'ok' | 'missing' | 'skipped';
+/**
+ * `info` (CREW-3452) is neither a grant nor a miss: a fact worth stating that
+ * needs nothing from anyone, so it is not stored with the route and `crew
+ * doctor` never repeats it.
+ */
+export type CapabilityStatus = 'ok' | 'missing' | 'skipped' | 'info';
 
 export interface CapabilityItem {
   key: 'crew-table' | 'ships-table' | 'repos-table' | 'mint-agent-keys' | 'sync-personas';
@@ -15,7 +21,7 @@ export interface CapabilityItem {
   status: CapabilityStatus;
   /** What to ask a workspace admin for; set when `status` is `missing`. */
   askFor?: string;
-  /** Why it was skipped (no such table, or the probe itself failed). */
+  /** Why it was skipped (no such table, or the probe itself failed), or the sentence an `info` item carries. */
   note?: string;
 }
 
@@ -32,6 +38,30 @@ async function canWriteTable(o: AuthOptions, modelId: string): Promise<boolean |
 async function projectCapabilities(o: AuthOptions, projectId: string | undefined): Promise<Record<string, boolean> | undefined> {
   if (!projectId) return undefined;
   try { return await get<Record<string, boolean>>(o, `/projects/${projectId}/capabilities`); } catch { return undefined; }
+}
+
+const LANE_ROLES = ROLE_NAMES.filter((r) => r !== 'pair');
+
+/**
+ * A member cannot write the workspace-level Agents table, and does not need to:
+ * running on the rows the workspace already defines is the normal member setup,
+ * so that is reported as `info`. Only a lane role with no Agents row at all is a
+ * real blocker, because an admin has to run the sync once to create it.
+ */
+async function memberPersonaItem(o: AuthOptions, found: Discovered): Promise<CapabilityItem> {
+  const key = 'sync-personas';
+  const label = 'sync personas and skills';
+  try {
+    const model = await get<{ id: string }>(o, `/data-models/agents?workspaceId=${found.workspaceId}`);
+    const rows = await get<Array<{ name?: string }>>(o, `/data-models/${model.id}/records?limit=200`);
+    const absent = LANE_ROLES.filter((r) => !rows.some((row) => row.name === PERSONA_NAME[r]));
+    if (absent.length > 0) {
+      return { key, label, status: 'missing', askFor: `one \`crew agents sync\` run (no Agents row for ${absent.map((r) => PERSONA_NAME[r]).join(', ')})` };
+    }
+    return { key, label, status: 'info', note: "this ship uses the workspace's personas and skills as they are" };
+  } catch {
+    return { key, label, status: 'skipped', note: 'could not read the Agents table' };
+  }
 }
 
 /**
@@ -62,7 +92,7 @@ export async function checkCapabilities(o: AuthOptions, found: Discovered): Prom
       : { key: 'mint-agent-keys', label: 'mint agent keys', status: 'skipped', note: 'could not read capabilities' };
   const sync: CapabilityItem = admin
     ? { key: 'sync-personas', label: 'sync personas and skills', status: 'ok' }
-    : { key: 'sync-personas', label: 'sync personas and skills', status: 'missing', askFor: 'the workspace admin role (personas and skills are workspace-level tables)' };
+    : await memberPersonaItem(o, found);
   return [crew, ships, repos, mint, sync];
 }
 
@@ -73,6 +103,7 @@ export function missLine(i: CapabilityItem): string {
 
 export function describeCapability(i: CapabilityItem): string {
   if (i.status === 'ok') return `ok       ${i.label}`;
+  if (i.status === 'info') return `info     ${i.label} (${i.note ?? ''})`;
   if (i.status === 'skipped') return `skipped  ${i.label} (${i.note ?? 'not checked'})`;
   return `missing  ${missLine(i)}`;
 }

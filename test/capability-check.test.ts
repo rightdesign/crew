@@ -29,11 +29,18 @@ const ACCESS = (access: string) => ({
   '/api/data-models/repos-m/access': { access },
 });
 
-test('a member key with no project role gets five named misses', async (t) => {
-  t.after(mockFetch({ ...ACCESS('NONE'), '/api/projects/proj/capabilities': { MINT_AGENT_KEYS: false } }));
+const AGENTS = (names: string[]) => ({
+  '/api/data-models/agents': { id: 'agents-m' },
+  '/api/data-models/agents-m/records': names.map((name) => ({ name })),
+});
+const ALL_PERSONAS = ['Developer', 'Design', 'QA', 'Triage', 'Pair'];
+
+test('a member key with no project role gets four named misses and the personas line as info', async (t) => {
+  t.after(mockFetch({ ...ACCESS('NONE'), ...AGENTS(ALL_PERSONAS), '/api/projects/proj/capabilities': { MINT_AGENT_KEYS: false } }));
   const items = await checkCapabilities(BASE, found('WORKSPACE_USER'));
   assert.equal(items.length, 5);
-  assert.ok(items.every((i) => i.status === 'missing' && i.askFor));
+  assert.ok(items.slice(0, 4).every((i) => i.status === 'missing' && i.askFor));
+  assert.equal(items[4]!.status, 'info');
   assert.match(missLine(items[3]!), /Mint agent keys/);
 });
 
@@ -43,10 +50,27 @@ test('an admin key gets all ok', async (t) => {
   assert.deepEqual(items.map((i) => i.status), ['ok', 'ok', 'ok', 'ok', 'ok']);
 });
 
-test('a member holding the mint capability and table writes misses only the persona sync', async (t) => {
+test('a member with personas in the workspace has no miss and no ask-an-admin text', async (t) => {
+  t.after(mockFetch({ ...ACCESS('WRITE'), ...AGENTS(ALL_PERSONAS), '/api/projects/proj/capabilities': { MINT_AGENT_KEYS: true } }));
+  const items = await checkCapabilities(BASE, found('WORKSPACE_USER'));
+  assert.deepEqual(items.filter((i) => i.status === 'missing'), []);
+  const line = describeCapability(items[4]!);
+  assert.match(line, /^info/);
+  assert.doesNotMatch(line, /admin/i);
+});
+
+test('a member in a workspace with no persona rows is told an admin must run the sync once', async (t) => {
+  t.after(mockFetch({ ...ACCESS('WRITE'), ...AGENTS([]), '/api/projects/proj/capabilities': { MINT_AGENT_KEYS: true } }));
+  const items = await checkCapabilities(BASE, found('WORKSPACE_USER'));
+  const miss = items.filter((i) => i.status === 'missing');
+  assert.deepEqual(miss.map((i) => i.key), ['sync-personas']);
+  assert.match(missLine(miss[0]!), /ask a workspace admin for one `crew agents sync` run/);
+});
+
+test('an unreadable Agents table is skipped for a member, not a miss', async (t) => {
   t.after(mockFetch({ ...ACCESS('WRITE'), '/api/projects/proj/capabilities': { MINT_AGENT_KEYS: true } }));
   const items = await checkCapabilities(BASE, found('WORKSPACE_USER'));
-  assert.deepEqual(items.filter((i) => i.status === 'missing').map((i) => i.key), ['sync-personas']);
+  assert.equal(items[4]!.status, 'skipped');
 });
 
 test('an unreadable answer is skipped, not reported as a miss', async (t) => {

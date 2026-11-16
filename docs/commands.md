@@ -156,7 +156,7 @@ On a terminal the wizard still runs unless `--no-wizard` is given. Off a termina
 | `mcp_registered` | `harness`, `bin`, `url`, and for Claude Code `action` (`registered`, `replaced` or `kept`); `message` is the line crew prints |
 | `pair_installed` | `harness`; `message` is the line crew prints |
 | `config` | `written`, `path` and, when `written` is `false`, `reason`: `exists` (a crew.yaml was already there, so only the route block was printed to stderr for pasting), `appeared while connecting` (a first run lost a race to another writer) or `no-key` (no key file or keychain entry to name). Not emitted by `--dry-run` |
-| `capabilities` | reserved for the member capability checklist (ISSUE-2240) |
+| `capabilities` | `route` and `items`: one per checked capability (`key`, `label`, `status`, and `askFor` or `note` where they apply). `status` is `ok`, `missing` (a real miss: `askFor` names the narrowest grant), `skipped` (could not be read) or `info` (a fact that needs nothing from anyone: a member key does not sync personas and skills, the ship uses the workspace's as they are). Only `missing` is stored with the route or repeated by `crew doctor` |
 | `choice` | `key`, `options` (`value`, `label`), `answer`: a decision a terminal would have asked; see below |
 | `problem` | `stage` and, for an HTTP failure, `status` and `path`; the run is stopping, or (stage `discover`) the route is written with a gap |
 | `done` | `route`, `resolvedPath`, `configPath`, `wroteConfig`, `operator`, `dryRun`, `unresolved` (count) |
