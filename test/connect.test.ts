@@ -276,6 +276,11 @@ test('discover() carries the resolved workspace and project slugs, not just thei
 test('discover() auto-matches operator to the hold whose email matches this key\'s own identity', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'brad@example.test' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -283,7 +288,7 @@ test('discover() auto-matches operator to the hold whose email matches this key\
     ],
     '/api/data-models/crew-model/records?limit=200': [
       { id: 'seat-dev', name: 'Developer' },
-      { id: 'hold-pair', name: 'Pair agent', email: 'pair@example.test' },
+      { id: 'hold-pair', name: 'Pair agent', agent_id: 'agent-pair', email: 'pair@example.test' },
       { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' },
     ],
   });
@@ -296,6 +301,11 @@ test('discover() auto-matches operator to the hold whose email matches this key\
 test('discover() leaves operator unset when several holds remain and no email matches', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'nobody@example.test' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -323,13 +333,18 @@ test('discover() leaves operator unset when several holds remain and no email ma
 test('discover() picks the operator when exactly one hold remains, even with no email match', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'nobody@example.test' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
       { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
     ],
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'hold-pair', name: 'Pair agent', email: 'pair@example.test' },
+      { id: 'hold-pair', name: 'Pair agent', agent_id: 'agent-pair', email: 'pair@example.test' },
       { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test' },
     ],
   });
@@ -345,13 +360,18 @@ test('discover() picks the operator when exactly one hold remains, even with no 
 test('discover() best-effort-matches a "pair" Crew row into seats.pair, and drops it from holds', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
       { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
     ],
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'hold-pair', name: 'Pair agent' },
+      { id: 'hold-pair', name: 'Pair agent', agent_id: 'agent-pair' },
       { id: 'hold-brad', name: 'Brad C.' },
     ],
   });
@@ -365,6 +385,11 @@ test('discover() best-effort-matches a "pair" Crew row into seats.pair, and drop
 test('discover() reports no problem when no "pair" Crew row exists — it is optional, unlike the four polled seats', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -384,6 +409,11 @@ test('discover() reports no problem when no "pair" Crew row exists — it is opt
 test('discover() flags a status CHOICE value the default contract does not name (ISSUE-467)', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -419,6 +449,11 @@ test('discover() flags a status CHOICE value the default contract does not name 
 test('discover() reports no unrecognized statuses when every value matches DEFAULT_CONTRACT', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -440,6 +475,11 @@ test('discover() reports no unrecognized statuses when every value matches DEFAU
 test('discover() leaves unrecognizedStatuses undefined rather than failing the whole connect when the Issues model cannot be read', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -458,13 +498,18 @@ test('discover() leaves unrecognizedStatuses undefined rather than failing the w
 test('discover() with no `ship` given never provisions — same workspace-wide, unscoped search as before (ISSUE-610)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
       { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
       { id: 'ships-model', name: 'Ships' },
     ],
-    '/api/data-models/crew-model/records?limit=200': [{ id: 'seat-dev', name: 'Developer agent' }],
+    '/api/data-models/crew-model/records?limit=200': [{ id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev' }],
   });
   t.after(restore);
 
@@ -477,6 +522,11 @@ test('discover() with no `ship` given never provisions — same workspace-wide, 
 test('discover() creates the Ships row when this ship has no row yet, and reports it in provisioning (ISSUE-610)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -486,10 +536,10 @@ test('discover() creates the Ships row when this ship has no row yet, and report
     '/api/data-models/ships-model/records?limit=200': [],
     '/api/data-models/ships-model/records': { id: 'ship-new' },
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-new' },
-      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-new' },
-      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-new' },
-      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-new' },
+      { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: 'ship-new' },
+      { id: 'seat-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-new' },
+      { id: 'seat-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-new' },
+      { id: 'seat-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: 'ship-new' },
     ],
     // The per-ship Release row (CREW-1371) is created alongside the new Ships row.
     '/api/data-models/crew-model/records': { id: 'release-new' },
@@ -509,7 +559,12 @@ test('discover() writes kind=developer_machine on a new Ships row only when the 
   const run = async (withColumn: boolean) => {
     const { restore, calls } = mockFetchCalls({
       '/api/workspaces/issues': { id: 'ws-1' },
-      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+      '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
       '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
       '/api/data-models?projectId=proj-1': [
         { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
@@ -533,6 +588,11 @@ test('discover() writes kind=developer_machine on a new Ships row only when the 
 test('discover() creates a Release Crew row scoped to this ship, records it as releaseSeat, and never lists it as a hold (CREW-1371)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -542,10 +602,10 @@ test('discover() creates a Release Crew row scoped to this ship, records it as r
     '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }],
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
-      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
-      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+      { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: 'ship-1' },
     ],
     '/api/data-models/crew-model/records': { id: 'release-new' },
   });
@@ -563,6 +623,11 @@ test('discover() creates a Release Crew row scoped to this ship, records it as r
 test('discover() keeps a hold Crew row that belongs to another ship (CREW-1390)', async (t) => {
   const { restore } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', email: 'brad@example.test' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -572,10 +637,10 @@ test('discover() keeps a hold Crew row that belongs to another ship (CREW-1390)'
     '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }, { id: 'ship-2', name: 'Other' }],
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
-      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
-      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+      { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: 'ship-1' },
       { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' },
       // The operator's row is scoped to a different ship, with a user_id.
       { id: 'hold-brad', name: 'Brad C.', email: 'brad@example.test', ship_id: 'ship-2', user_id: 'ident-brad' },
@@ -583,7 +648,7 @@ test('discover() keeps a hold Crew row that belongs to another ship (CREW-1390)'
   });
   t.after(restore);
 
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.deepEqual(found.holds.map((h) => h.id), ['hold-brad']);
   assert.equal(found.operator, 'hold-brad');
 });
@@ -591,6 +656,11 @@ test('discover() keeps a hold Crew row that belongs to another ship (CREW-1390)'
 test('discover() stamps host_passengers on a newly-created Ships row when this route\'s config says true (ISSUE-644)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -615,6 +685,11 @@ test('discover() stamps host_passengers on a newly-created Ships row when this r
 test('discover() PATCHes host_passengers onto an existing Ships row when it disagrees with this route\'s config (ISSUE-644)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -643,7 +718,12 @@ test('discover() syncs host_periscopes only when the Ships table has the column 
   const run = async (row: Record<string, unknown>, withColumn: boolean) => {
     const { restore, calls } = mockFetchCalls({
       '/api/workspaces/issues': { id: 'ws-1' },
-      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+      '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
       '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
       '/api/data-models?projectId=proj-1': [
         { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
@@ -674,6 +754,11 @@ test('discover() syncs host_periscopes only when the Ships table has the column 
 test('discover() leaves an existing Ships row alone when host_passengers already matches this route\'s config (ISSUE-644)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -699,6 +784,11 @@ test('discover() leaves an existing Ships row alone when host_passengers already
 test('discover() PATCHes ssh_public_key onto an existing Ships row when it disagrees with what this ship holds (ISSUE-553)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -726,6 +816,11 @@ test('discover() PATCHes ssh_public_key onto an existing Ships row when it disag
 test('discover() leaves ssh_public_key alone when this ship offers none (e.g. ssh-keygen unavailable) — never clobbers a working key with nothing (ISSUE-553)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -751,6 +846,11 @@ test('discover() leaves ssh_public_key alone when this ship offers none (e.g. ss
 test('discover() claims a pre-existing, unscoped Crew row for this ship rather than creating a duplicate (ISSUE-610)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -761,7 +861,7 @@ test('discover() claims a pre-existing, unscoped Crew row for this ship rather t
     '/api/data-models/crew-model/records?limit=200': [
       // No ship_id — this is the single-machine-era row the ticket's own
       // framing describes; claiming it (not duplicating it) is the point.
-      { id: 'seat-dev', name: 'Developer agent' },
+      { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev' },
       { id: 'hold-brad', name: 'Brad C.' },
     ],
     '/api/data-models/crew-model/records/seat-dev': { id: 'seat-dev', ship_id: 'ship-1' },
@@ -842,13 +942,18 @@ test('discover() keeps a renamed seat row via its agent_id instead of creating a
 test('discover() skips all provisioning on a dry run — writes nothing, falls back to the unscoped search (ISSUE-610)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
       { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
       { id: 'ships-model', name: 'Ships' },
     ],
-    '/api/data-models/crew-model/records?limit=200': [{ id: 'seat-dev', name: 'Developer agent' }],
+    '/api/data-models/crew-model/records?limit=200': [{ id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev' }],
   });
   t.after(restore);
 
@@ -862,6 +967,11 @@ test('discover() skips all provisioning on a dry run — writes nothing, falls b
 
 const DRY_ROUTES = {
   '/api/workspaces/issues': { id: 'ws-1' },
+  '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+  '/api/data-models/agents-model/records?limit=200': [
+    { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+    { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+  ],
   '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
   '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
   '/api/data-models?projectId=proj-1': [
@@ -875,10 +985,10 @@ test('discover() dry run with no Ships row ignores another ship\'s seat rows and
   const { restore, calls } = mockFetchCalls({
     ...DRY_ROUTES,
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'o-dev', name: 'Developer agent', ship_id: 'ship-other' },
-      { id: 'o-design', name: 'Design agent', ship_id: 'ship-other' },
-      { id: 'o-qa', name: 'QA agent', ship_id: 'ship-other' },
-      { id: 'o-triage', name: 'Triage agent', ship_id: 'ship-other' },
+      { id: 'o-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: 'ship-other' },
+      { id: 'o-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-other' },
+      { id: 'o-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-other' },
+      { id: 'o-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: 'ship-other' },
     ],
   });
   t.after(restore);
@@ -897,9 +1007,9 @@ test('discover() dry run claims legacy unscoped rows and reports the owning ship
     ...DRY_ROUTES,
     '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: "Brad's MacBook" }, { id: 'ship-other', name: 'Other Mac' }],
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'legacy-dev', name: 'Developer agent' },
-      { id: 'o-design', name: 'Design agent', ship_id: 'ship-other' },
-      { id: 'mine-qa', name: 'QA agent', ship_id: 'ship-1' },
+      { id: 'legacy-dev', name: 'Developer agent', agent_id: 'agent-dev' },
+      { id: 'o-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-other' },
+      { id: 'mine-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-1' },
     ],
   });
   t.after(restore);
@@ -1036,6 +1146,11 @@ test('renderConnection() still shows the paste-your-own-key placeholder for a pl
 function ownerFixture(me: Record<string, unknown>, shipsRows: unknown[], shipsModel?: unknown) {
   return {
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': me,
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -1047,16 +1162,18 @@ function ownerFixture(me: Record<string, unknown>, shipsRows: unknown[], shipsMo
     ...(shipsModel ? { '/api/data-models/ships-model': shipsModel } : {}),
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
-      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
-      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+      { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: 'ship-1' },
     ],
     // The per-ship Release row (CREW-1371) is created on the first connect.
     '/api/data-models/crew-model/records': { id: 'release-new' },
   };
 }
 const SHIP = { name: 'Box', platform: 'macos' as const };
+/** The route already stored its Release row's id (CREW-3448: the release row is never matched by name). */
+const STORED_RELEASE = () => ({ releaseSeat: 'release-1' });
 
 test('discover() writes the caller\'s identity id as owner_id on a new Ships row (CREW-1286)', async (t) => {
   const { restore, calls } = mockFetchCalls(ownerFixture(
@@ -1122,6 +1239,11 @@ test('provisionReleaseLocks creates a row for each repo scope that has none and 
 function operatorRoutes(crewRows: unknown[], extra: Record<string, unknown> = {}) {
   return {
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN', id: 'ident-brad', email: 'Brad@example.test', name: 'Brad C.' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -1131,10 +1253,10 @@ function operatorRoutes(crewRows: unknown[], extra: Record<string, unknown> = {}
     '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }],
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
     '/api/data-models/crew-model/records?limit=200': [
-      { id: 'seat-dev', name: 'Developer agent', ship_id: 'ship-1' },
-      { id: 'seat-design', name: 'Design agent', ship_id: 'ship-1' },
-      { id: 'seat-qa', name: 'QA agent', ship_id: 'ship-1' },
-      { id: 'seat-triage', name: 'Triage agent', ship_id: 'ship-1' },
+      { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: 'ship-1' },
+      { id: 'seat-design', name: 'Design agent', agent_id: 'agent-design', ship_id: 'ship-1' },
+      { id: 'seat-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-1' },
+      { id: 'seat-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: 'ship-1' },
       { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' },
       ...crewRows,
     ],
@@ -1147,7 +1269,7 @@ const writes = (calls: Array<{ method: string; key: string; body: unknown }>) =>
 test('discover() creates the operator row when there are no holds (CREW-1798)', async (t) => {
   const { restore, calls } = mockFetchCalls(operatorRoutes([], { '/api/data-models/crew-model/records': { id: 'new-op' } }));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'new-op');
   assert.deepEqual(writes(calls).map((c) => c.body), [{ name: 'Brad C.', email: 'Brad@example.test', user_id: 'ident-brad' }]);
   assert.ok(found.provisioning.some((p) => p.includes('created Crew row "Brad C." for you')));
@@ -1159,7 +1281,7 @@ test('discover() links the hold with a matching email and null user_id (CREW-179
     { '/api/data-models/crew-model/records/hold-brad': {} },
   ));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'hold-brad');
   const w = writes(calls);
   assert.equal(w.length, 1);
@@ -1173,7 +1295,7 @@ test('discover() matches by identity first and writes nothing on a re-run (CREW-
     { id: 'hold-brad', name: 'Brad C.', user_id: 'ident-brad' }, { id: 'hold-x', name: 'X', email: 'brad@example.test' },
   ]));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'hold-brad');
   assert.equal(writes(calls).length, 0);
 });
@@ -1184,7 +1306,7 @@ test('discover() never touches a single hold that carries another identity; crea
     { '/api/data-models/crew-model/records': { id: 'new-op' } },
   ));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'new-op');
   const w = writes(calls);
   assert.deepEqual(w.map((c) => c.method), ['POST']);
@@ -1196,7 +1318,7 @@ test('discover() links the only hold even with no email match (CREW-1798)', asyn
     { '/api/data-models/crew-model/records/hold-solo': {} },
   ));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'hold-solo');
   assert.deepEqual(writes(calls).map((c) => c.body), [{ user_id: 'ident-brad' }]);
 });
@@ -1206,7 +1328,7 @@ test('discover() leaves an ambiguous operator to the interactive caller instead 
     { id: 'hold-a', name: 'A', email: 'a@example.test' }, { id: 'hold-b', name: 'B', email: 'b@example.test' },
   ]));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, interactive: true });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, interactive: true, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, undefined);
   assert.equal(writes(calls).length, 0);
 });
@@ -1221,7 +1343,7 @@ test('discover() reports a 403 on link and still selects the operator (CREW-1798
     return key in routes ? new Response(JSON.stringify(routes[key]), { status: 200 }) : new Response('{}', { status: 404 });
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = original; });
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'hold-brad');
   assert.ok(found.provisioning.some((p) => p.includes('could not link your Crew row (no write access)')));
 });
@@ -1253,6 +1375,11 @@ test('discover() addresses a secondary by its <primary>:<slug> segment and repor
 test('discover() falls back to slug when the server sends no path', async (t) => {
   const { restore } = mockFetch({
     '/api/workspaces/issues': { id: 'ws-1', slug: 'issues', name: 'Issues' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [{ id: 'issues-model', name: 'Issues' }, { id: 'crew-model', name: 'Crew' }],
@@ -1265,14 +1392,14 @@ test('discover() falls back to slug when the server sends no path', async (t) =>
 // CREW-2423: operator candidates are people, matched by identity then email.
 test('discover() excludes agent and other-ship seat rows from the operator candidates (CREW-2423)', async (t) => {
   const { restore } = mockFetchCalls(operatorRoutes([
-    { id: 'other-seat', name: 'QA agent', ship_id: 'ship-2' },
+    { id: 'other-seat', name: 'QA agent', agent_id: 'agent-qa', ship_id: 'ship-2' },
     { id: 'other-agent', name: 'Dev agent', agent_id: 'a-1' },
     { id: 'p-co', name: 'Co-worker', email: 'co@example.test', user_id: 'someone-else' },
     { id: 'p-two', name: 'Other', email: 'o@example.test' },
     { id: 'p-three', name: '', email: 'u@example.test' },
   ]));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, interactive: true });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, interactive: true, storedSeats: STORED_RELEASE });
   assert.deepEqual(found.candidates.map((c) => c.id), ['p-co', 'p-two', 'p-three']);
   assert.deepEqual(found.candidates.map((c) => c.detail), ['co@example.test', 'o@example.test', 'u@example.test']);
   assert.ok(found.holds.some((h) => h.id === 'other-seat'), 'holds keep the poll semantics');
@@ -1291,7 +1418,7 @@ test('discover() treats a row linked to another membership of the same identity 
     },
   ));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'p-primary');
   assert.equal(found.operatorAction, 'matched');
   assert.equal(writes(calls).length, 0);
@@ -1303,7 +1430,7 @@ test('discover() matches the sign-in email against the linked member when the ro
     { '/api/data-models/crew-model/records/p-sync': {} },
   ));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
   assert.equal(found.operator, 'p-sync');
   assert.equal(found.operatorAction, 'linked');
 });
@@ -1311,6 +1438,11 @@ test('discover() matches the sign-in email against the linked member when the ro
 test('discover() resolves the optional Periscopes table by name, and leaves it unset when absent (EPIC-077)', async (t) => {
   const mk = (extra: Array<{ id: string; name: string }>) => mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -1331,7 +1463,12 @@ test('discover() syncs host_periscopes only when the route sets it and the Ships
   const run = async (columns: string[]) => {
     const { restore, calls } = mockFetchCalls({
       '/api/workspaces/issues': { id: 'ws-1' },
-      '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+      '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
       '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
       '/api/data-models?projectId=proj-1': [
         { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' },
@@ -1370,6 +1507,11 @@ test('ConnectHttpError carries the server\'s message after the status (CREW-3054
 test('discover() leaves kind unset and names the missing option when the Ships kind type has none (CREW-3054)', async (t) => {
   const { restore, calls } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -1392,6 +1534,11 @@ test('discover() leaves kind unset and names the missing option when the Ships k
 test('discover() fails with a specific message when Ships platform lacks the option (CREW-3054)', async (t) => {
   const { restore } = mockFetchCalls({
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+      { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -1407,4 +1554,129 @@ test('discover() fails with a specific message when Ships platform lacks the opt
     () => discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'M', platform: 'macos' } }),
     /Ships platform type has no "macos" option/,
   );
+});
+
+// CREW-3448: a seat is the Crew row linked to the role's Agents row; names never decide.
+function seatRoutes(crewRows: unknown[], opts: { agents?: boolean } = {}) {
+  return {
+    '/api/workspaces/issues': { id: 'ws-1' },
+    ...(opts.agents === false ? {} : {
+      '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+      '/api/data-models/agents-model/records?limit=200': [
+        { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' },
+        { id: 'agent-triage', name: 'Triage' }, { id: 'agent-pair', name: 'Pair' },
+      ],
+    }),
+    '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
+    '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
+    '/api/data-models?projectId=proj-1': [
+      { id: 'i', name: 'Issues' }, { id: 'c', name: 'Comments' }, { id: 'crew-model', name: 'Crew' }, { id: 'ships-model', name: 'Ships' },
+    ],
+    '/api/data-models/ships-model/records?limit=200': [{ id: 'ship-1', name: 'Box' }],
+    '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
+    '/api/data-models/crew-model/records?limit=200': crewRows,
+    '/api/data-models/crew-model/records': { id: 'created-row' },
+  };
+}
+const linked = (role: string, id: string, name: string, extra: Record<string, unknown> = {}) =>
+  ({ id, name, agent_id: `agent-${role}`, ship_id: 'ship-1', ...extra });
+const ALL_LINKED = [
+  linked('dev', 'seat-dev', 'Developer agent'), linked('design', 'seat-design', 'Design agent'),
+  linked('qa', 'seat-qa', 'QA agent'), linked('triage', 'seat-triage', 'Triage agent'),
+];
+const createsOf = (calls: Array<{ method: string; key: string; body: unknown }>, rowName?: string) =>
+  calls.filter((c) => c.method === 'POST' && c.key === '/api/data-models/crew-model/records'
+    && ((c.body as { name?: string }).name === 'Release agent') === (rowName === 'Release agent'));
+
+test('discover() matches a linked seat renamed to text with no role word, and creates nothing (CREW-3448)', async (t) => {
+  const { restore, calls } = mockFetchCalls(seatRoutes([
+    linked('dev', 'seat-dev', 'Studio box #1'), ...ALL_LINKED.slice(1),
+  ]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.deepEqual(createsOf(calls), []);
+});
+
+test('discover() never takes a row by a role word in its name when its agent_id is empty or another Agent\'s (CREW-3448)', async (t) => {
+  const { restore, calls } = mockFetchCalls(seatRoutes([
+    { id: 'name-only', name: 'Developer agent', ship_id: 'ship-1' },
+    { id: 'wrong-agent', name: 'Design agent', agent_id: 'agent-qa', ship_id: 'ship-1' },
+    { id: 'legacy', name: 'Triage agent' },
+    { id: 'pair-named', name: 'Pair agent', ship_id: 'ship-1' },
+  ]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
+  assert.notEqual(found.seats.dev, 'name-only');
+  assert.notEqual(found.seats.design, 'wrong-agent');
+  assert.notEqual(found.seats.triage, 'legacy');
+  assert.equal(found.seats.pair, undefined);
+  assert.equal(found.seats.qa, 'wrong-agent', 'a row linked to the QA agent is the QA seat, whatever it is called');
+  // The dev, design and triage seats get fresh linked rows.
+  assert.deepEqual(createsOf(calls).map((c) => (c.body as { agent_id?: string }).agent_id), ['agent-dev', 'agent-design', 'agent-triage']);
+});
+
+test('discover() with no readable Agents table keeps the stored seat and creates nothing (CREW-3448)', async (t) => {
+  const { restore, calls } = mockFetchCalls(seatRoutes([
+    { id: 'seat-dev', name: 'Studio box', ship_id: 'ship-1' },
+    { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' },
+  ], { agents: false }));
+  t.after(restore);
+  const found = await discover({
+    ...BASE, workspace: 'issues', project: 'bar', ship: SHIP,
+    storedSeats: () => ({ seats: { dev: 'seat-dev' }, releaseSeat: 'release-1' }),
+  });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.ok(found.notes?.some((n) => n.includes('dev seat kept by its stored id') && n.includes('crew agents sync')));
+  assert.deepEqual(createsOf(calls), [], 'no row that could never be matched again');
+  assert.ok(found.problems.some((p) => p.includes('design seat') && p.includes('Agents table could not be read') && p.includes('never matched by name')));
+});
+
+test('discover() keeps an unlinked stored seat while the Agents row exists, rather than duplicating it (CREW-3448)', async (t) => {
+  const { restore, calls } = mockFetchCalls(seatRoutes([
+    { id: 'seat-dev', name: 'Studio box', ship_id: 'ship-1' }, ...ALL_LINKED.slice(1),
+    { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' },
+  ]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: () => ({ seats: { dev: 'seat-dev' }, releaseSeat: 'release-1' }) });
+  assert.equal(found.seats.dev, 'seat-dev');
+  assert.equal(found.notes?.length, 1);
+  assert.deepEqual(createsOf(calls), []);
+});
+
+test('discover() reports two rows linked to one Agents row unless the stored id settles it (CREW-3448)', async (t) => {
+  const rows = [
+    linked('dev', 'dev-a', 'Dev A'), linked('dev', 'dev-b', 'Dev B'), ...ALL_LINKED.slice(1),
+  ];
+  const first = mockFetchCalls(seatRoutes(rows));
+  const ambiguous = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
+  first.restore();
+  assert.equal(ambiguous.seats.dev, undefined);
+  assert.ok(ambiguous.problems.some((p) => p.includes('dev seat is ambiguous') && p.includes('dev-a') && p.includes('dev-b')));
+  assert.deepEqual(createsOf(first.calls), []);
+
+  const second = mockFetchCalls(seatRoutes(rows));
+  t.after(second.restore);
+  const settled = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: () => ({ seats: { dev: 'dev-b' }, releaseSeat: 'release-1' }) });
+  assert.equal(settled.seats.dev, 'dev-b');
+  assert.ok(!settled.problems.some((p) => p.includes('ambiguous')));
+});
+
+test('discover() keeps the Release row by its stored id, never by its name (CREW-3448)', async (t) => {
+  const { restore, calls } = mockFetchCalls(seatRoutes([...ALL_LINKED, { id: 'release-1', name: 'Release agent', ship_id: 'ship-1' }]));
+  t.after(restore);
+  const noStore = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP });
+  assert.equal(noStore.releaseSeat, 'created-row', 'a row named Release agent is not adopted without a stored id');
+  assert.equal(createsOf(calls, 'Release agent').length, 1);
+  const kept = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, storedSeats: STORED_RELEASE });
+  assert.equal(kept.releaseSeat, 'release-1');
+});
+
+test('discover() --dry-run reports a missing seat the same way without writing (CREW-3448)', async (t) => {
+  const { restore, calls } = mockFetchCalls(seatRoutes([{ id: 'name-only', name: 'Developer agent', ship_id: 'ship-1' }]));
+  t.after(restore);
+  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: SHIP, dryRun: true });
+  assert.equal(found.seats.dev, undefined);
+  assert.equal(found.seatRows?.find((r) => r.role === 'dev')?.action, 'would-create');
+  assert.ok(!calls.some((c) => c.method !== 'GET'));
 });

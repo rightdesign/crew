@@ -133,8 +133,11 @@ async function mockTracker(o: { projects: string[]; role?: string; holds?: Array
         return send(200, ['Issues', 'Comments', 'Crew', 'Ships'].map((n) => ({ id: `${p}:${n}`, name: n })));
       }
       if (/\/data-models\/[^/]+:Issues$/.test(path)) return send(200, { fields: [] });
+      // Seats are matched by Agent reference, so connect needs the persona rows (CREW-3448).
+      if (path === '/data-models/agents') return send(200, { id: 'agents-model' });
+      if (path === '/data-models/agents-model/records') return send(200, ['Developer', 'Design', 'QA', 'Triage', 'Pair'].map((n) => ({ id: `agent-${n}`, name: n })));
       if (/:Issues\/events$/.test(path)) return send(200, []);
-      if (/:Ships$/.test(path)) return send(200, { fields: [] });
+      if (/:(Ships|Crew)$/.test(path)) return send(200, { fields: [] });
       if (/:Ships\/records$/.test(path)) return req.method === 'POST' ? send(200, { id: 'ship1' }) : send(200, []);
       if (/:Crew\/records$/.test(path)) {
         return req.method === 'POST' ? send(200, { id: `new-${posts.length}` }) : send(200, o.holds ?? [{ id: 'h1', name: 'Me', email: 'me@x.test' }]);

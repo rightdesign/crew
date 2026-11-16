@@ -45,16 +45,22 @@ function mockCalls(routes: Record<string, unknown>) {
   return { restore: () => { globalThis.fetch = original; }, calls };
 }
 
+/** The route already stored its Release row (CREW-3448: it is never matched by name). */
+const STORED = () => ({ releaseSeat: 'rel' });
 const BASE = { baseUrl: 'https://example.test', apiKey: 'k', userAgent: 'crew-test' };
 const SEATS = (ship: string) => [
-  { id: 'seat-dev', name: 'Developer agent', ship_id: ship }, { id: 'seat-design', name: 'Design agent', ship_id: ship },
-  { id: 'seat-qa', name: 'QA agent', ship_id: ship }, { id: 'seat-triage', name: 'Triage agent', ship_id: ship },
+  { id: 'seat-dev', name: 'Developer agent', agent_id: 'agent-dev', ship_id: ship }, { id: 'seat-design', name: 'Design agent', agent_id: 'agent-design', ship_id: ship },
+  { id: 'seat-qa', name: 'QA agent', agent_id: 'agent-qa', ship_id: ship }, { id: 'seat-triage', name: 'Triage agent', agent_id: 'agent-triage', ship_id: ship },
   { id: 'rel', name: 'Release agent', ship_id: ship },
 ];
 
 function routes(ships: unknown[], withColumn: boolean, shipForSeats: string) {
   return {
     '/api/workspaces/issues': { id: 'ws-1' },
+    '/api/data-models/agents?workspaceId=ws-1': { id: 'agents-model' },
+    '/api/data-models/agents-model/records?limit=200': [
+      { id: 'agent-dev', name: 'Developer' }, { id: 'agent-design', name: 'Design' }, { id: 'agent-qa', name: 'QA' }, { id: 'agent-triage', name: 'Triage' },
+    ],
     '/api/auth/me?workspaceId=ws-1': { role: 'WORKSPACE_ADMIN' },
     '/api/projects/bar?workspaceId=ws-1': { id: 'proj-1', name: 'Bar' },
     '/api/data-models?projectId=proj-1': [
@@ -73,7 +79,7 @@ test('discover() matches the Ships row by machine id when the hostname drifted: 
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
   });
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'New Name', machineId: 'M1' } });
+  const found = await discover({ ...BASE, storedSeats: STORED, workspace: 'issues', project: 'bar', ship: { name: 'New Name', machineId: 'M1' } });
   assert.equal(found.shipRow?.id, 'ship-1');
   assert.equal(found.shipRow?.matchedBy, 'machine_id');
   assert.equal(found.shipRow?.name, 'Old Name');
@@ -91,7 +97,7 @@ test('discover() pushes a changed crew.yaml name to the row when the baseline sa
   });
   t.after(restore);
   const found = await discover({
-    ...BASE, workspace: 'issues', project: 'bar',
+    ...BASE, storedSeats: STORED, workspace: 'issues', project: 'bar',
     ship: { name: 'New Name', machineId: 'M1', lastSyncedName: () => 'Old Name' },
   });
   assert.equal(found.shipNameAdopted, undefined);
@@ -104,7 +110,7 @@ test('discover() matches by name and writes the machine id onto the row (ISSUE-2
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
   });
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'Box', machineId: 'M1' } });
+  const found = await discover({ ...BASE, storedSeats: STORED, workspace: 'issues', project: 'bar', ship: { name: 'Box', machineId: 'M1' } });
   assert.equal(found.shipRow?.matchedBy, 'name');
   assert.deepEqual(calls.find((c) => c.method === 'PATCH' && c.key.endsWith('/ship-1'))?.body, { machine_id: 'M1' });
 });
@@ -112,7 +118,7 @@ test('discover() matches by name and writes the machine id onto the row (ISSUE-2
 test('discover() gives two machines with the same hostname two rows (ISSUE-2249)', async (t) => {
   const { restore, calls } = mockCalls(routes([{ id: 'ship-1', name: 'Box', machine_id: 'OTHER' }], true, 'ship-new'));
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'Box', machineId: 'M1' } });
+  const found = await discover({ ...BASE, storedSeats: STORED, workspace: 'issues', project: 'bar', ship: { name: 'Box', machineId: 'M1' } });
   assert.equal(found.shipRow?.action, 'created');
   const create = calls.find((c) => c.method === 'POST' && c.key === '/api/data-models/ships-model/records');
   assert.equal((create?.body as { machine_id?: string }).machine_id, 'M1');
@@ -124,7 +130,7 @@ test('discover() without the machine_id column behaves exactly as before and nev
     '/api/data-models/ships-model/records/ship-1': { id: 'ship-1' },
   });
   t.after(restore);
-  const found = await discover({ ...BASE, workspace: 'issues', project: 'bar', ship: { name: 'Box', machineId: 'M1' } });
+  const found = await discover({ ...BASE, storedSeats: STORED, workspace: 'issues', project: 'bar', ship: { name: 'Box', machineId: 'M1' } });
   assert.equal(found.shipRow?.matchedBy, 'name');
   assert.ok(!calls.some((c) => c.method !== 'GET' && JSON.stringify(c.body ?? {}).includes('machine_id')));
 });

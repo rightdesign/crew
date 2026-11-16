@@ -38,7 +38,7 @@ import {
   ticketsByRepo, configuredMembers, crewVersion, routeSlug,
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
-  splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, type Ship, releaseSeat, shipPair,
+  splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, type Ship, releaseSeat, shipPair, readStoredSeats,
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
@@ -4675,7 +4675,7 @@ switch (command) {
     };
 
     const runConnect = async (ws: string, proj: string | undefined): Promise<void> => {
-      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json });
+      let found = await discover({ ...authOpts, workspace: ws, project: proj, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json, storedSeats: (r) => readStoredSeats(cfg.ship.stateDir, r) });
       // CREW-2668: the route and `hydrateApiKeys` use `found.workspaceSlug`, so
       // the keychain entry and remembered pointer must sit under it too.
       if (store && keychainBacked && sessionAddress && sessionAddress !== found.workspaceSlug) {
@@ -4716,7 +4716,7 @@ switch (command) {
           const installedSlug = await offerTemplateInstall(authOpts, found.workspaceId, canAsk ? undefined : true);
           if (installedSlug) {
             connectEvents.emit('template_installed', `installed project ${installedSlug}`, { projectSlug: installedSlug });
-            found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json });
+            found = await discover({ ...authOpts, workspace: ws, project: installedSlug, area: value('area'), ship, dryRun, interactive: canAsk || connectEvents.json, storedSeats: (r) => readStoredSeats(cfg.ship.stateDir, r) });
           }
         }
       }
@@ -5096,6 +5096,7 @@ switch (command) {
         emit.note(`Provisioned for this machine (${ship.name}):`);
         for (const p of found.provisioning) emit.note(`  - ${p}`);
       }
+      for (const n of found.notes ?? []) emit.note(`Note: ${n}`);
       if (found.problems.length) {
         emit.warn(`Unresolved — fix these before arming it:\n${found.problems.map((p) => `  - ${p}`).join('\n')}`);
         for (const p of found.problems) connectEvents.emit('problem', p, { stage: 'discover' });

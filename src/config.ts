@@ -1024,6 +1024,20 @@ function readResolvedFile(stateDir: string, route: string): any {
   }
 }
 
+/**
+ * The seat ids a route's resolved state already holds (CREW-3448), for
+ * `connect` to keep a seat it cannot match by Agent reference. Best effort: an
+ * unreadable or absent file is "nothing stored".
+ */
+export function readStoredSeats(stateDir: string, route: string): { seats: Partial<Record<RoleName, string>>; releaseSeat?: string } | undefined {
+  let raw: any;
+  try { raw = readResolvedFile(stateDir, route); } catch { return undefined; }
+  if (!raw || typeof raw !== 'object') return undefined;
+  const seats: Partial<Record<RoleName, string>> = {};
+  for (const role of ROLE_NAMES) if (typeof raw.seats?.[role] === 'string' && raw.seats[role]) seats[role] = raw.seats[role];
+  return { seats, ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}) };
+}
+
 function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undefined {
   if (!raw) return undefined;
   const seats: Partial<Record<RoleName, string>> = {};

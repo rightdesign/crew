@@ -10,8 +10,8 @@ and reports back on the board.
 
 Each **seat** is a row in the board's Crew table that happens to be a robot,
 with a brief (`prompts/<promptSet>/`, see "Prompt sets" below) and a slice
-of the queue. A seat is named in that table and answers to that name, in the
-queue digest and in the comments it writes on tickets. Everything the crew
+of the queue. A seat is linked to its Agents row and is found by that link, not its name; it
+answers to the name in that table, in the queue digest and in the comments it writes on tickets. Everything the crew
 knows about a run — what to build, what is blocked, what has shipped — is
 table data, and every step it takes is visible as a status change or a
 comment on the ticket. There is no hidden state and no queue but the board.

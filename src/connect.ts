@@ -90,6 +90,14 @@ export interface DiscoverOptions extends AuthOptions {
    * leave the route with none.
    */
   interactive?: boolean;
+  /**
+   * The seat ids this route already has stored (resolved state), looked up by
+   * route string once discovery knows it, like `ship.lastSyncedName`
+   * (CREW-3448). Seats are matched by their Agent reference; a stored id is
+   * what keeps a seat that is not linked yet (or whose Agents row cannot be
+   * read) from being duplicated. Absent: nothing stored.
+   */
+  storedSeats?: (route: string) => { seats?: Partial<Record<RoleName, string>>; releaseSeat?: string } | undefined;
 }
 
 /** One workspace this key's identity can see, whichever workspace minted it. */
@@ -221,6 +229,8 @@ export interface Discovered {
    * provisioning a machine is never a silent write.
    */
   provisioning: string[];
+  /** Seat decisions worth telling the operator that are not writes, e.g. a seat kept by its stored id that is not linked to its Agent (CREW-3448). */
+  notes?: string[];
   /**
    * The Ships row this machine resolved to and whether this pass created it,
    * for `crew connect --json`'s `ship_row` event (CREW-2235). Unset whenever
@@ -440,22 +450,28 @@ export async function listWorkspaces(o: AuthOptions): Promise<WorkspaceOption[]>
 
 const eq = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.trim().toLowerCase();
 
+type SeatRow = { id: string; name?: string | null; agent_id?: string | null };
+
+/** How a role's Crew row was settled; `ambiguous` lists every row that claimed the role. */
+interface SeatPick { id?: string; via?: 'agent' | 'stored'; ambiguous?: SeatRow[] }
+
 /**
- * Names a role's Crew row. A row linked to the role's Agent persona
- * (`agentId`) wins however it was renamed (CREW-3326: a user renaming a seat
- * to tell ships apart must not make `connect` create a second one); rows with
- * no `agent_id` fall back to the name containing the role word.
+ * Picks a role's Crew row by identity, never by name (CREW-3448): a row's Name
+ * is user data an operator can change to anything. The row whose `agent_id` is
+ * the role's Agents row (`agentId`) is the seat. Several such rows are an
+ * ambiguity, reported rather than settled by position, unless the id this
+ * route already stored is one of them. With no such row, or no Agents row to
+ * compare against, the stored id is kept while its row still exists in `rows`
+ * and is not linked to some other Agent (an unlinked seat from before
+ * `crew agents sync` ran must not be duplicated by the next connect).
  */
-function seatFor(
-  rows: Array<{ id: string; name?: string | null; agent_id?: string | null }>,
-  role: string,
-  agentId?: string,
-): string | undefined {
-  const linked = agentId ? rows.find((x) => x.agent_id === agentId) : undefined;
-  if (linked) return linked.id;
-  const byName = (x: { name?: string | null }) => (x.name ?? '').toLowerCase().includes(role.toLowerCase());
-  const r = rows.find((x) => !x.agent_id && byName(x)) ?? rows.find(byName);
-  return r?.id;
+function pickSeat(rows: SeatRow[], agentId: string | undefined, storedId?: string): SeatPick {
+  const linked = agentId ? rows.filter((x) => x.agent_id === agentId) : [];
+  if (storedId && linked.some((x) => x.id === storedId)) return { id: storedId, via: 'agent' };
+  if (linked.length === 1) return { id: linked[0]!.id, via: 'agent' };
+  if (linked.length > 1) return { ambiguous: linked };
+  const kept = storedId ? rows.find((x) => x.id === storedId && (!agentId || !x.agent_id)) : undefined;
+  return kept ? { id: kept.id, via: 'stored' } : {};
 }
 
 /** The tables a route cannot work without — `Issues` alone gates whether a project qualifies. */
@@ -478,7 +494,7 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   const ws = await get<{ id: string; slug: string; path?: string; name?: string }>(o, `/workspaces/${encodeURIComponent(o.workspace).replace(/%3A/gi, ':')}`);
   const out: Discovered = {
     workspaceId: ws.id, workspaceSlug: ws.path ?? ws.slug, workspaceName: ws.name,
-    models: {}, seats: {}, holds: [], candidates: [], problems, provisioning,
+    models: {}, seats: {}, holds: [], candidates: [], problems, provisioning, notes: [],
   };
 
   // Own role, not anyone else's — `/auth/me` derives it the same way for an
@@ -869,17 +885,19 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   // agents.ts), not one of this project's own data models, so it is looked
   // up by its fixed tableName rather than through `find()` above.
   let agentIdFor: (role: RoleName) => string | undefined = () => undefined;
-  if (shipRowId || o.ship) {
+  // Why a role has no Agents row to match by, for the problem it is reported as.
+  let agentsGap: (role: RoleName) => string = () => 'the Agents table could not be read with this key';
+  if (out.models.crew) {
     try {
       const agentsModel = await get<{ id: string }>(o, `/data-models/agents?workspaceId=${ws.id}`);
       const agentRows = await get<Array<{ id: string; name?: string | null }>>(
         o, `/data-models/${agentsModel.id}/records?limit=200`,
       );
       agentIdFor = (role) => agentRows.find((r) => r.name === PERSONA_NAME[role])?.id;
+      agentsGap = (role) => `the Agents table has no "${PERSONA_NAME[role]}" row`;
     } catch {
-      // No Agents table yet, or unreadable — the Crew row still gets
-      // created below, just without an agent_id; `crew agents sync` links
-      // it the first time someone runs that.
+      // No Agents table yet, or unreadable: seats cannot be matched by
+      // reference, so they are kept by stored id or reported (CREW-3448).
     }
   }
 
@@ -910,48 +928,60 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     const scoped = seatShipId ? rows.filter((r) => r.ship_id === seatShipId) : rows.filter((r) => !r.ship_id);
     // A row with no `ship_id` predates multi-machine support and implicitly
     // represents a single shared instance (see the ticket's own framing,
-    // ISSUE-610) — claimed by name the first time a real ship connects and
-    // finds one, rather than left to be duplicated by a fresh create below.
+    // ISSUE-610) — claimed the first time a real ship connects and finds one
+    // linked to the role's Agents row, rather than left to be duplicated by a
+    // fresh create below. Never claimed by name (CREW-3448).
     const unclaimed = seatShipId ? rows.filter((r) => !r.ship_id) : [];
+    const stored = o.storedSeats?.(`${out.workspaceSlug}/${out.projectSlug ?? out.projectId}`);
+    const listRows = (rs: SeatRow[]) => rs.map((r) => `"${r.name ?? ''}" (${r.id})`).join(', ');
 
     for (const role of ['dev', 'design', 'qa', 'triage'] as const) {
-      const searchTerm = role === 'dev' ? 'develop' : role;
-      let id = seatFor(scoped, searchTerm, agentIdFor(role));
+      const agentId = agentIdFor(role);
+      let pick = pickSeat(scoped, agentId, stored?.seats?.[role]);
+      let id = pick.id;
       let seatAction: 'matched' | 'claimed' | 'created' | 'would-create' = 'matched';
-      if (!id && seatShipId && !shipRowId) {
-        // Dry run against an existing Ships row: preview what a real run does.
-        const legacyId = seatFor(unclaimed, searchTerm, agentIdFor(role));
-        if (legacyId) {
-          id = legacyId;
+      if (!id && !pick.ambiguous && agentId && seatShipId) {
+        const legacy = pickSeat(unclaimed, agentId);
+        if (legacy.ambiguous) pick = legacy;
+        else if (legacy.id) {
+          id = legacy.id;
           seatAction = 'claimed';
+          // Dry run against an existing Ships row: preview what a real run does.
+          if (shipRowId) {
+            await patch(o, `/data-models/${out.models.crew}/records/${id}`, { ship_id: shipRowId });
+            provisioning.push(`claimed existing Crew row for the ${role} seat`);
+          }
         }
-      } else if (!id && shipRowId) {
-        const legacyId = seatFor(unclaimed, searchTerm, agentIdFor(role));
-        if (legacyId) {
-          await patch(o, `/data-models/${out.models.crew}/records/${legacyId}`, { ship_id: shipRowId });
-          id = legacyId;
-          seatAction = 'claimed';
-          provisioning.push(`claimed existing Crew row for the ${role} seat`);
-        } else {
+      }
+      if (pick.ambiguous) {
+        problems.push(`${pick.ambiguous.length} Crew rows on this ship are linked to the ${PERSONA_NAME[role]} agent, so the ${role} seat is ambiguous: ${listRows(pick.ambiguous)} — unlink all but one`);
+        continue;
+      }
+      if (!id && agentId) {
+        if (shipRowId) {
           const created = await post<{ id: string }>(o, `/data-models/${out.models.crew}/records`, {
             name: `${PERSONA_NAME[role]} agent`,
             ship_id: shipRowId,
-            ...(agentIdFor(role) ? { agent_id: agentIdFor(role) } : {}),
+            agent_id: agentId,
           });
           id = created.id;
           seatAction = 'created';
           provisioning.push(`created Crew row for the ${role} seat`);
+        } else if (o.dryRun && out.shipsModelId) {
+          // Nothing qualifies and a real run would create the row: preview it
+          // rather than reporting a problem. No id exists yet.
+          (out.seatRows ??= []).push({ role, id: '', action: 'would-create' });
+          continue;
         }
       }
       if (id) {
         out.seats[role] = id;
         const rowShip = rows.find((r) => r.id === id)?.ship_id ?? shipRowId ?? undefined;
         (out.seatRows ??= []).push({ role, id, action: seatAction, ...(rowShip ? { shipId: rowShip } : {}) });
-      } else if (o.dryRun && o.ship && out.shipsModelId) {
-        // Nothing qualifies and a real run would create the row: preview it
-        // rather than reporting a problem or a false match. No id exists yet.
-        (out.seatRows ??= []).push({ role, id: '', action: 'would-create' });
-      } else problems.push(`no Crew row looking like the ${role} seat — create one, or omit that role`);
+        if (pick.via === 'stored') (out.notes ??= []).push(`${role} seat kept by its stored id; it is not linked to its Agent — run \`crew agents sync\` to link it`);
+      } else if (!agentId) {
+        problems.push(`${role} seat: ${agentsGap(role)}, so no Crew row can be matched or created for it (seats are never matched by name) — run \`crew agents sync\`, then connect again`);
+      } else problems.push(`no Crew row on this ship is linked to the ${PERSONA_NAME[role]} agent for the ${role} seat — link one, or omit that role`);
     }
     // `pair` is optional and best-effort, unlike the four polled seats above:
     // a workspace with no interactive-session row yet is not a problem, just
@@ -962,17 +992,26 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // ticket Pair is working must stay off-limits to the polled seats the
     // same way one a person is driving does. Never claimed or created
     // (unlike the four polled seats): an interactive session's own row is
-    // a person's to place, not this command's.
-    const pairId = seatFor(scoped, 'pair') || (seatShipId ? seatFor(unclaimed, 'pair') : undefined);
-    if (pairId) out.seats.pair = pairId;
+    // a person's to place, not this command's. Matched by Agent reference only.
+    const pairAgent = agentIdFor('pair');
+    let pairPick = pickSeat(scoped, pairAgent, stored?.seats?.pair);
+    if (!pairPick.id && !pairPick.ambiguous && pairAgent && seatShipId) pairPick = pickSeat(unclaimed, pairAgent);
+    if (pairPick.ambiguous) {
+      problems.push(`${pairPick.ambiguous.length} Crew rows are linked to the Pair agent, so the pair seat is ambiguous: ${listRows(pairPick.ambiguous)} — unlink all but one`);
+    } else if (pairPick.id) {
+      out.seats.pair = pairPick.id;
+      if (pairPick.via === 'stored') (out.notes ??= []).push('pair seat kept by its stored id; it is not linked to its Agent — run `crew agents sync` to link it');
+    }
     // The per-ship "Release" row (CREW-1371 D5): release-phase comments and
     // failure tickets are written as this row, not the Developer agent. Only
     // ever scoped to this ship — an unscoped "Release" row would be shared by
     // every machine on the workspace, which is the very thing this avoids.
-    // Found-or-created like the polled seats, but never claimed from a legacy
-    // unscoped row and never given an agent_id: it has no persona to link.
+    // It has no Agents row to reference and is never matched by name
+    // (CREW-3448): the id stored for this route is kept while its row still
+    // exists on this ship, and a row is created only when there is none. A
+    // machine reconnecting with no stored state therefore creates a new one.
     if (shipRowId) {
-      const releaseId = seatFor(scoped, 'release');
+      const releaseId = stored?.releaseSeat && scoped.some((r) => r.id === stored.releaseSeat) ? stored.releaseSeat : undefined;
       if (releaseId) out.releaseSeat = releaseId;
       else {
         const created = await post<{ id: string }>(o, `/data-models/${out.models.crew}/records`, {
