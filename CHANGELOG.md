@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.157.3] — 2026-11-16
+
+- CREW-3451 `crew connect` on a route crew.yaml already has now reports what it did (seats, resolved ids) instead of printing a placeholder block to paste, and a new route's block carries only real values.
+
 ## [0.157.2] — 2026-11-16
 
 - CREW-3449 A seat whose Crew row was deleted is now reported by `crew status`, `crew doctor` and the run cycle, with a `crew connect` remedy, instead of silently never picking up work.
