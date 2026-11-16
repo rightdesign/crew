@@ -231,7 +231,7 @@ are. See `src/epics.ts`.
 An epic's requirements document ("Map") is a row of a `Maps` table linked to
 the epic. A ticket filed from it cites it ("Map v1 §11"), and the document is
 in no repository, so the run's brief carries it: after the ticket banner, a
-"Map for <epic>" section. `crew connect` finds the table by name like Epics;
+`Map for <epic>` section. `crew connect` finds the table by name like Epics;
 a workspace without it, and a ticket without an epic, get the same brief as
 before.
 
