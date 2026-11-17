@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.159.3] — 2026-11-17
+
+- CREW-3563 The test hook's per-test timeout is 300s instead of 90s, so a heavily loaded machine no longer fails a release on a test that passes on rerun.
+
 ## [0.159.2] — 2026-11-17
 
 - CREW-3558 A seat now asks its question plainly, asks for a reply in a comment, and parks a ticket again when it comes back unanswered
