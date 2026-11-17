@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.159.2] — 2026-11-17
+
+- CREW-3558 A seat now asks its question plainly, asks for a reply in a comment, and parks a ticket again when it comes back unanswered
+
 ## [0.159.1] — 2026-11-16
 
 - CREW-3475 The ci_run_failed ship attention item now carries the failing run's URL and whether the release is blocked as structured `ci` fields, in `crew status --json` and the Ships row.
