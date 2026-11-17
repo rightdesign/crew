@@ -103,6 +103,21 @@ for (const preset of ['default', 'dev-qa']) {
   });
 }
 
+// CREW-3558. A person-stop leads with the question, asks for a reply in a
+// comment, and an unanswered return to accepted is not treated as an answer.
+for (const preset of ['default', 'dev-qa']) {
+  test(`${preset} common persona asks plainly and re-asks when unanswered (CREW-3558)`, () => {
+    const text = readFileSync(join(PROMPTS, preset, 'skills', 'crew-lane-agent.md'), 'utf8');
+    assert.match(text, /comment \*\*opens with the question\*\*/);
+    assert.match(text, /Reply in a comment on this ticket\./);
+    assert.match(text, /never tells the person to change the status/);
+    assert.match(text, /If you just approve this without replying, I\s+will <default>/);
+    assert.match(text, /A parked ticket that comes back unanswered is not an answer/);
+    assert.match(text, /park it again the same way/);
+    assert.doesNotMatch(text, /set status back to\s+`accepted` \/ clear/);
+  });
+}
+
 // CREW-3182. Agents get a person's attention with an @-mention token.
 for (const preset of ['default', 'dev-qa']) {
   test(`${preset} common persona teaches @-mentions for attention (CREW-3182)`, () => {

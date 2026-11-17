@@ -25,7 +25,10 @@ No worktree and no code changes; only an answer.
    rests on, the way a closing comment cites what changed.
 4. Set `status` to `needs_info`, `needs_planning` to true, and `assignee_id`
    to the Crew row in the ticket's `park to` cell (none: leave it unassigned,
-   no personal address). This is the designed ending
+   no personal address).
+   Close the answer by saying what you need from the person in one plain
+   sentence and asking them to reply in a comment — never to change the
+   status (see "Stopping" in the shared policy). This is the designed ending
    for every Question — "answered, awaiting a person to decide what's next" —
    not a fallback for one that went wrong.
 

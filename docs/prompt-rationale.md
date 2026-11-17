@@ -73,6 +73,14 @@ tracker.
   `needs_info` plus the operator as assignee, and a ship problem sets the
   ship's flag rather than touching the ticket. Every stop comment names its
   un-park condition.
+- **Questions lead, answers are comments, an unanswered return is not an
+  answer** (CREW-3558): a person new to the tracker read "set status back to
+  `accepted`" as "approve" and moved parked tickets without reading the
+  question, so the seat resumed on a guess. A person-stop now opens with the
+  plain question, asks for a reply in a comment, and states a default when it
+  is a decision. A ticket back at `accepted` with no person's comment since the
+  question proceeds on the stated default (and says so) or is parked again
+  with the question restated.
 
 ## Building
 

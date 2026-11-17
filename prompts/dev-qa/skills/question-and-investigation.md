@@ -23,7 +23,10 @@ No worktree and no code changes; only an answer.
 3. Post the answer as its own comment, citing the files, lines or tickets it
    rests on, the way a closing comment cites what changed.
 4. Set `status` to `needs_info`, `needs_planning` to true, and `assignee_id`
-   to the operator's Crew row (see the roster). This is the designed ending
+   to the operator's Crew row (see the roster).
+   Close the answer by saying what you need from the person in one plain
+   sentence and asking them to reply in a comment — never to change the
+   status (see "Stopping" in the shared policy). This is the designed ending
    for every Question — "answered, awaiting a person to decide what's next" —
    not a fallback for one that went wrong.
 

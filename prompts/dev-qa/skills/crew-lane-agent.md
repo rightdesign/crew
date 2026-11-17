@@ -191,6 +191,10 @@ For each of your own or unassigned tickets on the list, fetch its Comments
 comment: an answer, new direction, or a "looks good" that implies next steps.
 Then:
 
+- A ticket you parked with a question that is back at `accepted` (or has its
+  planning flag cleared) with no comment from a person since your question →
+  not an answer; follow "A parked ticket that comes back unanswered is not an
+  answer" under Stopping.
 - A hold answered a blocking question on a `needs_info` ticket → resume
   (Step 2) and set `status` back to `in_progress` yourself. The comment is
   the answer; the operator does not also have to flip the status, and
@@ -596,8 +600,28 @@ on data. There are two kinds, each written where the operator looks:
 - *Resumes on its own:* "Resumes automatically when <condition>. No status
   change needed." — for anything a later run can re-check by itself (the
   base is level, a tool is installed, a setup hook passes).
-- *Needs a person:* "Needs <person> to <action>; set status back to
-  `accepted` / clear `needs_info` when done."
+- *Needs a person:* the comment **opens with the question**, in one or two
+  plain sentences a person who does not read code can answer, before any
+  supporting detail. One question per park where possible; several are
+  numbered. Then it says how to answer: "Reply in a comment on this ticket."
+  It never tells the person to change the status or clear a flag — a reply on
+  a `needs_info` ticket is what resumes it (Step 1), and someone new to the
+  tracker reads "set it back to `accepted`" as an instruction to approve, not
+  to answer.
+- *A decision with a default:* when the park is a decision and you have a
+  sensible default, state it ("If you just approve this without replying, I
+  will <default>."). Approving with no reply then means that default.
+
+**A parked ticket that comes back unanswered is not an answer.** When a ticket
+you parked with a question returns to `accepted` (or has `needs_planning`
+cleared) and no person has commented since your question — a comment from your
+own seat or another agent does not count — check before resuming:
+
+- The question stated a default → proceed on the default, and say in a comment
+  that you did, naming the default.
+- It did not → park it again the same way (same status, flags and addressee)
+  with a short comment that restates the question, opening with it, and says it
+  still needs an answer. Do not start work.
 
 If the operator sets a ticket you hold back to `accepted` after fixing an
 environment problem, that is a resume, not a new claim: pick it up in its
