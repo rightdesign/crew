@@ -49,8 +49,11 @@ hooks:
 
   # Runs directly, not through `pnpm test`: type stripping means there is no
   # build to do first, and the suite includes an in-process fake board so it
-  # touches no network.
-  test: node --test --test-timeout 90000 --experimental-strip-types test/*.test.ts
+  # touches no network. The per-test timeout is wall-clock headroom, not a
+  # speed target: release-run tests drive real git and take ~11s alone, but
+  # a release gate or several lanes running at once (load average 20+) made
+  # one overrun 90s and fail a release that passed on rerun (CREW-3563).
+  test: node --test --test-timeout 300000 --experimental-strip-types test/*.test.ts
 
   # Typecheck, then rebuild dist/cli.js — bin/crew runs the built output
   # when present, so a release that skips this step leaves every local
