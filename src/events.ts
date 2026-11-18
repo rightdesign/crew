@@ -27,6 +27,13 @@ export const STEPS = [
 ] as const;
 export type Step = (typeof STEPS)[number];
 
+/**
+ * CREW-3645: a one-shot command's own failure is stamped with the command
+ * (`connect`, `repos`, ...) rather than a cycle step, so a view filtering by
+ * step never files it under `poll`.
+ */
+export type EventStep = Step | (string & {});
+
 export type Level = 'info' | 'warn' | 'error';
 
 export interface CrewEvent {
@@ -34,7 +41,7 @@ export interface CrewEvent {
   /** Groups every event of one poll cycle, so a view can show "this cycle". */
   cycle: string;
   route: string;
-  step: Step;
+  step: EventStep;
   level: Level;
   message: string;
   role?: string;
@@ -170,7 +177,7 @@ export class Emitter {
     const e: CrewEvent = {
       at: this.now().toISOString(),
       cycle: this.cycle,
-      route: this.opts.route,
+      route: extra.route ?? this.opts.route,
       step: extra.step ?? this.step,
       level: extra.level ?? 'info',
       message,

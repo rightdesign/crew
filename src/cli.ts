@@ -1035,11 +1035,22 @@ function routineLine(line: string): void {
 }
 
 /**
+ * CREW-3645: where a command's own failure is filed. The step is the command
+ * that ran, and the route is the one the command was given, if it names a
+ * configured route. A fleet-wide command's emitter is stamped with `routes[0]`
+ * and the step `poll`, neither of which the failing command had anything to do with.
+ */
+function failureScope(): { step: string; route: string } {
+  const given = value('route') ?? positional[1];
+  return { step: command ?? 'crew', route: given !== undefined && cfg.routes.some((r) => r.route === given) ? given : '' };
+}
+
+/**
  * CREW-3267: a command's own failure, through the Emitter (so it is logged and
  * rendered like every other event) and ending with what to run next. Exits.
  */
 function die(command: string, message: string, fix: string, code = 2): never {
-  emit.error(withFix(`${command}: ${message}`, fix));
+  emit.error(withFix(`${command}: ${message}`, fix), failureScope());
   return process.exit(code);
 }
 
@@ -5090,7 +5101,7 @@ switch (command) {
       // CREW-2910: a managed ship runs its agents in the sandbox image, which carries the harness; the host has none, so a missing `claude` is expected there.
       if (firstRunFromFlags && agentBinSearched && !dryRun && !isManagedShipKind(value('ship-kind'))) {
         const msg = `no agent binary: "claude" was not found on PATH or in ${agentBinSearched.join(', ')} — pass --agent-bin /absolute/path`;
-        emit.error(`crew connect: ${msg}`);
+        emit.error(`crew connect: ${msg}`, failureScope());
         stopWithProblem(msg, 'wizard');
       }
       // CREW-3451: a key handed in by flag or environment goes into the key store

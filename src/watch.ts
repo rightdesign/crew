@@ -10,7 +10,7 @@
  */
 
 import { watch as watchFile, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
-import type { CrewEvent, Step } from './events.ts';
+import type { CrewEvent, EventStep, Step } from './events.ts';
 
 const E = '\x1b[';
 const dim = (s: string) => `${E}2m${s}${E}0m`;
@@ -31,7 +31,7 @@ const STEP_ORDER: Step[] = ['poll', 'sweep', 'select', 'worktree', 'agent', 'rec
  * "current" made the header claim the crew was working a ticket it had merely
  * commented about. A monitor that misattributes work is worse than none.
  */
-const WORKING_STEPS = new Set<Step>(['worktree', 'agent', 'reconcile', 'merge', 'release']);
+const WORKING_STEPS = new Set<string>(['worktree', 'agent', 'reconcile', 'merge', 'release']);
 
 export interface WatchFilter {
   role?: string;
@@ -90,7 +90,7 @@ export function formatLine(e: CrewEvent, showRoute = false): string {
 export interface CycleState {
   cycle: string;
   route: string;
-  step: Step;
+  step: EventStep;
   role?: string;
   ticket?: string;
   startedAt: string;
