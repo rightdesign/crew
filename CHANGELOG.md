@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.163.1] — 2026-11-18
+
+- CREW-3643 Tracker interface notices are kept per route, so an undeclared app on a multi-route ship raises one standing item instead of a warning every cycle.
+
 ## [0.163.0] — 2026-11-18
 
 - CREW-3638 The work tracker interface (now 1.3) lets the generated key roles be computed fields and asks for a file field for attachments, so the Issues app can declare it.
