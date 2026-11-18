@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.164.3] — 2026-11-18
+
+- CREW-3689 An idle crew member no longer shows the last ticket it worked on as its current issue.
+
 ## [0.164.2] — 2026-11-18
 
 - CREW-3686 The hand-off guard repairs a worktree on a misnamed branch itself when the contract branch is only behind, and parks a ticket with a diagnosis instead of repeating the same bounce.
