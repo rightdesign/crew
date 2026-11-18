@@ -11,7 +11,7 @@ import {
   type InterfaceMapping,
 } from '../src/tracker-interface.ts';
 import {
-  checkTrackerInterface, INTERFACE_MISMATCH_KEY, INTERFACE_UNDECLARED_KEY, mappingKey, type InterfaceState,
+  checkTrackerInterface, INTERFACE_MISMATCH_KEY, INTERFACE_UNDECLARED_KEY, INTERFACE_OVERRIDE_KEY, interfaceKey, mappingKey, type InterfaceState,
 } from '../src/tracker-interface-read.ts';
 import { openShipAttention } from '../src/ship-attention.ts';
 import { Emitter } from '../src/events.ts';
@@ -116,7 +116,7 @@ const fresh = () => {
 const declared = (over: Partial<Extract<InterfaceState, { kind: 'declared' }>> = {}): InterfaceState => ({
   kind: 'declared', version: { major: 1, minor: 0 }, accepted: true, mapping: renamedMapping(), conforms: true, unmet: [], ...over,
 });
-const items = (state: State, key: string) => openShipAttention(state).filter((i) => i.key === key);
+const items = (state: State, key: string, route = 'r') => openShipAttention(state).filter((i) => i.key === interfaceKey(key, route));
 
 test('a nonconforming app stops claiming, raises one item, and clears itself once it conforms', async () => {
   const { state, emit } = fresh();
@@ -166,13 +166,54 @@ test('a crew.yaml contract override is reported ignored once the app declares', 
   const { state, emit } = fresh();
   const o = { state, emit, route: mkRoute({ contractAuthored: true }), ship };
   assert.equal(await checkTrackerInterface(o, { read: async () => declared() }), null);
-  assert.match(items(state, `${INTERFACE_MISMATCH_KEY}_override`)[0]!.message, /ignored/);
+  assert.match(items(state, INTERFACE_OVERRIDE_KEY)[0]!.message, /ignored/);
 });
 
 test('a mapping changed since connect stops claiming until connect reruns', async () => {
   const { state, emit } = fresh();
   const o = { state, emit, route: mkRoute({}, 'stale'), ship };
   assert.match((await checkTrackerInterface(o, { read: async () => declared() }))!, /rerun `crew connect`/);
+});
+
+test('a declared and an undeclared route keep one standing undeclared item and warn once across cycles', async () => {
+  const { state, emit } = fresh();
+  const warned: string[] = [];
+  const warn = emit.warn.bind(emit);
+  emit.warn = ((m: string, ...rest: unknown[]) => { warned.push(m); return (warn as (...a: unknown[]) => unknown)(m, ...rest); }) as typeof emit.warn;
+  const declaredRoute = mkRoute({ route: 'good' });
+  const undeclaredRoute = mkRoute({ route: 'bare' });
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await checkTrackerInterface({ state, emit, route: declaredRoute, ship }, { read: async () => declared() });
+    await checkTrackerInterface({ state, emit, route: undeclaredRoute, ship }, { read: async () => ({ kind: 'undeclared' }) });
+  }
+  const open = openShipAttention(state).filter((i) => i.kind === 'tracker_interface');
+  assert.equal(open.length, 1);
+  assert.equal(open[0]!.key, interfaceKey(INTERFACE_UNDECLARED_KEY, 'bare'));
+  assert.match(open[0]!.message, /route bare/);
+  assert.equal(warned.filter((m) => /no work-tracker interface/.test(m)).length, 1);
+});
+
+test('a blocking item for one route survives another route reading clean and clears with its own', async () => {
+  const { state, emit } = fresh();
+  const bad = mkRoute({ route: 'bad' });
+  const good = mkRoute({ route: 'good' });
+  const unmet = [{ roleId: 'issues.status', message: 'no column "x_status"' }];
+  assert.ok(await checkTrackerInterface({ state, emit, route: bad, ship }, { read: async () => declared({ conforms: false, unmet }) }));
+  assert.equal(await checkTrackerInterface({ state, emit, route: good, ship }, { read: async () => declared() }), null);
+  assert.equal(items(state, INTERFACE_MISMATCH_KEY, 'bad').length, 1);
+  assert.equal(items(state, INTERFACE_MISMATCH_KEY, 'bad')[0]!.message.startsWith('route bad:'), true);
+  assert.equal(await checkTrackerInterface({ state, emit, route: bad, ship }, { read: async () => declared() }), null);
+  assert.equal(items(state, INTERFACE_MISMATCH_KEY, 'bad').length, 0);
+});
+
+test('items an older crew left under the ship-wide keys are dropped', async () => {
+  const { state, emit } = fresh();
+  state.shipAttention().persist([
+    { kind: 'tracker_interface', key: INTERFACE_UNDECLARED_KEY, since: 'then', message: 'old' },
+    { kind: 'tracker_interface', key: INTERFACE_MISMATCH_KEY, since: 'then', message: 'old' },
+  ]);
+  await checkTrackerInterface({ state, emit, route: mkRoute(), ship }, { read: async () => declared() });
+  assert.equal(openShipAttention(state).filter((i) => i.kind === 'tracker_interface').length, 0);
 });
 
 // ---- the definition ----------------------------------------------------------

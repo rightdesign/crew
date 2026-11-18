@@ -20,8 +20,19 @@ import {
   type InterfaceMapping, type InterfaceVersion, type UnmetRoleLike,
 } from './tracker-interface.ts';
 
+/**
+ * The legacy ship-wide keys. Items are keyed per route now (CREW-3643); these
+ * remain as the base of the new keys and so the checker can drop any item an
+ * older crew left open under them.
+ */
 export const INTERFACE_MISMATCH_KEY = 'tracker_interface';
 export const INTERFACE_UNDECLARED_KEY = 'tracker_interface_undeclared';
+export const INTERFACE_OVERRIDE_KEY = `${INTERFACE_MISMATCH_KEY}_override`;
+
+/** One item per route and condition, so one route's clean read never closes another's item. */
+export const interfaceKey = (base: string, route: string): string => `${base}:${route}`;
+
+const routeLabel = (route: string): string => `route ${route}: `;
 
 export type Getter = <T>(path: string) => Promise<T>;
 
@@ -126,14 +137,14 @@ export function blockingMessage(state: InterfaceState, storedMappingKey: string 
 
 // ---- the per-cycle check -------------------------------------------------
 
-export function mismatchItem(message: string, nowIso = new Date().toISOString()): ShipAttentionItem {
-  return { kind: 'tracker_interface', key: INTERFACE_MISMATCH_KEY, since: nowIso, message };
+export function mismatchItem(route: string, message: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return { kind: 'tracker_interface', key: interfaceKey(INTERFACE_MISMATCH_KEY, route), since: nowIso, message: routeLabel(route) + message };
 }
-export function undeclaredItem(nowIso = new Date().toISOString()): ShipAttentionItem {
-  return { kind: 'tracker_interface', key: INTERFACE_UNDECLARED_KEY, since: nowIso, message: UNDECLARED_MESSAGE };
+export function undeclaredItem(route: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return { kind: 'tracker_interface', key: interfaceKey(INTERFACE_UNDECLARED_KEY, route), since: nowIso, message: routeLabel(route) + UNDECLARED_MESSAGE };
 }
-export function overrideItem(nowIso = new Date().toISOString()): ShipAttentionItem {
-  return { kind: 'tracker_interface', key: `${INTERFACE_MISMATCH_KEY}_override`, since: nowIso, message: OVERRIDE_IGNORED_MESSAGE };
+export function overrideItem(route: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return { kind: 'tracker_interface', key: interfaceKey(INTERFACE_OVERRIDE_KEY, route), since: nowIso, message: routeLabel(route) + OVERRIDE_IGNORED_MESSAGE };
 }
 
 function open(state: RaiseOptions['state'], key: string): string | null {
@@ -151,31 +162,37 @@ export async function checkTrackerInterface(
 ): Promise<string | null> {
   const r = o.route.resolved;
   if (!r?.projectId) return null;
+  const name = o.route.route;
+  const mismatchKey = interfaceKey(INTERFACE_MISMATCH_KEY, name);
+  const undeclaredKey = interfaceKey(INTERFACE_UNDECLARED_KEY, name);
+  const overrideKey = interfaceKey(INTERFACE_OVERRIDE_KEY, name);
+  // An older crew kept these three ship-wide; drop whatever it left open so none is stranded.
+  for (const legacy of [INTERFACE_MISMATCH_KEY, INTERFACE_UNDECLARED_KEY, INTERFACE_OVERRIDE_KEY]) clearShipAttention(o.state, legacy);
   const state = await (deps.read ?? readForRoute)(o.route, o.ship);
-  if (state.kind === 'unreadable') return open(o.state, INTERFACE_MISMATCH_KEY);
+  if (state.kind === 'unreadable') return open(o.state, mismatchKey);
 
   if (state.kind === 'undeclared') {
-    clearShipAttention(o.state, INTERFACE_MISMATCH_KEY);
-    clearShipAttention(o.state, `${INTERFACE_MISMATCH_KEY}_override`);
+    clearShipAttention(o.state, mismatchKey);
+    clearShipAttention(o.state, overrideKey);
     if (ALLOW_UNDECLARED_TRACKER_APPS) {
-      await raiseShipAttention(o, undeclaredItem());
+      await raiseShipAttention(o, undeclaredItem(name));
       return null;
     }
     const message = 'the app declares no work-tracker interface and this crew requires one — no ticket will be picked. Update the app’s Issues template. Resumes automatically once it declares one';
-    await raiseShipAttention(o, mismatchItem(message));
+    await raiseShipAttention(o, mismatchItem(name, message));
     return message;
   }
 
-  clearShipAttention(o.state, INTERFACE_UNDECLARED_KEY);
-  if (o.route.contractAuthored) await raiseShipAttention(o, overrideItem());
-  else clearShipAttention(o.state, `${INTERFACE_MISMATCH_KEY}_override`);
+  clearShipAttention(o.state, undeclaredKey);
+  if (o.route.contractAuthored) await raiseShipAttention(o, overrideItem(name));
+  else clearShipAttention(o.state, overrideKey);
 
   const message = blockingMessage(state, r.trackerInterface?.mappingKey);
   if (message) {
-    await raiseShipAttention(o, mismatchItem(message));
+    await raiseShipAttention(o, mismatchItem(name, message));
     return message;
   }
-  clearShipAttention(o.state, INTERFACE_MISMATCH_KEY);
+  clearShipAttention(o.state, mismatchKey);
   return null;
 }
 
