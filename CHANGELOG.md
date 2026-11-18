@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.162.0] — 2026-11-18
+
+- CREW-3633 The work tracker interface is now version 1.2 and adds optional roles for ticket description, needs planning, repository details and a crew member's workspace membership.
+
 ## [0.161.0] — 2026-11-18
 
 - CREW-3588 A seat parking a ticket for a person's answer can also write the question as a record with proposed answers (`crew ask`), on an app that maps the work tracker interface's optional questions part (1.1); apps at 1.0 are unchanged.
