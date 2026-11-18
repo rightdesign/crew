@@ -17,28 +17,15 @@ to mean exactly this, and needs no configuration at all.
 
 ### Which column plays which part
 
-| part | column | on |
-| --- | --- | --- |
-| key | `issue_id` | Issues |
-| title | `title` | |
-| status | `status` | |
-| assignee | `assignee_id` | |
-| priority | `priority` | |
-| severity | `severity` | |
-| slice (the area) | `project_id` | |
-| work mode | `work_mode` | Projects (the area row). `automatic` (default; missing column or null): every lane works by status. `manual` (`manualWorkMode`): no lane — dev, design, QA or triage — selects or claims the project's tickets. `hybrid` (`hybridWorkMode`): a lane considers a ticket only when its assignee is a Crew row linked to an Agent and not a hold of this ship; dev/design/QA only, triage works automatic projects alone. A ticket with no project is treated as manual. |
-| repo | `repo_id` | |
-| parent | `parent_id` | |
-| blocked by | `blocked_by` | |
-| updated at | `updated_at` | |
-| needs design | `needs_design` | |
-| attachments | `attachments` | a reference into the workspace's Media Library table, holding record ids; never written by the crew, but its field type's target table is read so the Environment section can name the table and the download recipe (CREW-1558) |
-| report type | `report_type`, with `coordinating` marking a coordinating parent (ISSUE-354); `coordinating`, `question` and `investigation` are all exempt from needing a Repo (ISSUE-387), but only `coordinating` rolls up children |
-| epic | `epic_id` | only rendered when the workspace has an `Epics` table (ISSUE-384) |
-| comment parent | `ticket_id` | Comments |
-| comment body / author | `body` / `team_member_id` | |
-| comment public reply / author name | `is_public_reply` / `author_name` | optional (CREW-1811): a reply from a public intake form carries no `team_member_id` and its `created_by_id` is the public view's creator, so the digest labels a flagged comment `<author_name or anonymous> (public reporter)` and never resolves it through the roster. A Comments table without the column is read as having no public replies; `crew doctor` reports which case applies |
-| crew name / ship | `name` / `ship_id` | Crew |
+The tables and columns crew reads, with their default names, shapes and what goes wrong without each, are the [work tracker reference](/work-tracker), generated from the interface definition in `src/tracker-interface.ts` (CREW-3579). An app that implements the interface declares its own names in a mapping and crew reads it through that; an app that declares nothing is read by the default names in that reference. A `contract:` override in `crew.yaml` is for an app that cannot declare; once the app does declare, the declaration wins and the override is reported as ignored.
+
+Notes on specific columns:
+
+- **work mode** (`work_mode`, on the Projects row): `automatic` (default; missing column or null) means every lane works by status. `manual` (`manualWorkMode`): no lane selects or claims the project's tickets. `hybrid` (`hybridWorkMode`): a lane considers a ticket only when its assignee is a Crew row linked to an Agent and not a hold of this ship; dev/design/QA only, triage works automatic projects alone. A ticket with no project is treated as manual.
+- **attachments** is a reference into the workspace's Media Library, holding record ids. Crew never writes it; it reads the field type's target table so the Environment section can name the table and the download recipe (CREW-1558).
+- **report type**: `coordinating` marks a coordinating parent (ISSUE-354); `coordinating`, `question` and `investigation` are all exempt from needing a Repo (ISSUE-387), but only `coordinating` rolls up children.
+- **epic** is only rendered when the workspace has an `Epics` table (ISSUE-384).
+- **comment public reply / author name** (CREW-1811): a reply from a public intake form carries no `team_member_id`, so the digest labels a flagged comment `<author_name or anonymous> (public reporter)` and never resolves it through the roster. A Comments table without the column is read as having no public replies; `crew doctor` reports which case applies.
 
 **Optional columns on Issues** (a table without one has simply not adopted the
 feature, and the crew writes around it): `held_by_ship_id` (the ship holding a
@@ -110,18 +97,7 @@ stating.
 
 ### What each status means
 
-| role | value | |
-| --- | --- | --- |
-| open | `new` `accepted` `blocked` `in_progress` `needs_info` `fixed` `qa` `verified` | everything a poll considers live |
-| resolved | `verified` `closed_deployed` `closed_wont_fix` `closed_duplicate` `closed_completed` `closed_cant_reproduce` | a blocker stops counting only at these. `closed_completed` is done-but-not-deployed (investigation-report-shaped tickets with no build to ship); `closed_cant_reproduce` is closed as written, unreproducible |
-| approved | `accepted` | **only a human sets this.** The runner never does |
-| parked | `blocked` | the sub-state of approved the runner parks into and out of |
-| building | `in_progress` | |
-| handoff | `fixed` | built, not yet checked |
-| verifying | `qa` | |
-| verified | `verified` | |
-| deployed | `closed_deployed` | |
-| needs a human | `needs_info` | the runner surfaces these, never moves them |
+The status meanings, which values are open and which are resolved, are in the [work tracker reference](/work-tracker#status-meanings).
 
 **`fixed` is open but NOT resolved**, and that is the single most load-bearing
 line in this document. `fixed` means an unmerged branch awaiting QA, so a

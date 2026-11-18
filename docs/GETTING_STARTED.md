@@ -823,6 +823,14 @@ is stored in plaintext there.
   an **Update** button; on the CLI, `npm install -g @tablation/crew` or the
   newest binary tarball) and it resumes on its own. Tracker writes from an
   older crew are also refused with HTTP 426.
+- `tracker_interface` in `crew status` or the log → the app declares the work
+  tracker interface but does not conform (the item lists each role, the shape
+  expected and what was found), declares a version this crew does not read (it
+  names both versions and which side to update), or its mapping changed since
+  `crew connect` (rerun it). Nothing is claimed and the heartbeat keeps
+  running; it resumes on its own once resolved. `tracker_interface_undeclared`
+  is only a notice: the app declares nothing, crew reads it by table name, and
+  the operator should update the app's template.
 - `push auth <repo>: FAILED` in `crew doctor` (or a failed push check in the
   app's Repositories step) → a seat could build a branch but not push it. The
   line carries the fix: `gh auth login` then `gh auth setup-git` for an HTTPS

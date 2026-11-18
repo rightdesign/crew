@@ -20,6 +20,7 @@ export default defineConfig({
     'GETTING_STARTED.md': 'getting-started.md',
     'REPO_SPEC.md': 'repo-spec.md',
     'CONTRACT.md': 'contract.md',
+    'WORK_TRACKER.md': 'work-tracker.md',
   },
   themeConfig: {
     search: { provider: 'local' },
@@ -41,6 +42,7 @@ export default defineConfig({
       { text: 'The repo spec (.crew.yaml)', link: '/repo-spec' },
       { text: 'Repository setup prompt', link: '/repo-setup-prompt' },
       { text: 'The contract', link: '/contract' },
+      { text: 'Work tracker reference', link: '/work-tracker' },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/rightdesign/crew' }],
   },

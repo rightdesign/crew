@@ -102,6 +102,13 @@ export interface HoldConfig { id: string; role?: string }
 /** The ids a route discovers from its project. Regenerable; never authored. */
 export interface ResolvedIds {
   workspaceId: string;
+  /**
+   * Set by `crew connect` when the app declares the work tracker interface
+   * (CREW-3579): its tables and columns came from the app's mapping, `mappingKey`
+   * is that mapping as connect read it (a change later is a mismatch until
+   * connect reruns), and a `contract:` override in crew.yaml is ignored.
+   */
+  trackerInterface?: { declared: true; version: string; mappingKey: string };
   projectId?: string;
   /** The `Projects` table, and the row this route's `area` names. */
   areaModelId?: string;
@@ -379,6 +386,8 @@ export interface Route {
    * machine may serve several workspaces with different conventions.
    */
   contract?: Partial<import('./contract.ts').Contract> | null;
+  /** True when crew.yaml itself carries a `contract:` override for this route (CREW-3579 reports it ignored once the app declares the interface). */
+  contractAuthored?: boolean;
   resolved?: ResolvedIds;
   /**
    * Where this route's four prompt files (`common.md` + `lane-<role>.md`)
@@ -1087,6 +1096,9 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     operator: m.req(raw.operator, `${where}.resolved.operator`),
     holds,
     contract: raw.contract ?? undefined,
+    ...(raw.trackerInterface?.declared === true && typeof raw.trackerInterface.mappingKey === 'string'
+      ? { trackerInterface: { declared: true as const, version: String(raw.trackerInterface.version ?? ''), mappingKey: raw.trackerInterface.mappingKey } }
+      : {}),
     ...(typeof raw.releaseSeat === 'string' && raw.releaseSeat ? { releaseSeat: raw.releaseSeat } : {}),
     ...(typeof raw.connectedAt === 'string' && raw.connectedAt ? { connectedAt: raw.connectedAt } : {}),
     ...(typeof raw.releaseAgentId === 'string' && raw.releaseAgentId ? { releaseAgentId: raw.releaseAgentId } : {}),
@@ -1583,7 +1595,11 @@ function parseOneRoute(
   // `crew.yaml` is the escape hatch, not the primary path.
   const resolvedFile = routeWellFormed ? readResolvedFile(stateDir, route) : undefined;
   result.resolved = parseResolved(resolvedFile ?? c?.resolved, missing, where);
-  result.contract = resolvedFile?.contract ?? c?.contract ?? null;
+  // CREW-3579: an app that declares the interface is read through its own
+  // declaration; a `contract:` override in crew.yaml never applies to it.
+  const declaredApp = resolvedFile?.trackerInterface?.declared === true;
+  result.contract = declaredApp ? resolvedFile?.contract ?? null : resolvedFile?.contract ?? c?.contract ?? null;
+  result.contractAuthored = !!c?.contract;
   missing.throwIfAny(file);
   return result;
 }

@@ -18,7 +18,12 @@
  * that part shipped as ISSUE-609's device-authorization handshake instead.
  */
 
-import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, EVENT_LOG_STATUS_UNTRACKED } from './contract.ts';
+import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, EVENT_LOG_STATUS_UNTRACKED, type Contract } from './contract.ts';
+import { contractFromMapping, describeDifferences, mappedTableName, TABLE_ENTRIES, acceptedLabel, versionLabel } from './tracker-interface.ts';
+import {
+  findImplementers, mappingKey, readInterfaceState, versionMismatchMessage,
+  type InterfaceState,
+} from './tracker-interface-read.ts';
 import { ensureLockRows, releaseLockScope, type LockProvisionClient } from './board-lock.ts';
 import { PERSONA_NAME } from './agents.ts';
 import { DEFAULT_BASE_URL, type RoleName } from './config.ts';
@@ -151,6 +156,16 @@ export interface Discovered {
   projectSlug?: string;
   projectName?: string;
   models: Record<string, string>;
+  /**
+   * What the app declares about the work tracker interface (CREW-3579).
+   * `declared` apps are read through their mapping: `models` and `contract`
+   * came from it, never from a table's display name.
+   */
+  interface?: InterfaceState;
+  /** The contract the declaration implies; set only for a declared, accepted app. */
+  declaredContract?: Contract;
+  /** The stored form of the mapping, for the poll's change check. */
+  declaredMappingKey?: string;
   /**
    * Status CHOICE values this project's Issues table defines that
    * DEFAULT_CONTRACT's own status names don't cover (ISSUE-467) — e.g. a
@@ -539,10 +554,16 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     // before the multi-project picker below, not instead of it: a default
     // candidate that doesn't actually qualify (missing tables) falls
     // through to the same picker/install-offer as if none was named.
+    // CREW-3579: an app that declares the work tracker interface is the
+    // project, whatever its tables are called. Exactly one declared app wins;
+    // none (or several) falls through to the undeclared rules below.
+    const implementers = await findImplementers((path) => get(o, path), ws.id);
+    const declaredHere = implementers === 'unreadable' ? [] : implementers.filter((i) => projects.some((p) => p.id === i.project.id));
     const issuesKeys = await resolveIssuesTemplateKeys(o);
-    const defaultCandidate = projects.find((p) => !!p.sourceTemplateId && issuesKeys.has(p.sourceTemplateId))
+    const declaredCandidate = declaredHere.length === 1 ? projects.find((p) => p.id === declaredHere[0]!.project.id) : undefined;
+    const defaultCandidate = declaredCandidate ?? projects.find((p) => !!p.sourceTemplateId && issuesKeys.has(p.sourceTemplateId))
       ?? projects.find((p) => eq(p.slug ?? '', 'issues'));
-    if (defaultCandidate && (await missingTables(o, defaultCandidate.id)).length === 0) {
+    if (defaultCandidate && (declaredCandidate || (await missingTables(o, defaultCandidate.id)).length === 0)) {
       out.projectId = defaultCandidate.id; out.projectSlug = defaultCandidate.slug; out.projectName = defaultCandidate.name;
     } else {
       // Offer every project that has what a route needs, rather than
@@ -581,12 +602,46 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   if (!out.projectId) return out;
 
   const models = await get<Array<{ id: string; name: string }>>(o, `/data-models?projectId=${out.projectId}`);
-  const find = (name: string) => models.find((m) => eq(m.name, name))?.id;
+  const iface = await readInterfaceState((path) => get(o, path), ws.id, out.projectId);
+  out.interface = iface;
+  // A declared, accepted app is read through its mapping: a table is found by
+  // the name the mapping gives its ROLE, never by a built-in display name. Any
+  // other app is found by name, as before.
+  const usesMapping = iface.kind === 'declared' && iface.accepted;
+  const mapping = iface.kind === 'declared' ? iface.mapping : undefined;
+  let contractNow: Contract = DEFAULT_CONTRACT;
+  if (iface.kind === 'declared' && mapping) {
+    if (!iface.accepted) problems.push(versionMismatchMessage(iface.version));
+    else {
+      out.declaredContract = contractFromMapping(DEFAULT_CONTRACT, mapping);
+      out.declaredMappingKey = mappingKey(mapping);
+      contractNow = out.declaredContract;
+      if (iface.conforms === false) {
+        problems.push(
+          `the app declares work-tracker interface ${versionLabel(iface.version)} but does not conform:\n  ` +
+            describeDifferences(iface.unmet).join('\n  '),
+        );
+      }
+    }
+  }
+  const tableByRole = (role: string): string | undefined => {
+    if (usesMapping) {
+      const name = mappedTableName(mapping!, role);
+      return name ? models.find((m) => eq(m.name, name))?.id : undefined;
+    }
+    const entry = TABLE_ENTRIES.find((t) => t.role === role);
+    return entry ? models.find((m) => eq(m.name, entry.defaultName))?.id : undefined;
+  };
+  const find = (role: string): string | undefined => tableByRole(role);
+  const have = (): string => models.map((m) => m.name).join(', ');
 
-  for (const [key, name] of [['issues', 'Issues'], ['comments', 'Comments'], ['crew', 'Crew']] as const) {
-    const id = find(name);
-    if (id) out.models[key] = id;
-    else problems.push(`no "${name}" table — have: ${models.map((m) => m.name).join(', ')}`);
+  for (const role of ['issues', 'comments', 'crew'] as const) {
+    const id = find(role);
+    if (id) out.models[role] = id;
+    else {
+      const wanted = usesMapping ? mappedTableName(mapping!, role) ?? `(no table mapped for ${role})` : TABLE_ENTRIES.find((t) => t.role === role)!.defaultName;
+      problems.push(`no "${wanted}" table — have: ${have()}`);
+    }
   }
   // Read the Issues model's own status field to find any CHOICE value
   // DEFAULT_CONTRACT doesn't already name (ISSUE-467) — the discovery
@@ -602,11 +657,11 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
           fieldType?: { choiceOptions?: Array<{ value: string; label?: string; position?: number | null }> };
         }>;
       }>(o, `/data-models/${out.models.issues}`);
-      const statusField = issuesModel.fields.find((f) => f.columnName === DEFAULT_CONTRACT.columns.status);
+      const statusField = issuesModel.fields.find((f) => f.columnName === contractNow.columns.status);
       const known = new Set([
-        ...DEFAULT_CONTRACT.statuses.open,
-        ...DEFAULT_CONTRACT.statuses.resolved,
-        DEFAULT_CONTRACT.statuses.draft,
+        ...contractNow.statuses.open,
+        ...contractNow.statuses.resolved,
+        contractNow.statuses.draft,
       ]);
       out.unrecognizedStatuses = (statusField?.fieldType?.choiceOptions ?? [])
         .filter((opt) => !known.has(opt.value))
@@ -629,8 +684,8 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
       try {
         const model = await get<{ eventLogConfig?: { trackedFields?: unknown } | null }>(o, `/data-models/${out.models.issues}`);
         const tracked = model.eventLogConfig?.trackedFields;
-        if (Array.isArray(tracked) && !tracked.includes(DEFAULT_CONTRACT.columns.status)) {
-          problems.push(EVENT_LOG_STATUS_UNTRACKED(DEFAULT_CONTRACT.columns.status));
+        if (Array.isArray(tracked) && !tracked.includes(contractNow.columns.status)) {
+          problems.push(EVENT_LOG_STATUS_UNTRACKED(contractNow.columns.status));
         }
       } catch { /* leave it to doctor */ }
     } catch (e) {
@@ -638,20 +693,20 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
     }
   }
 
-  out.areaModelId = find('Projects');
-  out.reposModelId = find('Repos');
-  out.shipsModelId = find('Ships');
+  out.areaModelId = find('projects');
+  out.reposModelId = find('repos');
+  out.shipsModelId = find('ships');
   // Optional, like Ships: an unmodified Issue Tracker template has no Epics
   // table, and that is a legitimate shape, not a problem to report.
-  out.epicsModelId = find('Epics');
+  out.epicsModelId = find('epics');
   // Optional, like Epics: without it no brief carries a Map.
-  out.mapsModelId = find('Maps');
+  out.mapsModelId = find('maps');
   // Optional too: a workspace without it cannot host periscopes (EPIC-077).
-  out.periscopesModelId = find('Periscopes');
+  out.periscopesModelId = find('periscopes');
   // Optional, like Ships and Epics: a workspace that has not adopted a
   // board-visible release lock (ISSUE-394) still works with the local-only
   // pid lock it always had.
-  out.locksModelId = find('Locks');
+  out.locksModelId = find('locks');
 
   // The record-link-only View bound to Issues (ISSUE-928) — what
   // `Tracker.recordLinkUrl` mints against. Best-effort like the field

@@ -30,6 +30,7 @@ import { dirForRepo, reposOf } from './config.ts';
 import { planFootprintsFor, readFootprintEvents, type FootprintEvents } from './footprint-run.ts';
 import { footprintDigestSection, footprintOf, type FootprintPlan } from './footprint.ts';
 import { checkCrewFloor } from './crew-floor.ts';
+import { checkTrackerInterface } from './tracker-interface-read.ts';
 import { diskFullStop } from './sandbox-hygiene.ts';
 import { openShipAttention, clearShipAttention, raiseShipAttention, listTruncatedItem, listTruncatedKey, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
@@ -320,7 +321,8 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   await checkRepoDisks({ state, emit, route, ship });
   // EPIC-053 §4: below the workspace's crew floor nothing is picked; the
   // heartbeat and sweeps still run, and the item clears the cycle it is met.
-  const floorStop = await checkCrewFloor({ state, emit, route, ship });
+  // CREW-3579: an app declaring an interface this crew cannot read, or not conforming to it, stops the same way.
+  const floorStop = (await checkCrewFloor({ state, emit, route, ship })) ?? (await checkTrackerInterface({ state, emit, route, ship }));
   const itemStop = repoStopFor(openShipAttention(state), route);
   // CREW-3034: a full docker host stops every repo, not one.
   const diskStop = diskFullStop(state);

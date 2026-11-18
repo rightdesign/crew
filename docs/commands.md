@@ -203,6 +203,17 @@ A cursor is opaque; send back the one the last answer returned. Only whole lines
 
 A project can set a minimum crew version. A crew below it claims no ticket, keeps its heartbeat, and raises a `crew_outdated` attention item (shown by `crew status`) naming both versions; it clears itself once crew is updated. Tracker writes from an older crew are refused with HTTP 426. The Crew app updates its built-in crew; on the CLI, update with `npm install -g @tablation/crew` or the newest binary release. See [If something's stuck](/getting-started#if-something-s-stuck).
 
+## The work tracker interface
+
+The tracker app can declare that it implements the `work-tracker` interface, naming which of its tables, fields and status values play each part (see the [work tracker reference](/work-tracker)). `crew connect` and `crew doctor` read that declaration from the platform:
+
+- **Declared and conforming:** tables and columns are read through the app's mapping, never found by display name, and `connect` says so.
+- **Declared but not conforming:** both commands print one line per difference: the role, the shape it expects and what was found.
+- **Declared at a version this crew does not read:** a crew that reads 1.x refuses an app declaring another major version, or a minor below its floor.
+- **Not declared:** the app is read from the built-in defaults, found by table name, as before.
+
+While a declared app does not conform, or declares a version this crew does not accept, a seat claims no ticket and keeps its heartbeat, and `crew status` shows one `tracker_interface` attention item (not repeated while open) naming both versions and which side to update; it clears itself once resolved. An app that declares nothing raises a non-blocking `tracker_interface_undeclared` item asking the operator to update the app's template. A `contract:` override in `crew.yaml` is ignored for a declared app, and `doctor` and the attention list say so. If the app's mapping changes after connect, claims stop until `crew connect` is rerun.
+
 ## Options on every command
 
 - `--dry-run` decides everything and performs nothing.

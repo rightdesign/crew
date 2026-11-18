@@ -122,6 +122,8 @@ import { StaleWriteError } from '@tablation/client';
 import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
 import { validateContract, DEFAULT_CONTRACT, EVENT_LOG_STATUS_UNTRACKED } from './contract.ts';
+import { OVERRIDE_IGNORED_MESSAGE, UNDECLARED_MESSAGE, readForRoute, interfaceReport } from './tracker-interface-read.ts';
+import { versionLabel } from './tracker-interface.ts';
 import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
@@ -1740,6 +1742,9 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
   }
   // CREW-3144: the acceptor is read from the event log's status rows.
   if ((await tracker.eventLogTracksStatus()) === false) problems.push(EVENT_LOG_STATUS_UNTRACKED(tracker.contract.columns.status));
+  for (const l of interfaceReport(await readForRoute(c, cfg.ship), { storedMappingKey: c.resolved?.trackerInterface?.mappingKey, contractAuthored: c.contractAuthored })) {
+    if (l.problem) problems.push(l.line);
+  }
   const diff = await snapshotDiffFor(c);
   return { problems, readiness, snapshotStale: !!diff && isStale(diff) };
 }
@@ -4979,6 +4984,27 @@ switch (command) {
             },
           }
         : undefined;
+      // CREW-3579: an app that declares the work tracker interface is read
+      // through its declaration. The contract comes from the mapping, a
+      // `contract:` override in crew.yaml is ignored (and said so), and the
+      // mapping is stored so the poll can tell when it changes.
+      const declared = found.declaredContract && found.declaredMappingKey && found.interface?.kind === 'declared'
+        ? {
+            contract: {
+              ...found.declaredContract,
+              statuses: {
+                ...found.declaredContract.statuses,
+                resolved: [...new Set([...found.declaredContract.statuses.resolved, ...resolvedStatusValues])],
+              },
+            },
+            trackerInterface: { declared: true as const, version: versionLabel(found.interface.version), mappingKey: found.declaredMappingKey },
+          }
+        : undefined;
+      if (declared && existingRoute?.contractAuthored) emit.warn(`Note: ${OVERRIDE_IGNORED_MESSAGE}`);
+      if (found.interface?.kind === 'declared' && found.interface.accepted) {
+        emit.note(`The app declares work-tracker interface ${versionLabel(found.interface.version)}${found.interface.conforms === false ? ' (does not conform)' : found.interface.conforms ? ' and conforms' : ''} — tables and columns read from its mapping`);
+      }
+      if (found.interface?.kind === 'undeclared') emit.note(`Note: ${UNDECLARED_MESSAGE}`);
       const resolved = {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
@@ -4991,7 +5017,7 @@ switch (command) {
         ...((found.role ?? previous?.role) ? { role: found.role ?? previous?.role } : {}),
         ...(capabilityMisses.length > 0 ? { capabilityMisses } : {}),
         ...(operator ? { operator } : {}),
-        ...(contract ? { contract } : {}),
+        ...(declared ? { contract: declared.contract, trackerInterface: declared.trackerInterface } : contract ? { contract } : {}),
         ...(reviewedStatuses.length > 0 ? { reviewedStatuses } : {}),
         // CREW-1055: connect only ever discovers ids — it never syncs
         // personas/skills itself — so carry forward whatever `crew agents
@@ -7492,6 +7518,9 @@ switch (command) {
     // A workspace's contract can be internally inconsistent — a status named
     // as `approved` that is not in `open`, a `handoff` listed as resolved.
     // Checked here rather than left to fail as odd behaviour later.
+    for (const l of interfaceReport(await readForRoute(route, cfg.ship), { storedMappingKey: route.resolved?.trackerInterface?.mappingKey, contractAuthored: route.contractAuthored })) {
+      R.line(`${l.line.startsWith('  ') ? '' : `${l.problem ? 'WARN ' : ''}`}${l.line}\n`);
+    }
     const contractProblems = validateContract(tracker.contract);
     R.line(
       contractProblems.length

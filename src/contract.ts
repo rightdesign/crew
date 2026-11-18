@@ -17,6 +17,8 @@
  *      load-bearing, since a ticket blocked by unmerged work is still blocked.
  */
 
+import { defaultGroup, defaultStatusValues } from './tracker-interface.ts';
+
 export interface ContractColumns {
   key: string;
   /**
@@ -314,88 +316,30 @@ export interface Contract {
  * What an unmodified Issue Tracker template means by its own choices. Any
  * workspace that has not said otherwise is assumed to mean this.
  */
+// Built from the work tracker interface (tracker-interface.ts), the single
+// source for these defaults; docs/WORK_TRACKER.md is generated from the same data.
+const STATUS_DEFAULTS = defaultStatusValues();
+const EPIC_DEFAULTS = defaultGroup<{ statusColumn: string; keyColumn: string }>('epics');
+const MAP_DEFAULTS = defaultGroup<Omit<ContractMaps, 'activeStatus'>>('maps');
+const single = (k: string): string => STATUS_DEFAULTS.single[k]!;
+
 export const DEFAULT_CONTRACT: Contract = {
-  columns: {
-    key: 'issue_id',
-    tag: 'issue_tag',
-    title: 'title',
-    status: 'status',
-    assignee: 'assignee_id',
-    priority: 'priority',
-    severity: 'severity',
-    slice: 'project_id',
-    repo: 'repo_id',
-    parent: 'parent_id',
-    blockedBy: 'blocked_by',
-    updatedAt: 'updated_at',
-    needsDesign: 'needs_design',
-    attachments: 'attachments',
-    workMode: 'work_mode',
-    reportType: 'report_type',
-    epic: 'epic_id',
-    author: 'filed_by_id',
-    ship: 'ship_id',
-    heldBy: 'held_by_ship_id',
-    resolutionNote: 'resolution_note',
-    verifiedSha: 'verified_sha',
-    prRef: 'pr_ref',
-    branchUrl: 'branch_url',
-    prUrl: 'pr_url',
-    externalId: 'external_id',
-    position: 'position',
-    agentRuns: 'agent_runs',
-    tokensIn: 'tokens_in',
-    tokensOut: 'tokens_out',
-    cacheReadTokens: 'cache_read_tokens',
-    cacheWriteTokens: 'cache_write_tokens',
-    costUsd: 'cost_usd',
-    crewAssisted: 'crew_assisted',
-  },
-  comments: {
-    parent: 'ticket_id',
-    body: 'body',
-    author: 'team_member_id',
-    createdAt: 'created_at',
-    ship: 'ship_id',
-    publicReply: 'is_public_reply',
-    authorName: 'author_name',
-  },
+  columns: defaultGroup<ContractColumns>('columns'),
+  comments: defaultGroup<ContractComments>('comments'),
   statuses: {
-    open: ['new', 'accepted', 'blocked', 'in_progress', 'needs_info', 'fixed', 'qa', 'verified'],
-    resolved: [
-      'verified',
-      'closed_deployed',
-      'closed_wont_fix',
-      'closed_duplicate',
-      'closed_completed',
-      'closed_cant_reproduce',
-    ],
-    approved: 'accepted',
-    parked: 'blocked',
-    building: 'in_progress',
-    handoff: 'fixed',
-    verifying: 'qa',
-    verified: 'verified',
-    deployed: 'closed_deployed',
-    needsHuman: 'needs_info',
-    reviewing: null,
-    wontFix: 'closed_wont_fix',
-    draft: 'draft',
+    open: STATUS_DEFAULTS.open,
+    resolved: STATUS_DEFAULTS.resolved,
+    approved: single('approved'), parked: single('parked'), building: single('building'),
+    handoff: single('handoff'), verifying: single('verifying'), verified: single('verified'),
+    deployed: single('deployed'), needsHuman: single('needsHuman'), reviewing: STATUS_DEFAULTS.single.reviewing ?? null,
+    wontFix: single('wontFix'), draft: single('draft'),
   },
   epics: {
-    statusColumn: 'status',
-    keyColumn: 'epic_id',
+    statusColumn: EPIC_DEFAULTS.statusColumn,
+    keyColumn: EPIC_DEFAULTS.keyColumn,
     statuses: { planned: 'planned', building: 'in_progress', done: 'done', cancelled: 'cancelled' },
   },
-  maps: {
-    epicColumn: 'epic_id',
-    titleColumn: 'title',
-    contentColumn: 'content',
-    conversationColumn: 'conversation',
-    statusColumn: 'status',
-    versionColumn: 'version',
-    activeStatus: 'active',
-  },
+  maps: { ...MAP_DEFAULTS, activeStatus: 'active' },
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
