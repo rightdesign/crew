@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.161.0] — 2026-11-18
+
+- CREW-3588 A seat parking a ticket for a person's answer can also write the question as a record with proposed answers (`crew ask`), on an app that maps the work tracker interface's optional questions part (1.1); apps at 1.0 are unchanged.
+
 ## [0.160.0] — 2026-11-18
 
 - CREW-3579 Crew publishes the work tracker interface (1.0) and reads the tracker app through the mapping it declares; connect and doctor report conformance, and a nonconforming or unreadable-version app stops claims with an attention item.
