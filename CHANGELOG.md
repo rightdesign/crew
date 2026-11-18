@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.160.0] — 2026-11-18
+
+- CREW-3579 Crew publishes the work tracker interface (1.0) and reads the tracker app through the mapping it declares; connect and doctor report conformance, and a nonconforming or unreadable-version app stops claims with an attention item.
+
 ## [0.159.3] — 2026-11-17
 
 - CREW-3563 The test hook's per-test timeout is 300s instead of 90s, so a heavily loaded machine no longer fails a release on a test that passes on rerun.
