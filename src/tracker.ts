@@ -186,6 +186,10 @@ export interface CrewRow {
    * for a person whose row was never linked.
    */
   user_id?: string | null;
+  /** `working` or `idle`; absent on a workspace without the status columns. */
+  status?: string | null;
+  /** The seat's current ticket (a Tickets row id); cleared whenever the seat is idle (CREW-3689). */
+  current_issue_id?: string | null;
 }
 
 /**
@@ -1048,9 +1052,10 @@ export class Tracker {
    *
    * `ticketRecordId` is the ticket's own row id (`Ticket.id`), not its
    * `issue_id` label — the field it fills is a Reference, not text.
-   * Omitted (as on the idle transition) leaves the column alone, so it
-   * keeps reading as "current/last issue" rather than clearing to blank
-   * the moment a run ends.
+   * An idle seat has no current issue (CREW-3689): the idle write clears
+   * the column in the same patch, so a stale pointer never reads as a stuck
+   * seat. The last ticket a seat worked stays in the agent log. A working
+   * write with no id leaves the column alone.
    */
   async setCrewStatus(
     memberId: string,
@@ -1058,7 +1063,8 @@ export class Tracker {
     ticketRecordId?: string | null,
   ): Promise<void> {
     const patch: Record<string, unknown> = { status, status_updated_at: new Date().toISOString() };
-    if (ticketRecordId !== undefined) patch.current_issue_id = ticketRecordId;
+    if (status === 'idle') patch.current_issue_id = null;
+    else if (ticketRecordId !== undefined) patch.current_issue_id = ticketRecordId;
     await this.client.records.update(this.models.crew, memberId, patch);
   }
 

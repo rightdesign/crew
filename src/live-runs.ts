@@ -19,7 +19,7 @@ import { reposOf, routeSlug, type RoleName, type Route } from './config.ts';
 import { worktreeForNumber } from './git.ts';
 import type { Emitter } from './events.ts';
 import { runFinished } from './interrupted.ts';
-import type { Tracker } from './tracker.ts';
+import type { CrewRow, Tracker } from './tracker.ts';
 import { lastStreamEvent, readRunNotes } from './run-snapshot.ts';
 
 export interface LiveRun extends RunSidecar {
@@ -109,6 +109,36 @@ export async function settleRunEnd(o: {
     }
   } catch (e) {
     emit.warn(`could not beat ship idle: ${(e as Error).message}`, { step: 'agent' });
+  }
+}
+
+/**
+ * Seats on this route that read idle yet still carry a current issue (CREW-3689):
+ * left by a version that kept the last ticket on the idle write. A seat with a
+ * live run on this route is never listed, whatever its row says.
+ */
+export function staleIdleSeats(
+  route: Route, crewRows: CrewRow[], runs: LiveRun[],
+): Array<{ role: RoleName; memberId: string }> {
+  const slug = routeSlug(route.route);
+  const out: Array<{ role: RoleName; memberId: string }> = [];
+  for (const [role, memberId] of Object.entries(route.resolved?.seats ?? {}) as Array<[RoleName, string | undefined]>) {
+    if (!memberId) continue;
+    const row = crewRows.find((r) => r.id === memberId);
+    if (!row?.current_issue_id || row.status === 'working') continue;
+    if (runs.some((r) => r.role === role && r.route === slug)) continue;
+    out.push({ role, memberId });
+  }
+  return out;
+}
+
+/** Clears each stale idle seat's current issue; a failed write is a warning, the next poll retries. */
+export async function clearStaleIdleSeats(
+  tracker: Tracker, route: Route, crewRows: CrewRow[], runs: LiveRun[], emit: Emitter,
+): Promise<void> {
+  for (const s of staleIdleSeats(route, crewRows, runs)) {
+    try { await tracker.setCrewStatus(s.memberId, 'idle'); }
+    catch (e) { emit.warn(`could not clear ${s.role} seat's current issue: ${(e as Error).message}`, { step: 'poll' }); }
   }
 }
 

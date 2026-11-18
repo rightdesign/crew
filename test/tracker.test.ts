@@ -97,7 +97,7 @@ test('setCrewStatus(working, ticketId) patches status, the ticket reference, and
   assert.ok(typeof body.status_updated_at === 'string' && body.status_updated_at.length > 0);
 });
 
-test('setCrewStatus(idle) with no ticket id leaves current_issue_id untouched â€” it reads as "last worked", not cleared', async (t) => {
+test('setCrewStatus(idle) clears current_issue_id in the same write as the status (CREW-3689)', async (t) => {
   const bodies: Array<Record<string, unknown>> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -113,7 +113,7 @@ test('setCrewStatus(idle) with no ticket id leaves current_issue_id untouched â€
 
   assert.equal(bodies.length, 1);
   assert.equal(bodies[0]!.status, 'idle');
-  assert.equal('current_issue_id' in bodies[0]!, false);
+  assert.equal(bodies[0]!.current_issue_id, null);
 });
 
 test('beatShip() is a no-op when the workspace has no Ships table', async (t) => {

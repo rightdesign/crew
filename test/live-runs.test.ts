@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { liveRuns, settleRunEnd, describeRun, type LiveRun } from '../src/live-runs.ts';
+import { liveRuns, settleRunEnd, staleIdleSeats, clearStaleIdleSeats, describeRun, type LiveRun } from '../src/live-runs.ts';
 import type { RunSidecar } from '../src/agent.ts';
 import type { Route } from '../src/config.ts';
 import type { Emitter } from '../src/events.ts';
@@ -137,4 +137,33 @@ test('runActivity counts live runs and takes the newest finished meta mtime as l
     utimesSync(join(streams, `${n}.jsonl.meta.json`), when, when);
   }
   assert.deepEqual(runActivity(dir), { activeRuns: 0, lastRunEndedAt: new Date(1_700_000_500_000).toISOString() });
+});
+
+const SEATED = { route: 'main', resolved: { seats: { dev: 'seat-dev', qa: 'seat-qa' } } } as unknown as Route;
+const lr = (over: Partial<RunSidecar>): LiveRun => ({ ...sidecar(over), streamPath: '/x' });
+
+test('staleIdleSeats lists an idle seat that still names a ticket, and nothing else (CREW-3689)', () => {
+  const rows = [
+    { id: 'seat-dev', status: 'idle', current_issue_id: 'old' },
+    { id: 'seat-qa', status: 'working', current_issue_id: 'live' },
+  ];
+  assert.deepEqual(staleIdleSeats(SEATED, rows, []), [{ role: 'dev', memberId: 'seat-dev' }]);
+  assert.deepEqual(staleIdleSeats(SEATED, [{ id: 'seat-dev', status: 'idle', current_issue_id: null }], []), []);
+});
+
+test('staleIdleSeats skips a seat that has a live run on the route', () => {
+  const rows = [{ id: 'seat-dev', status: 'idle', current_issue_id: 'old' }];
+  assert.deepEqual(staleIdleSeats(SEATED, rows, [lr({ role: 'dev', route: 'main' })]), []);
+  assert.equal(staleIdleSeats(SEATED, rows, [lr({ role: 'dev', route: 'other' })]).length, 1);
+});
+
+test('clearStaleIdleSeats writes idle for each stale seat and survives a failed write', async () => {
+  const calls: unknown[][] = [];
+  const warns: string[] = [];
+  const t = { setCrewStatus: async (...a: unknown[]) => { calls.push(a); if (a[0] === 'seat-dev') throw new Error('boom'); } } as unknown as Tracker;
+  const emit = { warn: (m: string) => warns.push(m) } as unknown as Emitter;
+  const rows = [{ id: 'seat-dev', status: 'idle', current_issue_id: 'a' }, { id: 'seat-qa', status: 'idle', current_issue_id: 'b' }];
+  await clearStaleIdleSeats(t, SEATED, rows, [], emit);
+  assert.deepEqual(calls, [['seat-dev', 'idle'], ['seat-qa', 'idle']]);
+  assert.equal(warns.length, 1);
 });

@@ -34,6 +34,7 @@ import { checkTrackerInterface } from './tracker-interface-read.ts';
 import { diskFullStop } from './sandbox-hygiene.ts';
 import { openShipAttention, clearShipAttention, raiseShipAttention, listTruncatedItem, listTruncatedKey, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
+import { clearStaleIdleSeats, liveRuns } from './live-runs.ts';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { State } from './state.ts';
@@ -127,6 +128,8 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     tracker.crewRows(),
     optional('project work modes', tracker.projectWorkModes(), new Map()),
   ]);
+  // CREW-3689: a seat left idle by an earlier version still names its last ticket.
+  await clearStaleIdleSeats(tracker, route, crewRows, liveRuns(state.dir), emit);
   const scopeHolds = new Set(holdIds(buildRoster(configuredMembers(route), crewRows)));
   const scope: TicketScope = {
     modes: projectModes,
