@@ -198,7 +198,7 @@ test('role ids are unique and every field role names a table role', () => {
   assert.equal(new Set(ids).size, ids.length);
   const tables = new Set(TABLE_ENTRIES.map((t) => t.role));
   for (const e of FIELD_ENTRIES) assert.ok(tables.has(e.table), e.role);
-  assert.deepEqual(def.version, { major: 1, minor: 2 });
+  assert.deepEqual(def.version, { major: 1, minor: 3 });
 });
 
 test('docs/WORK_TRACKER.md matches the definition (regenerate with `node --experimental-strip-types scripts/gen-tracker-reference.ts`)', () => {
@@ -218,4 +218,40 @@ test('the 1.2 roles the platform reads are all optional, so a 1.0 app that maps 
   assert.ok(versionAccepted({ major: 1, minor: 0 }));
   assert.equal(DEFAULT_CONTRACT.repos.remote, 'remote');
   assert.equal(DEFAULT_CONTRACT.crew.userId, 'user_id');
+});
+
+interface TemplateShape { kind: string; computed: boolean; multiple?: boolean }
+
+/** Whether a column shape satisfies a field role, by the platform's rules: no `computed` setting means must not be computed. */
+function shapeMeets(role: (typeof FIELD_ENTRIES)[number], shape: TemplateShape): string | null {
+  if (role.kind !== 'any' && role.kind !== shape.kind) return `expected ${role.kind}, found ${shape.kind}`;
+  if ((role.computed ?? false) !== 'either' && (role.computed ?? false) !== shape.computed) return shape.computed ? 'is computed' : 'is not computed';
+  if (role.multiple !== 'either' && role.multiple !== undefined && role.multiple !== !!shape.multiple) return 'wrong multiplicity';
+  return null;
+}
+
+test('the default mapping conforms to the published definition on a snapshot of the Issues template (CREW-3638)', () => {
+  const file = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'issues-template-shapes.json');
+  const snap = JSON.parse(readFileSync(file, 'utf8')) as { tables: Record<string, Record<string, TemplateShape>> };
+  const problems: string[] = [];
+  const unmapped: string[] = [];
+  for (const e of FIELD_ENTRIES) {
+    const table = snap.tables[e.table];
+    if (!table || e.builtin) continue;
+    const shape = table[e.defaultColumn];
+    // The snapshot of a table other than Issues holds only the columns this check is about.
+    if (!shape) { if (e.table === 'issues') unmapped.push(e.role); continue; }
+    const why = shapeMeets(e, shape);
+    if (why) problems.push(`${e.role} (${e.defaultColumn}): ${why}`);
+  }
+  assert.deepEqual(problems, []);
+  // The Issues app has no pull request reference column; nothing else on Issues is missing.
+  assert.deepEqual(unmapped, ['issues.prRef']);
+});
+
+test('only the roles crew reads accept a computed field; the key roles do', () => {
+  const either = FIELD_ENTRIES.filter((e) => e.computed === 'either').map((e) => e.role).sort();
+  assert.deepEqual(either, ['epics.key', 'issues.key', 'issues.tag', 'maps.version']);
+  const attachments = trackerInterfaceDefinition().roles.find((r) => r.id === 'issues.attachments');
+  assert.equal(attachments?.type === 'field' && attachments.fieldKind, 'file');
 });

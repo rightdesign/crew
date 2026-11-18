@@ -109,6 +109,8 @@ export interface FieldEntry {
   label: string;
   optional?: boolean;
   multiple?: boolean | 'either';
+  /** Absent means the platform's default: the field must not be computed. */
+  computed?: boolean | 'either';
   builtin?: string[];
   /** `link` only: the table role the link must point at. */
   linkTo?: string;
@@ -117,15 +119,22 @@ export interface FieldEntry {
 
 function f(
   table: string, name: string, contractPath: string, defaultColumn: string, kind: FieldRole['fieldKind'],
-  label: string, whatBreaks: string, extra: Partial<Pick<FieldEntry, 'optional' | 'multiple' | 'builtin' | 'linkTo'>> = {},
+  label: string, whatBreaks: string, extra: Partial<Pick<FieldEntry, 'optional' | 'multiple' | 'computed' | 'builtin' | 'linkTo'>> = {},
 ): FieldEntry {
   return { role: `${table}.${name}`, table, contractPath, defaultColumn, kind, label, whatBreaks, ...extra };
 }
 const opt = { optional: true } as const;
+/**
+ * A role crew only reads (the key roles: the tracker generates them and crew
+ * never writes them) accepts a computed or a plain field. A role with no
+ * `computed` setting means "must not be computed", which is what a role crew
+ * writes needs (CREW-3638).
+ */
+const readOnly = { computed: 'either' } as const;
 
 export const FIELD_ENTRIES: readonly FieldEntry[] = [
-  f('issues', 'key', 'columns.key', 'issue_id', 'any', 'Ticket key', 'Without it tickets cannot be named in branches, comments or logs.'),
-  f('issues', 'tag', 'columns.tag', 'issue_tag', 'any', 'Per-project ticket tag', 'Without it branches fall back to plain `issue-<number>` names.', opt),
+  f('issues', 'key', 'columns.key', 'issue_id', 'any', 'Ticket key', 'Without it tickets cannot be named in branches, comments or logs.', readOnly),
+  f('issues', 'tag', 'columns.tag', 'issue_tag', 'any', 'Per-project ticket tag', 'Without it branches fall back to plain `issue-<number>` names.', { ...opt, ...readOnly }),
   f('issues', 'title', 'columns.title', 'title', 'text', 'Title', 'Without it crew cannot show or file a ticket.'),
   f('issues', 'status', 'columns.status', 'status', 'choice', 'Status', 'Without it crew cannot tell which tickets to work.'),
   f('issues', 'assignee', 'columns.assignee', 'assignee_id', 'link', 'Assignee', 'Without it crew cannot claim a ticket or see who holds one.'),
@@ -137,7 +146,7 @@ export const FIELD_ENTRIES: readonly FieldEntry[] = [
   f('issues', 'blockedBy', 'columns.blockedBy', 'blocked_by', 'link', 'Blocked by', 'Without it crew cannot park a ticket behind its dependencies.', { multiple: 'either' }),
   f('issues', 'updatedAt', 'columns.updatedAt', 'updated_at', 'any', 'Updated at', 'Without it crew cannot tell what changed since the last poll.', { builtin: ['updated_at'] }),
   f('issues', 'needsDesign', 'columns.needsDesign', 'needs_design', 'boolean', 'Needs design', 'Without it tickets cannot be split between the dev and design lanes.', opt),
-  f('issues', 'attachments', 'columns.attachments', 'attachments', 'link', 'Attachments', 'Without it a seat cannot open a ticket’s screenshots.', { ...opt, multiple: 'either' }),
+  f('issues', 'attachments', 'columns.attachments', 'attachments', 'file', 'Attachments', 'Without it a seat cannot open a ticket’s screenshots.', { ...opt, multiple: 'either' }),
   f('issues', 'reportType', 'columns.reportType', 'report_type', 'choice', 'Report type', 'Without it questions, investigations and coordinating tickets are treated as builds.', opt),
   f('issues', 'epic', 'columns.epic', 'epic_id', 'link', 'Epic', 'Without it tickets cannot belong to an epic.', opt),
   f('issues', 'author', 'columns.author', 'filed_by_id', 'link', 'Filed by', 'Without it a filed ticket does not name its filer.', opt),
@@ -194,13 +203,13 @@ export const FIELD_ENTRIES: readonly FieldEntry[] = [
   f('answers', 'detail', 'answers.detail', 'detail', 'text', 'Answer detail', 'Without it an answer has no full instruction to act on when chosen.', opt),
   f('answers', 'order', 'answers.order', 'position', 'number', 'Answer order', 'Without it the answers show in the order they were created, not the order the seat intended.', opt),
   f('epics', 'status', 'epics.statusColumn', 'status', 'choice', 'Epic status', 'Without it crew cannot keep an epic’s status from its tickets.', opt),
-  f('epics', 'key', 'epics.keyColumn', 'epic_id', 'any', 'Epic key', 'Without it an epic has no name in the log.', opt),
+  f('epics', 'key', 'epics.keyColumn', 'epic_id', 'any', 'Epic key', 'Without it an epic has no name in the log.', { ...opt, ...readOnly }),
   f('maps', 'epic', 'maps.epicColumn', 'epic_id', 'link', 'Map epic', 'Without it a Map cannot be matched to its epic.', opt),
   f('maps', 'title', 'maps.titleColumn', 'title', 'text', 'Map title', 'Without it a Map has no name in a brief.', opt),
   f('maps', 'content', 'maps.contentColumn', 'content', 'text', 'Map content', 'Without it a brief cannot carry the Map.', opt),
   f('maps', 'conversation', 'maps.conversationColumn', 'conversation', 'text', 'Map conversation', 'Without it the interview record cannot be pointed at.', opt),
   f('maps', 'status', 'maps.statusColumn', 'status', 'choice', 'Map status', 'Without it the active Map cannot be told from a draft.', opt),
-  f('maps', 'version', 'maps.versionColumn', 'version', 'any', 'Map version', 'Without it a brief cannot name the Map’s version.', opt),
+  f('maps', 'version', 'maps.versionColumn', 'version', 'any', 'Map version', 'Without it a brief cannot name the Map’s version.', { ...opt, ...readOnly }),
 ];
 
 export interface StatusMeaning {
@@ -247,7 +256,7 @@ export const QUESTION_STATUS_MEANINGS: readonly { id: string; label: string; def
 ];
 
 /** The version this crew publishes; `ACCEPTED_INTERFACE_VERSIONS` is what it reads. */
-export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 2 };
+export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 3 };
 
 /** The definition as the platform stores it. */
 export function trackerInterfaceDefinition(): InterfaceDefinition {
@@ -259,6 +268,7 @@ export function trackerInterfaceDefinition(): InterfaceDefinition {
       id: e.role, type: 'field', tableRole: e.table, fieldKind: e.kind, label: e.label, whatBreaks: e.whatBreaks,
       ...(e.optional ? { optional: true } : {}),
       ...(e.multiple !== undefined ? { multiple: e.multiple } : {}),
+      ...(e.computed !== undefined ? { computed: e.computed } : {}),
       ...(e.builtin ? { builtinColumns: e.builtin } : {}),
       ...(e.linkTo ? { linkTarget: { tableRole: e.linkTo } } : {}),
     })),
@@ -402,7 +412,9 @@ export function describeShape(roleId: string): string {
   if (t) return 'a table';
   const e = FIELD_ENTRIES.find((x) => x.role === roleId);
   if (!e) return 'unknown role';
-  const kind = e.kind === 'any' ? 'any column' : e.kind === 'link' ? `a ${e.multiple === 'either' ? 'link (one or several)' : 'link'} field` : `a ${e.kind} field`;
+  const several = e.multiple === 'either' ? ' (one or several)' : '';
+  const base = e.kind === 'any' ? 'any column' : e.kind === 'link' || e.kind === 'file' ? `a ${e.kind}${several} field` : `a ${e.kind} field`;
+  const kind = e.computed === 'either' ? `${base}, plain or computed` : base;
   return `${kind} on the ${e.table} table${e.optional ? ' (optional)' : ''}`;
 }
 
@@ -443,6 +455,10 @@ export function renderReferencePage(): string {
     }
     lines.push('');
   }
+  lines.push('## Changes in version 1.3');
+  lines.push('');
+  lines.push('The roles crew only reads accept a computed field as well as a plain one: `issues.key`, `issues.tag`, `epics.key` and `maps.version`, which an app generates. `issues.attachments` asks for a file field (one or several) rather than a link field, because crew reads file references from it. Every role not named here is unchanged, and a role crew writes still asks for a plain field. An app declared at an earlier 1.x still conforms to that version and is read by this crew.');
+  lines.push('');
   lines.push('## Roles the platform reads (version 1.2)');
   lines.push('');
   lines.push('Optional. The platform\u2019s scheduler, project setup checklist and repository pages read `issues.description`, `issues.needsPlanning`, the `repos.*` roles and `crew.userId`. An app that maps none of them, including every app at version 1.0 or 1.1, still conforms; the platform then reports the function that needs a missing role as not ready, naming the role.');

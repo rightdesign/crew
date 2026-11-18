@@ -1,0 +1,223 @@
+{
+ "_note": "Column shapes of the live Issues app (read from the platform on 2026-11-17, CREW-3638); epics.epic_id is stated by the ticket as computed. Built-in columns (created_at, updated_at) are not listed. Refresh when the Issues template changes.",
+ "tables": {
+  "epics": {
+   "epic_id": {
+    "computed": true,
+    "kind": "text"
+   }
+  },
+  "issues": {
+   "agent_runs": {
+    "computed": false,
+    "kind": "number"
+   },
+   "assignee_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "attachments": {
+    "computed": false,
+    "kind": "file",
+    "multiple": true
+   },
+   "blocked_by": {
+    "computed": false,
+    "kind": "link",
+    "multiple": true
+   },
+   "branch_url": {
+    "computed": false,
+    "kind": "text"
+   },
+   "cache_read_tokens": {
+    "computed": false,
+    "kind": "number"
+   },
+   "cache_write_tokens": {
+    "computed": false,
+    "kind": "number"
+   },
+   "commit_sha": {
+    "computed": false,
+    "kind": "text"
+   },
+   "contact_email": {
+    "computed": false,
+    "kind": "text"
+   },
+   "cost_usd": {
+    "computed": false,
+    "kind": "number"
+   },
+   "crew_assisted": {
+    "computed": false,
+    "kind": "boolean"
+   },
+   "description": {
+    "computed": false,
+    "kind": "text"
+   },
+   "duplicate_of_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "environment": {
+    "computed": false,
+    "kind": "choice"
+   },
+   "epic_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "external_id": {
+    "computed": false,
+    "kind": "text"
+   },
+   "f_active_time": {
+    "computed": true,
+    "kind": "number"
+   },
+   "f_effective_priority": {
+    "computed": true,
+    "kind": "number"
+   },
+   "f_issue_label": {
+    "computed": true,
+    "kind": "text"
+   },
+   "f_queue_time": {
+    "computed": true,
+    "kind": "number"
+   },
+   "f_resolution_time": {
+    "computed": true,
+    "kind": "number"
+   },
+   "f_resolved_on": {
+    "computed": true,
+    "kind": "text"
+   },
+   "filed_by_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "held_by_ship_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "issue_id": {
+    "computed": true,
+    "kind": "text"
+   },
+   "issue_tag": {
+    "computed": true,
+    "kind": "text"
+   },
+   "merged_at": {
+    "computed": false,
+    "kind": "date"
+   },
+   "needs_design": {
+    "computed": false,
+    "kind": "boolean"
+   },
+   "needs_planning": {
+    "computed": false,
+    "kind": "boolean"
+   },
+   "needs_review": {
+    "computed": false,
+    "kind": "boolean"
+   },
+   "parent_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "position": {
+    "computed": false,
+    "kind": "number"
+   },
+   "pr_url": {
+    "computed": false,
+    "kind": "text"
+   },
+   "priority": {
+    "computed": false,
+    "kind": "choice"
+   },
+   "product_area": {
+    "computed": false,
+    "kind": "choice"
+   },
+   "project_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "released_at": {
+    "computed": false,
+    "kind": "date"
+   },
+   "released_version": {
+    "computed": false,
+    "kind": "text"
+   },
+   "repo_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "report_type": {
+    "computed": false,
+    "kind": "choice"
+   },
+   "reporter_name": {
+    "computed": false,
+    "kind": "text"
+   },
+   "repro_steps": {
+    "computed": false,
+    "kind": "text"
+   },
+   "resolution_note": {
+    "computed": false,
+    "kind": "text"
+   },
+   "resolved_at": {
+    "computed": false,
+    "kind": "date"
+   },
+   "severity": {
+    "computed": false,
+    "kind": "choice"
+   },
+   "ship_id": {
+    "computed": false,
+    "kind": "link"
+   },
+   "status": {
+    "computed": false,
+    "kind": "choice"
+   },
+   "title": {
+    "computed": false,
+    "kind": "text"
+   },
+   "tokens_in": {
+    "computed": false,
+    "kind": "number"
+   },
+   "tokens_out": {
+    "computed": false,
+    "kind": "number"
+   },
+   "verified_sha": {
+    "computed": false,
+    "kind": "text"
+   },
+   "work_started_at": {
+    "computed": false,
+    "kind": "date"
+   }
+  }
+ }
+}

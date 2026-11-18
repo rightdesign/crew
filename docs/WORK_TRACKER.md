@@ -2,7 +2,7 @@
 
 <!-- Generated from src/tracker-interface.ts by `node --experimental-strip-types scripts/gen-tracker-reference.ts`. Do not edit by hand. -->
 
-Interface `work-tracker`, owner `crew`, version 1.2. This crew reads versions 1.0 or a later 1.x.
+Interface `work-tracker`, owner `crew`, version 1.3. This crew reads versions 1.0 or a later 1.x.
 
 An app that implements this interface declares a mapping from each role below to its own table, field or status value, and crew reads the app through that mapping. A table or column keeps working under any name as long as the mapping says so. An app that declares nothing is read from the defaults in the last column, found by table display name, and crew raises a non-blocking attention item asking the operator to update the app’s template.
 
@@ -27,8 +27,8 @@ An app that implements this interface declares a mapping from each role below to
 
 | Role | Default column | Shape | Required | What goes wrong without it |
 | --- | --- | --- | --- | --- |
-| `issues.key` | `issue_id` | any column | yes | Without it tickets cannot be named in branches, comments or logs. |
-| `issues.tag` | `issue_tag` | any column | no | Without it branches fall back to plain `issue-<number>` names. |
+| `issues.key` | `issue_id` | any column, plain or computed | yes | Without it tickets cannot be named in branches, comments or logs. |
+| `issues.tag` | `issue_tag` | any column, plain or computed | no | Without it branches fall back to plain `issue-<number>` names. |
 | `issues.title` | `title` | a text field | yes | Without it crew cannot show or file a ticket. |
 | `issues.status` | `status` | a choice field | yes | Without it crew cannot tell which tickets to work. |
 | `issues.assignee` | `assignee_id` | a link field | yes | Without it crew cannot claim a ticket or see who holds one. |
@@ -40,7 +40,7 @@ An app that implements this interface declares a mapping from each role below to
 | `issues.blockedBy` | `blocked_by` | a link (one or several) field | yes | Without it crew cannot park a ticket behind its dependencies. |
 | `issues.updatedAt` | `updated_at` | any column | yes | Without it crew cannot tell what changed since the last poll. |
 | `issues.needsDesign` | `needs_design` | a boolean field | no | Without it tickets cannot be split between the dev and design lanes. |
-| `issues.attachments` | `attachments` | a link (one or several) field | no | Without it a seat cannot open a ticket’s screenshots. |
+| `issues.attachments` | `attachments` | a file (one or several) field | no | Without it a seat cannot open a ticket’s screenshots. |
 | `issues.reportType` | `report_type` | a choice field | no | Without it questions, investigations and coordinating tickets are treated as builds. |
 | `issues.epic` | `epic_id` | a link field | no | Without it tickets cannot belong to an epic. |
 | `issues.author` | `filed_by_id` | a link field | no | Without it a filed ticket does not name its filer. |
@@ -103,7 +103,7 @@ An app that implements this interface declares a mapping from each role below to
 | Role | Default column | Shape | Required | What goes wrong without it |
 | --- | --- | --- | --- | --- |
 | `epics.status` | `status` | a choice field | no | Without it crew cannot keep an epic’s status from its tickets. |
-| `epics.key` | `epic_id` | any column | no | Without it an epic has no name in the log. |
+| `epics.key` | `epic_id` | any column, plain or computed | no | Without it an epic has no name in the log. |
 
 ## Maps fields
 
@@ -114,7 +114,7 @@ An app that implements this interface declares a mapping from each role below to
 | `maps.content` | `content` | a text field | no | Without it a brief cannot carry the Map. |
 | `maps.conversation` | `conversation` | a text field | no | Without it the interview record cannot be pointed at. |
 | `maps.status` | `status` | a choice field | no | Without it the active Map cannot be told from a draft. |
-| `maps.version` | `version` | any column | no | Without it a brief cannot name the Map’s version. |
+| `maps.version` | `version` | any column, plain or computed | no | Without it a brief cannot name the Map’s version. |
 
 ## Questions fields
 
@@ -136,6 +136,10 @@ An app that implements this interface declares a mapping from each role below to
 | `answers.label` | `label` | a text field | no | Without it an answer has no short label to show on a button. |
 | `answers.detail` | `detail` | a text field | no | Without it an answer has no full instruction to act on when chosen. |
 | `answers.order` | `position` | a number field | no | Without it the answers show in the order they were created, not the order the seat intended. |
+
+## Changes in version 1.3
+
+The roles crew only reads accept a computed field as well as a plain one: `issues.key`, `issues.tag`, `epics.key` and `maps.version`, which an app generates. `issues.attachments` asks for a file field (one or several) rather than a link field, because crew reads file references from it. Every role not named here is unchanged, and a role crew writes still asks for a plain field. An app declared at an earlier 1.x still conforms to that version and is read by this crew.
 
 ## Roles the platform reads (version 1.2)
 
