@@ -188,11 +188,14 @@ export interface HeldTicket { ticket: Ticket; blockers: string }
  * pass after the last blocker resolves — every ship re-reads `blocked_by`
  * each cycle, so no signalling is needed across ships or repos.
  */
-export function heldByBlockers(tickets: Ticket[], verifiedStatus: string, info: BlockerInfo | undefined): HeldTicket[] {
+export function heldByBlockers(
+  tickets: Ticket[], verifiedStatus: string, info: BlockerInfo | undefined, resolved?: ReadonlySet<string>,
+): HeldTicket[] {
   if (!info) return [];
+  const opts = { mergeGated: false, resolved };
   return tickets
-    .filter((t) => t.status === verifiedStatus && unresolvedBlockers(t, info, { mergeGated: false }).length > 0)
-    .map((ticket) => ({ ticket, blockers: describeUnresolved(ticket, info, { mergeGated: false }) }));
+    .filter((t) => t.status === verifiedStatus && unresolvedBlockers(t, info, opts).length > 0)
+    .map((ticket) => ({ ticket, blockers: describeUnresolved(ticket, info, opts) }));
 }
 
 /** One line per held ticket: `CREW-9 held: blocked by CREW-1234 (accepted), …`. */
@@ -257,7 +260,7 @@ export function planMerge(
   /** What "the base as it stands" means for the key searches; HEAD unless the decision reads a remote ref. */
   ref = 'HEAD',
 ): MergeCandidate[] {
-  const held = new Set(heldByBlockers(tickets, contract.statuses.verified, blockerInfo).map((h) => h.ticket.id));
+  const held = new Set(heldByBlockers(tickets, contract.statuses.verified, blockerInfo, new Set(contract.statuses.resolved)).map((h) => h.ticket.id));
   const verified = tickets
     .filter((t) => t.status === contract.statuses.verified && !held.has(t.id))
     .sort((a, b) => Number.parseInt(a.issue_id.replace(/^\D+/, ''), 10) - Number.parseInt(b.issue_id.replace(/^\D+/, ''), 10));
@@ -520,7 +523,7 @@ export function decideRelease(
         .split('\n').filter((l) => l && !RELEASE_COMMIT_SUBJECT.test(l)).length
     : 0;
   return {
-    block, merges, held: heldByBlockers(tickets, contract.statuses.verified, opts.blockerInfo), head, lastTag, lastReleased, unreleasedCommits,
+    block, merges, held: heldByBlockers(tickets, contract.statuses.verified, opts.blockerInfo, new Set(contract.statuses.resolved)), head, lastTag, lastReleased, unreleasedCommits,
     upToDate: lastReleased === head || (lastReleased !== null && unreleasedWork === 0),
     unseeded: lastTag === null,
   };

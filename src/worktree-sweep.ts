@@ -13,8 +13,8 @@
  *   reads it after that: QA has finished, the release has merged, or the
  *   ticket was refused.
  * - The branch is deleted only once the work actually landed in the base
- *   branch (`closed_deployed`). For `closed_wont_fix` / `closed_duplicate`
- *   the branch holds commits that were deliberately never merged, and
+ *   branch (`closed_deployed`). For `closed_wont_fix` / `closed_duplicate` /
+ *   `closed_obsolete` the branch holds commits that were deliberately never merged, and
  *   deleting it would destroy the only copy.
  *
  * `verified` is not terminal — the contract counts it as resolved for a

@@ -187,7 +187,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const extra = await tracker.ticketsByIds(missingBlockerIds(tickets));
   const info = blockerInfoMap(tickets, extra);
   await reportTruncated(tracker, route.route, state, emit);
-  const blocked = computeBlockedIds(tickets, info);
+  const blocked = computeBlockedIds(tickets, info, { resolved: new Set(tracker.contract.statuses.resolved) });
   // CREW-3387: tickets held back because they would change a file an active
   // ticket changes. Parked like a dependency-blocked ticket, so they join
   // `blocked` for selection; a ticket already parked by a dependency takes no

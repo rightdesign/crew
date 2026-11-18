@@ -338,3 +338,17 @@ test('a verified same-repo blocker with commit_sha set and no deployed status re
   assert.deepEqual(unresolvedBlockers(t, blockerInfoMap([t, landed])), []);
   assert.equal(computeBlockedIds([t, landed], blockerInfoMap([t, landed])).has('a'), false);
 });
+
+test('a blocker closed as obsolete releases its dependent only under a contract that resolves it (CREW-3642)', () => {
+  const t = T({ id: 'a', issue_id: 'ISSUE-1', status: 'accepted', blocked_by: ['b'] });
+  const b = T({ id: 'b', issue_id: 'ISSUE-2', status: 'closed_obsolete' });
+  const info = blockerInfoMap([t, b]);
+  const mapped = new Set(['verified', 'closed_deployed', 'closed_wont_fix', 'closed_duplicate', 'closed_obsolete']);
+  // The workspace maps the meaning: released, as won't-fix is.
+  assert.equal(computeBlockedIds([t, b], info, { resolved: mapped }).has('a'), false);
+  assert.deepEqual(unresolvedBlockers(t, info, { resolved: mapped }), []);
+  assert.equal(describeUnresolved(t, info, { resolved: mapped }), '');
+  // Unmapped, or no contract handed over: behaves exactly as before.
+  assert.equal(computeBlockedIds([t, b], info).has('a'), true);
+  assert.deepEqual(unresolvedBlockers(t, info), ['b']);
+});

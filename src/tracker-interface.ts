@@ -222,6 +222,12 @@ export interface StatusMeaning {
   open: boolean;
   resolved: boolean;
   optional?: boolean;
+  /**
+   * Counts only where the app maps it: `defaultValue` is the value to map, not
+   * a value assumed for an undeclared or earlier-version app, so such an app
+   * behaves exactly as it did before the meaning existed.
+   */
+  mappedOnly?: boolean;
   meaning: string;
 }
 
@@ -244,6 +250,7 @@ export const STATUS_MEANINGS: readonly StatusMeaning[] = [
   { id: 'wontFix', label: 'Won’t fix', defaultValue: 'closed_wont_fix', contractKey: 'wontFix', open: false, resolved: true, meaning: 'Called off without merging.' },
   { id: 'duplicate', label: 'Duplicate', defaultValue: 'closed_duplicate', open: false, resolved: true, meaning: 'Closed in favor of another ticket.' },
   { id: 'completed', label: 'Completed', defaultValue: 'closed_completed', open: false, resolved: true, meaning: 'Done with nothing to deploy.' },
+  { id: 'obsolete', label: 'Obsolete', defaultValue: 'closed_obsolete', open: false, resolved: true, optional: true, mappedOnly: true, meaning: 'Overtaken or no longer wanted, closed without being built. Releases a dependent exactly as Won’t fix does (interface 1.4).' },
   { id: 'cantReproduce', label: 'Can’t reproduce', defaultValue: 'closed_cant_reproduce', open: false, resolved: true, meaning: 'Closed as written, unreproducible.' },
   { id: 'draft', label: 'Draft', defaultValue: 'draft', contractKey: 'draft', open: false, resolved: false, optional: true, meaning: 'Held back; never polled.' },
 ];
@@ -256,7 +263,7 @@ export const QUESTION_STATUS_MEANINGS: readonly { id: string; label: string; def
 ];
 
 /** The version this crew publishes; `ACCEPTED_INTERFACE_VERSIONS` is what it reads. */
-export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 3 };
+export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 4 };
 
 /** The definition as the platform stores it. */
 export function trackerInterfaceDefinition(): InterfaceDefinition {
@@ -313,10 +320,10 @@ export function defaultQuestionStatuses(): { open: string; answered: string; wit
 }
 
 export function defaultStatusValues(): { open: string[]; resolved: string[]; single: Record<string, string | null> } {
-  const open = STATUS_MEANINGS.filter((s) => s.open && s.defaultValue).map((s) => s.defaultValue);
-  const resolved = STATUS_MEANINGS.filter((s) => s.resolved && s.defaultValue).map((s) => s.defaultValue);
+  const open = STATUS_MEANINGS.filter((s) => s.open && s.defaultValue && !s.mappedOnly).map((s) => s.defaultValue);
+  const resolved = STATUS_MEANINGS.filter((s) => s.resolved && s.defaultValue && !s.mappedOnly).map((s) => s.defaultValue);
   const single: Record<string, string | null> = {};
-  for (const s of STATUS_MEANINGS) if (s.contractKey) single[s.contractKey] = s.defaultValue || null;
+  for (const s of STATUS_MEANINGS) if (s.contractKey && !s.mappedOnly) single[s.contractKey] = s.defaultValue || null;
   return { open, resolved, single };
 }
 
@@ -368,7 +375,7 @@ export function contractFromMapping(base: Contract, mapping: InterfaceMapping): 
   const resolved: string[] = [];
   for (const s of STATUS_MEANINGS) {
     // An optional meaning the app did not map is absent (review) or stays default (draft).
-    const v = mapped[s.id] ?? (s.defaultValue || null);
+    const v = mapped[s.id] ?? (s.mappedOnly ? null : s.defaultValue || null);
     if (s.contractKey) Object.assign(next.statuses, { [s.contractKey]: v });
     if (!v) continue;
     if (s.open && !open.includes(v)) open.push(v);
@@ -455,6 +462,10 @@ export function renderReferencePage(): string {
     }
     lines.push('');
   }
+  lines.push('## Changes in version 1.4');
+  lines.push('');
+  lines.push('Adds the optional status meaning `obsolete` (default value `closed_obsolete`): closed, resolved, for a ticket overtaken or no longer wanted. It releases a dependent exactly as `wontFix` does. It counts only in an app that maps it; an app declared at an earlier 1.x, or one that leaves it unmapped, behaves as before.');
+  lines.push('');
   lines.push('## Changes in version 1.3');
   lines.push('');
   lines.push('The roles crew only reads accept a computed field as well as a plain one: `issues.key`, `issues.tag`, `epics.key` and `maps.version`, which an app generates. `issues.attachments` asks for a file field (one or several) rather than a link field, because crew reads file references from it. Every role not named here is unchanged, and a role crew writes still asks for a plain field. An app declared at an earlier 1.x still conforms to that version and is read by this crew.');

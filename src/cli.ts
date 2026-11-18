@@ -7209,8 +7209,8 @@ switch (command) {
     try {
       const open = await statusTracker.openTickets();
       const blockerInfo = blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open)));
-      heldReleases = describeHeld(heldByBlockers(open, statusTracker.contract.statuses.verified, blockerInfo));
-      waitViews = [...planFootprintsFor(route, open, await readFootprintEvents(statusTracker), computeBlockedIds(open, blockerInfo)).waits.values()]
+      heldReleases = describeHeld(heldByBlockers(open, statusTracker.contract.statuses.verified, blockerInfo, new Set(statusTracker.contract.statuses.resolved)));
+      waitViews = [...planFootprintsFor(route, open, await readFootprintEvents(statusTracker), computeBlockedIds(open, blockerInfo, { resolved: new Set(statusTracker.contract.statuses.resolved) })).waits.values()]
         .map((w) => ({ ticket: displayKey(w.ticket), waitingFor: w.waitingFor, files: w.files }));
       // CREW-3386: verified branches waiting for a ticket handed back for a conflict.
       const minutes = Math.min(...(await resolvedRepos(route)).map((r) => r.config.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES), DEFAULT_RIGHT_OF_WAY_MINUTES);

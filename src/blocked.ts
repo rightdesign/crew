@@ -70,9 +70,11 @@ export function blockerInfoMap(tickets: Ticket[], extra: Ticket[] = []): Blocker
  * blocking — parking a ticket forever on a row nobody can resolve is the worse
  * failure — and reported by `sweepDiagnostics`.
  */
-export function computeBlockedIds(tickets: Ticket[], info: BlockerInfo): Set<string> {
+export function computeBlockedIds(
+  tickets: Ticket[], info: BlockerInfo, opts: { resolved?: ReadonlySet<string> } = {},
+): Set<string> {
   const blocked = new Set<string>();
-  for (const t of tickets) if (unresolvedBlockers(t, info).length > 0) blocked.add(t.id);
+  for (const t of tickets) if (unresolvedBlockers(t, info, opts).length > 0) blocked.add(t.id);
   return blocked;
 }
 
@@ -94,20 +96,26 @@ export function computeBlockedIds(tickets: Ticket[], info: BlockerInfo): Set<str
  * blocker in another repo, or either side with no `repo_id`, keeps the plain
  * rule: a dependent cannot stack on a branch in a different repository anyway.
  *
+ * `opts.resolved` is the workspace contract's resolved-status set
+ * (`contract.statuses.resolved`). A status the app maps on top of the default
+ * set (`closed_obsolete`, CREW-3642) is resolved only there; absent, the
+ * default workspace's set applies.
+ *
  * `opts.mergeGated: false` restores the plain rule. The release phase uses it:
  * it merges a batch oldest-first, so a verified blocker is merged before its
  * dependent in the same pass and holding the dependent for a whole extra
  * release would only add latency.
  */
 export function unresolvedBlockers(
-  t: Pick<Ticket, 'blocked_by' | 'repo_id'>, info: BlockerInfo, opts: { mergeGated?: boolean } = {},
+  t: Pick<Ticket, 'blocked_by' | 'repo_id'>, info: BlockerInfo, opts: { mergeGated?: boolean; resolved?: ReadonlySet<string> } = {},
 ): string[] {
   const mergeGated = opts.mergeGated ?? true;
+  const resolved = opts.resolved ?? RESOLVED_STATUSES;
   return (t.blocked_by ?? []).filter((id) => {
     const b = info[id];
     const status = b?.status;
     if (!b || status === undefined) return false;
-    if (!RESOLVED_STATUSES.has(status)) return true;
+    if (!resolved.has(status)) return true;
     return mergeGated && status === 'verified' && !!t.repo_id && b.repo_id === t.repo_id
       && !b.merged_at && !b.commit_sha;
   });
@@ -115,7 +123,7 @@ export function unresolvedBlockers(
 
 /** "CREW-1234 (accepted), CREW-9 (fixed)" — only the blockers still unresolved. */
 export function describeUnresolved(
-  t: Pick<Ticket, 'blocked_by' | 'repo_id'>, info: BlockerInfo, opts: { mergeGated?: boolean } = {},
+  t: Pick<Ticket, 'blocked_by' | 'repo_id'>, info: BlockerInfo, opts: { mergeGated?: boolean; resolved?: ReadonlySet<string> } = {},
 ): string {
   return unresolvedBlockers(t, info, opts)
     .map((id) => `${info[id]?.issue_tag ?? info[id]?.issue_id ?? '?'} (${info[id]?.status ?? 'unknown'})`)
@@ -371,10 +379,10 @@ This is automatic and reversible: a ticket that would change a file another acti
   return step.action === 'park'
     ? `Parked as **Blocked** by the crew — waiting on: ${step.blockers}.
 
-This is automatic and reversible: an approved ticket whose \`Blocked by\` entries are not all resolved is parked out of the queue, and restored on the first poll after the last one resolves. Nothing else about the ticket changes. A blocker counts as resolved at \`closed_deployed\`, \`closed_wont_fix\` or \`closed_duplicate\`, or at \`verified\` when it is in a different repository or already merged (\`merged_at\` set) — not at \`fixed\`, which is still an unmerged branch awaiting QA, and not at \`verified\` for a blocker in this ticket's own repository until the release has merged it, so nothing gets built stacked on an unmerged branch.`
+This is automatic and reversible: an approved ticket whose \`Blocked by\` entries are not all resolved is parked out of the queue, and restored on the first poll after the last one resolves. Nothing else about the ticket changes. A blocker counts as resolved at \`closed_deployed\`, \`closed_wont_fix\`, \`closed_duplicate\` or \`closed_obsolete\` (where the app maps it), or at \`verified\` when it is in a different repository or already merged (\`merged_at\` set) — not at \`fixed\`, which is still an unmerged branch awaiting QA, and not at \`verified\` for a blocker in this ticket's own repository until the release has merged it, so nothing gets built stacked on an unmerged branch.`
     : `Restored to **Approved** by the crew — ${step.blockers ? 'every blocker has resolved' : 'nothing holds it back now (the tickets it waited for no longer hold its files)'}${step.blockers && step.blockers !== '—' ? ` (${step.blockers})` : ''}.
 
-This restores the status it was approved at before being parked; it is back in the queue and a role may pick it up. If a blocker resolved as \`closed_wont_fix\` or \`closed_duplicate\` this ticket may still not be buildable as written — that is a call for a human, not the crew.`;
+This restores the status it was approved at before being parked; it is back in the queue and a role may pick it up. If a blocker resolved as \`closed_wont_fix\`, \`closed_duplicate\` or \`closed_obsolete\` (where the app maps it) this ticket may still not be buildable as written — that is a call for a human, not the crew.`;
 }
 
 export interface SweepWriter {

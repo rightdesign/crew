@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { discover } from '../src/connect.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
-  contractFromMapping, renderReferencePage, trackerInterfaceDefinition, FIELD_ENTRIES, TABLE_ENTRIES, versionAccepted,
+  contractFromMapping, renderReferencePage, trackerInterfaceDefinition, FIELD_ENTRIES, TABLE_ENTRIES, STATUS_MEANINGS, versionAccepted,
   type InterfaceMapping,
 } from '../src/tracker-interface.ts';
 import {
@@ -239,7 +239,7 @@ test('role ids are unique and every field role names a table role', () => {
   assert.equal(new Set(ids).size, ids.length);
   const tables = new Set(TABLE_ENTRIES.map((t) => t.role));
   for (const e of FIELD_ENTRIES) assert.ok(tables.has(e.table), e.role);
-  assert.deepEqual(def.version, { major: 1, minor: 3 });
+  assert.deepEqual(def.version, { major: 1, minor: 4 });
 });
 
 test('docs/WORK_TRACKER.md matches the definition (regenerate with `node --experimental-strip-types scripts/gen-tracker-reference.ts`)', () => {
@@ -295,4 +295,15 @@ test('only the roles crew reads accept a computed field; the key roles do', () =
   assert.deepEqual(either, ['epics.key', 'issues.key', 'issues.tag', 'maps.version']);
   const attachments = trackerInterfaceDefinition().roles.find((r) => r.id === 'issues.attachments');
   assert.equal(attachments?.type === 'field' && attachments.fieldKind, 'file');
+});
+
+test('the obsolete meaning is resolved and closed only where an app maps it (1.4)', () => {
+  const m = STATUS_MEANINGS.find((s) => s.id === 'obsolete')!;
+  assert.deepEqual([m.open, m.resolved, m.optional, m.defaultValue], [false, true, true, 'closed_obsolete']);
+  const mapped = contractFromMapping(DEFAULT_CONTRACT, { tables: {}, fields: {}, values: { status: { obsolete: 'closed_obsolete' } } });
+  assert.ok(mapped.statuses.resolved.includes('closed_obsolete'));
+  assert.ok(!mapped.statuses.open.includes('closed_obsolete'));
+  const unmapped = contractFromMapping(DEFAULT_CONTRACT, { tables: {}, fields: {}, values: {} });
+  assert.ok(!unmapped.statuses.resolved.includes('closed_obsolete'));
+  assert.ok(!DEFAULT_CONTRACT.statuses.resolved.includes('closed_obsolete'));
 });

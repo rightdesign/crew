@@ -2,7 +2,7 @@
 
 <!-- Generated from src/tracker-interface.ts by `node --experimental-strip-types scripts/gen-tracker-reference.ts`. Do not edit by hand. -->
 
-Interface `work-tracker`, owner `crew`, version 1.3. This crew reads versions 1.0 or a later 1.x.
+Interface `work-tracker`, owner `crew`, version 1.4. This crew reads versions 1.0 or a later 1.x.
 
 An app that implements this interface declares a mapping from each role below to its own table, field or status value, and crew reads the app through that mapping. A table or column keeps working under any name as long as the mapping says so. An app that declares nothing is read from the defaults in the last column, found by table display name, and crew raises a non-blocking attention item asking the operator to update the app’s template.
 
@@ -137,6 +137,10 @@ An app that implements this interface declares a mapping from each role below to
 | `answers.detail` | `detail` | a text field | no | Without it an answer has no full instruction to act on when chosen. |
 | `answers.order` | `position` | a number field | no | Without it the answers show in the order they were created, not the order the seat intended. |
 
+## Changes in version 1.4
+
+Adds the optional status meaning `obsolete` (default value `closed_obsolete`): closed, resolved, for a ticket overtaken or no longer wanted. It releases a dependent exactly as `wontFix` does. It counts only in an app that maps it; an app declared at an earlier 1.x, or one that leaves it unmapped, behaves as before.
+
 ## Changes in version 1.3
 
 The roles crew only reads accept a computed field as well as a plain one: `issues.key`, `issues.tag`, `epics.key` and `maps.version`, which an app generates. `issues.attachments` asks for a file field (one or several) rather than a link field, because crew reads file references from it. Every role not named here is unchanged, and a role crew writes still asks for a plain field. An app declared at an earlier 1.x still conforms to that version and is read by this crew.
@@ -174,5 +178,6 @@ Which statuses are open and which are resolved belongs to the interface, not to 
 | `wontFix` | `closed_wont_fix` | no | yes | yes | Called off without merging. |
 | `duplicate` | `closed_duplicate` | no | yes | yes | Closed in favor of another ticket. |
 | `completed` | `closed_completed` | no | yes | yes | Done with nothing to deploy. |
+| `obsolete` | `closed_obsolete` | no | yes | no | Overtaken or no longer wanted, closed without being built. Releases a dependent exactly as Won’t fix does (interface 1.4). |
 | `cantReproduce` | `closed_cant_reproduce` | no | yes | yes | Closed as written, unreproducible. |
 | `draft` | `draft` | no | no | no | Held back; never polled. |
