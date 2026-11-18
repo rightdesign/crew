@@ -1082,6 +1082,37 @@ export class Tracker {
     if (!res.ok) throw new Error(`posting a ${type} event failed: HTTP ${res.status}${await refusalReason(res)}`);
   }
 
+  /**
+   * The questions part's tables when this route's app maps it (interface 1.1,
+   * CREW-3588), else null: an app at 1.0, an undeclared app, or a mapping that
+   * leaves a table out. Nothing is written for a null.
+   */
+  questionsPart(): { questionsModelId: string; answersModelId: string } | null {
+    const r = this.route.resolved;
+    return r?.questionsModelId && r.answersModelId ? { questionsModelId: r.questionsModelId, answersModelId: r.answersModelId } : null;
+  }
+
+  /** The seat's own open questions on a ticket (its askedBy, never a person's). */
+  async listOpenQuestions(part: { questionsModelId: string }, ticketId: string, askedBy: string): Promise<{ id: string }[]> {
+    const q = this.contract.questions;
+    return this.client.records.list<{ id: string }>(part.questionsModelId, {
+      filters: encodeFilters([
+        { columnName: q.parent, operator: 'EQ', value: ticketId },
+        { columnName: q.status, operator: 'EQ', value: this.contract.questionStatuses.open },
+        { columnName: q.askedBy, operator: 'EQ', value: askedBy },
+      ]),
+      limit: 100,
+    });
+  }
+
+  async updateRecord(modelId: string, id: string, fields: Record<string, unknown>): Promise<void> {
+    await this.client.records.update(modelId, id, fields);
+  }
+
+  async createRecord(modelId: string, fields: Record<string, unknown>): Promise<{ id: string }> {
+    return this.client.records.create<{ id: string }>(modelId, fields);
+  }
+
   /** A ticket comment under a seat's identity (CREW-2363: the replayed hand-off comment). */
   async postComment(ticketId: string, body: string, memberId: string): Promise<void> {
     const auth = await this.authorshipProbe();

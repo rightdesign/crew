@@ -612,6 +612,29 @@ on data. There are two kinds, each written where the operator looks:
   sensible default, state it ("If you just approve this without replying, I
   will <default>."). Approving with no reply then means that default.
 
+**Also ask it as a record, when the app takes questions.** Before you post a
+stop comment that asks a person to decide or answer something, run
+`crew ask <ticket number> --question "<the question>" --role <your lane>`, with
+`--to <the park-to Crew row id>` when the park names a person, and one
+`--answer "<label> :: <detail>"` per proposed answer. It writes the question as
+a record the person can answer with one click. It is a no-op that says so when
+the app has no questions part, so run it every time and then post the comment as
+usual; the comment is never skipped, and it still opens with the question. A
+failure of the command is never a reason to hold the park back.
+
+- Offer answers only when the choices are genuinely discrete: two to four
+  options you could each act on at once. Give the recommended one first, and the
+  default you would take on a bare approval is that first one. Each label is a
+  few words for a button; each detail is the full instruction you will act on if
+  it is chosen.
+- A question that needs a free-form answer (a name, a description, an opinion,
+  "what should this say?") is asked with no `--answer` at all. Do not invent
+  options to fill the space.
+- Asking again on the same ticket withdraws your earlier open question, so the
+  person never sees two. Do not read the question record to learn the answer:
+  a chosen answer arrives as a comment from the person, which you already treat
+  as direction.
+
 **A parked ticket that comes back unanswered is not an answer.** When a ticket
 you parked with a question returns to `accepted` (or has `needs_planning`
 cleared) and no person has commented since your question — a comment from your

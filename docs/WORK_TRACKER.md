@@ -2,7 +2,7 @@
 
 <!-- Generated from src/tracker-interface.ts by `node --experimental-strip-types scripts/gen-tracker-reference.ts`. Do not edit by hand. -->
 
-Interface `work-tracker`, owner `crew`, version 1.0. This crew reads versions 1.0 or a later 1.x.
+Interface `work-tracker`, owner `crew`, version 1.1. This crew reads versions 1.0 or a later 1.x.
 
 An app that implements this interface declares a mapping from each role below to its own table, field or status value, and crew reads the app through that mapping. A table or column keeps working under any name as long as the mapping says so. An app that declares nothing is read from the defaults in the last column, found by table display name, and crew raises a non-blocking attention item asking the operator to update the app’s template.
 
@@ -20,6 +20,8 @@ An app that implements this interface declares a mapping from each role below to
 | `maps` | Maps | no | Without it a ticket cannot cite its epic’s planning document. |
 | `periscopes` | Periscopes | no | Without it crew cannot host live previews. |
 | `locks` | Locks | no | Without it ships cannot take the release lock through the board. |
+| `questions` | Questions | no | Without it a seat that parks a ticket for an answer cannot also ask the question as a record with proposed answers; the comment still carries it. |
+| `answers` | Answers | no | Without it a question cannot offer proposed answers. |
 
 ## Issues fields
 
@@ -94,6 +96,37 @@ An app that implements this interface declares a mapping from each role below to
 | `maps.conversation` | `conversation` | a text field | no | Without it the interview record cannot be pointed at. |
 | `maps.status` | `status` | a choice field | no | Without it the active Map cannot be told from a draft. |
 | `maps.version` | `version` | any column | no | Without it a brief cannot name the Map’s version. |
+
+## Questions fields
+
+| Role | Default column | Shape | Required | What goes wrong without it |
+| --- | --- | --- | --- | --- |
+| `questions.parent` | `ticket_id` | a link field | no | Without it a question cannot be tied to the ticket it is about, so crew writes none. |
+| `questions.text` | `question` | a text field | no | Without it a question has no words. |
+| `questions.status` | `status` | a choice field | no | Without it crew cannot tell an open question from an answered or withdrawn one. |
+| `questions.askedBy` | `asked_by_id` | a link field | no | Without it a question does not say which seat asked it, so crew cannot withdraw its own earlier question. |
+| `questions.addressedTo` | `addressed_to_id` | a link field | no | Without it a question does not say who it is waiting on. |
+| `questions.answeredBy` | `answered_by_id` | a link field | no | Without it an answered question does not say who answered. |
+| `questions.chosenAnswer` | `chosen_answer_id` | a link field | no | Without it an answered question does not say which answer was chosen. |
+
+## Answers fields
+
+| Role | Default column | Shape | Required | What goes wrong without it |
+| --- | --- | --- | --- | --- |
+| `answers.question` | `question_id` | a link field | no | Without it an answer cannot be tied to its question, so crew offers none. |
+| `answers.label` | `label` | a text field | no | Without it an answer has no short label to show on a button. |
+| `answers.detail` | `detail` | a text field | no | Without it an answer has no full instruction to act on when chosen. |
+| `answers.order` | `position` | a number field | no | Without it the answers show in the order they were created, not the order the seat intended. |
+
+## The questions part (version 1.1)
+
+Optional. When the app maps the Questions and Answers tables and the roles below, a seat that parks a ticket for a person’s answer also writes the question as a record: one open question linked to the ticket, with two to four ordered answers (recommended first) when the choices are genuinely discrete, none when the answer is free-form. The comment is posted either way and still leads with the question. An app that maps none of it, including every app at version 1.0, still conforms and gets the comment alone. The shapes are the ones the platform’s Record choices component asks of its questions and answers tables. Crew writes the part only when the mapping carries `questions.parent`, `questions.text`, `questions.status`, `questions.askedBy`, `answers.question`, `answers.label`, `answers.detail`; the other roles are written when mapped.
+
+| Value id | Default value | Meaning |
+| --- | --- | --- |
+| `open` | `open` | Waiting for a person to answer. |
+| `answered` | `answered` | A person chose an answer or replied in writing. |
+| `withdrawn` | `withdrawn` | The asker took it back, usually because it asked again on the same ticket. |
 
 ## Status meanings
 

@@ -128,6 +128,7 @@ import { startWatch } from './watch.ts';
 import { findOrphansIn, listeners, ticketForPort, killGently, pidsInWorktree, worktreeExistsIn } from './ports.ts';
 import { gatherInbox, renderInbox } from './inbox.ts';
 import { renderStatus, type StatusRepo, type StatusLastRun, type StatusWait } from './status-render.ts';
+import { askQuestion, validateAsk, MAX_ANSWERS, MIN_ANSWERS, type ProposedAnswer } from './questions.ts';
 import { ignoreByRepo, planFootprintsFor, pushedEventExtra, readFootprintEvents } from './footprint-run.ts';
 import { FOOTPRINT_DECLARED_EVENT, countedPaths, footprintVerdictText, mustYieldTo } from './footprint.ts';
 import { decideFleet, renderFleet, snapshot, changed, nextRoles, since } from './fleet.ts';
@@ -485,6 +486,8 @@ function usage(problem?: string, requested = false): never {
   crew shell-init [--shell zsh|bash|fish]   print the periscope shell function (install: eval "\$(crew shell-init)")
   crew worktree [route] NNN      cut (or refresh) this run's worktree for a ticket from the remote; prints its path
   crew unassign [route] NNN      hand back a session's ticket — clears assignee, next cycle picks it up
+  crew ask [route] NNN --question TEXT [--answer "LABEL :: DETAIL"]... [--to CREW_ROW_ID] [--role dev|design|qa]
+                                 write a parked ticket's question as a record with 2-4 proposed answers (none for a free-form question); a no-op when the app maps no questions part
   crew footprint [route] NNN [path...]   record the files a ticket will change (once), then print PROCEED or YIELD against active work
   crew sandbox cache [--refresh|--prune|--reset] [--json]   list the sandbox cache volume's mirrors; --refresh runs the daemon's cache pass once (creates missing mirrors), --prune drops unserved repositories, --reset recreates the volume
   crew sync [route]              fast-forward the checkout and its worktrees from the remote
@@ -588,7 +591,7 @@ const KNOWN_COMMANDS = new Set([
   'passenger-sync-daemon', 'periscope-proxy', 'intel', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
   'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'sandbox', 'selftest', 'shell-init', 'ship', 'skills', 'status',
-  'sync', 'unassign', 'footprint', 'uninstall', 'watch', 'whoami', 'worktree',
+  'sync', 'unassign', 'footprint', 'ask', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
 if (!KNOWN_COMMANDS.has(command)) usage(`unknown command "${command}"`);
 // CREW-3446: `crew <command> --help` is a usage request, answered before the command
@@ -5008,7 +5011,7 @@ switch (command) {
       const resolved = {
         workspaceId: found.workspaceId, projectId: found.projectId,
         areaModelId: found.areaModelId, areaId: found.areaId,
-        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, mapsModelId: found.mapsModelId, periscopesModelId: found.periscopesModelId, locksModelId: found.locksModelId,
+        shipsModelId: found.shipsModelId, epicsModelId: found.epicsModelId, mapsModelId: found.mapsModelId, periscopesModelId: found.periscopesModelId, questionsModelId: found.questionsModelId, answersModelId: found.answersModelId, locksModelId: found.locksModelId,
         recordLinkViewId: found.recordLinkViewId,
         reposModelId: found.reposModelId, repoNames: found.repoNames, repoRemotes: found.repoRemotes, repoForgeHosts: found.repoForgeHosts,
         models: found.models, seats: found.seats, holds: found.holds.map((h) => ({ id: h.id, role: h.name })),
@@ -6329,6 +6332,51 @@ switch (command) {
       }
       throw e;
     }
+    break;
+  }
+
+  case 'ask': {
+    // CREW-3588: a seat parking a ticket for a person's answer calls this
+    // BEFORE posting its comment. A no-op (exit 0, nothing written) when the
+    // app maps no questions part, so the lane skill can call it unconditionally.
+    const argsA = positional.slice(1);
+    const nA = argsA.map(parseTicketNumber).find((x): x is string => x !== null);
+    const usageA = '`crew ask 326 --question "Which way?" --answer "Option A :: Do A" --answer "Option B :: Do B" --to <crew row id>`';
+    if (!nA) { die('crew ask', 'need a ticket number (326, ISSUE-326, or TABL-326)', usageA); }
+    const questionA = value('question');
+    if (!questionA) { die('crew ask', 'need --question TEXT', usageA); }
+    const answersA: ProposedAnswer[] = [];
+    argv.forEach((a, i) => {
+      if (a !== '--answer') return;
+      const raw = argv[i + 1] ?? '';
+      const at = raw.indexOf('::');
+      if (at < 0) { die('crew ask', `--answer "${raw}" needs a label and a detail separated by "::"`, usageA); }
+      answersA.push({ label: raw.slice(0, at).trim(), detail: raw.slice(at + 2).trim() });
+    });
+    const trA = new Tracker(route, cfg.ship);
+    const partA = trA.questionsPart();
+    if (!partA) {
+      process.stdout.write('no questions part: this app does not map one, so nothing was written — post the comment as usual\n');
+      break;
+    }
+    const openA = await trA.openTickets();
+    const ticketA = openA.find((t) => t[trA.contract.columns.key] === `ISSUE-${nA}`);
+    if (!ticketA) { die('crew ask', `no open ticket ISSUE-${nA} on ${route.route}`, '`crew inbox` to list open tickets'); }
+    const seatsA = route.resolved?.seats ?? {};
+    const roleA = value('role') ?? 'dev';
+    // The seat holding the ticket is the asker; --role names it when the ticket is unassigned.
+    const holderA = ticketA[trA.contract.columns.assignee] as string | null | undefined;
+    const askedByA = holderA && Object.values(seatsA).includes(holderA) ? holderA : seatsA[roleA as keyof typeof seatsA];
+    if (!askedByA) { die('crew ask', `no seat for role "${roleA}" on ${route.route}`, 'pass --role dev|design|qa'); }
+    const reqA = { ticketId: ticketA.id, question: questionA, answers: answersA, askedBy: askedByA, addressedTo: value('to') };
+    const problemsA = validateAsk(reqA);
+    if (problemsA.length) { die('crew ask', problemsA.join('; '), `${MIN_ANSWERS} to ${MAX_ANSWERS} --answer flags, or none for a free-form question`); }
+    if (dryRun) {
+      emit.emit(`would withdraw this seat's open questions on ${displayKey(ticketA)}, then ask one with ${answersA.length} proposed answer(s)`);
+      break;
+    }
+    const doneA = await askQuestion(trA, partA, trA.contract, reqA);
+    process.stdout.write(`asked on ${displayKey(ticketA)}: question ${doneA.questionId} with ${doneA.answerIds.length} answer(s)${doneA.withdrawn.length ? `, withdrew ${doneA.withdrawn.length} earlier` : ''}\n`);
     break;
   }
 

@@ -32,6 +32,8 @@ export interface FieldRole extends RoleBase {
   multiple?: boolean | 'either';
   computed?: boolean | 'either';
   builtinColumns?: string[];
+  /** `link` only: the table role the link must point at (the platform's own `linkTarget` form). */
+  linkTarget?: { tableRole: string };
 }
 export type InterfaceRole = TableRole | FieldRole;
 
@@ -92,6 +94,8 @@ export const TABLE_ENTRIES: readonly TableEntry[] = [
   { role: 'maps', defaultName: 'Maps', label: 'Maps table', optional: true, whatBreaks: 'Without it a ticket cannot cite its epic’s planning document.' },
   { role: 'periscopes', defaultName: 'Periscopes', label: 'Periscopes table', optional: true, whatBreaks: 'Without it crew cannot host live previews.' },
   { role: 'locks', defaultName: 'Locks', label: 'Locks table', optional: true, whatBreaks: 'Without it ships cannot take the release lock through the board.' },
+  { role: 'questions', defaultName: 'Questions', label: 'Questions table', optional: true, whatBreaks: 'Without it a seat that parks a ticket for an answer cannot also ask the question as a record with proposed answers; the comment still carries it.' },
+  { role: 'answers', defaultName: 'Answers', label: 'Answers table', optional: true, whatBreaks: 'Without it a question cannot offer proposed answers.' },
 ];
 
 export interface FieldEntry {
@@ -106,12 +110,14 @@ export interface FieldEntry {
   optional?: boolean;
   multiple?: boolean | 'either';
   builtin?: string[];
+  /** `link` only: the table role the link must point at. */
+  linkTo?: string;
   whatBreaks: string;
 }
 
 function f(
   table: string, name: string, contractPath: string, defaultColumn: string, kind: FieldRole['fieldKind'],
-  label: string, whatBreaks: string, extra: Partial<Pick<FieldEntry, 'optional' | 'multiple' | 'builtin'>> = {},
+  label: string, whatBreaks: string, extra: Partial<Pick<FieldEntry, 'optional' | 'multiple' | 'builtin' | 'linkTo'>> = {},
 ): FieldEntry {
   return { role: `${table}.${name}`, table, contractPath, defaultColumn, kind, label, whatBreaks, ...extra };
 }
@@ -159,6 +165,22 @@ export const FIELD_ENTRIES: readonly FieldEntry[] = [
   f('comments', 'ship', 'comments.ship', 'ship_id', 'link', 'Posted from ship', 'Without it a comment does not name the machine that posted it.', opt),
   f('comments', 'publicReply', 'comments.publicReply', 'is_public_reply', 'boolean', 'Public reply', 'Without it replies from a public form are read as the team’s.', opt),
   f('comments', 'authorName', 'comments.authorName', 'author_name', 'text', 'Public author name', 'Without it a public reporter’s name is lost.', opt),
+  // The optional questions part (interface 1.1, CREW-3588). The shapes are the
+  // ones the platform's Record choices requirement asks of its questions and
+  // answers tables; `questionsPartMapped` says when a mapping carries enough of
+  // them for crew to write a question. Each role is optional here because the
+  // whole part is: an app that maps none of it still conforms.
+  f('questions', 'parent', 'questions.parent', 'ticket_id', 'link', 'Question ticket', 'Without it a question cannot be tied to the ticket it is about, so crew writes none.', { ...opt, linkTo: 'issues' }),
+  f('questions', 'text', 'questions.text', 'question', 'text', 'Question text', 'Without it a question has no words.', opt),
+  f('questions', 'status', 'questions.status', 'status', 'choice', 'Question status', 'Without it crew cannot tell an open question from an answered or withdrawn one.', opt),
+  f('questions', 'askedBy', 'questions.askedBy', 'asked_by_id', 'link', 'Asked by', 'Without it a question does not say which seat asked it, so crew cannot withdraw its own earlier question.', opt),
+  f('questions', 'addressedTo', 'questions.addressedTo', 'addressed_to_id', 'link', 'Addressed to', 'Without it a question does not say who it is waiting on.', opt),
+  f('questions', 'answeredBy', 'questions.answeredBy', 'answered_by_id', 'link', 'Answered by', 'Without it an answered question does not say who answered.', opt),
+  f('questions', 'chosenAnswer', 'questions.chosenAnswer', 'chosen_answer_id', 'link', 'Chosen answer', 'Without it an answered question does not say which answer was chosen.', { ...opt, linkTo: 'answers' }),
+  f('answers', 'question', 'answers.question', 'question_id', 'link', 'Answer question', 'Without it an answer cannot be tied to its question, so crew offers none.', { ...opt, linkTo: 'questions' }),
+  f('answers', 'label', 'answers.label', 'label', 'text', 'Answer label', 'Without it an answer has no short label to show on a button.', opt),
+  f('answers', 'detail', 'answers.detail', 'detail', 'text', 'Answer detail', 'Without it an answer has no full instruction to act on when chosen.', opt),
+  f('answers', 'order', 'answers.order', 'position', 'number', 'Answer order', 'Without it the answers show in the order they were created, not the order the seat intended.', opt),
   f('epics', 'status', 'epics.statusColumn', 'status', 'choice', 'Epic status', 'Without it crew cannot keep an epic’s status from its tickets.', opt),
   f('epics', 'key', 'epics.keyColumn', 'epic_id', 'any', 'Epic key', 'Without it an epic has no name in the log.', opt),
   f('maps', 'epic', 'maps.epicColumn', 'epic_id', 'link', 'Map epic', 'Without it a Map cannot be matched to its epic.', opt),
@@ -205,6 +227,16 @@ export const STATUS_MEANINGS: readonly StatusMeaning[] = [
   { id: 'draft', label: 'Draft', defaultValue: 'draft', contractKey: 'draft', open: false, resolved: false, optional: true, meaning: 'Held back; never polled.' },
 ];
 
+/** What each question status MEANS (interface 1.1). Only `open` is waiting on anyone. */
+export const QUESTION_STATUS_MEANINGS: readonly { id: string; label: string; defaultValue: string; meaning: string }[] = [
+  { id: 'open', label: 'Open', defaultValue: 'open', meaning: 'Waiting for a person to answer.' },
+  { id: 'answered', label: 'Answered', defaultValue: 'answered', meaning: 'A person chose an answer or replied in writing.' },
+  { id: 'withdrawn', label: 'Withdrawn', defaultValue: 'withdrawn', meaning: 'The asker took it back, usually because it asked again on the same ticket.' },
+];
+
+/** The version this crew publishes; `ACCEPTED_INTERFACE_VERSIONS` is what it reads. */
+export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 1 };
+
 /** The definition as the platform stores it. */
 export function trackerInterfaceDefinition(): InterfaceDefinition {
   const roles: InterfaceRole[] = [
@@ -216,17 +248,24 @@ export function trackerInterfaceDefinition(): InterfaceDefinition {
       ...(e.optional ? { optional: true } : {}),
       ...(e.multiple !== undefined ? { multiple: e.multiple } : {}),
       ...(e.builtin ? { builtinColumns: e.builtin } : {}),
+      ...(e.linkTo ? { linkTarget: { tableRole: e.linkTo } } : {}),
     })),
   ];
   return {
     name: TRACKER_INTERFACE_NAME,
     owner: 'crew',
-    version: { major: 1, minor: 0 },
+    version: PUBLISHED_INTERFACE_VERSION,
     roles,
-    valueSets: [{
-      id: 'status', label: 'Ticket statuses', fieldRole: 'issues.status',
-      values: STATUS_MEANINGS.map((s) => ({ id: s.id, label: s.label, ...(s.optional ? { optional: true } : {}) })),
-    }],
+    valueSets: [
+      {
+        id: 'status', label: 'Ticket statuses', fieldRole: 'issues.status',
+        values: STATUS_MEANINGS.map((s) => ({ id: s.id, label: s.label, ...(s.optional ? { optional: true } : {}) })),
+      },
+      {
+        id: 'questionStatus', label: 'Question statuses', fieldRole: 'questions.status',
+        values: QUESTION_STATUS_MEANINGS.map((s) => ({ id: s.id, label: s.label })),
+      },
+    ],
   };
 }
 
@@ -244,6 +283,11 @@ export function defaultGroup<T extends object = Record<string, string>>(group: s
   }
   // Safe: every key of the caller's column group has a field entry, which test/tracker-interface.test.ts pins.
   return out as T;
+}
+
+export function defaultQuestionStatuses(): { open: string; answered: string; withdrawn: string } {
+  const v = (id: string): string => QUESTION_STATUS_MEANINGS.find((q) => q.id === id)!.defaultValue;
+  return { open: v('open'), answered: v('answered'), withdrawn: v('withdrawn') };
 }
 
 export function defaultStatusValues(): { open: string[]; resolved: string[]; single: Record<string, string | null> } {
@@ -282,11 +326,19 @@ import type { Contract } from './contract.ts';
  */
 export function contractFromMapping(base: Contract, mapping: InterfaceMapping): Contract {
   const next = structuredClone(base);
-  const groups: Record<string, object> = { columns: next.columns, comments: next.comments, epics: next.epics, maps: next.maps };
+  const groups: Record<string, object> = {
+    columns: next.columns, comments: next.comments, epics: next.epics, maps: next.maps,
+    questions: next.questions, answers: next.answers,
+  };
   for (const e of FIELD_ENTRIES) {
     const col = mapping.fields[e.role];
-    if (!col) continue;
     const [group, key] = e.contractPath.split('.') as [string, string];
+    // A questions-part column the mapping leaves out is blank, not the default
+    // name: the default would be written to a column the app does not have.
+    if (!col) {
+      if (group === 'questions' || group === 'answers') Object.assign(groups[group]!, { [key]: '' });
+      continue;
+    }
     Object.assign(groups[group]!, { [key]: col });
   }
   const mapped = mapping.values?.['status'] ?? {};
@@ -302,12 +354,30 @@ export function contractFromMapping(base: Contract, mapping: InterfaceMapping): 
   }
   next.statuses.open = open;
   next.statuses.resolved = resolved;
+  const questionValues = mapping.values?.['questionStatus'] ?? {};
+  for (const q of QUESTION_STATUS_MEANINGS) {
+    Object.assign(next.questionStatuses, { [q.id]: questionValues[q.id] ?? q.defaultValue });
+  }
   return next;
 }
 
 /** The table name the mapping gives each table role (declared apps are never searched by default name). */
 export function mappedTableName(mapping: InterfaceMapping, role: string): string | undefined {
   return mapping.tables?.[role];
+}
+
+/**
+ * Whether a mapping carries what crew needs to write a question: both tables
+ * and the fields that tie a question to its ticket and its asker (so a seat can
+ * withdraw only its own) and an answer to its question. The rest (addressed to, order, ...) are written when
+ * mapped and left out when not. An undeclared app never maps any of it.
+ */
+export const QUESTIONS_PART_ROLES = [
+  'questions.parent', 'questions.text', 'questions.status', 'questions.askedBy', 'answers.question', 'answers.label', 'answers.detail',
+] as const;
+
+export function questionsPartMapped(mapping: InterfaceMapping): boolean {
+  return !!mapping.tables?.['questions'] && !!mapping.tables?.['answers'] && QUESTIONS_PART_ROLES.every((r) => !!mapping.fields?.[r]);
 }
 
 // ---- reading conformance -------------------------------------------------
@@ -361,6 +431,14 @@ export function renderReferencePage(): string {
     }
     lines.push('');
   }
+  lines.push('## The questions part (version 1.1)');
+  lines.push('');
+  lines.push('Optional. When the app maps the Questions and Answers tables and the roles below, a seat that parks a ticket for a person\u2019s answer also writes the question as a record: one open question linked to the ticket, with two to four ordered answers (recommended first) when the choices are genuinely discrete, none when the answer is free-form. The comment is posted either way and still leads with the question. An app that maps none of it, including every app at version 1.0, still conforms and gets the comment alone. The shapes are the ones the platform\u2019s Record choices component asks of its questions and answers tables. Crew writes the part only when the mapping carries ' + QUESTIONS_PART_ROLES.map((r) => `\`${r}\``).join(', ') + '; the other roles are written when mapped.');
+  lines.push('');
+  lines.push('| Value id | Default value | Meaning |');
+  lines.push('| --- | --- | --- |');
+  for (const q of QUESTION_STATUS_MEANINGS) lines.push(`| \`${q.id}\` | \`${q.defaultValue}\` | ${q.meaning} |`);
+  lines.push('');
   lines.push('## Status meanings');
   lines.push('');
   lines.push('Which statuses are open and which are resolved belongs to the interface, not to the app. A blocker stops counting only at a resolved status; `Handed off` is open and not resolved, because a ticket blocked by unmerged work is still blocked.');

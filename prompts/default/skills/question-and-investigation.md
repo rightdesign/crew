@@ -26,6 +26,10 @@ No worktree and no code changes; only an answer.
 4. Set `status` to `needs_info`, `needs_planning` to true, and `assignee_id`
    to the Crew row in the ticket's `park to` cell (none: leave it unassigned,
    no personal address).
+   When the closing question is a decision between discrete choices, ask it as
+   a record too (`crew ask`, see "Stopping" in the shared policy) with the
+   recommended choice first; a question that needs a free-form answer is asked
+   with no answers.
    Close the answer by saying what you need from the person in one plain
    sentence and asking them to reply in a comment — never to change the
    status (see "Stopping" in the shared policy). This is the designed ending

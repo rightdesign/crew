@@ -144,6 +144,14 @@ export interface ResolvedIds {
    */
   periscopesModelId?: string;
   /**
+   * The optional `Questions` and `Answers` tables of the work tracker
+   * interface's questions part (1.1, CREW-3588). Set only for an app that
+   * declares the interface and maps the part; an undeclared app is read by
+   * display name and never has them, so a seat's park writes the comment alone.
+   */
+  questionsModelId?: string;
+  answersModelId?: string;
+  /**
    * The `Locks` table, when this workspace has one (ISSUE-394) — rows this
    * route's ships CAS against for cross-machine exclusion (the release
    * lock today; ISSUE-395's ticket-claim lock will share the mechanism).
@@ -1081,6 +1089,8 @@ function parseResolved(raw: any, m: Missing, where: string): ResolvedIds | undef
     epicsModelId: raw.epicsModelId,
     mapsModelId: raw.mapsModelId,
     periscopesModelId: raw.periscopesModelId,
+    questionsModelId: raw.questionsModelId,
+    answersModelId: raw.answersModelId,
     locksModelId: raw.locksModelId,
     recordLinkViewId: raw.recordLinkViewId,
     reposModelId: raw.reposModelId,

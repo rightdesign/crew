@@ -19,7 +19,7 @@
  */
 
 import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, EVENT_LOG_STATUS_UNTRACKED, type Contract } from './contract.ts';
-import { contractFromMapping, describeDifferences, mappedTableName, TABLE_ENTRIES, acceptedLabel, versionLabel } from './tracker-interface.ts';
+import { contractFromMapping, describeDifferences, mappedTableName, questionsPartMapped, TABLE_ENTRIES, acceptedLabel, versionLabel } from './tracker-interface.ts';
 import {
   findImplementers, mappingKey, readInterfaceState, versionMismatchMessage,
   type InterfaceState,
@@ -195,6 +195,9 @@ export interface Discovered {
   mapsModelId?: string;
   /** The optional `Periscopes` table (EPIC-077); its columns are checked by `crew doctor`. */
   periscopesModelId?: string;
+  /** The questions part's tables (CREW-3588): only for a declared app that maps the part. */
+  questionsModelId?: string;
+  answersModelId?: string;
   locksModelId?: string;
   /** The record-link-only View bound to Issues (ISSUE-928) — see the field's matching doc comment on `ResolvedIds` in config.ts. */
   recordLinkViewId?: string;
@@ -703,6 +706,14 @@ export async function discover(o: DiscoverOptions): Promise<Discovered> {
   out.mapsModelId = find('maps');
   // Optional too: a workspace without it cannot host periscopes (EPIC-077).
   out.periscopesModelId = find('periscopes');
+  // The questions part (interface 1.1) exists only through a declaration: an
+  // undeclared app is found by display name, and a table that merely happens to
+  // be called "Questions" is not this one.
+  if (usesMapping && mapping && questionsPartMapped(mapping)) {
+    out.questionsModelId = find('questions');
+    out.answersModelId = find('answers');
+    if (!out.questionsModelId || !out.answersModelId) { out.questionsModelId = undefined; out.answersModelId = undefined; }
+  }
   // Optional, like Ships and Epics: a workspace that has not adopted a
   // board-visible release lock (ISSUE-394) still works with the local-only
   // pid lock it always had.

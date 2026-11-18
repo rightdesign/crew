@@ -186,7 +186,10 @@ test('the default contract is built from the definition and is unchanged', () =>
   assert.deepEqual(DEFAULT_CONTRACT.statuses.resolved, [
     'verified', 'closed_deployed', 'closed_wont_fix', 'closed_duplicate', 'closed_completed', 'closed_cant_reproduce',
   ]);
-  assert.deepEqual(contractFromMapping(DEFAULT_CONTRACT, { tables: {}, fields: {}, values: {} }), DEFAULT_CONTRACT);
+  // An app that maps nothing of the questions part gets blank question columns, so none is ever written.
+  const empty = contractFromMapping(DEFAULT_CONTRACT, { tables: {}, fields: {}, values: {} });
+  assert.deepEqual({ ...empty, questions: DEFAULT_CONTRACT.questions, answers: DEFAULT_CONTRACT.answers }, DEFAULT_CONTRACT);
+  assert.ok(Object.values(empty.questions).every((c) => c === '') && Object.values(empty.answers).every((c) => c === ''));
 });
 
 test('role ids are unique and every field role names a table role', () => {
@@ -195,7 +198,7 @@ test('role ids are unique and every field role names a table role', () => {
   assert.equal(new Set(ids).size, ids.length);
   const tables = new Set(TABLE_ENTRIES.map((t) => t.role));
   for (const e of FIELD_ENTRIES) assert.ok(tables.has(e.table), e.role);
-  assert.deepEqual(def.version, { major: 1, minor: 0 });
+  assert.deepEqual(def.version, { major: 1, minor: 1 });
 });
 
 test('docs/WORK_TRACKER.md matches the definition (regenerate with `node --experimental-strip-types scripts/gen-tracker-reference.ts`)', () => {

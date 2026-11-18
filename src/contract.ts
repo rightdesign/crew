@@ -17,7 +17,7 @@
  *      load-bearing, since a ticket blocked by unmerged work is still blocked.
  */
 
-import { defaultGroup, defaultStatusValues } from './tracker-interface.ts';
+import { defaultGroup, defaultQuestionStatuses, defaultStatusValues } from './tracker-interface.ts';
 
 export interface ContractColumns {
   key: string;
@@ -274,12 +274,45 @@ export interface ContractMaps {
   activeStatus: string;
 }
 
+/**
+ * The optional questions part of the work tracker interface (1.1, CREW-3588).
+ * Only read for an app that declares the interface and maps the part; a
+ * column left unmapped keeps the default and is written only when the
+ * mapping names it (see `questionsPartMapped`).
+ */
+export interface ContractQuestions {
+  parent: string;
+  text: string;
+  status: string;
+  askedBy: string;
+  addressedTo: string;
+  answeredBy: string;
+  chosenAnswer: string;
+}
+
+export interface ContractAnswers {
+  question: string;
+  label: string;
+  detail: string;
+  order: string;
+}
+
+/** The choice values of a question's status. */
+export interface ContractQuestionStatuses {
+  open: string;
+  answered: string;
+  withdrawn: string;
+}
+
 export interface Contract {
   columns: ContractColumns;
   comments: ContractComments;
   statuses: ContractStatuses;
   epics: ContractEpics;
   maps: ContractMaps;
+  questions: ContractQuestions;
+  answers: ContractAnswers;
+  questionStatuses: ContractQuestionStatuses;
   /** Most urgent first. Cannot be inferred from the values themselves. */
   priorityOrder: string[];
   severityOrder: string[];
@@ -340,6 +373,9 @@ export const DEFAULT_CONTRACT: Contract = {
     statuses: { planned: 'planned', building: 'in_progress', done: 'done', cancelled: 'cancelled' },
   },
   maps: { ...MAP_DEFAULTS, activeStatus: 'active' },
+  questions: defaultGroup<ContractQuestions>('questions'),
+  answers: defaultGroup<ContractAnswers>('answers'),
+  questionStatuses: defaultQuestionStatuses(),
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
   unknownPriorityRank: 2,
@@ -374,6 +410,9 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
       statuses: { ...DEFAULT_CONTRACT.epics.statuses, ...override.epics?.statuses },
     },
     maps: { ...DEFAULT_CONTRACT.maps, ...override.maps },
+    questions: { ...DEFAULT_CONTRACT.questions, ...override.questions },
+    answers: { ...DEFAULT_CONTRACT.answers, ...override.answers },
+    questionStatuses: { ...DEFAULT_CONTRACT.questionStatuses, ...override.questionStatuses },
     priorityOrder: override.priorityOrder ?? DEFAULT_CONTRACT.priorityOrder,
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
     unknownPriorityRank: override.unknownPriorityRank ?? DEFAULT_CONTRACT.unknownPriorityRank,
