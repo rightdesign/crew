@@ -157,6 +157,8 @@ export const FIELD_ENTRIES: readonly FieldEntry[] = [
   f('issues', 'cacheWriteTokens', 'columns.cacheWriteTokens', 'cache_write_tokens', 'number', 'Cache write tokens', 'Without it per-ticket token spend is not kept.', opt),
   f('issues', 'costUsd', 'columns.costUsd', 'cost_usd', 'number', 'Cost (USD)', 'Without it per-ticket spend is not kept.', opt),
   f('issues', 'crewAssisted', 'columns.crewAssisted', 'crew_assisted', 'boolean', 'Crew assisted', 'Without it tickets the crew worked are not marked.', opt),
+  f('issues', 'description', 'columns.description', 'description', 'text', 'Description', 'Without it the platform cannot tell its own setup tickets from a first ticket, and cannot write one.', opt),
+  f('issues', 'needsPlanning', 'columns.needsPlanning', 'needs_planning', 'boolean', 'Needs planning', 'Without it the platform counts every ticket in a demand status as plannable, including ones a person still owes scoping.', opt),
   f('projects', 'workMode', 'columns.workMode', 'work_mode', 'choice', 'Work mode', 'Without it every project is worked automatically.', opt),
   f('comments', 'parent', 'comments.parent', 'ticket_id', 'link', 'Comment ticket', 'Without it a comment cannot be tied to its ticket.'),
   f('comments', 'body', 'comments.body', 'body', 'text', 'Comment body', 'Without it a comment has no text.'),
@@ -165,6 +167,16 @@ export const FIELD_ENTRIES: readonly FieldEntry[] = [
   f('comments', 'ship', 'comments.ship', 'ship_id', 'link', 'Posted from ship', 'Without it a comment does not name the machine that posted it.', opt),
   f('comments', 'publicReply', 'comments.publicReply', 'is_public_reply', 'boolean', 'Public reply', 'Without it replies from a public form are read as the team’s.', opt),
   f('comments', 'authorName', 'comments.authorName', 'author_name', 'text', 'Public author name', 'Without it a public reporter’s name is lost.', opt),
+  // Read by the platform's scheduler, project setup checklist and repository
+  // pages (interface 1.2, CREW-3633). All optional: the platform reports a role
+  // it needs but the app did not map as 'not ready' with that reason.
+  f('repos', 'name', 'repos.name', 'name', 'text', 'Repository name', 'Without it a repository has no short name to show or route by.', opt),
+  f('repos', 'remote', 'repos.remote', 'remote', 'text', 'Repository remote', 'Without it the platform cannot tell which `owner/name` a repository is.', opt),
+  f('repos', 'enabled', 'repos.enabled', 'enabled', 'boolean', 'Repository enabled', 'Without it the platform cannot tell a repository crew works from one it has switched off.', opt),
+  f('repos', 'ciProvider', 'repos.ciProvider', 'ci_provider', 'any', 'CI provider', 'Without it the platform cannot tell which CI system a repository uses (a text or choice field).', opt),
+  f('repos', 'appUrl', 'repos.appUrl', 'app_url', 'text', 'App URL', 'Without it the setup checklist has no link to where the app is served.', opt),
+  f('repos', 'project', 'repos.project', 'project_id', 'link', 'Repository project', 'Without it setup tickets cannot tell which project a repository belongs to.', { ...opt, linkTo: 'projects' }),
+  f('crew', 'userId', 'crew.userId', 'user_id', 'any', 'Workspace membership', 'Without it the platform cannot find the adding member’s seat (the field holds the workspace membership id of the person the seat is).', opt),
   // The optional questions part (interface 1.1, CREW-3588). The shapes are the
   // ones the platform's Record choices requirement asks of its questions and
   // answers tables; `questionsPartMapped` says when a mapping carries enough of
@@ -235,7 +247,7 @@ export const QUESTION_STATUS_MEANINGS: readonly { id: string; label: string; def
 ];
 
 /** The version this crew publishes; `ACCEPTED_INTERFACE_VERSIONS` is what it reads. */
-export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 1 };
+export const PUBLISHED_INTERFACE_VERSION: InterfaceVersion = { major: 1, minor: 2 };
 
 /** The definition as the platform stores it. */
 export function trackerInterfaceDefinition(): InterfaceDefinition {
@@ -328,7 +340,7 @@ export function contractFromMapping(base: Contract, mapping: InterfaceMapping): 
   const next = structuredClone(base);
   const groups: Record<string, object> = {
     columns: next.columns, comments: next.comments, epics: next.epics, maps: next.maps,
-    questions: next.questions, answers: next.answers,
+    questions: next.questions, answers: next.answers, repos: next.repos, crew: next.crew,
   };
   for (const e of FIELD_ENTRIES) {
     const col = mapping.fields[e.role];
@@ -431,6 +443,10 @@ export function renderReferencePage(): string {
     }
     lines.push('');
   }
+  lines.push('## Roles the platform reads (version 1.2)');
+  lines.push('');
+  lines.push('Optional. The platform\u2019s scheduler, project setup checklist and repository pages read `issues.description`, `issues.needsPlanning`, the `repos.*` roles and `crew.userId`. An app that maps none of them, including every app at version 1.0 or 1.1, still conforms; the platform then reports the function that needs a missing role as not ready, naming the role.');
+  lines.push('');
   lines.push('## The questions part (version 1.1)');
   lines.push('');
   lines.push('Optional. When the app maps the Questions and Answers tables and the roles below, a seat that parks a ticket for a person\u2019s answer also writes the question as a record: one open question linked to the ticket, with two to four ordered answers (recommended first) when the choices are genuinely discrete, none when the answer is free-form. The comment is posted either way and still leads with the question. An app that maps none of it, including every app at version 1.0, still conforms and gets the comment alone. The shapes are the ones the platform\u2019s Record choices component asks of its questions and answers tables. Crew writes the part only when the mapping carries ' + QUESTIONS_PART_ROLES.map((r) => `\`${r}\``).join(', ') + '; the other roles are written when mapped.');

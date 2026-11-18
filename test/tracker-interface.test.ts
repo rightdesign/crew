@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { discover } from '../src/connect.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
-  contractFromMapping, renderReferencePage, trackerInterfaceDefinition, FIELD_ENTRIES, TABLE_ENTRIES,
+  contractFromMapping, renderReferencePage, trackerInterfaceDefinition, FIELD_ENTRIES, TABLE_ENTRIES, versionAccepted,
   type InterfaceMapping,
 } from '../src/tracker-interface.ts';
 import {
@@ -198,10 +198,24 @@ test('role ids are unique and every field role names a table role', () => {
   assert.equal(new Set(ids).size, ids.length);
   const tables = new Set(TABLE_ENTRIES.map((t) => t.role));
   for (const e of FIELD_ENTRIES) assert.ok(tables.has(e.table), e.role);
-  assert.deepEqual(def.version, { major: 1, minor: 1 });
+  assert.deepEqual(def.version, { major: 1, minor: 2 });
 });
 
 test('docs/WORK_TRACKER.md matches the definition (regenerate with `node --experimental-strip-types scripts/gen-tracker-reference.ts`)', () => {
   const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'WORK_TRACKER.md');
   assert.equal(readFileSync(file, 'utf8'), renderReferencePage());
+});
+
+test('the 1.2 roles the platform reads are all optional, so a 1.0 app that maps none still conforms', () => {
+  const roles = ['issues.description', 'issues.needsPlanning', 'repos.name', 'repos.remote', 'repos.enabled', 'repos.ciProvider', 'repos.appUrl', 'repos.project', 'crew.userId'];
+  const def = trackerInterfaceDefinition();
+  for (const id of roles) {
+    const r = def.roles.find((x) => x.id === id);
+    assert.ok(r, id);
+    assert.equal(r.optional, true, id);
+    assert.ok(r.whatBreaks.length > 0, id);
+  }
+  assert.ok(versionAccepted({ major: 1, minor: 0 }));
+  assert.equal(DEFAULT_CONTRACT.repos.remote, 'remote');
+  assert.equal(DEFAULT_CONTRACT.crew.userId, 'user_id');
 });

@@ -2,7 +2,7 @@
 
 <!-- Generated from src/tracker-interface.ts by `node --experimental-strip-types scripts/gen-tracker-reference.ts`. Do not edit by hand. -->
 
-Interface `work-tracker`, owner `crew`, version 1.1. This crew reads versions 1.0 or a later 1.x.
+Interface `work-tracker`, owner `crew`, version 1.2. This crew reads versions 1.0 or a later 1.x.
 
 An app that implements this interface declares a mapping from each role below to its own table, field or status value, and crew reads the app through that mapping. A table or column keeps working under any name as long as the mapping says so. An app that declares nothing is read from the defaults in the last column, found by table display name, and crew raises a non-blocking attention item asking the operator to update the app’s template.
 
@@ -60,6 +60,8 @@ An app that implements this interface declares a mapping from each role below to
 | `issues.cacheWriteTokens` | `cache_write_tokens` | a number field | no | Without it per-ticket token spend is not kept. |
 | `issues.costUsd` | `cost_usd` | a number field | no | Without it per-ticket spend is not kept. |
 | `issues.crewAssisted` | `crew_assisted` | a boolean field | no | Without it tickets the crew worked are not marked. |
+| `issues.description` | `description` | a text field | no | Without it the platform cannot tell its own setup tickets from a first ticket, and cannot write one. |
+| `issues.needsPlanning` | `needs_planning` | a boolean field | no | Without it the platform counts every ticket in a demand status as plannable, including ones a person still owes scoping. |
 
 ## Comments fields
 
@@ -73,11 +75,28 @@ An app that implements this interface declares a mapping from each role below to
 | `comments.publicReply` | `is_public_reply` | a boolean field | no | Without it replies from a public form are read as the team’s. |
 | `comments.authorName` | `author_name` | a text field | no | Without it a public reporter’s name is lost. |
 
+## Crew fields
+
+| Role | Default column | Shape | Required | What goes wrong without it |
+| --- | --- | --- | --- | --- |
+| `crew.userId` | `user_id` | any column | no | Without it the platform cannot find the adding member’s seat (the field holds the workspace membership id of the person the seat is). |
+
 ## Projects fields
 
 | Role | Default column | Shape | Required | What goes wrong without it |
 | --- | --- | --- | --- | --- |
 | `projects.workMode` | `work_mode` | a choice field | no | Without it every project is worked automatically. |
+
+## Repos fields
+
+| Role | Default column | Shape | Required | What goes wrong without it |
+| --- | --- | --- | --- | --- |
+| `repos.name` | `name` | a text field | no | Without it a repository has no short name to show or route by. |
+| `repos.remote` | `remote` | a text field | no | Without it the platform cannot tell which `owner/name` a repository is. |
+| `repos.enabled` | `enabled` | a boolean field | no | Without it the platform cannot tell a repository crew works from one it has switched off. |
+| `repos.ciProvider` | `ci_provider` | any column | no | Without it the platform cannot tell which CI system a repository uses (a text or choice field). |
+| `repos.appUrl` | `app_url` | a text field | no | Without it the setup checklist has no link to where the app is served. |
+| `repos.project` | `project_id` | a link field | no | Without it setup tickets cannot tell which project a repository belongs to. |
 
 ## Epics fields
 
@@ -117,6 +136,10 @@ An app that implements this interface declares a mapping from each role below to
 | `answers.label` | `label` | a text field | no | Without it an answer has no short label to show on a button. |
 | `answers.detail` | `detail` | a text field | no | Without it an answer has no full instruction to act on when chosen. |
 | `answers.order` | `position` | a number field | no | Without it the answers show in the order they were created, not the order the seat intended. |
+
+## Roles the platform reads (version 1.2)
+
+Optional. The platform’s scheduler, project setup checklist and repository pages read `issues.description`, `issues.needsPlanning`, the `repos.*` roles and `crew.userId`. An app that maps none of them, including every app at version 1.0 or 1.1, still conforms; the platform then reports the function that needs a missing role as not ready, naming the role.
 
 ## The questions part (version 1.1)
 

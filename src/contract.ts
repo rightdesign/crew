@@ -43,6 +43,10 @@ export interface ContractColumns {
   blockedBy: string;
   updatedAt: string;
   needsDesign: string;
+  /** The ticket's description (text); read by the platform, never by crew's own loop (1.2). */
+  description: string;
+  /** The human-only planning gate (boolean); the platform's scheduler skips flagged tickets (1.2). */
+  needsPlanning: string;
   /**
    * The ticket's attachments (CREW-1558): a REFERENCE into the workspace's
    * Media Library table, holding record ids — not file ids and not URLs. The
@@ -280,6 +284,21 @@ export interface ContractMaps {
  * column left unmapped keeps the default and is written only when the
  * mapping names it (see `questionsPartMapped`).
  */
+/** The `Repos` table columns the platform reads (interface 1.2, CREW-3633). */
+export interface ContractRepos {
+  name: string;
+  remote: string;
+  enabled: string;
+  ciProvider: string;
+  appUrl: string;
+  project: string;
+}
+
+/** The `Crew` table columns the platform reads (interface 1.2, CREW-3633). */
+export interface ContractCrew {
+  userId: string;
+}
+
 export interface ContractQuestions {
   parent: string;
   text: string;
@@ -312,6 +331,8 @@ export interface Contract {
   maps: ContractMaps;
   questions: ContractQuestions;
   answers: ContractAnswers;
+  repos: ContractRepos;
+  crew: ContractCrew;
   questionStatuses: ContractQuestionStatuses;
   /** Most urgent first. Cannot be inferred from the values themselves. */
   priorityOrder: string[];
@@ -375,6 +396,8 @@ export const DEFAULT_CONTRACT: Contract = {
   maps: { ...MAP_DEFAULTS, activeStatus: 'active' },
   questions: defaultGroup<ContractQuestions>('questions'),
   answers: defaultGroup<ContractAnswers>('answers'),
+  repos: defaultGroup<ContractRepos>('repos'),
+  crew: defaultGroup<ContractCrew>('crew'),
   questionStatuses: defaultQuestionStatuses(),
   priorityOrder: ['p0', 'p1', 'p2', 'p3'],
   severityOrder: ['s1', 's2', 's3', 's4'],
@@ -412,6 +435,8 @@ export function resolveContract(override?: Partial<Contract> | null): Contract {
     maps: { ...DEFAULT_CONTRACT.maps, ...override.maps },
     questions: { ...DEFAULT_CONTRACT.questions, ...override.questions },
     answers: { ...DEFAULT_CONTRACT.answers, ...override.answers },
+    repos: { ...DEFAULT_CONTRACT.repos, ...override.repos },
+    crew: { ...DEFAULT_CONTRACT.crew, ...override.crew },
     questionStatuses: { ...DEFAULT_CONTRACT.questionStatuses, ...override.questionStatuses },
     priorityOrder: override.priorityOrder ?? DEFAULT_CONTRACT.priorityOrder,
     severityOrder: override.severityOrder ?? DEFAULT_CONTRACT.severityOrder,
