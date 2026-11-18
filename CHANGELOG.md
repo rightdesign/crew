@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.164.0] — 2026-11-18
+
+- CREW-3642 A ticket blocked by one closed as obsolete is released from its park when the workspace maps that status as resolved; unmapped workspaces behave as before.
+
 ## [0.163.2] — 2026-11-18
 
 - CREW-3645 A failed `crew connect` (and other one-shot commands) is logged under its own step and the route it was given, not as a poll error on the first route.
