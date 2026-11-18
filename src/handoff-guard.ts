@@ -34,6 +34,7 @@
  */
 
 import { closedStatuses, type Contract } from './contract.ts';
+import { createHash } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { git, gitOk, headSha, lsRemoteHeads, isAncestor, pushBranchUpstream, remoteConfigured, worktrees } from './git.ts';
@@ -179,13 +180,25 @@ export function inspectHandoff(
  * pushes work no later phase can find (QA reads `MISSING`, the release calls the ticket never-built). When no
  * contract branch exists for the ticket but the ticket's contract-named worktree holds commits on another branch,
  * the guard renames that local branch to the contract name (the first non-glob candidate) and carries on with its
- * ordinary check and plain fast-forward push. A contract-named branch that already exists elsewhere is never
- * overwritten: that is a refusal, bounced with both names. Nothing here pushes or force-anything.
+ * ordinary check and plain fast-forward push.
+ *
+ * CREW-3686: a contract branch that already exists locally is repaired too when that is only a fast-forward of it:
+ * it is not checked out in another worktree and its tip is an ancestor of (or equal to) the worktree's HEAD. The
+ * contract branch is moved to HEAD, the worktree is switched onto it and the misnamed branch (now at the same
+ * commit) is deleted, so no commit is discarded. It is refused, with a note naming both tips and the commands
+ * that resolve it, only when the contract branch holds commits HEAD lacks, or is checked out elsewhere. Nothing
+ * here pushes or force-anything.
  */
 export type BranchRepair =
   | { kind: 'none' }
   | { kind: 'renamed'; from: string; to: string }
-  | { kind: 'refused'; from: string; to: string; local: string | null; reason: string };
+  | {
+    kind: 'refused'; from: string; to: string; local: string | null; reason: string;
+    /** The contract branch's local tip, when it exists locally. */
+    toTip?: string | null;
+    /** The worktree's path, and the commands that resolve the refusal; absent for a failure with no known fix. */
+    worktree?: string; fix?: string;
+  };
 
 const sameDir = (a: string, b: string): boolean => {
   try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
@@ -204,12 +217,7 @@ export function repairMisnamedBranch(dir: string, cfg: EffectiveRepoConfig, tick
   const base = [`${cfg.branch.remote}/${cfg.branch.base}`, cfg.branch.base].find((b) => gitOk(dir, ['rev-parse', '--verify', '-q', b]) !== null);
   const ahead = base ? Number(gitOk(dir, ['rev-list', '--count', `${base}..${from}`]) ?? '1') : 1;
   if (ahead === 0) return { kind: 'none' };
-  if (existing) {
-    return {
-      kind: 'refused', from, to: existing, local: headSha(wt.path),
-      reason: `the ticket's worktree is on \`${from}\`, but the contract branch \`${existing}\` already exists and the runner will not overwrite it, so \`${from}\` was left as it is (expected name: \`${expected}\`)`,
-    };
-  }
+  if (existing) return repairBehindContractBranch(dir, wt.path, from, existing, expected, cfg.branch.remote);
   try {
     git(dir, ['branch', '-m', from, expected]);
   } catch (e) {
@@ -219,6 +227,50 @@ export function repairMisnamedBranch(dir: string, cfg: EffectiveRepoConfig, tick
     };
   }
   return { kind: 'renamed', from, to: expected };
+}
+
+/**
+ * CREW-3686: the worktree is on `from` and the contract branch `to` already exists locally. Fast-forward `to` to
+ * the worktree's HEAD when it is only behind, otherwise refuse and say exactly why and how to resolve it.
+ */
+function repairBehindContractBranch(dir: string, wtPath: string, from: string, to: string, expected: string, remote: string): BranchRepair {
+  const head = headSha(wtPath);
+  const toTip = gitOk(dir, ['rev-parse', '--verify', '-q', `refs/heads/${to}`]);
+  const elsewhere = worktrees(dir).find((w) => w.branch === to && !w.prunable && !sameDir(w.path, wtPath));
+  const named = to !== expected ? ` (expected name: \`${expected}\`)` : '';
+  if (elsewhere) {
+    return {
+      kind: 'refused', from, to, local: head, toTip, worktree: wtPath,
+      reason: `the ticket's worktree is on \`${from}\` (at \`${head}\`), but the contract branch \`${to}\` is checked out in another worktree, \`${elsewhere.path}\`, so the runner cannot move it${named}`,
+      fix: `git -C ${elsewhere.path} switch --detach   # or: git worktree remove ${elsewhere.path}`,
+    };
+  }
+  if (!head || !toTip || !isAncestor(dir, toTip, head)) {
+    const counts = toTip && head ? gitOk(dir, ['rev-list', '--left-right', '--count', `${to}...${head}`])?.split(/\s+/).map(Number) : undefined;
+    const sides = counts && counts.length === 2
+      ? `\`${to}\` holds ${counts[0]} commit${counts[0] === 1 ? '' : 's'} the worktree's HEAD lacks, and HEAD holds ${counts[1]} that \`${to}\` lacks`
+      : `the two could not be compared`;
+    return {
+      kind: 'refused', from, to, local: head, toTip, worktree: wtPath,
+      reason: `the ticket's worktree is on \`${from}\` at \`${head}\` and the contract branch \`${to}\` is at \`${toTip}\`: ${sides}. Nothing was moved or deleted${named}`,
+      fix: `git -C ${wtPath} merge ${to}   # resolve any conflict, commit, run the suite`,
+    };
+  }
+  try {
+    git(dir, ['branch', '-f', to, head]);
+    git(wtPath, ['switch', to]);
+  } catch (e) {
+    return {
+      kind: 'refused', from, to, local: head, toTip,
+      reason: `the ticket's worktree is on \`${from}\` at \`${head}\`; \`${to}\` is only behind it, but moving the worktree onto it failed: ${(e as Error).message}`,
+      fix: `git -C ${wtPath} switch ${to}`, worktree: wtPath,
+    };
+  }
+  // The remote contract branch, when there is one, is where `to` pushes; the delete below is safe because `from`
+  // and `to` are now the same commit.
+  gitOk(wtPath, ['branch', '--set-upstream-to', `${remote}/${to}`, to]);
+  gitOk(dir, ['branch', '-D', from]);
+  return { kind: 'renamed', from, to };
 }
 
 /**
@@ -259,15 +311,81 @@ export function describeHandoffPush(dir: string, cfg: EffectiveRepoConfig, ticke
   return v.kind === 'bounce' && pushableBounce(dir, v) ? `would push ${v.branch} to ${v.remote}` : null;
 }
 
-export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, shipName: string | undefined, pushError?: string): string {
-  return `${HANDOFF_BOUNCED_MARKER}
+/**
+ * CREW-3686: a short fingerprint of what a bounce found. Two bounces with the same one, in a row, mean the seat
+ * was dispatched again and changed nothing the guard looks at.
+ */
+export function bounceSignature(...parts: Array<string | null | undefined>): string {
+  return createHash('sha256').update(parts.map((p) => p ?? '').join('\n')).digest('hex').slice(0, 12);
+}
+const SIGNATURE_RE = /Bounce signature: `([0-9a-f]{12})`/;
+const signatureLine = (sig: string): string => `Bounce signature: \`${sig}\``;
 
+/** The paragraph a second identical bounce opens with: the earlier attempt changed nothing, so say what to change. */
+function repeatParagraph(what: string, change: string): string {
+  return `**This is the second bounce for exactly the same state.** The run since the last note changed nothing the guard checks: ${what}. Repeating the same hand-off will bounce again, and a third identical bounce parks this ticket for a person. ${change}\n\n`;
+}
+
+export function bounceComment(v: Extract<HandoffVerdict, { kind: 'bounce' }>, shipName: string | undefined, pushError?: string, repeat?: { sig: string; second: boolean }): string {
+  const again = repeat?.second
+    ? repeatParagraph(
+      `the local HEAD is still ${v.local ? `\`${v.local}\`` : '(no local branch)'} and \`${v.remote}\` is still ${v.origin ? `\`${v.origin}\`` : '(without the branch)'}`,
+      `Change it: run \`git rev-parse HEAD\` and \`git ls-remote ${v.remote} ${v.branch ?? '<branch>'}\` in the worktree, push the commit that is missing, and if git refuses the push, set \`needs_info\` quoting its error instead of handing off again.`)
+    : '';
+  return `${HANDOFF_BOUNCED_MARKER}
+${repeat ? `\n${signatureLine(repeat.sig)}\n` : ''}
+${again}
 **Hand-off bounced: the branch is not on \`${v.remote}\` at the tip this ticket was built to.**
 
 ${shipName ? `Ship: ${shipName}\n` : ''}Local HEAD: ${v.local ? `\`${v.local}\`` : '(no local branch)'}
 \`${v.remote}\`: ${v.origin ? `\`${v.origin}\`` : v.branch ? '(branch missing)' : '(no branch to look for)'}
 
 ${v.reason[0]!.toUpperCase()}${v.reason.slice(1)}. ${pushError ? ` The runner tried a plain push and git refused it: \`${pushError}\`.` : ''} Set back to \`in_progress\`, still held by this ship; push with a plain \`git push --set-upstream ${v.remote} <branch>\` (never \`--force\`) and set \`fixed\` again. Your brief authorizes this push: it is the hand-off, not a release, so do it now rather than asking for permission.`;
+}
+
+/**
+ * CREW-3686: the note for a worktree on a misnamed branch the runner would not repair. It says what is true of
+ * the branches (never that the remote lacks one, never "push"): both names, both tips, what the remote contract
+ * branch is at, and the commands that resolve it.
+ */
+export function refusalComment(
+  r: Extract<BranchRepair, { kind: 'refused' }>, remote: string, remoteContractTip: string | null, shipName: string | undefined,
+  repeat: { sig: string; second: boolean },
+): string {
+  const remoteLine = remoteContractTip === null ? '(could not be asked)' : remoteContractTip ? `\`${remoteContractTip}\`` : '(no such branch)';
+  const again = repeat.second
+    ? repeatParagraph(
+      `the worktree is still on \`${r.from}\` at ${r.local ? `\`${r.local}\`` : '(unknown)'} and \`${r.to}\` is still at ${r.toTip ? `\`${r.toTip}\`` : '(not local)'}`,
+      `Run the commands below; handing off again without them leaves this exactly as it is.`)
+    : '';
+  return `${HANDOFF_BOUNCED_MARKER}
+
+${signatureLine(repeat.sig)}
+
+**Hand-off bounced: the ticket's worktree is on \`${r.from}\`, not on the contract branch \`${r.to}\`, and the runner could not rename it safely.**
+
+${shipName ? `Ship: ${shipName}\n` : ''}Worktree branch \`${r.from}\`: ${r.local ? `\`${r.local}\`` : '(unknown)'}
+Contract branch \`${r.to}\` (local): ${r.toTip ? `\`${r.toTip}\`` : '(not a local branch)'}
+\`${remote}/${r.to}\`: ${remoteLine}
+
+${again}${r.reason[0]!.toUpperCase()}${r.reason.slice(1)}.${r.fix ? `\n\nResolve it with:\n\n\`\`\`\n${r.fix}\n\`\`\`\n\nthen set \`fixed\` again: the runner moves \`${r.to}\` to the worktree's HEAD, switches the worktree onto it and pushes it as a plain fast-forward.` : ''} Nothing was forced and no commit was discarded. Set back to \`in_progress\`, still held by this ship.`;
+}
+
+/**
+ * CREW-3686: how many bounces in a row, newest first, carry `sig`. A bounce of another kind (no signature, or a
+ * different one) ends the run, so a seat that changed something starts counting again.
+ */
+async function identicalBounces(i: Pick<HandoffGuardInput, 'writer'>, ticketRow: string, sig: string): Promise<number> {
+  if (!i.writer.events) return 0;
+  const evs = (await i.writer.events('bounced').catch(() => [] as RunnerEvent[]))
+    .filter((e) => e.record_id === ticketRow)
+    .sort((a, b) => (b.occurred_at ?? b.created_at ?? '').localeCompare(a.occurred_at ?? a.created_at ?? ''));
+  let n = 0;
+  for (const e of evs) {
+    if (SIGNATURE_RE.exec(e.message ?? '')?.[1] !== sig) break;
+    n++;
+  }
+  return n;
 }
 
 /** The event log refuses a `message` over this many characters (CREW-3307). */
@@ -351,6 +469,8 @@ export interface HandoffGuardInput {
   hold?: { column: string; shipId: string };
   /** ISO time this run started: a `taken_over` event newer than it, naming another ship, means this run no longer owns the ticket. */
   since?: string;
+  /** CREW-3686: the person a ticket is parked with when the same bounce repeats; unset leaves it unassigned. */
+  parkTo?: string;
   /** CREW-3033: the remote URL to ask instead of `dir`, for a run whose clone lived in a sandbox that is already deleted. */
   origin?: string;
   /** CREW-3255: where to record the pushed branch's web page; absent when the Issues table has no `branch_url` column. */
@@ -490,9 +610,15 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     const repair: BranchRepair = i.origin ? { kind: 'none' } : repairMisnamedBranch(i.dir, i.cfg, t, i.role);
     const renamed = repair.kind === 'renamed' ? repair : null;
     if (renamed) i.log.warn(`${displayKey(t)}: renamed the misnamed branch ${renamed.from} to ${renamed.to}`, log);
-    const v: HandoffVerdict = repair.kind === 'refused'
-      ? { kind: 'bounce', branch: null, remote: i.cfg.branch.remote, local: repair.local, origin: null, reason: repair.reason }
-      : i.origin ? inspectRemoteHandoff(i.origin, i.cfg, t, i.role) : inspectHandoff(i.dir, i.cfg, t, i.role);
+    const refusal = repair.kind === 'refused' ? repair : null;
+    // CREW-3686: a hand-off already on the remote at HEAD is never bounced for a local name.
+    const refusedTip = refusal && !i.origin ? remoteTip(i.dir, i.cfg.branch.remote, refusal.to) : null;
+    const mismatch = refusal && refusedTip && refusedTip === refusal.local ? refusal : null;
+    const v: HandoffVerdict = mismatch
+      ? { kind: 'pushed', branch: mismatch.to, sha: refusedTip!, remote: i.cfg.branch.remote }
+      : refusal
+        ? { kind: 'bounce', branch: null, remote: i.cfg.branch.remote, local: refusal.local, origin: refusedTip || null, reason: refusal.reason }
+        : i.origin ? inspectRemoteHandoff(i.origin, i.cfg, t, i.role) : inspectHandoff(i.dir, i.cfg, t, i.role);
     if (v.kind === 'unverified') {
       i.log.warn(`${displayKey(t)} is at ${t.status} but the push was not checked: ${v.why}`, log);
       return { kind: 'unverified', why: v.why };
@@ -524,6 +650,7 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     if (v.kind === 'pushed') {
       await postPushed(i, t.id, v.sha, v.remote, v.branch, log);
       if (renamed) await announceRename(i, t.id, renamed, v.sha, v.remote, log);
+      if (mismatch) await i.writer.postEvent(t.id, `The hand-off stands: \`${v.remote}/${mismatch.to}\` is at the worktree's HEAD (${v.sha}). Only the local branch name is off, and the runner left it alone: ${mismatch.reason}.${mismatch.fix ? ` To tidy it: \`${mismatch.fix}\`.` : ''}`, i.seatId, 'branch_mismatch').catch((e: unknown) => i.log.warn(`the local branch mismatch note failed to post: ${(e as Error).message}`, log));
       i.log.emit(`${displayKey(t)} pushed at ${v.sha.slice(0, 7)} — handed on to QA`, log);
       return { kind: 'pushed', sha: v.sha };
     }
@@ -582,7 +709,31 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
       } else pushError = done.error;
       if (pushError) i.log.warn(`${displayKey(t)}: the runner's own push failed: ${pushError}`, log);
     }
-    if (!await deliverNote(i, t.id, bounceComment(v, i.shipName, pushError), 'bounced', log)) {
+    // CREW-3686: the same bounce again is the runtime's signal the seat cannot act on the note.
+    const sig = refusal
+      ? bounceSignature('refused', refusal.from, refusal.to, refusal.local, refusal.toTip, v.origin)
+      : bounceSignature(v.reason, v.branch, v.local, v.origin);
+    const earlier = await identicalBounces(i, t.id, sig);
+    if (earlier >= 2) {
+      const diagnosis = refusal
+        ? `${refusal.reason}. ${refusal.fix ? `The commands that resolve it: \`${refusal.fix}\`.` : ''}`
+        : `${v.reason}. Local HEAD ${v.local ? `\`${v.local}\`` : '(none)'}, \`${v.remote}\` ${v.origin ? `\`${v.origin}\`` : '(without the branch)'}${pushError ? `; the runner's own plain push failed: \`${pushError}\`` : ''}.`;
+      const parked = `${HANDOFF_BOUNCED_MARKER}\n\n**Parked: the same hand-off bounce happened ${earlier + 1} times in a row with nothing changing.**\n\n${diagnosis}\n\nNeeds a person to resolve the branch state above; set the status back to \`in_progress\` when done.`;
+      if (await deliverNote(i, t.id, parked, 'bounce_parked', log)) {
+        await i.writer.updateTicket(t.id, {
+          status: i.contract.statuses.needsHuman,
+          assignee_id: i.parkTo ?? null,
+          ...(i.hold ? { [i.hold.column]: null } : {}),
+        });
+        i.log.warn(`${displayKey(t)} parked for a person: the same hand-off bounce ${earlier + 1} times in a row`, log);
+        return { kind: 'bounced' };
+      }
+    }
+    const repeat = { sig, second: earlier === 1 };
+    const note = refusal
+      ? refusalComment(refusal, v.remote, refusedTip, i.shipName, repeat)
+      : bounceComment(v, i.shipName, pushError, repeat);
+    if (!await deliverNote(i, t.id, note, 'bounced', log)) {
       i.log.warn(`${displayKey(t)}: ${v.reason}, but the bounce note could not be delivered — left at ${t.status}, guard outcome unverified`, log);
       return { kind: 'unverified', why: 'the bounce note could not be posted' };
     }
@@ -662,7 +813,7 @@ export async function guardRunHandoff(
     // The replay just handed this very ticket on and posted its `pushed` event.
     const outcome: HandoffOutcome = replayed.includes(workingId) ? { kind: 'pushed', sha: '' } : await enforceHandoff({
       writer: tracker, contract: tracker.contract, ticketId: workingId, role, dir: target.dir, cfg,
-      seatId, shipName: ship.name, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
+      seatId, shipName: ship.name, parkTo: route.resolved?.operator, hold: affinity ? { column: affinity.column, shipId: affinity.shipId } : undefined, since, log,
       ...(await branchLinkFor(tracker, {
         remote: target.remote ?? (t.repo_id ? route.resolved?.repoRemotes?.[t.repo_id] : undefined),
         forgeHost: target.forgeHost ?? (t.repo_id ? route.resolved?.repoForgeHosts?.[t.repo_id] : undefined),

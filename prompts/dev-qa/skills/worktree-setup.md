@@ -45,6 +45,11 @@ person says so. **A missing worktree is never a reason to stop.**
 3. Otherwise `git worktree add <dir> -b <branch> <remote>/<base>` from the
    primary checkout, or `git worktree add <dir> <branch>` when
    `<remote>/<branch>` already exists (git creates the tracking branch).
+   When the branch already exists **locally** with no worktree (a QA run's
+   leftover, or an earlier run's), add the worktree on that branch and
+   fast-forward it to `<remote>/<branch>`; never create a branch under another
+   name for a ticket, because QA and the release phase find work by the
+   contract name only.
    The `-b <branch>` argument is required: omit it and git names the branch
    after the directory, which QA and the release phase cannot find. Before
    the first commit, check `git branch --show-current` against the digest's

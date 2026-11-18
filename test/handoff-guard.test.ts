@@ -645,19 +645,111 @@ test('repair: the misnamed remote branch at the same tip is deleted, at a differ
   assert.match(h2.notes.find((n) => /renamed the local branch/.test(n))!, /different tip than the renamed branch, and was left in place/);
 });
 
-test('repair: an existing contract branch is never overwritten; the ticket bounces naming both branches (CREW-3384)', async () => {
+test('repair: a contract branch that is only behind is fast-forwarded, the worktree switched onto it, the misnamed branch gone (CREW-3686)', async () => {
   const f = misnamed();
   sh(f.dir, 'branch', 'crew-9', 'main');
-  const before = sh(f.dir, 'rev-parse', 'crew-9');
+  sh(f.wt, 'push', '-q', 'origin', 'repo-crew-9:crew-9');
+  const tip = sh(f.wt, 'rev-parse', 'HEAD');
+  const h = harness(ticket());
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'pushed');
+  assert.deepEqual(h.patches, []);
+  assert.equal(sh(f.wt, 'branch', '--show-current'), 'crew-9');
+  assert.equal(sh(f.dir, 'rev-parse', 'crew-9'), tip);
+  assert.ok(!branchesOf(f.dir).includes('repo-crew-9'));
+  assert.equal(sh(f.bare, 'rev-parse', 'refs/heads/crew-9'), tip);
+  assert.ok(h.notes.some((n) => /renamed the local branch/.test(n)));
+  assert.ok(!h.notes.some((n) => /Hand-off Bounced/.test(n)));
+});
+
+test('repair: a contract branch that is behind and a remote that is behind are repaired and pushed as a fast-forward (CREW-3686)', async () => {
+  const f = misnamed();
+  sh(f.dir, 'branch', 'crew-9', 'main');
+  sh(f.wt, 'push', '-q', 'origin', 'main:refs/heads/crew-9');
+  const tip = sh(f.wt, 'rev-parse', 'HEAD');
+  const h = harness(ticket());
+  const out = await enforceHandoff(input(f, h));
+  assert.equal(out.kind, 'pushed');
+  assert.equal(sh(f.bare, 'rev-parse', 'refs/heads/crew-9'), tip);
+  assert.equal(sh(f.wt, 'branch', '--show-current'), 'crew-9');
+});
+
+test('repair: a contract branch holding a commit HEAD lacks is refused; nothing moves and the note names both tips (CREW-3686)', async () => {
+  const f = misnamed();
+  sh(f.dir, 'branch', 'crew-9', 'main');
+  sh(f.dir, 'worktree', 'add', '-q', join(f.dir, '..', 'tmp-div'), 'crew-9');
+  const tmp = join(f.dir, '..', 'tmp-div');
+  writeFileSync(join(tmp, 'z.txt'), 'z');
+  sh(tmp, 'add', '.');
+  sh(tmp, 'commit', '-qm', 'only on contract');
+  sh(f.dir, 'worktree', 'remove', '--force', tmp);
+  const toTip = sh(f.dir, 'rev-parse', 'crew-9');
+  const head = sh(f.wt, 'rev-parse', 'HEAD');
   const h = harness(ticket({ held_by_ship_id: null }));
   const out = await enforceHandoff(input(f, h));
   assert.equal(out.kind, 'bounced');
-  assert.equal(sh(f.dir, 'rev-parse', 'crew-9'), before);
+  assert.equal(sh(f.dir, 'rev-parse', 'crew-9'), toTip);
   assert.equal(sh(f.wt, 'branch', '--show-current'), 'repo-crew-9');
   assert.equal(h.patches[0]!.status, 'in_progress');
-  assert.match(h.notes[0]!, /`repo-crew-9`/);
-  assert.match(h.notes[0]!, /`crew-9`/);
+  assert.match(h.notes[0]!, new RegExp(toTip));
+  assert.match(h.notes[0]!, new RegExp(head));
+  assert.match(h.notes[0]!, /git -C .* merge crew-9/);
+  assert.doesNotMatch(h.notes[0]!, /branch missing|no branch to look for|git push/);
   assert.deepEqual(remoteHeads(f.bare), ['main']);
+});
+
+test('repair: a contract branch checked out in another worktree is refused naming that worktree (CREW-3686)', async () => {
+  const f = misnamed();
+  const other = join(f.dir, '..', 'tmp-other');
+  sh(f.dir, 'worktree', 'add', '-q', other, '-b', 'crew-9', 'main');
+  const h = harness(ticket({ held_by_ship_id: null }));
+  const out = await enforceHandoff(input(f, h));
+  sh(f.dir, 'worktree', 'remove', '--force', other);
+  assert.equal(out.kind, 'bounced');
+  assert.match(h.notes[0]!, /tmp-other/);
+  assert.equal(sh(f.wt, 'branch', '--show-current'), 'repo-crew-9');
+});
+
+test('repair: a hand-off already on the remote at HEAD is never bounced for a local name (CREW-3686)', async () => {
+  const f = misnamed();
+  sh(f.dir, 'branch', 'crew-9', 'main');
+  sh(f.dir, 'worktree', 'add', '-q', join(f.dir, '..', 'tmp-keep'), 'crew-9');
+  const other = join(f.dir, '..', 'tmp-keep');
+  sh(f.wt, 'push', '-q', 'origin', 'repo-crew-9:crew-9');
+  const h = harness(ticket());
+  const out = await enforceHandoff(input(f, h));
+  sh(f.dir, 'worktree', 'remove', '--force', other);
+  assert.equal(out.kind, 'pushed');
+  assert.deepEqual(h.patches, []);
+  assert.ok(h.notes.some((n) => /only the local branch name is off/i.test(n)));
+});
+
+test('enforce: a second identical bounce says so and a third parks the ticket with the diagnosis (CREW-3686)', async () => {
+  const f = misnamed();
+  sh(f.dir, 'branch', 'crew-9', 'main');
+  const tmp = join(f.dir, '..', 'tmp-rep');
+  sh(f.dir, 'worktree', 'add', '-q', tmp, 'crew-9');
+  writeFileSync(join(tmp, 'z.txt'), 'z');
+  sh(tmp, 'add', '.');
+  sh(tmp, 'commit', '-qm', 'only on contract');
+  sh(f.dir, 'worktree', 'remove', '--force', tmp);
+  const h = harness(ticket({ held_by_ship_id: null }));
+  const log: Array<{ record_id: string; event_type: string; message: string; occurred_at: string }> = [];
+  h.w.postEvent = async (_id, body, _m, type) => {
+    h.notes.push(body);
+    log.push({ record_id: 'row-9', event_type: type ?? '', message: body, occurred_at: new Date(Date.now() + log.length * 1000).toISOString() });
+  };
+  h.w.events = async (type) => log.filter((e) => e.event_type === type);
+  const run = () => enforceHandoff({ ...input(f, h), parkTo: 'op-1' });
+  assert.equal((await run()).kind, 'bounced');
+  assert.equal((await run()).kind, 'bounced');
+  assert.equal((await run()).kind, 'bounced');
+  assert.doesNotMatch(h.notes[0]!, /second bounce/);
+  assert.match(h.notes[1]!, /second bounce for exactly the same state/);
+  assert.match(h.notes[2]!, /Parked/);
+  const last = h.patches.at(-1)!;
+  assert.equal(last.status, DEFAULT_CONTRACT.statuses.needsHuman);
+  assert.equal(last.assignee_id, 'op-1');
 });
 
 test('repair: a ship with no worktree for the ticket behaves as before (CREW-3384)', async () => {
