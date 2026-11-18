@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.164.1] — 2026-11-18
+
+- CREW-3646 A coordinating parent rolls up, and a footprint-parked ticket names its files, when a child or blocker is closed at an app-mapped status such as closed_obsolete.
+- CREW-3648 `crew status --json` tags each run with its own route's ticket prefix, so FINC-157 no longer reads as TABL-157 when two routes share an issue number.
+
 ## [0.164.0] — 2026-11-18
 
 - CREW-3642 A ticket blocked by one closed as obsolete is released from its park when the workspace maps that status as resolved; unmapped workspaces behave as before.
