@@ -187,7 +187,9 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const extra = await tracker.ticketsByIds(missingBlockerIds(tickets));
   const info = blockerInfoMap(tickets, extra);
   await reportTruncated(tracker, route.route, state, emit);
-  const blocked = computeBlockedIds(tickets, info, { resolved: new Set(tracker.contract.statuses.resolved) });
+  // The app's own resolved set (CREW-3642/3646): a mapped `closed_obsolete` counts everywhere.
+  const resolvedStatuses = new Set(tracker.contract.statuses.resolved);
+  const blocked = computeBlockedIds(tickets, info, { resolved: resolvedStatuses });
   // CREW-3387: tickets held back because they would change a file an active
   // ticket changes. Parked like a dependency-blocked ticket, so they join
   // `blocked` for selection; a ticket already parked by a dependency takes no
@@ -205,7 +207,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   if (diag.selfBlocked.length) {
     emit.warn(`ticket(s) blocking themselves, parked permanently: ${diag.selfBlocked.join(', ')}`);
   }
-  const sweep = planSweep(tickets, info, blocked, workModes, footprintPlan.waits);
+  const sweep = planSweep(tickets, info, blocked, workModes, footprintPlan.waits, resolvedStatuses);
   const holdReleases = planHoldReleases(tickets, tracker.contract);
   const stalled = planStalled(tickets, comments, ships, tracker.contract, holds, Date.now(), workModes, stalledEvents);
   const skipped = await skippedCounts(tracker, tickets, projectModes);
@@ -234,7 +236,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     reportTypeColumn: tracker.contract.columns.reportType,
     coordinatingValue: tracker.contract.coordinatingValue,
   };
-  for (const r of rollUpParents(tickets, undefined, coordinating)) {
+  for (const r of rollUpParents(tickets, resolvedStatuses, coordinating)) {
     if (r.complete) {
       emit.note(`every child is done — this coordinating ticket is too`, { ticket: r.parent.issue_id });
     }

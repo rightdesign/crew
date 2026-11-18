@@ -154,6 +154,16 @@ test('a ticket held by a dependency keeps naming the dependency', () => {
   assert.equal(steps[0]!.footprint, undefined);
 });
 
+test('a blocker closed at an app-mapped resolved status does not hide the files note (CREW-3646)', () => {
+  const ts = [T(1, 'in_progress'), T(2, 'accepted', { blocked_by: ['id9'] })];
+  const info = blockerInfoMap(ts, [T(9, 'closed_obsolete')]);
+  const p = plan(ts, { 1: ['a'], 2: ['a'] });
+  const unmapped = planSweep(ts, info, new Set(['id2']), undefined, p.waits);
+  assert.equal(unmapped[0]!.footprint, undefined); // default set: still a dependency
+  const mapped = planSweep(ts, info, new Set(['id2']), undefined, p.waits, new Set(['closed_deployed', 'closed_obsolete']));
+  assert.deepEqual(mapped[0]!.footprint?.waitingFor, ['CREW-1']);
+});
+
 test('the digest shows what is recorded so a resumed run does not declare again; status lists waits', () => {
   assert.match(footprintDigestSection([{ ticket: 'CREW-7', paths: ['a.ts'] }]), /CREW-7: `a\.ts`/);
   assert.match(footprintDigestSection([]), /none recorded yet/);

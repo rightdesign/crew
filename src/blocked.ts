@@ -180,13 +180,14 @@ const describeBlockers = (t: Ticket, info: BlockerInfo): string =>
 export function planSweep(
   tickets: Ticket[], info: BlockerInfo, blocked: Set<string>, wm?: WorkModes,
   footprintWaits?: Map<string, { waitingFor: string[]; files: string[] }>,
+  resolved?: ReadonlySet<string>,
 ): SweepStep[] {
   const steps: SweepStep[] = [];
   for (const t of withinWorkMode(tickets, wm)) {
     if (t.status === 'accepted' && blocked.has(t.id)) {
       const fw = footprintWaits?.get(t.id);
       // A ticket held by a dependency says so; only one held by nothing else names the files.
-      const byFiles = fw && unresolvedBlockers(t, info).length === 0;
+      const byFiles = fw && unresolvedBlockers(t, info, { resolved }).length === 0;
       steps.push({
         action: 'park', ticket: t, blockers: byFiles ? footprintWaitNote(fw) : describeBlockers(t, info),
         to: 'blocked', ...(byFiles ? { footprint: { waitingFor: fw.waitingFor, files: fw.files } } : {}),

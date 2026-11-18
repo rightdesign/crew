@@ -107,6 +107,14 @@ test('a coordinating parent rolls up from its children', () => {
   assert.equal(full[0]!.complete, true);
 });
 
+test('a child closed at an app-mapped resolved status completes the parent only with that set (CREW-3646)', () => {
+  const parent = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), report_type: 'coordinating' };
+  const kid = { ...T({ id: 'k', issue_id: 'ISSUE-2', status: 'closed_obsolete' }), parent_id: 'p', repo_id: 'r1' };
+  assert.equal(rollUpParents([parent as Ticket, kid as Ticket])[0]!.complete, false);
+  const mapped = new Set(['closed_deployed', 'closed_obsolete']);
+  assert.equal(rollUpParents([parent as Ticket, kid as Ticket], mapped)[0]!.complete, true);
+});
+
 test('a parent with no children is not complete — vacuous truth would close it at birth', () => {
   const lonely = { ...T({ id: 'p', issue_id: 'ISSUE-1', status: 'accepted' }), report_type: 'coordinating' };
   assert.deepEqual(rollUpParents([lonely as Ticket]), []);
