@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.165.0] — 2026-11-19
+
+- CREW-3774 A release build that fails on the base alone no longer blames or bounces verified branches, files one alert, and no longer spawns a duplicate fix.
+
 ## [0.164.4] — 2026-11-19
 
 - CREW-3760 A run's banner and other messages name a ticket by its Issue Tag, matching the digest.
