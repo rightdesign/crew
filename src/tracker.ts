@@ -96,7 +96,7 @@ export function ticketBranchContext(t: Ticket): { tag?: string; prefix?: string 
  * which stay keyed on `issue_id` (see `ContractColumns.tag`'s own doc for
  * why `key` and `tag` must not be conflated).
  */
-export function displayKey(t: Ticket): string {
+export function displayKey(t: Pick<Ticket, 'issue_id' | 'issue_tag'>): string {
   return t.issue_tag ?? t.issue_id;
 }
 

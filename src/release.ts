@@ -14,7 +14,7 @@ import {
   branchForIssue, commitBodies, countCommits, gitOk, currentBranch, findKeyInRange, findSquashByBranchTip, findSquashOfBranch, firstReleaseTagContaining, isAncestor, latestReleaseTag,
   resolve, status, tagCommit,
 } from './git.ts';
-import { referenceKeys, type Ticket } from './tracker.ts';
+import { displayKey, referenceKeys, type Ticket } from './tracker.ts';
 import type { Contract } from './contract.ts';
 import { describeUnresolved, unresolvedBlockers, type BlockerInfo } from './blocked.ts';
 
@@ -41,7 +41,7 @@ export function describeUnplaceable(
   if (stranded.length === 0) return [];
   const notes: UnplaceableNote[] = [];
   const keysFor = (r: string) =>
-    stranded.filter((u) => u.reason === r).map((u) => u.ticket.issue_id);
+    stranded.filter((u) => u.reason === r).map((u) => displayKey(u.ticket));
 
   const noRepo = keysFor('no-repo');
   if (noRepo.length) {
@@ -68,7 +68,7 @@ export function describeUnplaceable(
     const byRepoName = new Map<string, string[]>();
     for (const u of elsewhere) {
       const name = u.repo ?? '?';
-      byRepoName.set(name, [...(byRepoName.get(name) ?? []), u.ticket.issue_id]);
+      byRepoName.set(name, [...(byRepoName.get(name) ?? []), displayKey(u.ticket)]);
     }
     notes.push({
       level: 'info',
@@ -200,7 +200,7 @@ export function heldByBlockers(
 
 /** One line per held ticket: `CREW-9 held: blocked by CREW-1234 (accepted), …`. */
 export const describeHeld = (held: HeldTicket[]): string[] =>
-  held.map((h) => `${h.ticket.issue_tag ?? h.ticket.issue_id} held: blocked by ${h.blockers}`);
+  held.map((h) => `${displayKey(h.ticket)} held: blocked by ${h.blockers}`);
 
 export type BumpSize = 'major' | 'minor' | 'patch';
 
@@ -335,7 +335,7 @@ export function planMerge(
     const { size, majorRequested } = requestedBump(bodies);
     return {
       ticket, branch,
-      entries: usedFallback ? [`${ticket.title || ticket.issue_id} (${ticket.issue_id})`] : entries,
+      entries: usedFallback ? [`${ticket.title || displayKey(ticket)} (${displayKey(ticket)})`] : entries,
       usedFallback,
       bump: size,
       majorRequested,

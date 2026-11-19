@@ -33,7 +33,7 @@
  */
 
 import type { Contract } from './contract.ts';
-import type { Ticket, RunnerEvent } from './tracker.ts';
+import { displayKey, referenceKeys, type Ticket, type RunnerEvent } from './tracker.ts';
 import type { MergeCandidate } from './release.ts';
 import { calloutHeader } from './callout.ts';
 import { gitOk } from './git.ts';
@@ -140,19 +140,22 @@ export function planStrandedVerified(
   };
 }
 
+/** The names searched for in history, as one phrase: `\`CREW-1\`` or `\`ISSUE-1\` or \`CREW-1\``. */
+const searchedNames = (t: Ticket): string => referenceKeys(t).map((k) => `\`${k}\``).join(' or ');
+
 export function flagComment(s: StrandedVerified): string {
-  const key = s.candidate.ticket.issue_id;
+  const key = displayKey(s.candidate.ticket);
   return `${STRANDED_MARKER}
 
 **Verified, but nothing to merge — flagging before this repeats forever.**
 
-\`${key}\` is \`verified\` with no branch on this ship, and its key names no commit anywhere in this ship's \`${s.base}\` history (searched all of it, local commits included, for a bounded \`${key}\` in a commit subject or body). One of three things is true: it landed under a commit that never named the key, the branch was deleted before it merged, or it was verified in error — the crew cannot tell these apart and will not guess.
+\`${key}\` is \`verified\` with no branch on this ship, and its key names no commit anywhere in this ship's \`${s.base}\` history (searched all of it, local commits included, for a bounded ${searchedNames(s.candidate.ticket)} in a commit subject or body). One of three things is true: it landed under a commit that never named the key, the branch was deleted before it merged, or it was verified in error — the crew cannot tell these apart and will not guess.
 
 If it is still unplaceable next cycle, this ticket is escalated to a person. If the work already landed, closing this ticket by hand now avoids that.${nearMissText(s)}`;
 }
 
 export function escalateComment(s: StrandedVerified): string {
-  const key = s.candidate.ticket.issue_id;
+  const key = displayKey(s.candidate.ticket);
   return `${STRANDED_MARKER}
 
 **Still nothing to merge — stopping rather than repeating.**

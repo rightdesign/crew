@@ -395,7 +395,7 @@ before going further, and never change a ticket's `report_type` yourself.
      fix; minor for a larger feature or real implementation complexity;
      never `major`, which is the operator's call alone);
    - one or more `Changelog: <text>` lines, each worded exactly as the
-     changelog entry should read, with the ticket's tag (e.g. `ISSUE-123`;
+     changelog entry should read, with the ticket's tag (e.g. `TABL-123`;
      the release phase matches it by number). The first one becomes the
      squash-merge subject. A ticket with no user-visible change still needs
      one saying so — a branch without a `Changelog:` line merges under a

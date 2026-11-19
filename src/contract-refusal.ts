@@ -6,10 +6,13 @@
  */
 import { REPO_CONFIG_FILENAMES, RepoConfigError, parseRepoConfig } from './repo-config.ts';
 import { gitOk } from './git.ts';
+import { displayKey } from './tracker.ts';
 import { join } from 'node:path';
 
 export interface ContractFixer {
   issueId: string;
+  /** What a message calls the ticket (its tag); `issueId` stays the key. */
+  tag: string;
   branch: string;
   file: string;
 }
@@ -22,8 +25,8 @@ export interface ContractFixer {
  * count as a fix.
  */
 export function contractFixers(
-  dir: string, baseRef: string, tickets: ReadonlyArray<{ issue_id: string }>,
-  locate: (t: { issue_id: string }) => string | null,
+  dir: string, baseRef: string, tickets: ReadonlyArray<{ issue_id: string; issue_tag?: string | null }>,
+  locate: (t: { issue_id: string; issue_tag?: string | null }) => string | null,
 ): ContractFixer[] {
   const out: ContractFixer[] = [];
   for (const t of tickets) {
@@ -40,7 +43,7 @@ export function contractFixers(
       if (e instanceof RepoConfigError) continue;
       throw e;
     }
-    out.push({ issueId: t.issue_id, branch, file });
+    out.push({ issueId: t.issue_id, tag: displayKey(t), branch, file });
   }
   return out;
 }

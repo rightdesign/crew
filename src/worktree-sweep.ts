@@ -240,7 +240,7 @@ export async function applyWorktreeSweep(
   const refuse = (a: SweepAction, reason: string, detail: string): void => {
     refused.push(a.path);
     const when = held
-      ? noteHeldWorktree(held.state, { repo: held.repo, path: a.path, ticket: a.ticket.issue_id, status: a.ticket.status, reason })
+      ? noteHeldWorktree(held.state, { repo: held.repo, path: a.path, ticket: displayKey(a.ticket), status: a.ticket.status, reason })
       : 'first';
     if (when) {
       log.warn(

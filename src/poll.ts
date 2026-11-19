@@ -224,9 +224,9 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // behind the winning role. Emitted every cycle, empty or not, since each
   // cycle is its own event-stream id — a view folding only the latest cycle
   // has nothing to fall back on if a quiet cycle skipped the emit (ISSUE-399).
-  const blockedIssues = tickets.filter((t) => blocked.has(t.id)).map((t) => t.issue_id);
+  const blockedIssues = tickets.filter((t) => blocked.has(t.id)).map(displayKey);
   emit.note(`${blockedIssues.length} ticket(s) parked as blocked`, { data: { blocked: blockedIssues } });
-  const qaHeld = tickets.filter((t) => t.status === tracker.contract.statuses.verifying).map((t) => t.issue_id);
+  const qaHeld = tickets.filter((t) => t.status === tracker.contract.statuses.verifying).map(displayKey);
   emit.note(`${qaHeld.length} ticket(s) held in QA`, { data: { qaHeld } });
 
   const stranded = strandedNeedsInfo(tickets, blocked, holds);
@@ -268,7 +268,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
     // CREW-3285: only a ticket that was routable last cycle is news to a person at a terminal.
     (added.length ? emit.emit : emit.note).call(emit,
       `${unroutableTickets.length} open ticket(s) have no repository and are not routable (${added.length} new since last cycle)`,
-      { step: 'sweep', data: { unroutable: unroutableTickets.map((t) => t.issue_id), newUnroutable: added.map((a) => a.ticket.issue_id) } },
+      { step: 'sweep', data: { unroutable: unroutableTickets.map(displayKey), newUnroutable: added.map((a) => displayKey(a.ticket)) } },
     );
   }
 
@@ -393,7 +393,7 @@ export const digestPath = (stateDir: string, route: string, role: RoleName, runI
  * `in_progress` ticket as "yours, resume it first".
  */
 export interface OwnRun {
-  ticket: { id: string; issue_id: string; description?: unknown };
+  ticket: { id: string; issue_id: string; issue_tag?: string | null; description?: unknown };
   inFlight: (ticketId: string) => boolean;
   /** The Map behind the ticket's epic, rendered for the brief (CREW-3444); absent when the section does not apply. */
   mapBrief?: string | null;
@@ -406,7 +406,7 @@ export function otherRunsRemoved<T extends { id: string }>(tickets: T[], own?: O
 }
 
 export function ownRunBanner(own: OwnRun): string {
-  const banner = `**Your ticket for this run: ${own.ticket.issue_id}.** Work this one. Any other ticket a live run ` +
+  const banner = `**Your ticket for this run: ${own.ticket.issue_tag ?? own.ticket.issue_id}.** Work this one. Any other ticket a live run ` +
     `on this ship is already working has been left out of this digest: it belongs to that run.`;
   // CREW-2970: the hand-off guard wants every Acceptance line quoted; hand the seat the block to copy.
   const block = acceptanceChecklistBlock(acceptanceLines(own.ticket.description));

@@ -12,9 +12,12 @@ import { join } from 'node:path';
 import { REPO_CONFIG_FILENAMES, RepoConfigError, parseRepoConfig } from './repo-config.ts';
 import { satisfies, eligibleShips, type ShipPlatform, type PlatformRequirement } from './platform.ts';
 import { gitOk } from './git.ts';
+import { displayKey } from './tracker.ts';
 
 export interface PlatformAdmitter {
   issueId: string;
+  /** What a message calls the ticket (its tag); `issueId` stays the key. */
+  tag: string;
   branch: string;
   platform: PlatformRequirement;
 }
@@ -27,8 +30,8 @@ export interface PlatformAdmitter {
  */
 export function platformAdmitters(
   dir: string, baseRef: string, ship: ShipPlatform,
-  tickets: ReadonlyArray<{ issue_id: string }>,
-  locate: (t: { issue_id: string }) => string | null,
+  tickets: ReadonlyArray<{ issue_id: string; issue_tag?: string | null }>,
+  locate: (t: { issue_id: string; issue_tag?: string | null }) => string | null,
 ): PlatformAdmitter[] {
   const out: PlatformAdmitter[] = [];
   for (const t of tickets) {
@@ -41,7 +44,7 @@ export function platformAdmitters(
     if (text === null) continue;
     try {
       const { platform } = parseRepoConfig(text, join(dir, file));
-      if (satisfies(ship, platform)) out.push({ issueId: t.issue_id, branch, platform });
+      if (satisfies(ship, platform)) out.push({ issueId: t.issue_id, tag: displayKey(t), branch, platform });
     } catch (e) {
       if (e instanceof RepoConfigError) continue;
       throw e;

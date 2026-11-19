@@ -82,7 +82,7 @@ import { briefMapFor } from './map-brief.ts';
 import { decideCycle, rosterFor, writeDigest, type CycleDecision } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, shipIdByName, noteReaccepted, noteTakeover, originBranchSha } from './ship-affinity.ts';
-import { claimStillHeld, resolveTopCandidate } from './claim.ts';
+import { claimStillHeld, namesOf, resolveTopCandidate } from './claim.ts';
 import { markCrewAssistedAtLaunch } from './crew-assisted.ts';
 import { refreshUnknownRepos, reportUnservable, repoLabelFor } from './repo-refresh.ts';
 import { applySweep } from './blocked.ts';
@@ -1189,29 +1189,29 @@ async function postRunKilled(
  */
 async function skipUnrunnable(candidates: Ticket[], ctx: RoleAgentContext): Promise<Ticket[]> {
   const { route, ship, emit } = ctx;
-  const backedOff: string[] = [];
+  const backedOff: Ticket[] = [];
   const noImage = new Set<string>();
-  const imageSkipped: string[] = [];
+  const imageSkipped: Ticket[] = [];
   const state = ship.runner === 'sandbox' ? readSandboxState(ship.stateDir) : null;
   // CREW-3032: whether the repository declares `sandbox:` is read the way the run reads it (the mirror's
   // contract on a sandbox ship), once per repository.
   const declares = new Map<string, boolean>();
   const out: Ticket[] = [];
   for (const t of candidates) {
-    if (noopBackedOff(ship.stateDir, t.id)) { backedOff.push(t.issue_id); continue; }
+    if (noopBackedOff(ship.stateDir, t.id)) { backedOff.push(t); continue; }
     const target = repoTargetFor(route, t.repo_id);
     if (state && target) {
       if (!declares.has(target.name)) declares.set(target.name, Boolean((await repoContractFor(ship, route, target))?.sandbox));
       if (sandboxImageMissing(state, target.name, declares.get(target.name)!)) {
         noImage.add(target.name);
-        imageSkipped.push(t.issue_id);
+        imageSkipped.push(t);
         continue;
       }
     }
     out.push(t);
   }
-  if (backedOff.length) emit.emit(`skipped ${backedOff.join(', ')} — recent runs changed nothing, backing off`, { step: 'select' });
-  if (imageSkipped.length) emit.emit(`skipped ${imageSkipped.join(', ')} — the sandbox image for their repo is not built yet`, { step: 'select' });
+  if (backedOff.length) emit.emit(`skipped ${backedOff.map(displayKey).join(', ')} — recent runs changed nothing, backing off`, { step: 'select' });
+  if (imageSkipped.length) emit.emit(`skipped ${imageSkipped.map(displayKey).join(', ')} — the sandbox image for their repo is not built yet`, { step: 'select' });
   for (const repo of noImage) {
     if (openShipAttention(ctx.state).some((i) => i.key === sandboxFailedKey(repo))) continue;
     try { await raiseShipAttention({ state: ctx.state, emit, route, ship }, sandboxMissingItem(repo)); } catch { /* the emit line says it */ }
@@ -1306,19 +1306,20 @@ async function runRoleAgentLocked(
       );
       held.release = result.releaseTicket;
       if (result.contended.length) {
-        emit.emit(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+        emit.emit(`claim contended for ${namesOf(result.contended, candidates)} — moved to the next candidate`, {
           step: 'select', role,
         });
       }
       if (result.unservable.length) {
-        emit.emit(`skipped ${result.unservable.join(', ')} — no local checkout for their repo`, {
+        emit.emit(`skipped ${namesOf(result.unservable, candidates)} — no local checkout for their repo`, {
           step: 'select', role,
         });
       }
       await reportUnservable({ state: ctx.state, emit, route, ship }, result.unservable,
-        (id) => repoLabelFor(route, candidates.find((c) => c.issue_id === id)));
+        (id) => repoLabelFor(route, candidates.find((c) => c.issue_id === id)),
+        (id) => namesOf([id], candidates));
       if (result.held.length) {
-        emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: role });
+        emit.emit(`skipped ${namesOf(result.held, candidates)} — held by another live ship`, { step: 'select', role: role });
       }
       await noteReaccepted(tracker, result, seat, ship.name);
       await noteTakeover(

@@ -761,7 +761,7 @@ function deepenUntilMergeBase(o: ReleaseRunOptions, branch: string): void {
 }
 
 function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
-  const subject = c.entries[0] ?? `${c.ticket.title ?? c.ticket.issue_id} (${c.ticket.issue_id})`;
+  const subject = c.entries[0] ?? `${c.ticket.title ?? displayKey(c.ticket)} (${displayKey(c.ticket)})`;
   if (o.dryRun) {
     o.emit.emit(`would squash-merge ${c.branch} — "${subject}"`, { ticket: c.ticket.issue_id });
     return { applied: true };
@@ -801,7 +801,7 @@ function mergeOne(o: ReleaseRunOptions, c: MergeCandidate): MergeResult {
     // already squashed even when replaying it would conflict (CREW-1408).
     const tip = gitOk(o.cwd, ['rev-parse', '--verify', '-q', `${c.branch}^{commit}`]);
     const trailer = tip ? `\n\n${BRANCH_TIP_TRAILER}: ${tip}` : '';
-    git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${c.ticket.issue_id}.${trailer}`]);
+    git(o.cwd, ['commit', '-m', `${subject}\n\nCloses ${displayKey(c.ticket)}.${trailer}`]);
     const sha = headSha(o.cwd);
     o.emit.note(`merged ${c.branch}`, { ticket: c.ticket.issue_id });
     clearFailure();

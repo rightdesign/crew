@@ -54,7 +54,7 @@ import { belowFloor, readCrewFloor, sentVersion } from './crew-floor.ts';
 import { decideCycle, rosterFor, writeDigest } from './poll.ts';
 import { claimStatuses, rankedCandidates, withHoldCheck } from './select.ts';
 import { applyHoldReleases, noteReaccepted, holdWarnings, noteTakeover, originBranchSha } from './ship-affinity.ts';
-import { resolveTopCandidate } from './claim.ts';
+import { namesOf, resolveTopCandidate } from './claim.ts';
 import { markCrewAssistedAtLaunch } from './crew-assisted.ts';
 import { refreshUnknownRepos, persistRepoRows } from './repo-refresh.ts';
 import { applySweep, blockerInfoMap, computeBlockedIds, missingBlockerIds } from './blocked.ts';
@@ -2405,7 +2405,7 @@ async function releasePhase(
           if (ids.length) {
             try {
               await raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship },
-                repoPlatformUnreleasableItem(target.name, platformStuckNote(target.name, repo.platform, cfg.ship.platform, ids)));
+                repoPlatformUnreleasableItem(target.name, platformStuckNote(target.name, repo.platform, cfg.ship.platform, verifiedPre.map(displayKey))));
             } catch { /* the skip line above still says it */ }
           } else {
             try { clearShipAttention(state, repoPlatformUnreleasableKey(target.name)); } catch { /* attention is a convenience */ }
@@ -2414,7 +2414,7 @@ async function releasePhase(
         }
         try { clearShipAttention(state, repoPlatformUnreleasableKey(target.name)); } catch { /* attention is a convenience */ }
         remit.emit(
-          `${scope}: the base contract requires ${repo.platform}, but ${admitters.map((a) => a.issueId).join(', ')} change${admitters.length === 1 ? 's' : ''} platform to ${admitters[0]!.platform}, which this ship satisfies — releasing`,
+          `${scope}: the base contract requires ${repo.platform}, but ${admitters.map((a) => a.tag).join(', ')} change${admitters.length === 1 ? 's' : ''} platform to ${admitters[0]!.platform}, which this ship satisfies — releasing`,
           { step: 'release' },
         );
       }
@@ -2483,7 +2483,7 @@ async function releasePhase(
       if (fixers.length === 0) throw refusal;
       remit.emit(
         `${target.name}: the base contract is refused (${refusal.message}); ` +
-          `${fixers.map((f) => f.issueId).join(', ')} replace${fixers.length === 1 ? 's' : ''} ${fixers[0]!.file} — merging first`,
+          `${fixers.map((f) => f.tag).join(', ')} replace${fixers.length === 1 ? 's' : ''} ${fixers[0]!.file} — merging first`,
         { step: 'release' },
       );
     }
@@ -3140,18 +3140,18 @@ switch (command) {
             lock = { release: () => { roleLock?.release(); releaseTicket(); } };
           }
           if (result.contended.length) {
-            wemit.note(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+            wemit.note(`claim contended for ${namesOf(result.contended, candidates)} — moved to the next candidate`, {
               step: 'select', role: w.role,
             });
           }
           if (result.unservable.length) {
             wemit.emit(
-              `skipped ${result.unservable.join(', ')} — no local checkout for their repo`,
+              `skipped ${namesOf(result.unservable, candidates)} — no local checkout for their repo`,
               { step: 'select', role: w.role },
             );
           }
           if (result.held.length) {
-            wemit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: w.role });
+            wemit.emit(`skipped ${namesOf(result.held, candidates)} — held by another live ship`, { step: 'select', role: w.role });
           }
           await noteReaccepted(fleetTracker, result, seat, cfg.ship.name);
           await noteTakeover(
@@ -3373,18 +3373,18 @@ switch (command) {
             lock = { release: () => { roleLock?.release(); releaseTicket(); } };
           }
           if (result.contended.length) {
-            emit.note(`claim contended for ${result.contended.join(', ')} — moved to the next candidate`, {
+            emit.note(`claim contended for ${namesOf(result.contended, candidates)} — moved to the next candidate`, {
               step: 'select', role: current,
             });
           }
           if (result.unservable.length) {
             emit.emit(
-              `skipped ${result.unservable.join(', ')} — no local checkout for their repo`,
+              `skipped ${namesOf(result.unservable, candidates)} — no local checkout for their repo`,
               { step: 'select', role: current },
             );
           }
           if (result.held.length) {
-            emit.emit(`skipped ${result.held.join(', ')} — held by another live ship`, { step: 'select', role: current });
+            emit.emit(`skipped ${namesOf(result.held, candidates)} — held by another live ship`, { step: 'select', role: current });
           }
           await noteReaccepted(tracker2, result, seat, cfg.ship.name);
           await noteTakeover(

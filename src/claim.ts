@@ -166,6 +166,16 @@ async function stampResumption(tracker: ClaimableTracker, t: Ticket, affinity: C
  * claim does; the lock of a candidate that then loses its claim is released,
  * and the winner's release comes back as `releaseTicket`.
  */
+/**
+ * The display names (tags) of `ids`, for a message a person reads. The claim lists
+ * stay `issue_id`s because lookups key on them (CREW-3760); an id with no matching
+ * ticket in `tickets` prints as itself.
+ */
+export function namesOf(ids: readonly string[], tickets: ReadonlyArray<Pick<Ticket, 'issue_id' | 'issue_tag'>>): string {
+  const byId = new Map(tickets.map((t) => [t.issue_id, displayKey(t)]));
+  return ids.map((id) => byId.get(id) ?? id).join(', ');
+}
+
 export async function resolveTopCandidate(
   tracker: ClaimableTracker,
   candidates: Ticket[],

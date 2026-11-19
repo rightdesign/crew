@@ -122,11 +122,11 @@ export function resetRepoRefreshCooldown(): void {
 export const repoUnservableKey = (route: string, issueId: string): string => `repo_unservable:${route}:${issueId}`;
 
 export function repoUnservableItem(
-  route: string, issueId: string, repoLabel: string, nowIso = new Date().toISOString(),
+  route: string, issueId: string, repoLabel: string, nowIso = new Date().toISOString(), tag: string = issueId,
 ): ShipAttentionItem {
   return {
     kind: 'repo_unservable', key: repoUnservableKey(route, issueId), since: nowIso,
-    message: `${route}: ${issueId} is skipped — this ship has no checkout for ${repoLabel}. Resumes automatically once the route lists that repository (\`crew repos add\`) or a Repos row for it exists`,
+    message: `${route}: ${tag} is skipped — this ship has no checkout for ${repoLabel}. Resumes automatically once the route lists that repository (\`crew repos add\`) or a Repos row for it exists`,
   };
 }
 
@@ -162,6 +162,8 @@ export async function reportUnservable(
   o: RaiseOptions & { route: Route },
   unservable: string[],
   repoLabelOf: (issueId: string) => string,
+  /** What the message calls the ticket (its tag); the key and lookups stay on the id. */
+  tagOf: (issueId: string) => string = (id) => id,
 ): Promise<void> {
   const streaks = streaksByRoute.get(o.route.route) ?? new Map<string, number>();
   streaksByRoute.set(o.route.route, streaks);
@@ -170,7 +172,7 @@ export async function reportUnservable(
     try { clearShipAttention(o.state, repoUnservableKey(o.route.route, id)); } catch { /* attention is a convenience */ }
   }
   for (const id of raise) {
-    try { await raiseShipAttention(o, repoUnservableItem(o.route.route, id, repoLabelOf(id))); } catch { /* attention is a convenience */ }
+    try { await raiseShipAttention(o, repoUnservableItem(o.route.route, id, repoLabelOf(id), undefined, tagOf(id))); } catch { /* attention is a convenience */ }
   }
 }
 
