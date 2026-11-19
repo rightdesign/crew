@@ -2729,7 +2729,8 @@ async function releasePhase(
       if (!notified && news.level === 'fail') {
         const memberId = releaseSeat(c);
         const placement = await alertPlacement();
-        await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun, placement).catch((e) => {
+        await applyFailureAlert(tracker, news, scope, all, memberId, remit, dryRun, placement,
+          outcome.hookFailure ? { tail: outcome.hookFailure.tail, contract: tracker.contract } : undefined).catch((e) => {
           remit.warn(`could not file/update a failure ticket: ${(e as Error).message}`, { step: 'release' });
         });
       }

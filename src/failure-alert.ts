@@ -48,8 +48,38 @@ export function findOpenFailureAlert(tickets: Ticket[], headline: string): Ticke
   return tickets.find((t) => t.title === headline);
 }
 
-function ticketBody(n: Notification, route: string): string {
-  return `${FAILURE_ALERT_MARKER}\n\n${n.detail ?? n.headline}\n\nFiled automatically — no ` +
+/** The lines of a failing hook's output worth matching on: long enough to be specific, with colour and spacing removed. */
+function significantLines(tail: string): string[] {
+  const plain = (x: string): string => x.replace(/\u001b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim();
+  return [...new Set(tail.split('\n').map(plain).filter((l) => l.length >= 24))];
+}
+
+/**
+ * An open ticket already working on the failure an alert is about (CREW-3774):
+ * one between acceptance and `verified` whose text quotes the failing hook's
+ * output (at least two of its distinctive lines, or the only one it has). An
+ * earlier alert is not such a ticket. A second ticket for the same failure is a
+ * second fix for it, and the two branches then conflict.
+ */
+export function ticketQuotingFailure(tickets: Ticket[], tail: string, c: Contract): Ticket | undefined {
+  const lines = significantLines(tail);
+  if (!lines.length) return undefined;
+  const need = Math.min(2, lines.length);
+  const s = c.statuses;
+  const working = new Set([s.approved, s.building, s.handoff, s.verifying, s.verified]);
+  return tickets.find((t) => {
+    if (!working.has(t.status)) return false;
+    const text = String(t[c.columns.description] ?? '').replace(/\u001b\[[0-9;]*m/g, '').replace(/\s+/g, ' ');
+    if (!text || text.includes(FAILURE_ALERT_MARKER)) return false;
+    return lines.filter((l) => text.includes(l)).length >= need;
+  });
+}
+
+function ticketBody(n: Notification, route: string, related?: Ticket): string {
+  const link = related
+    ? `\n\n${displayKey(related)} already quotes this failure and is being worked, so this alert is not for a lane to pick up: it waits on ${displayKey(related)} and closes when a release passes.`
+    : '';
+  return `${FAILURE_ALERT_MARKER}\n\n${n.detail ?? n.headline}${link}\n\nFiled automatically — no ` +
     `\`notify\` hook is configured for route \`${route}\`, so this is the crew's built-in ` +
     'fallback rather than a silent log line. Configure `hooks.notify` on this route to replace it.';
 }
@@ -75,6 +105,8 @@ export async function applyFailureAlert(
    * no project prefix and no lane takes it. Omitted when either lookup failed.
    */
   placement: { repo_id?: string; project_id?: string } = {},
+  /** The failing hook's output and the contract, to find a ticket already fixing it (CREW-3774). */
+  failure?: { tail: string; contract: Contract },
 ): Promise<FailureAlertOutcome> {
   const existing = findOpenFailureAlert(openTickets, n.headline);
 
@@ -107,9 +139,11 @@ export async function applyFailureAlert(
     return { kind: 'filed' };
   }
   try {
+    const related = failure ? ticketQuotingFailure(openTickets, failure.tail, failure.contract) : undefined;
     const created = await writer.fileTicket({
       title: n.headline,
-      description: ticketBody(n, route),
+      description: ticketBody(n, route, related),
+      ...(related && failure ? { [failure.contract.columns.blockedBy]: [related.id] } : {}),
       report_type: 'bug',
       severity: 's2',
       reporter_name: 'Crew release',

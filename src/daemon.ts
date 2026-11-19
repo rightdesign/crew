@@ -96,6 +96,7 @@ import { replayQueuedAgentRuns, replayQueuedTicketCounters } from './agent-log.t
 import { loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
 import { readSandboxState, sandboxImageMissing, sandboxMissingItem, sandboxFailedKey } from './sandbox-image.ts';
+import { restoreVerifiedIfUnchanged } from './build-failure.ts';
 import { DEFAULT_NOOP_REPEATS, noopBackedOff, settleNoopRun } from './noop-runs.ts';
 import { renderEnvironment, type EnvironmentRepo } from './environment.ts';
 import { withRepoMaps } from './repo-map.ts';
@@ -1436,6 +1437,13 @@ async function runRoleAgentLocked(
               runStart, memberId, operatorId: route.resolved?.operator, columns: { status: col.status, assignee: col.assignee },
               statuses: { building: tracker.contract.statuses.building, needsHuman: tracker.contract.statuses.needsHuman },
               repeats: ship.noopRunRepeats ?? DEFAULT_NOOP_REPEATS,
+              restoreVerified: async (after) => {
+                if (!memberId) return false;
+                const target = repoTargetFor(route, before.repo_id as string | null | undefined);
+                const tip = target ? originBranchSha(target.dir, before, gitResolve) : null;
+                const hold = await tracker.claimAffinity();
+                return restoreVerifiedIfUnchanged(tracker, after, tip, tracker.contract, memberId, hold ? { column: hold.column } : undefined);
+              },
               raise: (item) => raiseShipAttention({ state: ctx.state, emit, route, ship }, item),
               clear: (key) => clearShipAttention(ctx.state, key),
             });

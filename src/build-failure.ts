@@ -25,7 +25,8 @@ import { StaleWriteError } from '@tablation/client';
 import { worktreeForBranch } from './conflict.ts';
 import type { ConflictWriter, ConflictLog } from './conflict.ts';
 import type { Contract } from './contract.ts';
-import { displayKey, type Ticket } from './tracker.ts';
+import { displayKey, type RunnerEvent, type Ticket } from './tracker.ts';
+import { verifiedShaFor } from './verified-tip.ts';
 import { calloutHeader } from './callout.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
@@ -252,4 +253,49 @@ export async function applyBuildFailureBounce(
     }
     return { kind: 'failed', why: (e as Error).message };
   }
+}
+
+/** Whether the newest `build_failed` hand-back of this ticket has had no push since (CREW-3774). */
+export function unansweredBuildFailure(ticket: Ticket, events: readonly BuildFailureEvent[]): boolean {
+  const stamp = (e: BuildFailureEvent): string => e.occurred_at ?? e.created_at ?? '';
+  const mine = events.filter((e) => e.record_id === ticket.id);
+  const failed = mine.filter((e) => e.event_type === 'build_failed').map(stamp).sort().pop();
+  if (!failed) return false;
+  return !mine.some((e) => e.event_type === 'pushed' && stamp(e) > failed);
+}
+
+/** What a restore needs of the tracker. */
+export interface RestoreVerifiedWriter {
+  updateTicket(id: string, patch: Record<string, unknown>): Promise<unknown>;
+  postEvent(ticketId: string, body: string, memberId: string, type?: string): Promise<void>;
+  events?(type: string): Promise<RunnerEvent[]>;
+}
+
+/**
+ * A building run answered a `build_failed` hand-back without changing the branch: its tip is
+ * still the commit QA verified. That is a correct answer (the failure was not the branch's, as
+ * when the base itself is red), not a failed hand-off, so the ticket goes back to `verified`
+ * for the release instead of through the hand-off checks or the no-change count (CREW-3774).
+ * True when it did.
+ */
+export async function restoreVerifiedIfUnchanged(
+  w: RestoreVerifiedWriter, ticket: Ticket, tip: string | null | undefined, contract: Contract, memberId: string,
+  hold?: { column: string },
+): Promise<boolean> {
+  if (!w.events || !tip) return false;
+  const [failures, pushes] = await Promise.all([w.events('build_failed'), w.events('pushed')]);
+  if (!unansweredBuildFailure(ticket, [...failures, ...pushes])) return false;
+  const verified = verifiedShaFor(ticket, contract.columns.verifiedSha, pushes);
+  if (!verified || !(tip.startsWith(verified) || verified.startsWith(tip))) return false;
+  await w.updateTicket(ticket.id, {
+    status: contract.statuses.verified,
+    [contract.columns.assignee]: null,
+    ...(hold ? { [hold.column]: null } : {}),
+  });
+  await w.postEvent(
+    ticket.id,
+    `${BUILD_FAILURE_MARKER}\n\n**Back at \`${contract.statuses.verified}\`: the hand-back was answered with no change.** The branch is still at the commit QA verified (\`${verified.slice(0, 12)}\`), so nothing was handed on to QA again. The next release composes it with the current base.`,
+    memberId, 'build_failed_unchanged',
+  ).catch(() => undefined);
+  return true;
 }

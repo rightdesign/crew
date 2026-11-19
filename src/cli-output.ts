@@ -71,7 +71,7 @@ export interface RunOutcomeInput {
   /** The harness result (`spawnAgent`). */
   run: { code: number; handoffPending?: boolean; killed?: { limitMinutes: number } };
   /** What the hand-off guard found, when it checked. */
-  handoff: { kind: 'not-handed-off' | 'pushed' | 'unverified' | 'bounced' | 'failed'; why?: string } | null;
+  handoff: { kind: 'not-handed-off' | 'pushed' | 'unverified' | 'bounced' | 'restored' | 'failed'; why?: string } | null;
 }
 
 /**

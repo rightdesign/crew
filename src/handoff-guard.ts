@@ -47,6 +47,7 @@ import { loadRepoConfig, resolveRepoConfig } from './repo-config.ts';
 import { displayKey, type Comment, type RunnerEvent, type Ticket, type Tracker } from './tracker.ts';
 import { finishRunWorktree, dropEmptyRunBranch } from './run-worktree.ts';
 import { calloutHeader } from './callout.ts';
+import { restoreVerifiedIfUnchanged } from './build-failure.ts';
 import { sandboxOriginFor } from './agent.ts';
 import { branchWebUrl } from './forges.ts';
 import { pushedEventExtra } from './footprint-run.ts';
@@ -452,6 +453,8 @@ export type HandoffOutcome =
   | { kind: 'pushed'; sha: string }
   | { kind: 'unverified'; why: string }
   | { kind: 'bounced' }
+  /** CREW-3774: a `build_failed` hand-back answered with no change; the ticket went back to `verified`. */
+  | { kind: 'restored' }
   | { kind: 'failed'; why: string };
 
 export interface HandoffGuardInput {
@@ -622,6 +625,10 @@ export async function enforceHandoff(i: HandoffGuardInput): Promise<HandoffOutco
     if (v.kind === 'unverified') {
       i.log.warn(`${displayKey(t)} is at ${t.status} but the push was not checked: ${v.why}`, log);
       return { kind: 'unverified', why: v.why };
+    }
+    if (v.kind === 'pushed' && !claimed && i.writer.events && await restoreVerifiedIfUnchanged(i.writer, t, v.sha, i.contract, i.seatId, i.hold)) {
+      i.log.emit(`${displayKey(t)}: the build_failed hand-back was answered with no change (tip ${v.sha.slice(0, 7)} is what QA verified) — back at ${i.contract.statuses.verified}`, log);
+      return { kind: 'restored' };
     }
     if (v.kind === 'pushed' && !claimed) {
       const gap = await missingAcceptance(i, t);

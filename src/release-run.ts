@@ -1489,6 +1489,55 @@ const isolateCap = (o: ReleaseRunOptions): number =>
   o.repo.release.isolateFailures?.maxCandidates ?? DEFAULT_ISOLATE_MAX_CANDIDATES;
 
 /**
+ * The hook fails on the base with nothing merged (CREW-3774): no verified
+ * branch is to blame, so none is handed back and every ticket stays verified.
+ * A branch that makes the hook pass is the fix, though. Build each alone, and
+ * ship the ones that pass together with whichever others still pass beside
+ * them; the rest wait for the base to be green. Returns the release without
+ * the branches left out, or `{ tried }` when no branch fixes it (the caller
+ * then files the one alert for the failing base).
+ */
+async function redBase(
+  o: ReleaseRunOptions,
+  name: 'build' | 'test',
+  applied: MergeCandidate[],
+  cap: number,
+  preMerge: string,
+  head: string,
+  decision: ReleaseDecision,
+  fresh: ReturnType<typeof refreshBase>,
+  releaseBranch: string | undefined,
+): Promise<ReleaseOutcome | { tried: string }> {
+  const base = o.repo.branch.base;
+  const tried = `Isolation found no culprit: the ${name} hook also fails on the base alone, without ${applied.length === 1 ? applied[0]!.branch : `any of the ${applied.length} merged branches`}, so there is no branch to hand back. Every verified ticket stays verified.`;
+  o.emit.warn(`${name} fails on ${base} with no branch merged — not blaming any verified branch`);
+  const passes = async (group: MergeCandidate[]): Promise<boolean> => {
+    gitOk(o.cwd, ['reset', '--hard', preMerge]);
+    for (const c of group) if (mergeFailed(mergeOne(o, c))) return false;
+    const r = await hook(o, name);
+    return !r || r.code === 0;
+  };
+  const keep: MergeCandidate[] = [];
+  if (applied.length <= cap) {
+    for (const c of applied) if (await passes([c])) keep.push(c);
+    if (keep.length) {
+      for (const c of applied) {
+        if (!keep.includes(c) && await passes([...keep, c])) keep.push(c);
+      }
+    }
+  }
+  if (!keep.length) {
+    gitOk(o.cwd, ['reset', '--hard', head]);
+    return { tried };
+  }
+  o.emit.emit(`${keep.map((c) => c.branch).join(', ')} make the ${name} hook pass on a red ${base} — releasing ${keep.length === 1 ? 'it' : 'them'}, the rest stay verified`);
+  gitOk(o.cwd, ['reset', '--hard', preMerge]);
+  const rest = decision.merges.filter((c) => !applied.includes(c) || keep.includes(c));
+  const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, true);
+  return retried.isolation ? retried : { ...retried, isolation: tried };
+}
+
+/**
  * A combined `test`/`build` just failed with several branches merged: find the
  * branch(es) responsible (CREW-1581, see build-failure.ts). Returns the
  * outcome of re-running the release WITHOUT them, or null when nothing could
@@ -1515,6 +1564,15 @@ async function isolateAndRetry(
   if (o.dryRun || !preMerge || applied.length < 1 || cap === 0) return null;
   const head = headSha(o.cwd);
 
+  // 0. Does the hook fail on the base with none of the verified branches
+  // merged? Then no branch broke it, and blaming one only sends a branch that
+  // builds fine back through the lanes (CREW-3774).
+  gitOk(o.cwd, ['reset', '--hard', preMerge]);
+  const baseRun = await hook(o, name);
+  if (baseRun && baseRun.code !== 0) {
+    return redBase(o, name, applied, cap, preMerge, head, decision, fresh, releaseBranch);
+  }
+
   // 1. The failure names files. Cheap: nothing is rebuilt.
   const withFiles = applied.map((c) => ({
     c,
@@ -1528,21 +1586,12 @@ async function isolateAndRetry(
     o.emit.warn(`${name} failed; its output names files only ${byFile.c.branch} changed — treating it as the culprit`, { ticket: byFile.c.ticket.issue_id });
     culprits.push({ c: byFile.c, how: 'files', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(output, o.cwd) });
   } else if (applied.length === 1) {
-    // The combined tree is the base plus this one branch, and the base passed
-    // its last gate (the previous release), so the branch is the likely
-    // culprit: building it alone again would only repeat this run. The usual
-    // case is a clean textual merge that breaks at runtime against work that
-    // landed on the base after the branch was cut (CREW-2208). The one thing
-    // worth confirming is that the base itself is not red (or the hook not
-    // crashing for its own reasons), which no hand-back could fix.
+    // The combined tree is the base plus this one branch, and the base alone
+    // passed (step 0), so the branch is the culprit: building it alone again
+    // would only repeat this run. The usual case is a clean textual merge that
+    // breaks at runtime against work that landed on the base after the branch
+    // was cut (CREW-2208).
     const only = applied[0]!;
-    gitOk(o.cwd, ['reset', '--hard', preMerge]);
-    const baseRun = await hook(o, name);
-    if (baseRun && baseRun.code !== 0) {
-      o.emit.warn(`${name} fails on the base without ${only.branch} — not blaming the branch`, { ticket: only.ticket.issue_id });
-      gitOk(o.cwd, ['reset', '--hard', head]);
-      return { tried: `Isolation found no culprit: the ${name} hook also fails on the base alone, without ${only.branch}, so there is no branch to hand back.` };
-    }
     o.emit.warn(`${name} failed with only ${only.branch} merged and passes without it — treating it as the culprit`, { ticket: only.ticket.issue_id });
     culprits.push({ c: only, how: 'solo', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(output, o.cwd) });
   } else if (applied.length > cap) {

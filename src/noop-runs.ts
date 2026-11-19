@@ -132,6 +132,8 @@ export interface SettleNoopOptions {
   columns: { status: string; assignee: string };
   statuses: { building: string; needsHuman: string };
   repeats: number;
+  /** CREW-3774: puts a ticket whose `build_failed` hand-back was answered with no change back at `verified`; true when it did, which is not a no-op run. */
+  restoreVerified?: (after: Ticket) => Promise<boolean>;
   raise: (item: ShipAttentionItem) => Promise<unknown> | void;
   clear: (key: string) => void;
   now?: number;
@@ -157,6 +159,11 @@ export async function settleNoopRun(o: SettleNoopOptions): Promise<NoopSettlemen
     // A person owes an answer, so an earlier stale entry for this ticket is not a repeat either.
     !after.needs_review;
   if (!noop) {
+    clearNoopRuns(o.stateDir, o.ticketId);
+    o.clear(noopRunsKey(o.before.issue_id));
+    return 'progress';
+  }
+  if (await o.restoreVerified?.(after)) {
     clearNoopRuns(o.stateDir, o.ticketId);
     o.clear(noopRunsKey(o.before.issue_id));
     return 'progress';
