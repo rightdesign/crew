@@ -1036,8 +1036,8 @@ export class Tracker {
    * Locks table with no row for `scope` is `{ ok: false, reason: 'missing' }`
    * (CREW-1384): `crew connect` provisions the row.
    */
-  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number, log?: BoardLockLog): Promise<BoardLockResult> {
-    return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs, log);
+  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number, log?: BoardLockLog, renewEveryMs?: number): Promise<BoardLockResult> {
+    return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs, log, renewEveryMs);
   }
 
   /** The Locks row for `scope` — present? held by whom? Undefined when this workspace has no Locks table. */

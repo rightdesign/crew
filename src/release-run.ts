@@ -97,6 +97,12 @@ export interface ReleaseRunOptions {
    * to confirm the release. The caller records `commit_sha`/`merged_at` then.
    * Failures here must not reach the release; the caller swallows them.
    */
+  /**
+   * CREW-3870: asked before the steps that cannot be undone (the base push and
+   * the deploy). False means another ship has taken the board lock, so this
+   * release stops without publishing anything more.
+   */
+  stillHoldsLock?: () => Promise<boolean>;
   onBasePushed?: (merged: MergeCandidate[]) => Promise<void>;
   /**
    * Called just before a verified branch is squash-merged (never in a dry run),
@@ -2040,6 +2046,10 @@ async function mergeAndReleaseBody(
   // reach the remote without moving `<remote>/<base>` itself. A repo with no
   // remote configured is never asked to push and this is never an error for
   // them. A failed push is a failed release, not a warning.
+  if (!o.dryRun && o.stillHoldsLock && !(await o.stillHoldsLock())) {
+    o.emit.error('the board lock is no longer held by this release — not pushing or deploying; the tickets stay verified');
+    return { merged, conflicts, unbuildable, version, deployed: false, decision, stopped: 'release lock lost' };
+  }
   if (remoteConfigured(o.cwd, o.repo.branch.remote)) {
     if (o.dryRun) {
       o.emit.emit(`would push ${o.repo.branch.base} to ${o.repo.branch.remote}`);
@@ -2074,7 +2084,10 @@ async function mergeAndReleaseBody(
     integrated = true;
   } else if (o.repo.release.mode === 'local' && o.repo.hooks.deploy) {
     if (o.dryRun) o.emit.emit(`would run: ${hookLabel(o.repo, 'deploy')}`);
-    else {
+    else if (o.stillHoldsLock && !(await o.stillHoldsLock())) {
+      o.emit.error('the board lock is no longer held by this release — not deploying; run `crew deploy` once the other release has finished');
+      return { merged, conflicts, unbuildable, version, deployed: false, decision, stopped: 'release lock lost' };
+    } else {
       let r = await hook(o, 'deploy');
       if (r && r.code !== 0 && looksLikeTransientResolveFailure(r.output)) {
         o.emit.warn('deploy failed with what looks like a transient dependency-resolution glitch, not a real failure — retrying once');

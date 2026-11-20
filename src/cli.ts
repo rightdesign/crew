@@ -2608,6 +2608,7 @@ async function releasePhase(
       // genuinely unreleased.
       force: command === 'deploy' || flag('force'),
       isDeployCommand: opts.isDeployCommand,
+      stillHoldsLock: boardLock?.ok ? boardLock.stillHeld : undefined,
       attention: {
         raise: (item) => raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, item),
         clear: (key) => clearShipAttention(state, key),

@@ -49,6 +49,14 @@ export type BoardLockResult =
   | {
     ok: true;
     release: () => Promise<void>;
+    /**
+     * Whether this process still holds the row, read from the board (CREW-3870).
+     * False once another holder has taken it; a read that fails is not proof
+     * of loss, so it answers true and the failure is logged.
+     */
+    stillHeld: () => Promise<boolean>;
+    /** One renewal now; the timer calls this every `renewEveryMs`. Exposed for tests. */
+    renew: () => Promise<void>;
     /** `'off'` means this board has no Locks table, so there is NO cross-ship protection; the caller must say so in its log (CREW-1399). */
     exclusion: 'taken' | 'off';
   }
@@ -75,9 +83,9 @@ export function releaseLockScope(route: string, repo: string): string {
  */
 export async function acquireBoardLock(
   client: LockRecordsClient, modelId: string | undefined, scope: string, holderLabel: string, ttlMs: number,
-  log: BoardLockLog = {},
+  log: BoardLockLog = {}, renewEveryMs: number = DEFAULT_RENEW_EVERY_MS,
 ): Promise<BoardLockResult> {
-  if (!modelId) return { ok: true, release: async () => {}, exclusion: 'off' };
+  if (!modelId) return { ok: true, release: async () => {}, stillHeld: async () => true, renew: async () => {}, exclusion: 'off' };
 
   const filters = JSON.stringify([{ columnName: 'scope', operator: 'EQ', value: scope }]);
   const rows = await client.list(modelId, { filters, limit: 1 });
@@ -98,13 +106,61 @@ export async function acquireBoardLock(
     throw e;
   }
 
+  // CREW-3870: the lifetime is a backstop for a dead holder, not a cap on a
+  // live release. While this process runs, the row is rewritten on a timer so
+  // its `updated_at` never ages past `ttlMs`; `current` follows each write so
+  // the next compare-and-swap (and the release) uses the latest stamp.
+  let current = claimed.updated_at;
+  let lost = false;
+  let stopped = false;
+  let renewing = false;
+  const renew = async (): Promise<void> => {
+    if (stopped || lost || renewing) return;
+    renewing = true;
+    try {
+      try {
+        current = (await client.update(modelId, row.id, { holder: holderLabel }, current)).updated_at;
+      } catch (e) {
+        if (!(e instanceof StaleWriteError)) throw e;
+        const [now] = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+        if (now?.holder !== holderLabel) {
+          lost = true;
+          log.warn?.(`board lock ${scope} was taken by ${now?.holder || 'another ship'} while this release was running`);
+          return;
+        }
+        current = (await client.update(modelId, row.id, { holder: holderLabel }, now.updated_at)).updated_at;
+      }
+    } catch (e) {
+      log.warn?.(`lock renewal failed for ${scope}: ${(e as Error).message}; will retry`);
+    } finally {
+      renewing = false;
+    }
+  };
+  const timer = setInterval(() => { void renew(); }, renewEveryMs);
+  timer.unref();
+
   return {
     ok: true,
     exclusion: 'taken',
+    renew,
+    stillHeld: async () => {
+      if (lost) return false;
+      try {
+        const [now] = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+        if (now?.holder === holderLabel) return true;
+        lost = true;
+        return false;
+      } catch (e) {
+        log.warn?.(`could not confirm board lock ${scope} is still held: ${(e as Error).message}`);
+        return true;
+      }
+    },
     release: async () => {
+      stopped = true;
+      clearInterval(timer);
       try {
         try {
-          await client.update(modelId, row.id, { holder: '' }, claimed.updated_at);
+          await client.update(modelId, row.id, { holder: '' }, current);
         } catch (e) {
           if (!(e instanceof StaleWriteError)) throw e;
           // Something touched the row since our claim. If it still names us,
@@ -121,6 +177,9 @@ export async function acquireBoardLock(
     },
   };
 }
+
+/** Well inside `RELEASE_LOCK_TTL_MS` (20 min), so several renewals can fail before the lock is considered dead. */
+export const DEFAULT_RENEW_EVERY_MS = 3 * 60 * 1000;
 
 export interface BoardLockLog { warn?: (m: string) => void; debug?: (m: string) => void }
 

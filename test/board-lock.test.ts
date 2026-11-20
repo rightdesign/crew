@@ -209,3 +209,71 @@ test('this ship\'s claim by a dead pid is reclaimed; a live pid and another ship
   const other = fakeClient({ id: 'r', scope: 's', holder: 'shipB:999999999', updated_at: NOW });
   assert.equal((await acquireBoardLock(other.client, MODEL, 's', 'shipA:1', TTL)).ok, false);
 });
+
+// CREW-3870: a live release renews its lock; only a dead one loses it.
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('a release running past the lifetime keeps the lock and another ship sees it held (CREW-3870)', async () => {
+  const f = fakeClient({ id: 'r1', scope: 's', holder: '', updated_at: NOW });
+  const ttl = 60;
+  const a = await acquireBoardLock(f.client, MODEL, 's', 'shipA:1', ttl, {}, 15);
+  assert.equal(a.ok, true);
+  await sleep(ttl * 3);   // three lifetimes: unrenewed, the row would be stale
+  const b = await acquireBoardLock(f.client, MODEL, 's', 'shipB:2', ttl);
+  assert.deepEqual(b.ok ? null : [b.reason, b.heldBy], ['held', 'shipA:1']);
+  if (a.ok) { assert.equal(await a.stillHeld(), true); await a.release(); }
+});
+
+test('a killed release stops renewing and another ship can take the lock after the lifetime (CREW-3870)', async () => {
+  const f = fakeClient({ id: 'r1', scope: 's', holder: 'shipA:1', updated_at: new Date(Date.now() - 1000).toISOString() });
+  // No timer ever ran for this holder (its process is gone), so the row just ages.
+  const b = await acquireBoardLock(f.client, MODEL, 's', 'shipB:2', 5000);
+  assert.equal(b.ok, false);
+  const c = await acquireBoardLock(f.client, MODEL, 's', 'shipB:2', 100, {}, 1000);
+  assert.equal(c.ok, true);   // 1s old row is past a 100ms lifetime
+  if (c.ok) await c.release();
+});
+
+test('a failed renewal is logged and the next one is attempted (CREW-3870)', async () => {
+  const f = fakeClient({ id: 'r1', scope: 's', holder: '', updated_at: NOW });
+  const warns: string[] = [];
+  const a = await acquireBoardLock(f.client, MODEL, 's', 'shipA:1', TTL, { warn: (m) => warns.push(m) }, 60_000);
+  assert.ok(a.ok);
+  if (!a.ok) return;
+  const realUpdate = f.client.update;
+  f.client.update = async () => { throw new Error('tracker unreachable'); };
+  await a.renew();
+  assert.ok(warns.some((w) => /renewal failed.*tracker unreachable/.test(w)));
+  f.client.update = realUpdate;
+  const before = f.calls.length;
+  await a.renew();
+  assert.equal(f.calls.length, before + 1);
+  assert.equal(await a.stillHeld(), true);
+  await a.release();
+});
+
+test('a lock taken over by another holder is reported as no longer held (CREW-3870)', async () => {
+  const f = fakeClient({ id: 'r1', scope: 's', holder: '', updated_at: NOW });
+  const warns: string[] = [];
+  const a = await acquireBoardLock(f.client, MODEL, 's', 'shipA:1', TTL, { warn: (m) => warns.push(m) }, 60_000);
+  assert.ok(a.ok);
+  if (!a.ok) return;
+  f.row.holder = 'shipB:2';
+  f.row.updated_at = new Date(Date.now() + 5000).toISOString();
+  assert.equal(await a.stillHeld(), false);
+  await a.release();
+  assert.equal(f.row.holder, 'shipB:2');   // not ours to clear
+});
+
+test('release stops the renewal timer, so no write follows it (CREW-3870)', async () => {
+  const f = fakeClient({ id: 'r1', scope: 's', holder: '', updated_at: NOW });
+  const a = await acquireBoardLock(f.client, MODEL, 's', 'shipA:1', TTL, {}, 10);
+  assert.ok(a.ok);
+  if (!a.ok) return;
+  await sleep(45);
+  assert.ok(f.calls.length > 1);   // claim + renewals
+  await a.release();
+  const after = f.calls.length;
+  await sleep(50);
+  assert.equal(f.calls.length, after);
+});

@@ -1278,6 +1278,24 @@ test('a failed rebuild of the primary checkout is a warning, not a failed releas
   assert.ok(lines.some((l) => /rebuilding the primary checkout after the release failed/.test(l)));
 });
 
+test('a release that no longer holds the board lock neither pushes nor deploys (CREW-3870)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(`version: 1
+hooks:
+  test: exit 0
+  build: exit 0
+  deploy: touch DEPLOYED
+`, bare);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    stillHoldsLock: async () => false,
+  });
+  assert.equal(out.stopped, 'release lock lost');
+  assert.equal(out.deployed, false);
+  assert.equal(existsSync(join(dir, 'DEPLOYED')), false);
+  assert.ok(!execFileSync('git', ['--git-dir', bare, 'log', '--format=%s', 'main'], { encoding: 'utf8' }).includes('Release v'));
+});
+
 test('origin moving mid-release discards the release before the deploy: nothing deployed, no tag, primary untouched (CREW-1383)', async () => {
   const bare = bareRemote();
   const { dir, repo } = projectWithRemote(`version: 1
