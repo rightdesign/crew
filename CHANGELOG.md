@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.165.2] — 2026-11-20
+
+- CREW-3811 The release seat holds a verified ticket while the release merges and ships it, and gives it back on a failed merge or a later-cycle stamp.
+- CREW-3812 The Release agent has a robot avatar, uploaded by `crew agents sync` like the lane personas' faces.
+
 ## [0.165.1] — 2026-11-20
 
 - CREW-3775 Release gate hand-backs quote the output lines naming the failing file, say only what the gate established, and give a repeat failure on an unchanged commit one more lap before parking.
