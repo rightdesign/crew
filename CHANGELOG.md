@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.165.1] — 2026-11-20
+
+- CREW-3775 Release gate hand-backs quote the output lines naming the failing file, say only what the gate established, and give a repeat failure on an unchanged commit one more lap before parking.
+
 ## [0.165.0] — 2026-11-19
 
 - CREW-3774 A release build that fails on the base alone no longer blames or bounces verified branches, files one alert, and no longer spawns a duplicate fix.
