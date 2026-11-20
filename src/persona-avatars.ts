@@ -6,6 +6,9 @@
  * never over an image the workspace set by hand), so crew just offers the file
  * every sync and reports what came back. A failed upload is a warning, never a
  * failed sync: the persona works without a face.
+ *
+ * CREW-3812: the Release agent row has no brief, so its image ships as
+ * `personas/release-agent.png` and rides the same route.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,17 +18,21 @@ const IMAGE_TYPES = { png: 'image/png', svg: 'image/svg+xml' } as const;
 
 export type AvatarSyncStatus = 'updated' | 'unchanged' | 'skipped' | 'failed';
 
+/** A lane persona, or the ship's Release agent row. */
+export type AvatarRole = RoleName | 'release';
+
 export interface AvatarSyncOutcome {
-  role: RoleName;
+  role: AvatarRole;
   status: AvatarSyncStatus;
   /** Why it failed or was skipped. */
   detail?: string;
 }
 
 /** The bundled image for a role, or undefined when the preset ships none. */
-export function personaAvatarFile(promptsDir: string, role: RoleName): { path: string; mimeType: string; name: string } | undefined {
+export function personaAvatarFile(promptsDir: string, role: AvatarRole): { path: string; mimeType: string; name: string } | undefined {
+  const stem = role === 'release' ? 'release-agent' : `lane-${role}`;
   for (const ext of ['png', 'svg'] as const) {
-    const name = `lane-${role}.${ext}`;
+    const name = `${stem}.${ext}`;
     const path = join(promptsDir, 'personas', name);
     if (existsSync(path)) return { path, mimeType: IMAGE_TYPES[ext], name };
   }
@@ -35,14 +42,17 @@ export function personaAvatarFile(promptsDir: string, role: RoleName): { path: s
 export async function syncPersonaAvatars(
   route: Route,
   agentPersonas: Partial<Record<RoleName, { agentId: string }>>,
-  opts: { userAgent?: string },
+  opts: { userAgent?: string; releaseAgentId?: string },
 ): Promise<AvatarSyncOutcome[]> {
   if (!route.resolved) return [];
   const base = `${route.baseUrl.replace(/\/+$/, '')}/api/workspaces/${route.resolved.workspaceId}/agents/personas`;
   const outcomes: AvatarSyncOutcome[] = [];
-  for (const role of ROLE_NAMES) {
+  const targets: Array<{ role: AvatarRole; agentId?: string }> = [
+    ...ROLE_NAMES.map((role) => ({ role, agentId: agentPersonas[role]?.agentId })),
+    { role: 'release', agentId: opts.releaseAgentId },
+  ];
+  for (const { role, agentId } of targets) {
     const file = personaAvatarFile(route.promptsDir, role);
-    const agentId = agentPersonas[role]?.agentId;
     if (!file || !agentId) continue;
     try {
       const form = new FormData();

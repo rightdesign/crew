@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { syncPersonaAvatars, personaAvatarFile, routeAvatarFailures } from '../src/persona-avatars.ts';
@@ -63,5 +63,28 @@ test('CREW-3181: both bundled presets ship a stock PNG per lane and no SVG discs
       assert.equal(file?.name, `lane-${role}.png`);
     }
     assert.deepEqual(readdirSync(join(dir, 'personas')).filter((f) => f.endsWith('.svg')), []);
+  }
+});
+
+test('CREW-3812: the Release agent row is offered its bundled image after the lanes, only when the sync resolved one', async (t) => {
+  const { calls, restore } = stubFetch(() => json({ status: 'updated' }));
+  t.after(restore);
+  const r = route(['lane-dev.png', 'release-agent.png']);
+  const out = await syncPersonaAvatars(r, personas, { releaseAgentId: 'a-release' });
+  assert.deepEqual(calls.map((c) => [c.url, c.file]), [
+    ['https://example.test/api/workspaces/ws-1/agents/personas/a-dev/avatar', 'lane-dev.png'],
+    ['https://example.test/api/workspaces/ws-1/agents/personas/a-release/avatar', 'release-agent.png'],
+  ]);
+  assert.deepEqual(out.map((o) => [o.role, o.status]), [['dev', 'updated'], ['release', 'updated']]);
+  assert.deepEqual((await syncPersonaAvatars(r, personas, {})).map((o) => o.role), ['dev']);
+});
+
+test('CREW-3812: both bundled presets ship the same PNG for the Release agent, distinct from every lane face', () => {
+  const root = join(import.meta.dirname, '..', 'prompts');
+  const bytes = (preset: string, role: Parameters<typeof personaAvatarFile>[1]) => readFileSync(personaAvatarFile(join(root, preset), role)!.path);
+  for (const preset of ['default', 'dev-qa']) {
+    assert.equal(personaAvatarFile(join(root, preset), 'release')?.name, 'release-agent.png', preset);
+    assert.ok(bytes(preset, 'release').equals(bytes('default', 'release')), preset);
+    for (const role of ['dev', 'qa', 'design', 'triage', 'pair'] as const) assert.ok(!bytes(preset, 'release').equals(bytes(preset, role)), `${preset}/${role}`);
   }
 });
