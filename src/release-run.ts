@@ -28,7 +28,7 @@ import {
 import type { EffectiveRepoConfig } from './repo-config.ts';
 import { branchPaths, planRightOfWay, type RightOfWayCandidate, type RightOfWayPlan } from './right-of-way.ts';
 import { hookLabel, versionFileProblem, DEFAULT_ISOLATE_MAX_CANDIDATES, DEFAULT_RIGHT_OF_WAY_MINUTES, REPO_CONFIG_FILENAMES } from './repo-config.ts';
-import { failingPaths, culpritByFiles, type BuildCulprit } from './build-failure.ts';
+import { failingPaths, culpritByFiles, failureExcerpt, saveGateOutput, type BuildCulprit } from './build-failure.ts';
 import { locateBranchForTicket, materializeBranchForTicket } from './ticket-branch.ts';
 import { movedPastVerified } from './verified-tip.ts';
 import { runScript, resolveShell } from './shell.ts';
@@ -1580,11 +1580,11 @@ async function isolateAndRetry(
       (gitOk(o.cwd, ['diff', '--name-only', `${preMerge}...${c.branch}`]) ?? '').split('\n').filter(Boolean),
     ),
   }));
-  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo' | 'pair'; tail: string; paths: string[]; sibling?: MergeCandidate }> = [];
+  const culprits: Array<{ c: MergeCandidate; how: 'files' | 'solo' | 'pair'; output: string; paths: string[]; sibling?: MergeCandidate }> = [];
   const byFile = culpritByFiles(withFiles, failingPaths(output, o.cwd));
   if (byFile) {
     o.emit.warn(`${name} failed; its output names files only ${byFile.c.branch} changed — treating it as the culprit`, { ticket: byFile.c.ticket.issue_id });
-    culprits.push({ c: byFile.c, how: 'files', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(output, o.cwd) });
+    culprits.push({ c: byFile.c, how: 'files', output, paths: failingPaths(output, o.cwd) });
   } else if (applied.length === 1) {
     // The combined tree is the base plus this one branch, and the base alone
     // passed (step 0), so the branch is the culprit: building it alone again
@@ -1593,7 +1593,7 @@ async function isolateAndRetry(
     // was cut (CREW-2208).
     const only = applied[0]!;
     o.emit.warn(`${name} failed with only ${only.branch} merged and passes without it — treating it as the culprit`, { ticket: only.ticket.issue_id });
-    culprits.push({ c: only, how: 'solo', tail: lastLines(output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(output, o.cwd) });
+    culprits.push({ c: only, how: 'solo', output, paths: failingPaths(output, o.cwd) });
   } else if (applied.length > cap) {
     o.emit.warn(`${name} failed with ${applied.length} branches merged, over release.isolateFailures.maxCandidates (${cap}) — not isolating`);
     return { tried: `Isolation was skipped: ${applied.length} branches were merged, over release.isolateFailures.maxCandidates (${cap}).` };
@@ -1607,7 +1607,7 @@ async function isolateAndRetry(
       const r = await hook(o, name);
       if (r && r.code !== 0) {
         o.emit.warn(`${c.branch} fails the ${name} hook on its own`, { ticket: c.ticket.issue_id });
-        culprits.push({ c, how: 'solo', tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(r.output, o.cwd) });
+        culprits.push({ c, how: 'solo', output: r.output, paths: failingPaths(r.output, o.cwd) });
       }
     }
     // 3. Every branch passes alone: the failure is an interaction. Try pairs
@@ -1624,7 +1624,7 @@ async function isolateAndRetry(
         const r = await hook(o, name);
         if (r && r.code !== 0) {
           o.emit.warn(`${applied[j]!.branch} fails the ${name} hook together with ${applied[i]!.branch}`, { ticket: applied[j]!.ticket.issue_id });
-          culprits.push({ c: applied[j]!, how: 'pair', sibling: applied[i]!, tail: lastLines(r.output, HOOK_FAILURE_TAIL_LINES), paths: failingPaths(r.output, o.cwd) });
+          culprits.push({ c: applied[j]!, how: 'pair', sibling: applied[i]!, output: r.output, paths: failingPaths(r.output, o.cwd) });
           break;
         }
       }
@@ -1633,7 +1633,7 @@ async function isolateAndRetry(
         // prefix. The smallest failing prefix ends at the later-verified owner;
         // the earlier branches in that prefix are its siblings.
         let lo = 2, hi = applied.length;   // the whole set is known to fail
-        let tail = lastLines(output, HOOK_FAILURE_TAIL_LINES);
+        let tailOut = output;
         let paths = failingPaths(output, o.cwd);
         while (lo < hi) {
           const mid = Math.floor((lo + hi) / 2);
@@ -1644,11 +1644,11 @@ async function isolateAndRetry(
             if (mergeFailed(m)) { clean = false; break; }
           }
           const r = clean ? await hook(o, name) : null;
-          if (r && r.code !== 0) { hi = mid; tail = lastLines(r.output, HOOK_FAILURE_TAIL_LINES); paths = failingPaths(r.output, o.cwd); } else lo = mid + 1;
+          if (r && r.code !== 0) { hi = mid; tailOut = r.output; paths = failingPaths(r.output, o.cwd); } else lo = mid + 1;
         }
         const owner = applied[hi - 1]!;
         o.emit.warn(`${owner.branch} is the first branch whose prefix fails the ${name} hook (bisected over ${applied.length})`, { ticket: owner.ticket.issue_id });
-        culprits.push({ c: owner, how: 'pair', sibling: applied[hi - 2]!, tail, paths });
+        culprits.push({ c: owner, how: 'pair', sibling: applied[hi - 2]!, output: tailOut, paths });
       }
     }
   }
@@ -1666,12 +1666,19 @@ async function isolateAndRetry(
   const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, true);
   return {
     ...retried,
-    buildCulprits: culprits.map((x) => ({
-      ticket: x.c.ticket, branch: x.c.branch!, hook: name, tail: x.tail, how: x.how, cwd: o.cwd,
-      failingFiles: x.paths,
-      inBranch: x.paths.length === 0 ? null : x.paths.some((p) => withFiles.find((w) => w.c === x.c)?.changed.has(p) ?? false),
-      ...(x.sibling ? { sibling: { key: x.sibling.ticket.issue_tag ?? x.sibling.ticket.issue_id, branch: x.sibling.branch! } } : {}),
-    })),
+    buildCulprits: culprits.map((x) => {
+      const ex = failureExcerpt(x.output, x.paths, HOOK_FAILURE_TAIL_LINES);
+      const tip = gitOk(o.cwd, ['rev-parse', x.c.branch!])?.trim();
+      const logPath = saveGateOutput(x.c.ticket.issue_tag ?? x.c.ticket.issue_id, name, x.output);
+      return {
+        ticket: x.c.ticket, branch: x.c.branch!, hook: name, tail: ex.text, how: x.how, cwd: o.cwd,
+        pathCentered: ex.pathCentered, ...(logPath ? { outputPath: logPath } : {}),
+        ...(tip ? { tip } : {}),
+        failingFiles: x.paths,
+        inBranch: x.paths.length === 0 ? null : x.paths.some((p) => withFiles.find((w) => w.c === x.c)?.changed.has(p) ?? false),
+        ...(x.sibling ? { sibling: { key: x.sibling.ticket.issue_tag ?? x.sibling.ticket.issue_id, branch: x.sibling.branch! } } : {}),
+      };
+    }),
   };
 }
 

@@ -11,7 +11,7 @@ import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
 import {
   failingPaths, culpritByFiles, planBuildFailureBounce, applyBuildFailureBounce,
-  buildFailureComment, BUILD_FAILURE_MARKER, priorBuildFailures, failureComparison, priorFailureNote,
+  buildFailureComment, BUILD_FAILURE_MARKER, failureExcerpt, recordedFailure, priorBuildFailures, failureComparison, priorFailureNote,
 } from '../src/build-failure.ts';
 import type { Ticket } from '../src/tracker.ts';
 
@@ -172,7 +172,7 @@ test('the hand-back clears the assignee, posts the tail, and respects a stale wr
   assert.equal((await applyBuildFailureBounce(w, bounce, DEFAULT_CONTRACT, 'm', silent, false)).kind, 'handed-back');
   assert.deepEqual(patches[0], { status: DEFAULT_CONTRACT.statuses.building, assignee_id: null });
   assert.ok(notes[0]!.startsWith(BUILD_FAILURE_MARKER) && notes[0]!.includes('TS2300'));
-  assert.match(buildFailureComment(bounce), /git merge origin\/main/);
+  assert.match(buildFailureComment({ ...bounce, how: 'solo' }), /git merge origin\/main/);
   const stale = { ...w, updateTicket: async () => { throw new StaleWriteError({}); } };
   assert.equal((await applyBuildFailureBounce(stale, bounce, DEFAULT_CONTRACT, 'm', silent, false)).kind, 'stale');
   assert.equal((await applyBuildFailureBounce(w, bounce, DEFAULT_CONTRACT, 'm', silent, true)).kind, 'handed-back');
@@ -235,4 +235,70 @@ test('priorFailureNote returns the latest hand-back note for the ticket', () => 
     { record_id: 't2', event_type: 'build_failed', occurred_at: '3', message: 'other' },
   ];
   assert.equal(priorFailureNote({ id: 't1' } as never, ev), 'new');
+});
+
+const longOutput = (): string => [
+  '--- backend lint', 'ok',
+  '--- frontend lint', '/repo/src/new.ts:4:9  error  Unknown word "teh"', 'x', '1 problem',
+  ...Array.from({ length: 40 }, (_, i) => `PASS suite ${i}`),
+  'Tests 40 passed',
+].join('\n');
+
+test('the excerpt is built around the line naming the failing file, not the closing lines (CREW-3775)', () => {
+  const ex = failureExcerpt(longOutput(), ['src/new.ts'], 15);
+  assert.equal(ex.pathCentered, true);
+  assert.match(ex.text, /src\/new\.ts:4:9/);
+  assert.match(ex.text, /--- frontend lint/);
+  assert.match(ex.text, /end of the output/);
+  assert.match(ex.text, /Tests 40 passed/);
+  assert.ok(ex.text.split('\n').length < 25);
+});
+
+test('many matches show the first few and count the rest', () => {
+  const out = Array.from({ length: 30 }, (_, i) => `src/a.ts:${i}:1 error\npad\npad\npad\npad\npad\npad\npad`).join('\n');
+  assert.match(failureExcerpt(out, ['src/a.ts'], 15).text, /and 27 more lines naming these files/);
+});
+
+test('no recognizable path quotes the tail and says the failing step may be earlier', () => {
+  const ex = failureExcerpt(longOutput(), [], 15);
+  assert.equal(ex.pathCentered, false);
+  assert.equal(ex.text.split('\n').length, 15);
+  const note = buildFailureComment(bounce({ tail: ex.text, pathCentered: false, failingFiles: [], inBranch: null, how: 'solo' }));
+  assert.match(note, /failing step may be earlier/);
+});
+
+test('a culprit found by files makes no claim that the branch passes alone', () => {
+  const note = buildFailureComment(bounce({ how: 'files', inBranch: true, pathCentered: true }));
+  assert.match(note, /names files this branch changed/);
+  assert.match(note, /Nothing here shows whether the branch passes/);
+  assert.doesNotMatch(note, /builds on its own|semantic conflict/);
+  assert.match(note, /run the failing step on `b` itself/);
+});
+
+test('two failures naming the same file compare as the same, from the recorded paths', () => {
+  const first = buildFailureComment(bounce({ tail: 'unrelated closing lines', how: 'files' }));
+  assert.deepEqual(recordedFailure(first)?.paths, ['src/a.spec.ts']);
+  const cmp = failureComparison(bounce({ tail: 'also unrelated' }), first);
+  assert.match(cmp, /Same failure both times: yes, `src\/a\.spec\.ts`/);
+});
+
+test('a repeat on an unchanged tip is handed back once more, a third failure parks', async () => {
+  const t = T('ISSUE-11');
+  const patches: Array<Record<string, unknown>> = [];
+  const notes: string[] = [];
+  const w = {
+    updateTicket: async (_id: string, p: Record<string, unknown>) => { patches.push(p); return {}; },
+    postEvent: async (_id: string, b: string) => { notes.push(b); },
+  };
+  const b = planBuildFailureBounce('/nonexistent', { ticket: t, branch: 'issue-11', hook: 'test', tail: 'x', how: 'files', failingFiles: ['src/a.ts'], tip: 'abc' }, 'main', 'origin');
+  const firstNote = buildFailureComment(b);
+  const second = await applyBuildFailureBounce(w, b, DEFAULT_CONTRACT, 'm', silent, false, { count: 1, operatorId: 'op', previousNote: firstNote });
+  assert.equal(second.kind, 'handed-back');
+  assert.equal(patches[0]!.status, DEFAULT_CONTRACT.statuses.building);
+  assert.match(notes[0]!, /Second hand-back for the same failure/);
+  const third = await applyBuildFailureBounce(w, b, DEFAULT_CONTRACT, 'm', silent, false, { count: 2, operatorId: 'op', previousNote: notes[0] });
+  assert.equal(third.kind, 'escalated');
+  // a changed tip, or a different file, is not an unseen repeat
+  const moved = { ...b, tip: 'def' };
+  assert.equal((await applyBuildFailureBounce(w, moved, DEFAULT_CONTRACT, 'm', silent, false, { count: 1, operatorId: 'op', previousNote: firstNote })).kind, 'escalated');
 });

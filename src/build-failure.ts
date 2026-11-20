@@ -21,6 +21,9 @@
  * driving lives in `release-run.ts`, next to the hooks it runs.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { StaleWriteError } from '@tablation/client';
 import { worktreeForBranch } from './conflict.ts';
 import type { ConflictWriter, ConflictLog } from './conflict.ts';
@@ -76,6 +79,98 @@ export function culpritByFiles<T extends { changed: ReadonlySet<string> }>(
   return hits.length === 1 ? hits[0]! : null;
 }
 
+
+/** Lines of context kept before and after each output line that names a failing file. */
+const EXCERPT_CONTEXT = 3;
+/** How many such matches are shown before the rest are only counted. */
+const EXCERPT_MATCHES = 3;
+/** Closing lines of the output kept after the path-centered part. */
+const EXCERPT_CLOSING = 5;
+/** A line a multi-step hook prints to open a step (`--- frontend lint`). */
+const STEP_MARKER = /^\s*(?:---+\s|===+\s|##\s)\S/;
+
+const stripAnsi = (s: string): string => s.replace(/\u001b\[[0-9;]*m/g, '');
+
+/**
+ * The part of a failed hook's output a seat needs (CREW-3775). A multi-step
+ * hook keeps going after a failed step and exits non-zero at the end, so the
+ * last lines are the last step's output, not the failure. When the gate has
+ * failing paths, quote around the lines that name them (a few lines of context,
+ * plus the nearest step marker above), then the closing lines, clearly
+ * separated. With no path to anchor on, the tail, and `pathCentered` false so
+ * the note can say the failing step may be earlier.
+ */
+export function failureExcerpt(output: string, paths: readonly string[], tailLines: number): { text: string; pathCentered: boolean } {
+  const lines = stripAnsi(output).trimEnd().split('\n');
+  const tail = lines.slice(-tailLines).join('\n');
+  const hits: number[] = [];
+  if (paths.length) lines.forEach((l, i) => { if (paths.some((p) => l.includes(p))) hits.push(i); });
+  if (!hits.length) return { text: tail, pathCentered: false };
+  const shown = hits.slice(0, EXCERPT_MATCHES);
+  const keep = new Set<number>();
+  for (const i of shown) {
+    for (let k = Math.max(0, i - EXCERPT_CONTEXT); k <= Math.min(lines.length - 1, i + EXCERPT_CONTEXT); k++) keep.add(k);
+    for (let k = i; k >= 0; k--) { if (STEP_MARKER.test(lines[k]!)) { keep.add(k); break; } }
+  }
+  const out: string[] = [];
+  let prev = -2;
+  for (const k of [...keep].sort((a, b) => a - b)) {
+    if (k !== prev + 1 && out.length) out.push('…');
+    out.push(lines[k]!);
+    prev = k;
+  }
+  const more = hits.length - shown.length;
+  if (more > 0) out.push(`… and ${more} more line${more === 1 ? '' : 's'} naming these files`);
+  const closing = lines.slice(-Math.min(EXCERPT_CLOSING, tailLines));
+  const last = Math.max(...keep);
+  if (last < lines.length - closing.length) out.push('… end of the output:', ...closing);
+  return { text: out.join('\n'), pathCentered: true };
+}
+
+/**
+ * Keep a failed gate run's whole output where a seat on this ship can read it.
+ * Non-fatal: null when it cannot be written.
+ */
+export function saveGateOutput(ticketKey: string, hook: string, output: string): string | null {
+  try {
+    const dir = join(tmpdir(), 'crew-gate-output');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${ticketKey.replace(/[^\w.-]/g, '_')}-${hook}-${Date.now()}.log`);
+    writeFileSync(path, stripAnsi(output));
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/** What a hand-back note records about its failure, for the next one to compare with. */
+export interface RecordedFailure { paths: string[]; tip?: string; repeat?: boolean }
+
+const RECORD_RE = /<!-- crew-gate-failure (\{.*?\}) -->/;
+
+const recordLine = (b: BuildFailureBounce, repeat: boolean): string =>
+  `<!-- crew-gate-failure ${JSON.stringify({ paths: b.failingFiles ?? [], ...(b.tip ? { tip: b.tip } : {}), ...(repeat ? { repeat: true } : {}) })} -->`;
+
+/** The failure a hand-back note recorded; older notes fall back to the paths quoted in them. */
+export function recordedFailure(note: string | undefined, cwd?: string): RecordedFailure | undefined {
+  if (!note) return undefined;
+  const m = RECORD_RE.exec(note);
+  if (m) {
+    try { return JSON.parse(m[1]!) as RecordedFailure; } catch { /* fall through to the quoted text */ }
+  }
+  return { paths: failingPaths(note, cwd ?? '/\0') };
+}
+
+/**
+ * A repeat failure the seat was not shown enough to act on the first time: same
+ * file, same branch tip, and this is the first repeat (CREW-3775).
+ */
+export function isUnseenRepeat(b: BuildFailureBounce, previousNote: string | undefined): boolean {
+  const prev = recordedFailure(previousNote, b.cwd);
+  if (!prev || prev.repeat || !prev.tip || !b.tip || prev.tip !== b.tip) return false;
+  return (b.failingFiles ?? []).some((f) => prev.paths.includes(f));
+}
+
 /** A merged branch the build failure was pinned on. */
 export interface BuildCulprit {
   ticket: Ticket;
@@ -92,6 +187,12 @@ export interface BuildCulprit {
   inBranch?: boolean | null;
   /** How the culprit was found: named by the output, by building it alone, or as half of a failing pair. */
   how: 'files' | 'solo' | 'pair';
+  /** Whether `tail` is built around the lines naming the failing files (false: the closing lines). */
+  pathCentered?: boolean;
+  /** Where the whole output of the failed run was kept, on the ship that ran the gate. */
+  outputPath?: string;
+  /** The branch tip the gate saw. */
+  tip?: string;
   /** For `pair`: the earlier-verified branch it fails together with. */
   sibling?: { key: string; branch: string };
 }
@@ -116,25 +217,47 @@ function outsideNote(b: BuildFailureBounce): string {
   return `**None of the files the failure names (${shown}) are among this branch's changes**, so this may be a flake or a failure that already lives on \`${b.base ?? 'the base'}\` rather than something the branch broke; check that before changing code.\n\n`;
 }
 
-export function buildFailureComment(b: BuildFailureBounce): string {
+/** What the quoted excerpt is, and where the rest is. */
+function excerptNote(b: BuildFailureBounce): string {
+  const where = b.outputPath ? ` The whole output is at \`${b.outputPath}\` on the ship that ran the gate.` : '';
+  return b.pathCentered
+    ? `The excerpt below is built around the output lines that name the failing files.${where}`
+    : `No failing file could be read from the output, so this is its closing lines; **the failing step may be earlier than what is quoted.**${where}`;
+}
+
+export function buildFailureComment(b: BuildFailureBounce, repeat = false): string {
+  const names = (b.failingFiles ?? []).slice(0, 5).map((f) => `\`${f}\``).join(', ');
+  const byFiles = b.how === 'files';
   const how = b.how === 'pair' && b.sibling
     ? `Each branch passes the hook alone; \`${b.branch}\` together with ${b.sibling.key} (\`${b.sibling.branch}\`) fails it. ${b.sibling.key} was verified first, so the fix belongs on this branch: \`git merge ${b.remote}/${b.sibling.branch}\` first, then fix what disagrees. Fix it on this branch, never a fresh one.`
-    : b.how === 'files'
-    ? `The failing output names files that only \`${b.branch}\` changed among the branches in that release.`
+    : byFiles
+    ? `The failing output names files this branch changed${names ? ` (${names})` : ''}. Nothing here shows whether the branch passes the hook on its own.`
     : `Built alone on the previous \`${b.base}\`, \`${b.branch}\` fails the same hook.`;
+  const first = byFiles
+    ? `First step: run the failing step on \`${b.branch}\` itself${b.worktree ? ` in \`${b.worktree}\`` : ''} and fix what it reports in the files above. Merge \`${b.remote}/${b.base}\` in only if it passes there.`
+    : `First step: \`git merge ${b.remote}/${b.base}\` in ${b.worktree ? `\`${b.worktree}\`` : 'the branch\'s worktree'}, rebuild, and fix what disagrees — the merge is clean at the text level, so this is a semantic conflict (a duplicate identifier, a changed signature) with work that landed on \`${b.base}\` after this branch was cut.`;
+  const heading = byFiles
+    ? `Back with the dev lane — the release gate failed in files this branch changed.`
+    : `Back with the dev lane — this branch builds on its own but not on current \`${b.base}\`.`;
+  const again = repeat
+    ? `**Second hand-back for the same failure on the same commit.** The first note did not show enough to act on, so this one quotes the lines that name the file.\n\n`
+    : '';
   return `${BUILD_FAILURE_MARKER}
 
-**Back with the dev lane — this branch builds on its own but not on current \`${b.base}\`.**
+**${heading}**
 
-\`${b.branch}\` was verified, but the release's \`${b.hook}\` hook failed once it was merged with the other branches in the same release. ${how}
+${again}\`${b.branch}\` was verified, but the release's \`${b.hook}\` hook failed once it was merged with the other branches in the same release. ${how}
 
-${outsideNote(b)}First step: \`git merge ${b.remote}/${b.base}\` in ${b.worktree ? `\`${b.worktree}\`` : 'the branch\'s worktree'}, rebuild, and fix what disagrees — the merge is clean at the text level, so this is a semantic conflict (a duplicate identifier, a changed signature) with work that landed on \`${b.base}\` after this branch was cut. Push as a plain fast-forward and hand back to QA as usual.
+${outsideNote(b)}${first} Push as a plain fast-forward and hand back to QA as usual.
+
+${excerptNote(b)}
 
 \`\`\`
 ${b.tail.trimEnd()}
 \`\`\`
 
-Nothing was written to \`${b.base}\` for this ticket; the rest of the release shipped without it.`;
+Nothing was written to \`${b.base}\` for this ticket; the rest of the release shipped without it.
+${recordLine(b, repeat)}`;
 }
 
 interface BuildFailureEvent { record_id?: string | null; event_type?: string | null; occurred_at?: string | null; created_at?: string | null }
@@ -163,7 +286,7 @@ export function priorFailureNote(ticket: Ticket, events: readonly BuildFailureEv
 /** Whether the two failures were the same test, and whether the files are the branch's own (CREW-3220). */
 export function failureComparison(b: BuildFailureBounce, previousNote?: string): string {
   const now = b.failingFiles ?? failingPaths(b.tail, b.cwd ?? '/\0');
-  const before = previousNote ? failingPaths(previousNote, b.cwd ?? '/\0') : [];
+  const before = recordedFailure(previousNote, b.cwd)?.paths ?? [];
   const lines: string[] = [];
   if (!before.length || !now.length) {
     lines.push('- Same failure both times? Unknown: the output of at least one run names no file.');
@@ -205,7 +328,10 @@ export async function applyBuildFailureBounce(
   log: ConflictLog, dryRun: boolean, prior: { count: number; operatorId?: string; previousNote?: string } = { count: 0 },
 ): Promise<BuildFailureOutcome> {
   const t = { ticket: b.ticket.issue_id, step: 'release' };
-  if (prior.count > 0) {
+  // Same file, same tip: the seat was not shown enough the first time, so one
+  // more lap with the path-centered excerpt before a person is called (CREW-3775).
+  const repeat = prior.count > 0 && isUnseenRepeat(b, prior.previousNote);
+  if (prior.count > 0 && !repeat) {
     if (dryRun) {
       log.emit(`would escalate to ${contract.statuses.needsHuman} — handed back for the ${b.hook} hook before`, t);
       return { kind: 'escalated' };
@@ -234,7 +360,7 @@ export async function applyBuildFailureBounce(
     await writer.updateTicket(
       b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
     );
-    await writer.postEvent(b.ticket.id, buildFailureComment(b), memberId, 'build_failed').catch(() => {
+    await writer.postEvent(b.ticket.id, buildFailureComment(b, repeat), memberId, 'build_failed').catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });
     // One compact record of who was blamed and how (CREW-2777), apart from the
