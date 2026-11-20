@@ -84,7 +84,7 @@ import { collectDiagnostics } from './diagnostics.ts';
 import { schedulerLogFor } from './install.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, systemUnitPathFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
 import { DEFAULT_RIGHT_OF_WAY_MINUTES, REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
-import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
+import { runRelease, runFleetPasses, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
 import { remoteOf } from './remote-dir.ts';
@@ -1487,20 +1487,52 @@ async function releaseFleet(
   opts: { mergeOnly?: boolean; force?: boolean; isDeployCommand?: boolean } = {},
 ): Promise<void> {
   sweepStateDir();
-  if (releaseRefused()) return;
-  precheckTickets.clear();
-  const summaries: RoutedReleaseSummary[] = [];
-  // Touched at both ends so a long deploy does not read as a stopped timer
-  // (`release_stale`, CREW-1373).
-  if (!dryRun) state.releaseHeartbeat().touch();
-  for (const c of cfg.routes) {
-    if (!dryRun && !c.enabled) continue;
-    // No route-wide platform gate: releasePhase checks each repo's own
-    // requirement, and a route can span repos with different needs.
-    for (const r of reposOf(c)) summaries.push({ ...(await releasePhase(c, r, opts)), route: c.route });
-  }
-  emitReleaseSummary(emit, summaries);
-  if (!dryRun) state.releaseHeartbeat().touch();
+  type Key = { c: typeof route; r: RepoTarget };
+  const keyOf = (k: Key) => `${k.c.route}\0${k.r.name}`;
+  // CREW-3868: a repo this process just released that already has verified
+  // tickets waiting is released again at once instead of after the timer.
+  await runFleetPasses<Key>({
+    pass: async (only) => {
+      // A repeat pass was already cleared by runFleetPasses' own pause check.
+      if (!only && releaseRefused()) return [];
+      precheckTickets.clear();
+      const wanted = only ? new Set(only.map(keyOf)) : undefined;
+      const summaries: RoutedReleaseSummary[] = [];
+      const results: Array<{ key: Key; summary: RepoReleaseSummary }> = [];
+      // Touched at both ends of every pass so a long deploy does not read as a
+      // stopped timer (`release_stale`, CREW-1373).
+      if (!dryRun) state.releaseHeartbeat().touch();
+      for (const c of cfg.routes) {
+        if (!dryRun && !c.enabled) continue;
+        // No route-wide platform gate: releasePhase checks each repo's own
+        // requirement, and a route can span repos with different needs.
+        for (const r of reposOf(c)) {
+          if (wanted && !wanted.has(keyOf({ c, r }))) continue;
+          const summary = await releasePhase(c, r, opts);
+          summaries.push({ ...summary, route: c.route });
+          results.push({ key: { c, r }, summary });
+        }
+      }
+      emitReleaseSummary(emit, summaries);
+      if (!dryRun) state.releaseHeartbeat().touch();
+      return results;
+    },
+    waiting: async ({ c, r }) => {
+      try {
+        const identity = await resolveReleaseKey(c);
+        const tracker = new Tracker(c, cfg.ship, { apiKey: identity.apiKey });
+        const { byRepo } = ticketsByRepo(c, await tracker.openTickets());
+        const modes = { modes: await tracker.projectWorkModes(), agentAssignees: new Set<string>() };
+        return withoutManualVerified(byRepo.get(r.name) ?? [], tracker.contract.statuses.verified, modes)
+          .filter((t) => t.status === tracker.contract.statuses.verified).length;
+      } catch {
+        return 0; // the timer's next fire checks again
+      }
+    },
+    refused: () => !dryRun && releaseRefused(),
+    describe: ({ c, r }) => releaseLockScope(c.route, r.name),
+    emit: (line) => emit.emit(line, { step: 'release' }),
+  });
 }
 
 /**

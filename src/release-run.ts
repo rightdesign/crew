@@ -2142,3 +2142,59 @@ async function mergeAndReleaseBody(
   );
   return { merged, conflicts, unbuildable, version, tag, deployed, integrated, confirmed, decision, ...ciOutcome(o, watch, confirmed) };
 }
+
+/**
+ * Most consecutive fleet passes one `crew release --fleet` process runs
+ * (CREW-3868): a fault that keeps producing "verified tickets waiting" must
+ * not loop forever. Past it the process exits normally and the timer takes over.
+ */
+export const MAX_CONSECUTIVE_RELEASE_PASSES = 5;
+
+/** Outcomes that count as "this pass released the repo"; every other one waits for the timer. */
+const RELEASED_OUTCOMES: ReadonlySet<RepoReleaseSummary['outcome']> = new Set(['deployed', 'merged', 'integrated']);
+
+/**
+ * Run a fleet release pass, then another for each repo it released that already
+ * has verified tickets waiting, until a pass finds none or the cap is reached.
+ *
+ * Tickets that become `verified` while a release runs wait for the next one, and
+ * without this that next one started only when the timer fired. A repo whose pass
+ * failed, was refused or merged nothing is never repeated (no tight retry loop),
+ * a pause set during the release stops the repetition, and the "waiting" board
+ * query is made only for repos that were actually released.
+ *
+ * `K` identifies one repo to release; `pass(undefined)` is the full first pass,
+ * `pass(keys)` a repeat for just those repos.
+ */
+export async function runFleetPasses<K>(deps: {
+  pass: (only: K[] | undefined) => Promise<Array<{ key: K; summary: RepoReleaseSummary }>>;
+  waiting: (key: K) => Promise<number>;
+  refused: () => boolean;
+  describe: (key: K) => string;
+  emit: (line: string) => void;
+  cap?: number;
+}): Promise<number> {
+  const cap = deps.cap ?? MAX_CONSECUTIVE_RELEASE_PASSES;
+  let passes = 0;
+  let only: K[] | undefined;
+  for (;;) {
+    const results = await deps.pass(only);
+    passes++;
+    const released = results.filter((r) => RELEASED_OUTCOMES.has(r.summary.outcome));
+    if (released.length === 0 || deps.refused()) return passes;
+    const next: Array<{ key: K; count: number }> = [];
+    for (const r of released) {
+      const count = await deps.waiting(r.key);
+      if (count > 0) next.push({ key: r.key, count });
+    }
+    if (next.length === 0) return passes;
+    if (passes >= cap) {
+      deps.emit(`release: ${cap} consecutive passes run with verified tickets still waiting — leaving the rest to the timer`);
+      return passes;
+    }
+    for (const n of next) {
+      deps.emit(`release: repeating ${deps.describe(n.key)} — ${n.count} verified ticket${n.count === 1 ? '' : 's'} waiting`);
+    }
+    only = next.map((n) => n.key);
+  }
+}
