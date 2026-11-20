@@ -1494,6 +1494,32 @@ test('a failed commit that is not a conflict leaves the ticket verified and rais
   assert.equal(git(dir, ['status', '--porcelain']), '');
 });
 
+test('the release seat claims a branch before merging and gives the claim back on a conflict or a failed commit (CREW-3811)', async () => {
+  const conflict = project(LOCAL);
+  conflict.g('checkout', '-q', 'issue-7');
+  writeFileSync(join(conflict.dir, 'contested.txt'), 'the branch version\n');
+  conflict.g('add', '.'); conflict.g('commit', '-qm', 'branch takes it');
+  conflict.g('checkout', '-q', 'main');
+  writeFileSync(join(conflict.dir, 'contested.txt'), 'the base version\n');
+  conflict.g('add', '.'); conflict.g('commit', '-qm', 'base takes it');
+  const failed = project(LOCAL);
+  writeFileSync(join(failed.dir, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const clean = project(LOCAL);
+
+  for (const [p, claims, unclaims] of [[conflict, 1, 1], [failed, 1, 1], [clean, 1, 0]] as const) {
+    const calls: string[] = [];
+    await runRelease({
+      cwd: p.dir, repo: p.repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')],
+      emit: emitter(), dryRun: false,
+      attention: { raise: () => {}, clear: () => {} },
+      onClaim: async (t) => { calls.push(`claim ${t.issue_id}`); },
+      onUnclaim: async (t) => { calls.push(`unclaim ${t.issue_id}`); },
+    });
+    assert.equal(calls.filter((c) => c.startsWith('claim')).length, claims);
+    assert.equal(calls.filter((c) => c.startsWith('unclaim')).length, unclaims);
+  }
+});
+
 test('release_merge_failed attention is cleared once a later pass merges (CREW-2954)', async () => {
   const { dir, repo } = project(LOCAL);
   const hook = join(dir, '.git', 'hooks', 'pre-commit');

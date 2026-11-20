@@ -98,6 +98,14 @@ export interface ReleaseRunOptions {
    * Failures here must not reach the release; the caller swallows them.
    */
   onBasePushed?: (merged: MergeCandidate[]) => Promise<void>;
+  /**
+   * Called just before a verified branch is squash-merged (never in a dry run),
+   * so the caller can assign the ticket to the release seat while the release
+   * holds it (CREW-3811). Failures are warned and never stop the merge.
+   */
+  onClaim?: (ticket: Ticket) => Promise<void>;
+  /** Undoes `onClaim` when the branch did not merge (a conflict or an error), so the claim never outlives the attempt. */
+  onUnclaim?: (ticket: Ticket) => Promise<void>;
   cwd: string;
   repo: EffectiveRepoConfig;
   /**
@@ -1742,7 +1750,15 @@ async function mergeAndReleaseBody(
       }
       continue;
     }
+    if (o.onClaim && !o.dryRun) {
+      try { await o.onClaim(c.ticket); }
+      catch (e) { o.emit.warn(`could not assign the ticket to the release seat: ${(e as Error).message}`, { ticket: c.ticket.issue_id }); }
+    }
     const r = mergeOne(o, c);
+    if (o.onUnclaim && !o.dryRun && typeof r === 'object' && ('conflict' in r || 'error' in r)) {
+      try { await o.onUnclaim(c.ticket); }
+      catch (e) { o.emit.warn(`could not hand the ticket back from the release seat: ${(e as Error).message}`, { ticket: c.ticket.issue_id }); }
+    }
     if (typeof r === 'object' && 'conflict' in r) { conflicts.push(r.conflict); continue; }
     if (typeof r === 'object' && 'error' in r) continue;   // not a conflict: stays verified, retried next pass (CREW-2954)
     if (typeof r === 'object' && r.applied) {

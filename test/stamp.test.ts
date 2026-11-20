@@ -364,3 +364,35 @@ test('applyStamp keeps a commit_sha the early stamp already recorded (CREW-2820)
   assert.equal(patches[0]!.released_version, '1.0.0');
   assert.ok(!('commit_sha' in patches[0]!) && !('merged_at' in patches[0]!));
 });
+
+const SEAT = 'release-seat';
+function claimTracker(held: Record<string, string | null>, claims: Record<string, unknown>) {
+  const updates: { id: string; patch: Record<string, unknown> }[] = [];
+  const tracker = {
+    updateTicket: async (id: string, patch: Record<string, unknown>) => { updates.push({ id, patch }); return {} as Ticket; },
+    ticketsByIds: async (ids: string[]) => ids.map((id) => ({ id, [DEFAULT_CONTRACT.columns.assignee]: held[id] ?? null })),
+    events: async () => Object.entries(claims).map(([record_id, prior]) => ({ record_id, event_type: 'release_claimed', metadata: { prior_assignee: prior } })),
+  } as unknown as Parameters<typeof applyStamp>[0];
+  return { tracker, updates };
+}
+const planOf = (...ids: string[]) => ids.map((id) => ({ ticket: { ...T('ISSUE-1'), id } })) as Parameters<typeof applyStamp>[1];
+
+test('the stamp hands a ticket the release seat still holds back to whoever held it, read from the log', async () => {
+  const { tracker, updates } = claimTracker({ a: SEAT, b: SEAT }, { a: null, b: 'person-1' });
+  await applyStamp(tracker, planOf('a', 'b'), '1.0.0', DEFAULT_CONTRACT, emitter([]), false, undefined, SEAT);
+  const col = DEFAULT_CONTRACT.columns.assignee;
+  assert.equal(updates[0]!.patch[col], null);
+  assert.equal(updates[1]!.patch[col], 'person-1');
+});
+
+test('a claim with no readable prior is cleared at the stamp', async () => {
+  const { tracker, updates } = claimTracker({ a: SEAT }, {});
+  await applyStamp(tracker, planOf('a'), '1.0.0', DEFAULT_CONTRACT, emitter([]), false, undefined, SEAT);
+  assert.equal(updates[0]!.patch[DEFAULT_CONTRACT.columns.assignee], null);
+});
+
+test('a ticket not held by the release seat keeps its assignee through the stamp', async () => {
+  const { tracker, updates } = claimTracker({ a: 'person-2' }, { a: 'person-1' });
+  await applyStamp(tracker, planOf('a'), '1.0.0', DEFAULT_CONTRACT, emitter([]), false, undefined, SEAT);
+  assert.ok(!(DEFAULT_CONTRACT.columns.assignee in updates[0]!.patch));
+});

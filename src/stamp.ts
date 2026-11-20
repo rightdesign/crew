@@ -132,12 +132,47 @@ export async function applyMergeStamp(
   return stamped;
 }
 
+/** The event the release writes when its seat claims a ticket; `metadata.prior_assignee` is who held it (CREW-3811). */
+export const RELEASE_CLAIMED_EVENT = 'release_claimed';
+
+/**
+ * Ticket id -> who held it before the release seat claimed it, for every planned
+ * ticket the board still shows assigned to that seat. Read from the board and the
+ * event log, never from process memory, so a ticket merged in one cycle and
+ * stamped in a later one (a failed gate, a CI confirmation hours on) is still
+ * handed back. A claim with no readable prior clears the assignee, which is the
+ * end of the line in an automatic project.
+ */
+export async function priorAssignees(
+  tracker: Tracker, plan: StampPlan[], seat: string, contract: Contract, emit: Emitter,
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  if (!plan.length) return out;
+  try {
+    const fresh = await tracker.ticketsByIds(plan.map((p) => p.ticket.id));
+    const held = fresh.filter((t) => t[contract.columns.assignee as keyof Ticket] === seat);
+    if (!held.length) return out;
+    const events = await tracker.events(RELEASE_CLAIMED_EVENT);
+    for (const t of held) {
+      const e = events.find((x) => x.record_id === t.id);   // newest first
+      const prior = e?.metadata?.prior_assignee;
+      out.set(t.id, typeof prior === 'string' && prior !== seat ? prior : null);
+    }
+  } catch (e) {
+    emit.warn(`could not read who held the tickets before the release: ${(e as Error).message}`);
+  }
+  return out;
+}
+
 export async function applyStamp(
   tracker: Tracker, plan: StampPlan[], version: string | undefined,
   contract: Contract, emit: Emitter, dryRun: boolean, cwd?: string,
+  /** The release seat's Crew row (CREW-3811): a ticket still assigned to it is handed back to who held it before. */
+  seat?: string,
 ): Promise<number> {
   let stamped = 0;
   const at = new Date().toISOString();
+  const priorAssignee = !dryRun && seat ? await priorAssignees(tracker, plan, seat, contract, emit) : new Map<string, string | null>();
   for (const { ticket, sha } of plan) {
     const shaNote = sha ? `, commit_sha ${sha.slice(0, 8)}` : '';
     if (dryRun) {
@@ -154,6 +189,7 @@ export async function applyStamp(
     try {
       await tracker.updateTicket(ticket.id, {
         status: contract.statuses.deployed,
+        ...(priorAssignee.has(ticket.id) ? { [contract.columns.assignee]: priorAssignee.get(ticket.id) ?? null } : {}),
         // `released_at` is always a real release moment here; only the version is optional (versioning: none).
         released_at: at,
         ...(version ? { released_version: version } : {}),

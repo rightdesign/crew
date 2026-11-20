@@ -88,7 +88,7 @@ import { runRelease, selfRepairLine, summarizeOutcome, emitReleaseSummary, type 
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
 import { remoteOf } from './remote-dir.ts';
-import { planStamp, applyStamp, applyMergeStamp, applyExternalClosures } from './stamp.ts';
+import { planStamp, applyStamp, RELEASE_CLAIMED_EVENT, applyMergeStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
 import { sandboxEnv } from './sandbox-brief.ts';
@@ -2522,6 +2522,7 @@ async function releasePhase(
       }
     }
 
+    const claimed = new Map<string, string | null>();
     const outcome = await runRelease({
       cwd: target.dir, repo, rightOfWayEvents,
       reloadRepo: (dir) => resolveRepoConfig(loadRepoConfig(dir), {
@@ -2547,6 +2548,21 @@ async function releasePhase(
       mergeOnly: command === 'merge',
       // ci_* modes: record the merge on the board when it lands on base,
       // not only once CI confirms the release live (CREW-2820).
+      // CREW-3811: the release seat holds a ticket while it merges and ships it.
+      onClaim: async (ticket) => {
+        const seat = releaseSeat(c);
+        if (!seat || ticket.assignee_id === seat) return;
+        const prior = ticket.assignee_id ?? null;
+        // The prior holder is written to the log first, so a later cycle's stamp can hand the ticket back.
+        await tracker.postEvent(ticket.id, 'release took the ticket while it merges and ships it', seat, RELEASE_CLAIMED_EVENT, { prior_assignee: prior });
+        claimed.set(ticket.id, prior);
+        await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: seat });
+      },
+      onUnclaim: async (ticket) => {
+        if (!claimed.has(ticket.id)) return;
+        await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: claimed.get(ticket.id) ?? null });
+        claimed.delete(ticket.id);
+      },
       onBasePushed: async (merged) => {
         remit.enter('reconcile');
         await applyMergeStamp(
@@ -2584,7 +2600,7 @@ async function releasePhase(
           ...outcome.merged.map((m): [string, string | undefined] => [m.ticket.issue_id, m.sha]),
         ]),
       );
-      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun, target.dir);
+      if (plan.length) await applyStamp(tracker, plan, outcome.version, tracker.contract, remit, dryRun, target.dir, releaseSeat(c));
     } else if (outcome.stopped) {
       remit.emit(`nothing stamped — ${outcome.stopped}`);
     }
@@ -2602,7 +2618,7 @@ async function releasePhase(
       remit.enter('reconcile');
       await applyStamp(
         tracker, [{ ticket: m.ticket, reason: `carried by ${tag}`, sha: m.mergedSha }],
-        tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir,
+        tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir, releaseSeat(c),
       );
     }
 
@@ -2617,7 +2633,7 @@ async function releasePhase(
       remit.enter('reconcile');
       await applyStamp(
         tracker, [{ ticket: r.ticket, reason: `branch already released in ${r.tag}`, sha: r.sha }],
-        r.tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir,
+        r.tag.replace(/^v/, ''), tracker.contract, remit, dryRun, target.dir, releaseSeat(c),
       );
     }
 
