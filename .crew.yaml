@@ -75,6 +75,8 @@ release:
   mode: ci_auto
   ci: { provider: github }
   versioning: auto
+  # Local runners execute dist/cli.js from the primary checkout (ISSUE-584, CREW-3864).
+  rebuildPrimary: true
   versionFiles: [package.json]
   changelog: CHANGELOG.md
   verify:

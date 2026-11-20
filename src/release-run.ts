@@ -202,6 +202,12 @@ export interface CiReport {
 }
 
 export interface ReleaseOutcome {
+  /**
+   * Rebuilds the primary checkout after a release fast-forwarded it (CREW-3864). Present only when
+   * `release.rebuildPrimary` is on. The caller runs it once the tickets are stamped and the release
+   * lock is released; it never throws and a failure is a warning.
+   */
+  primaryRebuild?: () => Promise<void>;
   /** Failed CI runs seen while waiting for this release to go live. */
   ci?: CiReport;
   /** The runs were all green (and at least one existed) when the wait ended. */
@@ -1441,25 +1447,33 @@ async function runReleaseCycle(
     o.emit.error(scoped(`could not cut a release checkout from ${remote}/${base} — ${(e as Error).message}`));
     return { merged: [], deployed: false, stopped: 'release checkout failed', decision };
   }
+  let outcome: ReleaseOutcome;
+  let rebuild: (() => Promise<void>) | undefined;
   try {
-    return await mergeAndRelease({ ...o, cwd: checkout.dir }, decision, fresh, checkout.branch);
+    outcome = await mergeAndRelease({ ...o, cwd: checkout.dir }, decision, fresh, checkout.branch);
   } finally {
     checkout.close();
     // The primary checkout catches up to whatever was just pushed. A plain
     // fast-forward from a clean tree only, so nothing a person has in progress
     // is touched; the next cycle's refresh covers any case this one skips.
     const refreshed = refreshBaseBranch(o.cwd, remote, base);
-    // Local runners execute `dist/cli.js` from the primary checkout (ISSUE-584),
-    // and the build the release just ran wrote its output in the temporary
-    // checkout, so the primary's bundle is stale until it is rebuilt here. The
-    // push already landed, so a failed rebuild is a warning, not a failed release.
-    if (refreshed.action === 'fast-forwarded' && o.repo.hooks.build) {
-      const r = await hook(o, 'build');
-      if (r && r.code !== 0) {
-        o.emit.warn(scoped(`rebuilding the primary checkout after the release failed (exit ${r.code}) — its dist/ is stale until \`${o.repo.hooks.build}\` is run there`));
-      }
+    // A repo that runs its own built output from the primary checkout (the crew
+    // repo's `dist/cli.js`, ISSUE-584) opts in with `release.rebuildPrimary`: the
+    // release's build wrote into the temporary checkout, so the primary's bundle
+    // is stale until rebuilt here. Every other repo skips it (CREW-3864): the
+    // rebuild is minutes of output nothing reads. The caller runs it after the
+    // tickets are stamped and the release lock is released, so neither waits.
+    if (refreshed.action === 'fast-forwarded' && o.repo.hooks.build && o.repo.release.rebuildPrimary) {
+      rebuild = async () => {
+        // The push already landed, so a failed rebuild is a warning, not a failed release.
+        const r = await hook(o, 'build');
+        if (r && r.code !== 0) {
+          o.emit.warn(scoped(`rebuilding the primary checkout after the release failed (exit ${r.code}) — its dist/ is stale until \`${o.repo.hooks.build}\` is run there`));
+        }
+      };
     }
   }
+  return rebuild ? { ...outcome, primaryRebuild: rebuild } : outcome;
 }
 
 /** Most pairs the interaction search will build (CREW-2777). */

@@ -424,6 +424,12 @@ export interface RepoConfig {
      * `DEFAULT_RIGHT_OF_WAY_MINUTES`; 0 turns the right of way off.
      */
     rightOfWayMinutes?: number;
+    /**
+     * Rebuild the primary checkout with `hooks.build` after a release
+     * fast-forwards it (CREW-3864). Off unless a repo executes its own built
+     * output from the primary checkout (the crew repo's `dist/cli.js`).
+     */
+    rebuildPrimary?: boolean;
     versioning: Versioning;
     versionFiles: string[];
     /** null when this repo keeps no changelog — not every project does. */
@@ -513,7 +519,7 @@ export function worktreeNameProblem(template: string): string | null {
   return null;
 }
 const RELEASE_KEYS = new Set([
-  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
+  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'rebuildPrimary', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
 /** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
 export const VERSIONINGS: Versioning[] = ['auto', 'none'];
@@ -525,6 +531,13 @@ export const DEFAULT_ISOLATE_MAX_CANDIDATES = 4;
 
 /** Minutes a conflict hand-back keeps right of way over its paths (CREW-3386). */
 export const DEFAULT_RIGHT_OF_WAY_MINUTES = 60;
+
+/** `release.rebuildPrimary`: a boolean, undefined when not given (CREW-3864). */
+export function parseRebuildPrimary(raw: unknown, fail: (m: string) => Error): boolean | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'boolean') throw fail(`release.rebuildPrimary must be true or false (got "${raw}")`);
+  return raw;
+}
 
 /** `release.rightOfWayMinutes`: a non-negative integer, undefined when not given. */
 export function parseRightOfWayMinutes(raw: unknown, fail: (m: string) => Error): number | undefined {
@@ -809,6 +822,8 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
 
   const rightOfWay = parseRightOfWayMinutes(raw.release?.rightOfWayMinutes, (m) => new RepoConfigError(`${file}: ${m}`));
 
+  const rebuildPrimary = parseRebuildPrimary(raw.release?.rebuildPrimary, (m) => new RepoConfigError(`${file}: ${m}`));
+
   const versioning = String(raw.release?.versioning ?? 'auto') as Versioning;
   if (!VERSIONINGS.includes(versioning)) {
     throw new RepoConfigError(`${file}: release.versioning must be auto|none (got "${versioning}")`);
@@ -908,6 +923,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       verify,
       isolateFailures: isolateMax === undefined ? undefined : { maxCandidates: isolateMax },
       rightOfWayMinutes: rightOfWay,
+      rebuildPrimary,
       versioning,
       versionFiles,
       tag,
@@ -1212,6 +1228,7 @@ export function resolveRepoConfig(
           ship?.release?.isolateFailures?.maxCandidates, DEFAULT_ISOLATE_MAX_CANDIDATES),
       },
       rightOfWayMinutes: repo?.release.rightOfWayMinutes ?? ship?.release?.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES,
+      rebuildPrimary: repo?.release.rebuildPrimary ?? false,
       versioning: pick('release.versioning',
         repo?.release.versioning === 'auto' ? undefined : repo?.release.versioning,
         ship?.release?.versioning, DEFAULTS.versioning),

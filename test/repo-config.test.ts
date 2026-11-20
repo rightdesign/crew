@@ -558,3 +558,10 @@ test('a versionFiles entry that exists but cannot be read is a RepoConfigError n
   assert.throws(() => loadRepoConfig(d), (e: Error) =>
     e instanceof RepoConfigError && /VERSION/.test(e.message) && /cannot be read/.test(e.message));
 });
+
+test('release.rebuildPrimary is a boolean, off when absent (CREW-3864)', () => {
+  assert.equal(parseRepoConfig(MIN, 'f').release.rebuildPrimary, undefined);
+  assert.equal(parseRepoConfig(`${MIN}release:\n  rebuildPrimary: true\n`, 'f').release.rebuildPrimary, true);
+  assert.throws(() => parseRepoConfig(`${MIN}release:\n  rebuildPrimary: yes please\n`, 'f'), /release\.rebuildPrimary must be true or false/);
+  assert.throws(() => parseRepoConfig(`${MIN}release:\n  rebuildPrimary: 1\n`, 'f'), /release\.rebuildPrimary must be true or false/);
+});

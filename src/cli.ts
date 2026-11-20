@@ -2306,6 +2306,7 @@ async function releasePhase(
   // dry run and a machine with no other releasing process never pay for a
   // network round trip; released in the `finally` below alongside it.
   let boardLock: BoardLockResult | undefined;
+  let primaryRebuild: (() => Promise<void>) | undefined;
   try {
 
     // CREW-2928: a refused base contract is held, not thrown, so the ticket
@@ -2581,6 +2582,7 @@ async function releasePhase(
         clearKind: (kind, keyPrefix) => clearShipAttentionKind(state, kind, keyPrefix),
       },
     });
+    primaryRebuild = outcome.primaryRebuild;
     const summary = summarizeOutcome(outcome, scope, !!repo.hooks.test && !flag('skip-tests'));
 
     // Stamping is deliberately last and deliberately non-fatal: the work is
@@ -2933,6 +2935,10 @@ async function releasePhase(
   } finally {
     if (boardLock && boardLock.ok) await boardLock.release();
     if (relLock && relLock.ok) relLock.release();
+    // CREW-3864: after the stamp and both locks, so the next release never waits on it.
+    if (primaryRebuild) {
+      try { await primaryRebuild(); } catch (e) { remit.warn(`rebuilding the primary checkout failed: ${(e as Error).message}`, { step: 'release' }); }
+    }
   }
 }
 

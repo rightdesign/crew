@@ -1200,35 +1200,55 @@ test('a rejected base push leaves no release branch, no tag, and the primary bas
   assert.deepEqual(releaseLeftovers(dir), { worktrees: 1, branches: '' });
 });
 
-test('after a release the primary checkout\'s own build is re-run, so its dist/ is not stale (CREW-1383)', async () => {
+const REBUILD = (build: string) => `version: 1
+hooks:
+  test: exit 0
+  build: ${build}
+  deploy: exit 0
+release:
+  rebuildPrimary: true
+`;
+
+test('without release.rebuildPrimary the primary checkout is not rebuilt and the build runs once (CREW-3864)', async () => {
   const bare = bareRemote();
   const { dir, repo } = projectWithRemote(`version: 1
 hooks:
   test: exit 0
-  build: mkdir -p dist && echo built > dist/marker
+  build: mkdir -p dist && echo built >> dist/marker
   deploy: exit 0
 `, bare);
   const out = await runRelease({
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
   });
   assert.equal(out.version, '1.3.0');
+  assert.equal(out.primaryRebuild, undefined);
+  assert.ok(!existsSync(join(dir, 'dist', 'marker')));
+});
+
+test('with release.rebuildPrimary the rebuild is handed back to run after the stamp and unlock (CREW-3864)', async () => {
+  const bare = bareRemote();
+  const { dir, repo } = projectWithRemote(REBUILD('mkdir -p dist && echo built > dist/marker'), bare);
+  const out = await runRelease({
+    cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+  });
+  assert.equal(out.version, '1.3.0');
+  // Nothing has been built in the primary yet: the caller decides when.
+  assert.ok(!existsSync(join(dir, 'dist', 'marker')));
+  assert.equal(typeof out.primaryRebuild, 'function');
+  await out.primaryRebuild!();
   assert.ok(existsSync(join(dir, 'dist', 'marker')));
 });
 
-test('a failed rebuild of the primary checkout is a warning, not a failed release (CREW-1383)', async () => {
+test('a failed rebuild of the primary checkout is a warning, not a failed release (CREW-1383, CREW-3864)', async () => {
   const bare = bareRemote();
   const once = join(mkdtempSync(join(tmpdir(), 'crew-rel-once-')), 'ran');
-  const { dir, repo } = projectWithRemote(`version: 1
-hooks:
-  test: exit 0
-  build: if [ -f ${once} ]; then exit 3; fi; touch ${once}
-  deploy: exit 0
-`, bare);
+  const { dir, repo } = projectWithRemote(REBUILD(`if [ -f ${once} ]; then exit 3; fi; touch ${once}`), bare);
   const out = await runRelease({
     cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
   });
   assert.equal(out.version, '1.3.0');
   assert.equal(out.stopped, undefined);
+  await out.primaryRebuild!();
   assert.ok(lines.some((l) => /rebuilding the primary checkout after the release failed/.test(l)));
 });
 
