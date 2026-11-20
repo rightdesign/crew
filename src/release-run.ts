@@ -481,6 +481,15 @@ function looksLikeTransientResolveFailure(output: string): boolean {
   return resolveFailure.test(output) && !realBuildError.test(output);
 }
 
+/**
+ * Exit code a `test`/`build` hook returns to say "failed, and a rerun on the same
+ * tree will fail the same way" (CREW-3869): a static check such as compilation,
+ * type checking or lint. The gate skips `rerunOnce` and goes straight to
+ * isolation. Only the first run of the gate reads it; elsewhere it is just a
+ * failure. Documented in docs/REPO_SPEC.md.
+ */
+export const HOOK_NO_RETRY_EXIT_CODE = 86;
+
 /** A gate hook that failed once and passed on the immediate rerun (CREW-3220). */
 export interface GateFlake {
   hook: 'test' | 'build';
@@ -503,6 +512,10 @@ export interface GateFlake {
 async function rerunOnce(
   o: ReleaseRunOptions, name: 'test' | 'build', first: NonNullable<Awaited<ReturnType<typeof hook>>>,
 ): Promise<NonNullable<Awaited<ReturnType<typeof hook>>>> {
+  if (first.code === HOOK_NO_RETRY_EXIT_CODE) {
+    o.emit.warn(`${name} gate reported a failure that a rerun cannot fix (exit ${HOOK_NO_RETRY_EXIT_CODE}) — not rerunning`);
+    return first;
+  }
   o.emit.warn(`${name} gate failed — rerunning once on the same composition before blaming a branch`);
   const again = await hook(o, name);
   if (!again || again.code !== 0) return again ?? first;

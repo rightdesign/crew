@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runRelease, summarizeOutcome, emitReleaseSummary, type ReleaseOutcome } from '../src/release-run.ts';
+import { runRelease, HOOK_NO_RETRY_EXIT_CODE, summarizeOutcome, emitReleaseSummary, type ReleaseOutcome } from '../src/release-run.ts';
 import { git } from '../src/git.ts';
 import { parseRepoConfig, resolveRepoConfig } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
@@ -205,6 +205,32 @@ test('an ordinary test failure that fails the rerun too still stops the release,
   assert.equal(out.stopped, 'tests failed');
   assert.equal(out.flakes, undefined);
 });
+
+for (const gate of ['test', 'build'] as const) {
+  test(`a ${gate} hook exiting ${HOOK_NO_RETRY_EXIT_CODE} is not rerun (CREW-3869)`, async () => {
+    const { dir, repo } = project(LOCAL.replace(`${gate}: exit 0`, `${gate}: |
+      echo run >> .${gate}-runs; echo "error TS2345"; exit ${HOOK_NO_RETRY_EXIT_CODE}`));
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.stopped, gate === 'test' ? 'tests failed' : 'build failed');
+    assert.ok(lines.some((l) => /failure that a rerun cannot fix/.test(l)));
+    assert.ok(!lines.some((l) => new RegExp(`${gate} gate failed — rerunning once`).test(l)));
+    assert.equal(out.flakes, undefined);
+  });
+
+  test(`any other non-zero ${gate} exit is rerun once and a pass is a flake (CREW-3869)`, async () => {
+    const { dir, repo } = project(LOCAL.replace(`${gate}: exit 0`, `${gate}: |
+      if [ -f .${gate}-ran-once ]; then exit 0; else touch .${gate}-ran-once; echo "FAIL src/flaky.spec.ts"; exit 1; fi`));
+    const out = await runRelease({
+      cwd: dir, repo, contract: DEFAULT_CONTRACT, tickets: [T('ISSUE-7')], emit: emitter(), dryRun: false,
+    });
+    assert.equal(out.stopped, undefined);
+    assert.equal(out.flakes?.length, 1);
+    assert.equal(out.flakes![0]!.hook, gate);
+    assert.ok(lines.some((l) => new RegExp(`${gate} gate failed — rerunning once`).test(l)));
+  });
+}
 
 const INTEGRATE_NO_DEPLOY = `version: 1
 hooks:

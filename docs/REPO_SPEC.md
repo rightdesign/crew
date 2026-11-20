@@ -209,6 +209,7 @@ release:
 | `shell` | no | per platform | Interpreter for the hooks. |
 | `hooks.test` | for building | — | Test suite. Non-zero blocks a release. |
 | `hooks.build` | for building | — | Build. |
+| `hooks.test` / `hooks.build` exit code 86 | no | — | Reserved (CREW-3869): *failed, and a rerun on the same tree will fail the same way*. Return it from a failure of a static check (compilation, type checking, lint), **never** for a test run, which may be flaky. A release gate that fails is otherwise rerun once before any branch is blamed; on exit 86 the crew skips that rerun, logs one line, and goes straight to isolating the culprit branch, hand-back and alert. A pass on the rerun of any other non-zero exit is still recorded as a flake. The code means nothing on the rerun or in per-branch isolation runs (it is just a failure), and other hooks ignore it. No config key: a repo opts in by returning it. |
 | `hooks.setup` | no | — | Run once in a fresh worktree, before anything else. |
 | `hooks.deploy` | when `mode: local` | — | Ship it. |
 | `hooks.ports` | no | — | Prints `KEY=value` lines assigning ports, so parallel worktrees do not collide. |
