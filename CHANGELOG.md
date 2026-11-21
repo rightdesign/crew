@@ -17,6 +17,13 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.166.0] — 2026-11-21
+
+- CREW-3864 A release no longer rebuilds the primary checkout unless the repo sets `release.rebuildPrimary`, and when it does the rebuild runs after the tickets are stamped and the release lock is released.
+- CREW-3868 A release now starts the next one for the same repo straight away when tickets became verified while it ran, instead of waiting for the release timer.
+- CREW-3869 A test or build hook can exit 86 to tell a release its failure will not pass on a rerun, so the gate skips the rerun and goes straight to finding the culprit branch.
+- CREW-3870 A running release now renews its board lock, so a second ship no longer starts the same release after 20 minutes, and a release that has lost the lock does not push or deploy.
+
 ## [0.165.2] — 2026-11-20
 
 - CREW-3811 The release seat holds a verified ticket while the release merges and ships it, and gives it back on a failed merge or a later-cycle stamp.
