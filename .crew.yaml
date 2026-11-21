@@ -75,8 +75,12 @@ release:
   mode: ci_auto
   ci: { provider: github }
   versioning: auto
-  # Local runners execute dist/cli.js from the primary checkout (ISSUE-584, CREW-3864).
-  rebuildPrimary: true
+  # Local runners execute dist/cli.js from the primary checkout (ISSUE-584, CREW-3864),
+  # so this repo wants `rebuildPrimary: true`. It is left out until every ship
+  # serving this repo runs crew 0.166.0 or later: an older crew refuses a
+  # contract with a key it does not know and drops the whole repository
+  # (CREW-3874). Older crews rebuild the primary checkout after every release
+  # anyway, so nothing is lost meanwhile. Restore the line after the upgrade.
   versionFiles: [package.json]
   changelog: CHANGELOG.md
   verify:
