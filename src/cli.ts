@@ -158,6 +158,7 @@ import { checkRepoSpec, checkHookSyntax, renderRepoCheck } from './repos-check.t
 import { parseHooksArgs, repoDirOf, suggestHooks, selectRecipes, parseHookOverrides, planRouteHooks, clearRouteHooks, starterRepoConfig, existingRepoConfig } from './repos-hooks.ts';
 import { runAgentSuggest, AgentSuggestError, type AgentSuggestion } from './repos-hooks-agent.ts';
 import { SAMPLE_REPO, SAMPLE_REMOTE, SAMPLE_CREW_YAML, SAMPLE_README, sampleDir, isSampleTicket, planSampleTicket } from './sample-ticket.ts';
+import { planAppendToConfig, replaceFileKeepingMode } from './connect-append.ts';
 import { noProjectsError, parseAddArgs, parseCloneArgs, planRepoClone, routeNamesOf, planRepoAdd, planRepoRemove, planRepoRow, resolveRepoProject, configuredRepos, cloneBaseOf, listRepoRows, matchRepoName, normalizeRemote, ReposError, type RepoRemotes } from './repos-cmd.ts';
 import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
@@ -5287,6 +5288,17 @@ switch (command) {
         },
       );
       let wroteConfig = false;
+      // CREW-3914: an existing crew.yaml without this route gets the block appended
+      // (disabled), when it can be done safely; otherwise the block is printed as before.
+      const routeAlreadyInConfig = cfg.routes.some((r) => r.route === route);
+      let appendReason: string | undefined;
+      let appendedToExisting = false;
+      if (!wizard && !routeAlreadyInConfig) {
+        const appended = planAppendToConfig(CREW_HOME, cfg.configFile, route, routeBlock, keyPersisted);
+        if (!appended.ok) appendReason = appended.reason;
+        else if (!dryRun) { replaceFileKeepingMode(cfg.configFile, appended.text); appendedToExisting = true; }
+        else appendReason = 'dry-run';
+      }
       if (writeFirstRun) {
         wroteConfig = writeNewConfig(wizard.configPath, renderFullConfig(wizard.answers, routeBlock));
         if (!wroteConfig) emit.warn(`${wizard.configPath} appeared while connecting — leaving it alone`);
@@ -5301,8 +5313,10 @@ switch (command) {
           connectEvents.emit('config', `${wizard.configPath} appeared while connecting; left alone`, { written: false, path: wizard.configPath, reason: 'appeared while connecting' });
         } else if (wizard) {
           connectEvents.emit('config', `no key file or keychain entry to name; ${wizard.configPath} not written`, { written: false, path: wizard.configPath, reason: 'no-key' });
+        } else if (appendedToExisting) {
+          connectEvents.emit('config', `added the route ${route} to ${cfg.configFile}, disabled`, { written: true, path: cfg.configFile, appended: true });
         } else {
-          connectEvents.emit('config', `${cfg.configFile} already exists; left alone`, { written: false, path: cfg.configFile, reason: 'exists' });
+          connectEvents.emit('config', `${cfg.configFile} already exists; left alone`, { written: false, path: cfg.configFile, reason: appendReason ? `exists: ${appendReason}` : 'exists' });
         }
       }
       // Under `--json` stdout is the event stream; the block goes to stderr with the rest of the prose.
@@ -5313,7 +5327,11 @@ switch (command) {
         keys: mintOutcomes.map((m) => ({ role: m.role, action: m.action })),
       }) : '';
       if (routeInConfig) (connectEvents.json ? process.stderr : process.stdout).write(existingReport);
-      else if (!wroteConfig) (connectEvents.json ? process.stderr : process.stdout).write(routeBlock);
+      else if (appendedToExisting) {
+        (connectEvents.json ? process.stderr : process.stdout).write(`Added the route ${route} to ${cfg.configFile}, disabled. Set \`enabled: true\` on it once \`crew doctor ${route}\` is green.\n`);
+      } else if (dryRun && appendReason === 'dry-run') {
+        (connectEvents.json ? process.stderr : process.stdout).write(`(dry run) would add the route ${route} to ${cfg.configFile}, disabled.\n`);
+      } else if (!wroteConfig) (connectEvents.json ? process.stderr : process.stdout).write(routeBlock);
       // CREW-1378: give interactive Claude Code sessions the tablation MCP tools.
       if (!flag('no-mcp') && apiKey) {
         const replace = value('mcp') === 'replace';
@@ -5373,6 +5391,9 @@ switch (command) {
           route, configPath: wizard!.configPath, platform: cfg.ship.platform, needsRepos: !value('dir'),
         }));
         if (!operator) process.stderr.write(`  Also set operator in ${resolvedPath} before arming it.\n`);
+      } else if (appendedToExisting) {
+        // CREW-3914: the route is in the file now; the line above says how to enable it.
+        if (!operator) emit.warn(`no operator resolved: set it in ${resolvedPath} before arming this route`);
       } else if (routeInConfig) {
         // The report above already ends with the next step.
         if (!operator) emit.warn(`no operator resolved: set it in ${resolvedPath} before arming this route`);

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -549,13 +549,47 @@ for (const [label, keyLines, store, env, expected] of [
       assert.equal(r.code, 0, r.stderr);
       assert.ok(!names(r).includes('device_code'));
       assert.ok(sentKey(m, CFG_KEY), 'the sibling key was used');
-      const block = r.stderr.slice(r.stderr.indexOf('- route: ws/other'));
+      // CREW-3914: the block is appended to the existing crew.yaml rather than printed.
+      const written = readFileSync(join(dir, 'crew.yaml'), 'utf8');
+      const block = written.slice(written.indexOf('- route: ws/other'));
       assert.match(block, /- route: ws\/other/);
+      assert.match(block, /enabled: false/);
       if (expected) assert.match(block, expected);
       else assert.doesNotMatch(block, /apiKey/);
     } finally { await m.close(); }
   });
 }
+
+test('a route missing from an existing crew.yaml is appended once, disabled, keeping the mode; a dry run and a re-run change nothing (CREW-3914)', { timeout: 120000 }, async () => {
+  const m = await mockTracker({ projects: ['issues', 'other', 'third'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    writeRouteConfig(dir, `    apiKey: "${CFG_KEY}"\n`, m.url);
+    const file = join(dir, 'crew.yaml');
+    chmodSync(file, 0o640);
+    const original = readFileSync(file, 'utf8');
+    // A dry run writes nothing.
+    const dry = await runConnect(connectArgs('ws/third', m.url, ['--dry-run']), dir);
+    assert.equal(dry.code, 0, dry.stderr);
+    assert.equal(readFileSync(file, 'utf8'), original);
+    // A real run appends the block last, disabled, and says so on the event stream.
+    const r = await runConnect(connectArgs('ws/other', m.url), dir);
+    assert.equal(r.code, 0, r.stderr);
+    const config = r.events.find((e) => e.event === 'config');
+    assert.equal(config?.written, true, r.stderr);
+    assert.equal(config?.appended, true);
+    const after = readFileSync(file, 'utf8');
+    assert.ok(after.startsWith(original));
+    assert.match(after.slice(original.length), /^ {2}- route: ws\/other\n {4}enabled: false/);
+    assert.equal(statSync(file).mode & 0o7777, 0o640);
+    // The same connect again reports the existing route and writes nothing.
+    const again = await runConnect(connectArgs('ws/other', m.url), dir);
+    assert.equal(again.code, 0, again.stderr);
+    assert.equal(readFileSync(file, 'utf8'), after);
+    assert.equal(again.events.find((e) => e.event === 'config')?.written, false);
+    assert.match(again.stderr, /already has the route/);
+  } finally { await m.close(); }
+});
 
 test('a --base-url no configured route uses never receives a configured key (CREW-3912)', { timeout: 60000 }, async () => {
   const m = await mockTracker({ projects: ['issues'] });

@@ -787,8 +787,13 @@ has the route, `connect` leaves the file alone, says so, and reports what the
 run did: where the resolved ids were written and, for each seat (`dev`,
 `design`, `qa`, `triage`, `pair`, release), the Crew row it ended on and whether
 it was matched, claimed, created or left unresolved. It ends with
-`crew doctor <route>`. When the route is not in the file yet, it prints the
-route block to paste under `routes:`, with `enabled: false`. Everything the file
+`crew doctor <route>`. When the route is not in the file yet, it adds the route
+block last under `routes:`, with `enabled: false`, keeping the rest of the file
+(comments included) and its permissions as they were, and says how to enable it.
+The new text is checked with the config loader first; `--dry-run` writes nothing and says
+the route would be added. When it cannot add the route safely (no stored key to
+name, `routes:` missing or written inline, or the loader rejects the result),
+it leaves the file alone and prints the block to paste under `routes:`. Everything the file
 may contain is commented in `crew.example.yaml`; unknown keys are a hard error,
 not a warning.
 
