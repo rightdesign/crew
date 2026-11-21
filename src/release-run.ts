@@ -151,6 +151,14 @@ export interface ReleaseRunOptions {
    * Absent reads as none, so nothing is deferred.
    */
   rightOfWayEvents?: RunnerEvent[];
+  /**
+   * The repo's last release failed its gate and no culprit was isolated
+   * (CREW-3872): this release takes at most `release.isolateFailures.maxCandidates`
+   * branches. Read from the board by the caller so every ship agrees.
+   */
+  batchCapped?: boolean;
+  /** Filled in by `runRelease`: branches this release left out because the batch was shrunk or capped. */
+  batch?: BatchDeferral;
   /** Clock for the right of way's time limit; tests set it. */
   now?: () => number;
   emit: Emitter;
@@ -309,6 +317,13 @@ export interface ReleaseOutcome {
   localRefSkips?: LocalRefSkip[];
   /** Verified branches left out of this cycle for a hand-back's right of way (CREW-3386). */
   rightOfWay?: RightOfWayPlan;
+  /** Verified branches left for a later cycle because the batch was shrunk after a failed gate or capped after one (CREW-3872). */
+  batchDeferral?: BatchDeferral;
+  /**
+   * The gate failed and no branch was isolated, so the next release takes a capped batch
+   * until one ships (CREW-3872). Set only on a release that merged something.
+   */
+  unisolatedFailure?: boolean;
   /**
    * Consecutive cycles `decision.block` has refused this release, from
    * `state.release(route).noteBlocked()`. Only set when a block just
@@ -1225,9 +1240,13 @@ export async function runRelease(o: ReleaseRunOptions): Promise<ReleaseOutcome> 
   const movedPast: ReviewRequeue[] = [];
   const localRefSkips: LocalRefSkip[] = [];
   const rightOfWay: RightOfWayPlan = { deferrals: [], lapsed: [] };
-  const out = await runReleaseCycle(o, movedPast, localRefSkips, rightOfWay);
+  const batch: BatchDeferral = { deferred: [], reason: 'capped' };
+  const out = await runReleaseCycle({ ...o, batch }, movedPast, localRefSkips, rightOfWay);
+  const gateFailed = out.stopped === 'tests failed' || out.stopped === 'build failed';
   return {
     ...out,
+    ...(batch.deferred.length ? { batchDeferral: batch } : {}),
+    ...(gateFailed && !out.buildCulprits?.length && out.merged.length ? { unisolatedFailure: true } : {}),
     ...(movedPast.length ? { movedPast } : {}),
     ...(localRefSkips.length ? { localRefSkips } : {}),
     ...(rightOfWay.deferrals.length || rightOfWay.lapsed.length ? { rightOfWay } : {}),
@@ -1348,7 +1367,7 @@ async function runReleaseCycle(
   const { remote, base } = o.repo.branch;
   const inPlace = o.dryRun || !!o.mergeOnly || !remoteBranchExists(o.cwd, remote, base);
   const remoteRef = `${remote}/${base}`;
-  const decision = decideRelease(o.cwd, releasable, o.contract, {
+  const decided = decideRelease(o.cwd, releasable, o.contract, {
     tagPattern, base, blockerInfo: o.blockerInfo,
     ...(inPlace ? {} : { ref: remoteRef, guard: false }),
     // CREW-1364: a branch another ship built and pushed at `fixed` exists
@@ -1358,6 +1377,16 @@ async function runReleaseCycle(
       ? (locateBranchForTicket(o.cwd, o.repo, t)?.branch ?? null)
       : materializeBranchForTicket(o.cwd, o.repo, t),
   });
+
+  // CREW-3872: after a gate failure nobody isolated, take a bounded batch so
+  // it cannot grow across cycles and ships. Lifted by the first release that ships.
+  let decision = decided;
+  if (o.batchCapped && !o.dryRun && !o.mergeOnly && !o.force) {
+    const cap = isolateCap(o);
+    const trimmed = trimBatch(decided, cap);
+    decision = trimmed.decision;
+    noteDeferred(o, trimmed.left, 'capped', cap);
+  }
 
   reportHeld(o, decision.held);
 
@@ -1495,35 +1524,76 @@ async function runReleaseCycle(
   return rebuild ? { ...outcome, primaryRebuild: rebuild } : outcome;
 }
 
-/** Most pairs the interaction search will build (CREW-2777). */
-const MAX_ISOLATE_PAIRS = 10;
+/**
+ * Rounds of culprit isolation one release may run (CREW-3872). The first
+ * names a culprit; the release then re-gates the rest, and a second culprit
+ * hiding behind the first gets one more round. Past that the release fails as
+ * a whole and the alert says what was tried.
+ */
+const MAX_ISOLATE_ROUNDS = 2;
+
+/** The event a repo's cap is written as, and the one that lifts it (CREW-3872). */
+export const BATCH_CAPPED_EVENT = 'release_capped';
+export const BATCH_CAP_CLEARED_EVENT = 'release_cap_cleared';
 
 /**
- * The pairs the interaction search builds, in order: by the later branch's
- * verification position, then the earlier's, so the first failing pair names
- * the later-verified branch as the fix owner. Bounded; a longer list is the
- * caller's cue to bisect instead.
+ * Whether a repo's last release ended in a gate failure nobody isolated, read
+ * from the board's event log so every ship sees it (CREW-3872). `scope` is the
+ * `route/repo` the events carry in `metadata.scope`; the newest of the two
+ * event types decides, so a cleared cap stays cleared.
  */
-export function pairOrder(n: number, max: number = MAX_ISOLATE_PAIRS): { pairs: Array<[number, number]>; truncated: boolean } {
-  const pairs: Array<[number, number]> = [];
-  let truncated = false;
-  outer: for (let j = 1; j < n; j++) {
-    for (let i = 0; i < j; i++) {
-      if (pairs.length >= max) { truncated = true; break outer; }
-      pairs.push([i, j]);
-    }
-  }
-  return { pairs, truncated };
+export function batchCapActive(events: readonly RunnerEvent[], scope: string): boolean {
+  const at = (e: RunnerEvent): number => Date.parse(e.occurred_at ?? e.created_at ?? '') || 0;
+  const mine = events.filter((e) => e.metadata?.scope === scope
+    && (e.event_type === BATCH_CAPPED_EVENT || e.event_type === BATCH_CAP_CLEARED_EVENT));
+  if (!mine.length) return false;
+  const newest = mine.reduce((a, b) => (at(b) > at(a) ? b : a));
+  return newest.event_type === BATCH_CAPPED_EVENT;
 }
 
-export const ISOLATE_MAX_PAIRS = MAX_ISOLATE_PAIRS;
+const isMergeable = (c: MergeCandidate): boolean => !!c.branch && !c.mergedSha;
+
+/**
+ * Leave the newest branches out of a batch bigger than `cap` (CREW-3872). The
+ * branches stay `verified` and come round on a later cycle; `decision.merges`
+ * keeps its order, and entries that merge nothing (already on the base) stay.
+ */
+export function trimBatch(decision: ReleaseDecision, cap: number): { decision: ReleaseDecision; left: MergeCandidate[] } {
+  const mergeable = decision.merges.filter(isMergeable);
+  if (cap <= 0 || mergeable.length <= cap) return { decision, left: [] };
+  const left = mergeable.slice(cap);
+  return { decision: { ...decision, merges: decision.merges.filter((c) => !left.includes(c)) }, left };
+}
+
+/**
+ * Say, and record for the caller, that a batch was shrunk or capped. One line
+ * on the event stream naming how many branches wait and why.
+ */
+function noteDeferred(o: ReleaseRunOptions, left: MergeCandidate[], reason: BatchDeferral['reason'], limit: number): void {
+  if (!left.length) return;
+  const why = reason === 'capped'
+    ? `the last release failed its gate and was not isolated, so a batch is capped at ${limit}`
+    : `the gate failed on a batch over release.isolateFailures.maxCandidates (${limit}), so the oldest ${limit} are tried first`;
+  o.emit.warn(
+    `${left.length} verified branch${left.length === 1 ? '' : 'es'} left for a later cycle: ${why}`,
+    { step: 'release', data: { deferred: left.length, reason, limit } },
+  );
+  o.batch?.deferred.push(...left.map((c) => c.ticket));
+  if (o.batch) o.batch.reason = reason;
+}
+
+export interface BatchDeferral {
+  /** Verified tickets left out of this release because the batch was shrunk or capped. */
+  deferred: Ticket[];
+  reason: 'capped' | 'shrunk';
+}
 
 /** The `crew doctor` line for the isolation bound and loop guard (CREW-2777). */
 export function selfRepairLine(maxCandidates: number | undefined): string {
   const cap = maxCandidates ?? DEFAULT_ISOLATE_MAX_CANDIDATES;
   return cap === 0
     ? 'culprit isolation is off (release.isolateFailures.maxCandidates: 0); a failed gate files an alert'
-    : `culprit isolation up to ${cap} merged branches, ${MAX_ISOLATE_PAIRS} pairs before bisecting; a ticket handed back twice after a push escalates with an alert`;
+    : `culprit isolation bisects up to ${cap} merged branches (a larger failing batch is shrunk to the oldest ${cap}, and the next batch is capped at ${cap} until a release ships); a ticket handed back twice after a push escalates with an alert`;
 }
 
 const isolateCap = (o: ReleaseRunOptions): number =>
@@ -1574,8 +1644,60 @@ async function redBase(
   o.emit.emit(`${keep.map((c) => c.branch).join(', ')} make the ${name} hook pass on a red ${base} — releasing ${keep.length === 1 ? 'it' : 'them'}, the rest stay verified`);
   gitOk(o.cwd, ['reset', '--hard', preMerge]);
   const rest = decision.merges.filter((c) => !applied.includes(c) || keep.includes(c));
-  const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, true);
+  const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, MAX_ISOLATE_ROUNDS);
   return retried.isolation ? retried : { ...retried, isolation: tried };
+}
+
+/**
+ * Find the branch a failing batch owes its failure to with a few gate runs
+ * instead of one per branch (CREW-3872). `applied` is in merge order and is
+ * known to fail as a whole while the base alone passes.
+ *
+ * 1. The smallest merge-ordered prefix that fails ends at the owner; each step
+ *    halves the range, so n branches cost ceil(log2 n) gates.
+ * 2. The owner alone: a failure there is a solo culprit (one more gate).
+ * 3. Otherwise it fails only beside an earlier branch, and a second bisection
+ *    over the earlier branches names the sibling.
+ *
+ * A single culprit costs at most ceil(log2 n) + 1 gates; an interaction at most
+ * 2·ceil(log2 n) + 2. A merge conflict inside a group counts as passing, the
+ * way an unbuildable group always has. Null when nothing could be pinned down.
+ */
+async function bisectCulprit(
+  o: ReleaseRunOptions, name: 'build' | 'test', applied: MergeCandidate[], output: string, preMerge: string,
+): Promise<{ c: MergeCandidate; how: 'solo' | 'pair'; sibling?: MergeCandidate; output: string } | null> {
+  const gate = async (group: MergeCandidate[]): Promise<{ failed: boolean; output: string }> => {
+    gitOk(o.cwd, ['reset', '--hard', preMerge]);
+    for (const c of group) if (mergeFailed(mergeOne(o, c))) return { failed: false, output: '' };
+    const r = await hook(o, name);
+    return { failed: !!r && r.code !== 0, output: r?.output ?? '' };
+  };
+  let lo = 1, hi = applied.length, tail = output;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const g = await gate(applied.slice(0, mid));
+    if (g.failed) { hi = mid; tail = g.output; } else lo = mid + 1;
+  }
+  const owner = applied[hi - 1]!;
+  if (hi === 1) return { c: owner, how: 'solo', output: tail };
+  const alone = await gate([owner]);
+  if (alone.failed) return { c: owner, how: 'solo', output: alone.output };
+  const earlier = applied.slice(0, hi - 1);
+  let from = 1, to = earlier.length;   // earlier[0..to) + owner fails; the sibling is earlier[m - 1]
+  while (from < to) {
+    const mid = Math.floor((from + to) / 2);
+    const g = await gate([...earlier.slice(0, mid), owner]);
+    if (g.failed) { to = mid; tail = g.output; } else from = mid + 1;
+  }
+  const sibling = earlier[to - 1]!;
+  // Two or more earlier branches: the pair itself must fail, or the failure
+  // needs three or more branches together and blaming one would be a guess.
+  if (earlier.length > 1) {
+    const pair = await gate([sibling, owner]);
+    if (!pair.failed) return null;
+    tail = pair.output;
+  }
+  return { c: owner, how: 'pair', sibling, output: tail };
 }
 
 /**
@@ -1599,11 +1721,33 @@ async function isolateAndRetry(
   decision: ReleaseDecision,
   fresh: ReturnType<typeof refreshBase>,
   releaseBranch: string | undefined,
+  rounds: number,
 ): Promise<ReleaseOutcome | { tried: string } | null> {
   const applied = merged.filter((c) => c.sha && c.branch);
   const cap = isolateCap(o);
   if (o.dryRun || !preMerge || applied.length < 1 || cap === 0) return null;
   const head = headSha(o.cwd);
+
+  // Too many branches to bisect cheaply (CREW-3872): rather than give up and
+  // let the batch grow, try the oldest `cap` on their own, in this release.
+  // Where the failure names files only one branch changed, that is still
+  // cheaper, so it goes first. The newer branches stay verified.
+  if (applied.length > cap) {
+    const named = failingPaths(output, o.cwd);
+    const changed = (c: MergeCandidate): Set<string> => new Set(
+      (gitOk(o.cwd, ['diff', '--name-only', `${preMerge}...${c.branch}`]) ?? '').split('\n').filter(Boolean),
+    );
+    if (!culpritByFiles(applied.map((c) => ({ c, changed: changed(c) })), named)) {
+      const { decision: smaller, left } = trimBatch(decision, cap);
+      noteDeferred(o, left, 'shrunk', cap);
+      for (const c of left) {
+        if (!o.onUnclaim || o.dryRun) break;
+        try { await o.onUnclaim(c.ticket); } catch { /* the ticket stays with the release seat until the next stamp */ }
+      }
+      gitOk(o.cwd, ['reset', '--hard', preMerge]);
+      return mergeAndRelease(o, smaller, fresh, releaseBranch, rounds);
+    }
+  }
 
   // 0. Does the hook fail on the base with none of the verified branches
   // merged? Then no branch broke it, and blaming one only sends a branch that
@@ -1635,62 +1779,20 @@ async function isolateAndRetry(
     const only = applied[0]!;
     o.emit.warn(`${name} failed with only ${only.branch} merged and passes without it — treating it as the culprit`, { ticket: only.ticket.issue_id });
     culprits.push({ c: only, how: 'solo', output, paths: failingPaths(output, o.cwd) });
-  } else if (applied.length > cap) {
-    o.emit.warn(`${name} failed with ${applied.length} branches merged, over release.isolateFailures.maxCandidates (${cap}) — not isolating`);
-    return { tried: `Isolation was skipped: ${applied.length} branches were merged, over release.isolateFailures.maxCandidates (${cap}).` };
   } else {
-    // 2. Build each alone on the pre-merge base (node_modules is reused).
-    o.emit.warn(`${name} failed with ${applied.length} branches merged — building each alone to find the culprit`);
-    for (const c of applied) {
-      gitOk(o.cwd, ['reset', '--hard', preMerge]);
-      const m = mergeOne(o, c);
-      if (mergeFailed(m)) continue;
-      const r = await hook(o, name);
-      if (r && r.code !== 0) {
-        o.emit.warn(`${c.branch} fails the ${name} hook on its own`, { ticket: c.ticket.issue_id });
-        culprits.push({ c, how: 'solo', output: r.output, paths: failingPaths(r.output, o.cwd) });
-      }
-    }
-    // 3. Every branch passes alone: the failure is an interaction. Try pairs
-    // in verification order (CREW-2777); the later-verified branch of the
-    // first failing pair owns the fix. Bounded; beyond the bound the release
-    // fails as a whole and the alert says so.
-    if (culprits.length === 0) {
-      const { pairs, truncated } = pairOrder(applied.length);
-      for (const [i, j] of pairs) {
-        gitOk(o.cwd, ['reset', '--hard', preMerge]);
-        const a = mergeOne(o, applied[i]!);
-        const b = mergeFailed(a) ? a : mergeOne(o, applied[j]!);
-        if (mergeFailed(b)) continue;
-        const r = await hook(o, name);
-        if (r && r.code !== 0) {
-          o.emit.warn(`${applied[j]!.branch} fails the ${name} hook together with ${applied[i]!.branch}`, { ticket: applied[j]!.ticket.issue_id });
-          culprits.push({ c: applied[j]!, how: 'pair', sibling: applied[i]!, output: r.output, paths: failingPaths(r.output, o.cwd) });
-          break;
-        }
-      }
-      if (culprits.length === 0 && truncated) {
-        // Past the pair bound: bisect by halves over the verification-ordered
-        // prefix. The smallest failing prefix ends at the later-verified owner;
-        // the earlier branches in that prefix are its siblings.
-        let lo = 2, hi = applied.length;   // the whole set is known to fail
-        let tailOut = output;
-        let paths = failingPaths(output, o.cwd);
-        while (lo < hi) {
-          const mid = Math.floor((lo + hi) / 2);
-          gitOk(o.cwd, ['reset', '--hard', preMerge]);
-          let clean = true;
-          for (const c of applied.slice(0, mid)) {
-            const m = mergeOne(o, c);
-            if (mergeFailed(m)) { clean = false; break; }
-          }
-          const r = clean ? await hook(o, name) : null;
-          if (r && r.code !== 0) { hi = mid; tailOut = r.output; paths = failingPaths(r.output, o.cwd); } else lo = mid + 1;
-        }
-        const owner = applied[hi - 1]!;
-        o.emit.warn(`${owner.branch} is the first branch whose prefix fails the ${name} hook (bisected over ${applied.length})`, { ticket: owner.ticket.issue_id });
-        culprits.push({ c: owner, how: 'pair', sibling: applied[hi - 2]!, output: tailOut, paths });
-      }
+    // 2. Bisect (CREW-3872): the smallest merge-ordered prefix that fails ends
+    // at the culprit, so a handful of gates settles what one gate per branch
+    // used to.
+    o.emit.warn(`${name} failed with ${applied.length} branches merged — bisecting to find the culprit`);
+    const found = await bisectCulprit(o, name, applied, output, preMerge);
+    if (found) {
+      o.emit.warn(
+        found.how === 'solo'
+          ? `${found.c.branch} fails the ${name} hook on its own`
+          : `${found.c.branch} fails the ${name} hook together with ${found.sibling!.branch}`,
+        { ticket: found.c.ticket.issue_id },
+      );
+      culprits.push({ ...found, paths: failingPaths(found.output, o.cwd) });
     }
   }
 
@@ -1698,16 +1800,17 @@ async function isolateAndRetry(
   if (culprits.length === 0) {
     o.emit.warn('no single branch could be blamed — failing the release as a whole');
     gitOk(o.cwd, ['reset', '--hard', head]);
-    return { tried: `Isolation found no culprit: each of the ${applied.length} merged branches passes the ${name} hook alone and no pair among them fails it.` };
+    return { tried: `Isolation found no culprit: bisecting the ${applied.length} merged branches named no single branch, and no pair among them, that fails the ${name} hook.` };
   }
   const out = new Set(culprits.map((x) => x.c.ticket.id));
   const rest = decision.merges.filter((c) => !out.has(c.ticket.id));
-  // The squash merges are replayed from scratch; the guard stops a second
-  // round of isolation, so a still-red release fails normally.
-  const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, true);
+  // The squash merges are replayed from scratch. A still-red release may
+  // isolate once more (a second culprit); past MAX_ISOLATE_ROUNDS it fails
+  // normally.
+  const retried = await mergeAndRelease(o, { ...decision, merges: rest }, fresh, releaseBranch, rounds + 1);
   return {
     ...retried,
-    buildCulprits: culprits.map((x) => {
+    buildCulprits: [...culprits.map((x) => {
       const ex = failureExcerpt(x.output, x.paths, HOOK_FAILURE_TAIL_LINES);
       const tip = gitOk(o.cwd, ['rev-parse', x.c.branch!])?.trim();
       const logPath = saveGateOutput(x.c.ticket.issue_tag ?? x.c.ticket.issue_id, name, x.output);
@@ -1719,7 +1822,7 @@ async function isolateAndRetry(
         inBranch: x.paths.length === 0 ? null : x.paths.some((p) => withFiles.find((w) => w.c === x.c)?.changed.has(p) ?? false),
         ...(x.sibling ? { sibling: { key: x.sibling.ticket.issue_tag ?? x.sibling.ticket.issue_id, branch: x.sibling.branch! } } : {}),
       };
-    }),
+    }), ...(retried.buildCulprits ?? [])],
   };
 }
 
@@ -1733,10 +1836,10 @@ async function mergeAndRelease(
   decision: ReleaseDecision,
   fresh: ReturnType<typeof refreshBase>,
   releaseBranch?: string,
-  isolated = false,
+  isolationRounds = 0,
 ): Promise<ReleaseOutcome> {
   const flakeLog: GateFlake[] = o.flakeLog ?? [];
-  const outcome = await mergeAndReleaseBody({ ...o, flakeLog }, decision, fresh, releaseBranch, isolated);
+  const outcome = await mergeAndReleaseBody({ ...o, flakeLog }, decision, fresh, releaseBranch, isolationRounds);
   return flakeLog.length ? { ...outcome, flakes: [...flakeLog] } : outcome;
 }
 
@@ -1745,7 +1848,7 @@ async function mergeAndReleaseBody(
   decision: ReleaseDecision,
   fresh: ReturnType<typeof refreshBase>,
   releaseBranch?: string,
-  isolated = false,
+  isolationRounds = 0,
 ): Promise<ReleaseOutcome> {
   o.emit.enter('merge');
   // Where the base stood before any candidate merged, so a failed combined
@@ -1978,8 +2081,8 @@ async function mergeAndReleaseBody(
   const settleTest = async (first: GateRun): Promise<ReleaseOutcome | undefined> => {
     let r = first;
     if (r && r.code !== 0 && !o.dryRun) r = await rerunOnce(o, 'test', r);
-    if (r && r.code !== 0 && !isolated) {
-      const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch);
+    if (r && r.code !== 0 && isolationRounds < MAX_ISOLATE_ROUNDS) {
+      const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch, isolationRounds);
       if (out && 'tried' in out) isolation = out.tried;
       else if (out) return out;
     }
@@ -2011,8 +2114,8 @@ async function mergeAndReleaseBody(
   const settleBuild = async (first: GateRun): Promise<ReleaseOutcome | undefined> => {
     let r = first;
     if (r && r.code !== 0) r = await rerunOnce(o, 'build', r);
-    if (r && r.code !== 0 && !isolated) {
-      const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch);
+    if (r && r.code !== 0 && isolationRounds < MAX_ISOLATE_ROUNDS) {
+      const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch, isolationRounds);
       if (out && 'tried' in out) isolation = out.tried;
       else if (out) return out;
     }
@@ -2050,7 +2153,7 @@ async function mergeAndReleaseBody(
         if (applied >= 1) {
           o.emit.emit(
             `if it fails, would find the one of ${applied} merged branches that broke it (by the files it names, ` +
-              `else by building each alone, up to ${isolateCap(o)}), hand that back to the dev lane and ship the rest`,
+              `else by bisecting up to ${isolateCap(o)} branches), hand that back to the dev lane and ship the rest`,
           );
         }
       } else {

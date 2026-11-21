@@ -246,7 +246,7 @@ release:
 | `release.verify.match` | no | `commit` | `commit` (prefix match against the released HEAD) or `version` (exact match against the version just released — for a `hooks.released` like `npm view <pkg> version`). If a `ci_*` release is not confirmed within `timeoutSeconds`, a later cycle re-checks it and stamps the batch once it is live; no further ticket needs to land. |
 | `release.verify.timeoutSeconds` | no | `600` | How long to wait for `released` to match. |
 | `release.verify.intervalSeconds` | no | `15` | How often to ask. |
-| `release.isolateFailures.maxCandidates` | no | `4` | When the release's combined `test`/`build` fails with several branches merged, how many may be built one at a time to find the one that broke it. `0` turns isolation off. See [A failed combined build](#a-failed-combined-build). |
+| `release.isolateFailures.maxCandidates` | no | `8` | When the release's combined `test`/`build` fails with several branches merged, how many it will bisect to find the one that broke it, and how many branches a release takes after an unisolated failure. A failing batch over this shrinks to the oldest this many. `0` turns isolation off. See [A failed combined build](#a-failed-combined-build). |
 | `release.rebuildPrimary` | no | `false` | `true` or `false`; anything else is refused at config load. After a `local`/`integrate` release fast-forwards the primary checkout, rebuild it with `hooks.build`. Set it only when something runs built output from the primary checkout (the crew repo's `dist/cli.js`); every other repo leaves it off, because the rebuild is minutes of output nothing reads. When on, the rebuild runs after the tickets are stamped and the release lock is released, so neither waits on it, and a failed rebuild is a warning that does not change the release outcome. |
 | `release.rightOfWayMinutes` | no | `60` | How long a ticket handed back for a merge conflict keeps right of way over the files it conflicted in. `0` turns it off. See [Right of way after a conflict](#right-of-way-after-a-conflict). |
 | `release.parallelGates` | no | `false` | Run the `build` hook at the same time as the `test` hook instead of after it. The version is bumped first (the build bakes it in), then both start together. If either fails nothing is pushed or deployed, the version commit is dropped, and the rerun-once and culprit isolation run for the gate that failed; when both fail the test gate is handled first and the alert names it. Off, the order is test, bump, build. **Load trade-off:** the two hooks share the release checkout and the machine, so on a ship already busy with other seats the saving can be smaller than the build's duration and the tests can run slower. Try it where the ship has headroom. |
@@ -393,16 +393,31 @@ of holding the whole release:
 1. If the failing output names files (`path(line,col): error`, `path:line:col`,
    `FAIL path`) and exactly one merged branch changed one of them, that branch
    is the culprit.
-2. Otherwise each merged branch is built alone on the pre-merge base; a branch
-   that fails alone is a culprit. At most `release.isolateFailures.maxCandidates`
-   branches are tried — past that the release fails as a whole.
-3. If every branch passes alone, pairs are built in verification order (at most
-   the first 10). The first failing pair names the later-verified branch as the
-   culprit and the earlier one as the sibling; the hand-back comment tells the
-   owner to `git merge <remote>/<sibling>` first and fix on the same branch.
-   Past 10 pairs the search bisects by halves over the verification-ordered
-   prefix instead; the branch that completes the smallest failing prefix owns the
-   fix. A `release_culprit` event is posted beside the hand-back note.
+2. Otherwise the crew bisects. The smallest merge-ordered prefix that fails ends
+   at the owner (about log2 n gates for n branches). If the owner fails on its own
+   it is the culprit. If not, it fails only beside an earlier branch: a second
+   bisection over the earlier branches names that sibling, and the pair is built
+   once to confirm. The later-verified branch is the culprit and the earlier one
+   the sibling; the hand-back comment tells the owner
+   to `git merge <remote>/<sibling>` first and fix on the same branch. A failure that needs three
+   or more branches together names nobody. A single culprit costs at most
+   `ceil(log2 n) + 1` extra gate runs (4 at the default of 8), an interaction at
+   most `2 * ceil(log2 n) + 2`. A `release_culprit` event is posted beside the
+   hand-back note. If the re-gated rest fails again, one more round looks for a
+   second culprit; past that the release fails as a whole.
+
+A failing batch over `release.isolateFailures.maxCandidates` does not give up.
+Unless the output names files only one branch changed, the release drops back, in
+the same run, to the oldest `maxCandidates` branches (the order they were merged
+in), gates that smaller batch and carries on as a normal release: it ships, or its
+culprit is isolated as above. The newer branches stay `verified` for a later
+cycle, and the event stream says how many were deferred and why.
+
+When a gate fails and no culprit is isolated, the failure is recorded as a
+`release_capped` event on the board, and until a release ships (a
+`release_cap_cleared` event) every ship takes at most `maxCandidates` branches
+per release, oldest first, so the batch cannot grow across cycles. The release
+failure alert is filed in the cycle that fails, with what isolation tried.
 
 Each culprit goes back to `in_progress`, unassigned, with a comment carrying the
 hook's output tail and `git merge <remote>/<base>` as the first step. The other
@@ -410,7 +425,7 @@ branches are re-merged and the release continues, so no failure-alert ticket is
 filed. A ticket handed back this way that is pushed, re-verified and breaks the
 same hook again goes to `needs_info` assigned to the operator, and a failure
 alert is filed, instead of another lap (counted per ticket, which belongs to one
-route). If no culprit can be named (over the cap, the base fails alone, or no
+route). If no culprit can be named (the base fails alone, or no
 single branch or pair fails) the release fails and files the usual alert, whose
 text says what isolation tried. Two verified branches that conflict are handled
 at merge time by the existing conflict hand-back (file list, sibling named); the

@@ -578,7 +578,7 @@ const CI_KEYS = new Set(['provider', 'ref']);
 const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
 const ISOLATE_KEYS = new Set(['maxCandidates']);
 /** How many merged branches a failed release build may build one by one. */
-export const DEFAULT_ISOLATE_MAX_CANDIDATES = 4;
+export const DEFAULT_ISOLATE_MAX_CANDIDATES = 8;
 
 /** Minutes a conflict hand-back keeps right of way over its paths (CREW-3386). */
 export const DEFAULT_RIGHT_OF_WAY_MINUTES = 60;

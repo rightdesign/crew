@@ -83,8 +83,8 @@ import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKin
 import { collectDiagnostics } from './diagnostics.ts';
 import { schedulerLogFor } from './install.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, systemUnitPathFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
-import { DEFAULT_RIGHT_OF_WAY_MINUTES, setRunningCrewVersion, REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
-import { runRelease, runFleetPasses, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
+import { DEFAULT_RIGHT_OF_WAY_MINUTES, DEFAULT_ISOLATE_MAX_CANDIDATES, setRunningCrewVersion, REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
+import { runRelease, runFleetPasses, batchCapActive, BATCH_CAPPED_EVENT, BATCH_CAP_CLEARED_EVENT, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
 import { remoteOf } from './remote-dir.ts';
@@ -2563,9 +2563,21 @@ async function releasePhase(
       }
     }
 
+    // CREW-3872: the cap a failed, unisolated gate leaves behind lives in the event log, so both
+    // ships see it. A failed read means no cap this cycle, which is how it behaved before.
+    let capEvents: Awaited<ReturnType<Tracker['events']>> = [];
+    if (verifiedTickets.length >= 1 && repo.release.mode !== 'external') {
+      try {
+        capEvents = [...await tracker.events(BATCH_CAPPED_EVENT), ...await tracker.events(BATCH_CAP_CLEARED_EVENT)];
+      } catch (e) {
+        remit.warn(`could not read the release cap from the board; not capping this batch: ${(e as Error).message}`);
+      }
+    }
+    const batchCapped = batchCapActive(capEvents, scope);
+
     const claimed = new Map<string, string | null>();
     const outcome = await runRelease({
-      cwd: target.dir, repo, rightOfWayEvents,
+      cwd: target.dir, repo, rightOfWayEvents, batchCapped,
       reloadRepo: (dir) => resolveRepoConfig(loadRepoConfig(dir), {
         hooks: { ...c.hooks, ...o?.hooks }, labels: { ...c.labels, ...o?.labels },
         release: mergeRouteRelease(c.release, o?.release),
@@ -2695,6 +2707,24 @@ async function releasePhase(
         state.release(scope).noteTestGateReported(g.sha);
       } catch (e) {
         remit.warn(`could not note the red test gate on the board: ${(e as Error).message}`, { step: 'merge' });
+      }
+    }
+
+    // CREW-3872: a gate that failed with nobody isolated caps the next batch; the first release that
+    // ships lifts the cap. Each is written once, on a ticket of the batch, with the scope the reader matches.
+    if (!dryRun) {
+      const shipped = outcome.deployed || outcome.integrated;
+      const note = outcome.merged[0]?.ticket ?? outcome.batchDeferral?.deferred[0];
+      try {
+        if (outcome.unisolatedFailure && !batchCapped && note) {
+          await tracker.postEvent(note.id,
+            `${scope}: the release gate failed and no branch was isolated — the next release takes at most ${repo.release.isolateFailures?.maxCandidates ?? DEFAULT_ISOLATE_MAX_CANDIDATES} branches until one ships`,
+            releaseSeat(c), BATCH_CAPPED_EVENT, { scope });
+        } else if (shipped && batchCapped && note) {
+          await tracker.postEvent(note.id, `${scope}: a release shipped — the batch cap is lifted`, releaseSeat(c), BATCH_CAP_CLEARED_EVENT, { scope });
+        }
+      } catch (e) {
+        remit.warn(`could not record the release batch cap on the board: ${(e as Error).message}`, { step: 'release' });
       }
     }
 

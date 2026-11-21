@@ -80,12 +80,14 @@ test('two culprits are both handed back', async () => {
   assert.deepEqual(out.merged.map((m) => m.ticket.issue_id), ['ISSUE-8']);
 });
 
-test('over release.isolateFailures.maxCandidates the release fails as before', async () => {
+test('over release.isolateFailures.maxCandidates the release shrinks to the oldest branches and still finds the culprit', async () => {
   const { dir, repo } = release({ loud: false, extra: 'release:\n  isolateFailures: { maxCandidates: 2 }\n' });
   const out = await run(dir, repo);
-  assert.equal(out.buildCulprits, undefined);
-  assert.equal(out.stopped, 'build failed');
-  assert.ok(out.hookFailure);
+  // ISSUE-7 and ISSUE-8 are tried; ISSUE-9 waits for a later cycle.
+  assert.deepEqual(out.buildCulprits?.map((c) => c.ticket.issue_id), ['ISSUE-8']);
+  assert.deepEqual(out.merged.map((m) => m.ticket.issue_id), ['ISSUE-7']);
+  assert.equal(out.deployed, true);
+  assert.deepEqual(out.batchDeferral?.deferred.map((t) => t.issue_id), ['ISSUE-9']);
 });
 
 test('maxCandidates: 0 turns isolation off', async () => {

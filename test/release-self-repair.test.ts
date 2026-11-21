@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runRelease, pairOrder, selfRepairLine, ISOLATE_MAX_PAIRS } from '../src/release-run.ts';
+import { runRelease, selfRepairLine } from '../src/release-run.ts';
 import { parseRepoConfig, resolveRepoConfig, DEFAULT_ISOLATE_MAX_CANDIDATES } from '../src/repo-config.ts';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import { Emitter } from '../src/events.ts';
@@ -40,16 +40,6 @@ function repoWith(n: number, build: string, shared = false, extra = '') {
 }
 const go = (r: ReturnType<typeof repoWith>) =>
   runRelease({ cwd: r.dir, repo: r.repo, contract: DEFAULT_CONTRACT, tickets: r.tickets, emit: emitter(), dryRun: false });
-
-test('pairOrder walks pairs by the later branch, then the earlier, and stops at the bound', () => {
-  assert.deepEqual(pairOrder(4, 99).pairs, [[0, 1], [0, 2], [1, 2], [0, 3], [1, 3], [2, 3]]);
-  assert.equal(pairOrder(4, 99).truncated, false);
-  const bounded = pairOrder(6);
-  assert.equal(bounded.pairs.length, ISOLATE_MAX_PAIRS);
-  assert.equal(bounded.truncated, true);
-  assert.deepEqual(bounded.pairs.at(-1), [0, 4].length ? [3, 4] : [0, 0]);
-  assert.equal(pairOrder(5).truncated, false);   // exactly 10 pairs fit
-});
 
 test('replay: two branches that pass alone and fail together — the later-verified is bounced, the other ships, no alert', async () => {
   const r = repoWith(3, 'test ! -f f2.txt -o ! -f f3.txt');
@@ -94,7 +84,7 @@ test('when every branch passes alone and no pair fails, the alert says what was 
   const r = repoWith(3, 'test ! -f f1.txt -o ! -f f2.txt -o ! -f f3.txt');
   const out = await go(r);
   assert.equal(out.buildCulprits, undefined);
-  assert.match(out.isolation ?? '', /passes the build hook alone and no pair/);
+  assert.match(out.isolation ?? '', /bisecting the 3 merged branches named no single branch, and no pair/);
   assert.match(describeRelease(out, 'c')!.detail!, /Isolation found no culprit/);
 });
 
@@ -107,7 +97,7 @@ test('a bounce posts a release_culprit event beside the build_failed note', asyn
 });
 
 test('crew doctor states the isolation bound and the loop guard', () => {
-  assert.match(selfRepairLine(undefined), new RegExp(`up to ${DEFAULT_ISOLATE_MAX_CANDIDATES} merged branches, ${ISOLATE_MAX_PAIRS} pairs`));
+  assert.match(selfRepairLine(undefined), new RegExp(`bisects up to ${DEFAULT_ISOLATE_MAX_CANDIDATES} merged branches`));
   assert.match(selfRepairLine(undefined), /handed back twice after a push escalates with an alert/);
   assert.match(selfRepairLine(0), /isolation is off/);
 });
