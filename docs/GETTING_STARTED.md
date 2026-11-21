@@ -792,6 +792,15 @@ route block to paste under `routes:`, with `enabled: false`. Everything the file
 may contain is commented in `crew.example.yaml`; unknown keys are a hard error,
 not a warning.
 
+Which key `connect` signs in with depends on the workspace you name. A key
+from `--key` or `CREW_CONNECT_KEY` always wins. Otherwise it uses a credential
+this machine already holds for that host and workspace, then the key of a route
+already in `crew.yaml` for the same workspace on the same host (so adding
+another project to a workspace you already work reuses its key, and the printed
+route block names that key the way the existing route does). A key from a route
+in a different workspace or on a different host is never used: `connect` starts
+a device approval for the workspace you named instead.
+
 crew looks for the file in `$CREW_CONFIG`, then `$XDG_CONFIG_HOME/crew`, then
 `~/.config/crew/crew.yaml`, and only then beside the checkout. Keep it mode
 `0600`: if a route carries an `apiKey` instead of the keychain credential, it

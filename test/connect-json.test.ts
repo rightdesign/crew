@@ -96,11 +96,12 @@ test('flagWizardAnswers: finds claude in ~/.local/bin and extraPath with a minim
 
 // ---- end to end: the real CLI, no TTY, against a mock tracker -------------------------------
 
-interface Mock { server: Server; url: string; posts: string[]; close(): Promise<void> }
+interface Mock { server: Server; url: string; posts: string[]; auths: string[]; close(): Promise<void> }
 
 /** A tracker with one workspace; `projects` names the Issues-shaped projects it holds. */
 async function mockTracker(o: { projects: string[]; role?: string; holds?: Array<{ id: string; name: string; email?: string }>; installable?: boolean; workspaces?: string[] }): Promise<Mock> {
   const posts: string[] = [];
+  const auths: string[] = [];
   let installed = false;
   const projectRows = () => [
     ...o.projects,
@@ -117,6 +118,7 @@ async function mockTracker(o: { projects: string[]; role?: string; holds?: Array
         res.end(JSON.stringify(json));
       };
       if (req.method !== 'GET') posts.push(`${req.method} ${path}`);
+      auths.push(String(req.headers.authorization ?? ''));
       if (path === '/auth/device/authorize') return send(200, { deviceCode: 'dc', userCode: 'ABCD-1234', verificationUri: 'http://v', verificationUriComplete: 'http://v?c=ABCD-1234', expiresIn: 60, interval: 0 });
       if (path === '/auth/device/token') return send(400, { error: 'access_denied' });
       if (path === '/auth/my-workspaces') return send(200, { workspaces: (o.workspaces ?? ['ws']).map((slug) => ({ slug, name: slug.toUpperCase(), role: 'WORKSPACE_ADMIN' })) });
@@ -149,7 +151,7 @@ async function mockTracker(o: { projects: string[]; role?: string; holds?: Array
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   return {
-    server, posts, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    server, posts, auths, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     close: () => new Promise((r) => { server.close(() => r()); }),
   };
 }
@@ -200,7 +202,7 @@ esac
 }
 
 /** `crew connect` as a child process with no TTY and an empty HOME, so no config exists. */
-async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew-json-')), pathEnv = process.env.PATH ?? '', store: KeyStore = 'refuses'): Promise<Run> {
+async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew-json-')), pathEnv = process.env.PATH ?? '', store: KeyStore = 'refuses', extraEnv: Record<string, string> = {}): Promise<Run> {
   const fakeClaude = join(dir, 'claude');
   writeFileSync(fakeClaude, '#!/bin/sh\nexit 1\n');
   chmodSync(fakeClaude, 0o755);
@@ -215,7 +217,7 @@ async function runConnect(args: string[], dir = mkdtempSync(join(tmpdir(), 'crew
   writeFileSync(join(stubs, 'docker'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(stubs, 'docker'), 0o755);
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, '..', 'src', 'cli.ts'), 'connect', ...args.map((a) => a.replace('$CLAUDE', fakeClaude))], {
-    env: { PATH: `${stubs}:${pathEnv}`, HOME: dir, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent-crew-test-bus', CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1' },
+    env: { PATH: `${stubs}:${pathEnv}`, HOME: dir, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent-crew-test-bus', CREW_CONFIG: join(dir, 'crew.yaml'), NODE_NO_WARNINGS: '1', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = ''; let stderr = '';
@@ -489,4 +491,93 @@ test('--json emits a config event: written on a first run, left alone when crew.
     assert.equal(left.reason, 'exists');
     assert.equal(left.path, join(dir, 'crew.yaml'));
   } finally { await m.close(); }
+});
+
+// ---- CREW-3912: which key a `crew connect <workspace>` run uses ------------------------------
+
+const CFG_KEY = 'cfg-route-key';
+const sessionJson = (apiKey: string) => JSON.stringify({ apiKey, workspaceId: 'w1', identityId: 'me1', createdAt: '2026-11-21T00:00:00.000Z' });
+
+/** A crew.yaml whose one route, `ws/issues`, carries the given key lines and (optionally) its own server. */
+function writeRouteConfig(dir: string, keyLines: string, baseUrl?: string): void {
+  writeFileSync(join(dir, 'crew.yaml'),
+    `ship:\n  name: x\n  platform: macos\n  agent:\n    bin: /bin/claude\nroutes:\n  - route: ws/issues\n    repos: {}\n${baseUrl ? `    baseUrl: "${baseUrl}"\n` : ''}${keyLines}`);
+}
+const connectArgs = (target: string, url: string, extra: string[] = []) =>
+  [target, '--base-url', url, '--json', '--no-wizard', '--no-mcp', '--ship-name', 's', '--agent-bin', '$CLAUDE', '--dir', '/tmp/crew-json-checkout', ...extra];
+const sentKey = (m: Mock, key: string) => m.auths.some((a) => a.includes(key));
+
+test('a named workspace no configured route is in starts a device approval and never sends the route key (CREW-3912)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'], workspaces: ['ws', 'other'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    writeRouteConfig(dir, `    apiKey: "${CFG_KEY}"\n`);
+    const r = await runConnect(connectArgs('other', m.url), dir);
+    assert.equal(names(r)[0], 'device_code', r.stderr);
+    assert.ok(!sentKey(m, CFG_KEY), 'the configured key never reached the server');
+  } finally { await m.close(); }
+});
+
+test('a named workspace this machine already holds a credential for uses it, with no device approval (CREW-3912)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'], workspaces: ['ws', 'other'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    writeRouteConfig(dir, `    apiKey: "${CFG_KEY}"\n`);
+    writeFileSync(join(dir, 'fake-store.json'), sessionJson('held-key'));
+    const r = await runConnect(connectArgs('other', m.url), dir, undefined, 'accepts');
+    assert.ok(!names(r).includes('device_code'), r.stderr);
+    assert.ok(sentKey(m, 'held-key'), 'the held credential was used');
+    assert.ok(!sentKey(m, CFG_KEY));
+  } finally { await m.close(); }
+});
+
+for (const [label, keyLines, store, env, expected] of [
+  ['inline', `    apiKey: "${CFG_KEY}"\n`, 'refuses', {}, new RegExp(`apiKey: "${CFG_KEY}"`)],
+  ['key file', '    apiKeyFile: "KEYFILE"\n    apiKeyVar: MY_VAR\n', 'refuses', {}, /apiKeyFile: "[^"]*sibling\.env"\n\s+apiKeyVar: MY_VAR/],
+  ['environment', '', 'refuses', { CREW_API_KEY: CFG_KEY }, null],
+  ['keychain', '', 'accepts', {}, null],
+] as const) {
+  test(`another project in a routed workspace reuses the sibling's ${label} key and names it the same way (CREW-3912)`, { timeout: 60000 }, async () => {
+    const m = await mockTracker({ projects: ['issues', 'other'] });
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+      const keyFile = join(dir, 'sibling.env');
+      writeFileSync(keyFile, `MY_VAR=${CFG_KEY}\n`);
+      writeRouteConfig(dir, keyLines.replace('KEYFILE', keyFile), m.url);
+      if (store === 'accepts') writeFileSync(join(dir, 'fake-store.json'), sessionJson(CFG_KEY));
+      const r = await runConnect(connectArgs('ws/other', m.url), dir, undefined, store, env);
+      assert.equal(r.code, 0, r.stderr);
+      assert.ok(!names(r).includes('device_code'));
+      assert.ok(sentKey(m, CFG_KEY), 'the sibling key was used');
+      const block = r.stderr.slice(r.stderr.indexOf('- route: ws/other'));
+      assert.match(block, /- route: ws\/other/);
+      if (expected) assert.match(block, expected);
+      else assert.doesNotMatch(block, /apiKey/);
+    } finally { await m.close(); }
+  });
+}
+
+test('a --base-url no configured route uses never receives a configured key (CREW-3912)', { timeout: 60000 }, async () => {
+  const m = await mockTracker({ projects: ['issues'] });
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+    writeRouteConfig(dir, `    apiKey: "${CFG_KEY}"\n`, 'http://127.0.0.1:9');
+    const r = await runConnect(connectArgs('ws', m.url), dir);
+    assert.equal(names(r)[0], 'device_code', r.stderr);
+    assert.ok(!sentKey(m, CFG_KEY));
+  } finally { await m.close(); }
+});
+
+test('--key and CREW_CONNECT_KEY still win over a configured route key (CREW-3912)', { timeout: 60000 }, async () => {
+  for (const viaEnv of [false, true]) {
+    const m = await mockTracker({ projects: ['issues', 'other'] });
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'crew-json-'));
+      writeRouteConfig(dir, `    apiKey: "${CFG_KEY}"\n`, m.url);
+      const r = await runConnect(connectArgs('ws/other', m.url, viaEnv ? [] : ['--key', 'given-key']), dir, undefined, 'refuses', viaEnv ? { CREW_CONNECT_KEY: 'given-key' } : {});
+      assert.ok(!names(r).includes('device_code'), r.stderr);
+      assert.ok(sentKey(m, 'given-key'));
+      assert.ok(!sentKey(m, CFG_KEY));
+    } finally { await m.close(); }
+  }
 });

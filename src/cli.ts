@@ -41,6 +41,7 @@ import {
   DEFAULT_BASE_URL, DEFAULT_REPOS_BASE_PATH, resolvedPathFor, apiKeyPathFor, dirForRepo, repoTargetFor, mergeRouteRelease, passengerRepoTargets,
   type Unplaceable, type UnplaceableReason,
   splitRoute, ConfigError, ROLE_NAMES, ROLE_LABEL, type RoleName, type RepoTarget, type Route, type Ship, releaseSeat, shipPair, readStoredSeats,
+  siblingRouteKey,
 } from './config.ts';
 import { buildRoster, crewLabel, holdIds, memberByIdentity } from './roster.ts';
 import { State } from './state.ts';
@@ -4635,9 +4636,14 @@ switch (command) {
     // route parser merges in, not a field of its own on `Ship`. Any
     // already-configured route's (already-merged) key is the next best
     // guess, and exactly what a ship-level key resolves to in practice.
-    let apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? cfg.routes.find((c) => c.apiKey)?.apiKey;
+    // CREW-3912: with a workspace named, a configured route's key is never borrowed here: it belongs
+    // to one workspace on one host. The stored-credential and same-workspace-sibling steps below
+    // choose the key instead, and a device approval is the last resort.
+    let apiKey = value('key') ?? process.env.CREW_CONNECT_KEY ?? (workspace ? undefined : cfg.routes.find((c) => c.apiKey)?.apiKey);
     // CREW-2447: where a key given up front came from, for the `signed_in` event.
     const givenKeySource: 'flag' | 'config' = value('key') ?? process.env.CREW_CONNECT_KEY ? 'flag' : 'config';
+    // CREW-3912: set when a sibling route in this workspace supplied the key; the route block names it as that route does.
+    let siblingKey: ReturnType<typeof siblingRouteKey>;
     // The OS keychain store `@tablation/client` reads/writes sessions
     // through (ISSUE-966) — the same one `hydrateApiKeys` reads on every
     // `crew` invocation, and `tablation login` already writes into.
@@ -4687,6 +4693,18 @@ switch (command) {
         // No Secret Service / Credential Manager reachable right now — fall
         // through to the device-login flow below exactly as if nothing had
         // ever been stored.
+      }
+    }
+    // CREW-3912: a configured route in the same workspace on the same host (another project there)
+    // already has a key that works for it; reuse it rather than starting a device approval.
+    if (!apiKey && workspace) {
+      const host = hostFromUrl(baseUrl);
+      const full = rememberedAddressFor(cfg.ship.stateDir, host, workspace);
+      siblingKey = siblingRouteKey(cfg.routes, host, (w) => w === workspace || w === full, hostFromUrl);
+      if (siblingKey) {
+        apiKey = siblingKey.apiKey;
+        if (siblingKey.source === 'keychain') { keychainBacked = true; sessionAddress = siblingKey.workspace; }
+        routineLine(`Reusing the key of the existing route in ${host}/${workspace}.`);
       }
     }
     // CREW-2315/CREW-2498: a run with no workspace named (the macOS wizard's
@@ -5234,7 +5252,9 @@ switch (command) {
           }
         }
       }
-      if ((mintedFromDevice || firstRunFromFlags || keyFromFlag) && !keychainBacked) {
+      if (siblingKey?.source === 'apiKeyFile') {
+        apiKeyFile = siblingKey.apiKeyFile;
+      } else if (!siblingKey && (mintedFromDevice || firstRunFromFlags || keyFromFlag) && !keychainBacked) {
         apiKeyFile = apiKeyPathFor(cfg.ship.stateDir, route);
         if (dryRun) {
           process.stderr.write(`(dry run) would write the API key to ${apiKeyFile}\n`);
@@ -5248,7 +5268,7 @@ switch (command) {
       // printing a block to paste — but only when the route's key has somewhere
       // to live (keychain or a key file). A `--key` connect with neither has no
       // key a written file could name, so it keeps today's print-and-paste.
-      const keyPersisted = keychainBacked || apiKeyFile !== undefined;
+      const keyPersisted = keychainBacked || apiKeyFile !== undefined || siblingKey !== undefined;
       const wizard = firstRun;
       const writeFirstRun = wizard !== undefined && !dryRun && keyPersisted;
       // CREW-2516: a first run has no checkout yet, and `dir:` means "the
@@ -5259,7 +5279,8 @@ switch (command) {
         found, route,
         routeDir ?? null,
         {
-          area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? apiKeyVar : undefined, keychainBacked, baseUrl,
+          area: value('area'), apiKeyFile, apiKeyVar: apiKeyFile ? (siblingKey?.apiKeyVar ?? apiKeyVar) : undefined, keychainBacked, baseUrl,
+          ...(siblingKey?.source === 'inline' ? { inlineApiKey: siblingKey.apiKey } : {}),
           ...(writeFirstRun ? { hostPassengers: wizard.answers.hostPassengers } : {}),
         },
       );

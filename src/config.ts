@@ -1761,6 +1761,33 @@ export function credentialSource(r: Route): 'inline' | 'keychain' | 'apiKeyFile'
 }
 
 /**
+ * The key of a configured route on the same host and the same workspace as a
+ * `crew connect <workspace>` run (CREW-3912), with how that route stores it, so
+ * the block connect renders for a sibling project names the key the same way.
+ * Never a route on another host or in another workspace: a key belongs to one
+ * workspace on one host. `sameWorkspace` lets the caller fold in the
+ * secondary-workspace address forms; `undefined` when no route qualifies.
+ */
+export function siblingRouteKey(
+  routes: Route[], host: string, sameWorkspace: (routeWorkspace: string) => boolean,
+  hostOf: (baseUrl: string) => string,
+): { apiKey: string; source: 'inline' | 'keychain' | 'apiKeyFile' | 'CREW_API_KEY'; workspace: string; apiKeyFile?: string; apiKeyVar?: string } | undefined {
+  for (const r of routes) {
+    const [workspace] = splitRoute(r.route);
+    if (hostOf(r.baseUrl) !== host || !sameWorkspace(workspace)) continue;
+    const source = credentialSource(r);
+    if (source === 'none') continue;
+    try {
+      return {
+        apiKey: resolveApiKey(r), source, workspace,
+        ...(source === 'apiKeyFile' ? { apiKeyFile: r.apiKeyFile, apiKeyVar: r.apiKeyVar } : {}),
+      };
+    } catch { /* unreadable key: try the next route */ }
+  }
+  return undefined;
+}
+
+/**
  * Routes `hydrateApiKeys` has decided are keychain-backed — those that had
  * neither an explicit `apiKey` nor a working `apiKeyFile`/`apiKeyVar` pair
  * the FIRST time it ever saw them. Remembered per `Route` object (not

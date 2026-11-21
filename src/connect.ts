@@ -1241,6 +1241,8 @@ export function renderConnection(
   dir: string | null,
   opts: {
     area?: string; apiKeyFile?: string; apiKeyVar?: string; keychainBacked?: boolean;
+    /** CREW-3912: a sibling route in this workspace carries its key inline, so this one names it the same way. */
+    inlineApiKey?: string;
     /** Real values for the first-run wizard's written file (CREW-1286), where nothing is left for a person to paste over. */
     baseUrl?: string; hostPassengers?: boolean;
   } = {},
@@ -1261,7 +1263,8 @@ export function renderConnection(
   const apiKeyVarLine = !opts.keychainBacked && opts.apiKeyFile && opts.apiKeyVar ? `\n    apiKeyVar: ${opts.apiKeyVar}` : '';
   // The default server is left out; any other is printed as this run reached it.
   const baseUrlLine = opts.baseUrl && opts.baseUrl.replace(/\/+$/, '') !== DEFAULT_BASE_URL ? `    baseUrl: "${opts.baseUrl}"\n` : '';
-  const keyLines = [apiKeyFileLine, apiKeyVarLine.replace(/^\n/, '')].filter(Boolean).join('\n');
+  const inlineKeyLine = !opts.keychainBacked && opts.inlineApiKey ? `    apiKey: "${opts.inlineApiKey}"` : '';
+  const keyLines = [apiKeyFileLine, apiKeyVarLine.replace(/^\n/, ''), inlineKeyLine].filter(Boolean).join('\n');
   return `  - route: ${route}
     enabled: false          # set to true once \`crew doctor\` is green
 ${opts.area ? `    area: "${opts.area}"\n` : ''}${dir === null ? '' : `    dir: "${dir}"\n`}${baseUrlLine}${opts.hostPassengers ? '    hostPassengers: true\n' : ''}${keyLines ? keyLines + '\n' : ''}`;
