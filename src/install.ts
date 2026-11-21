@@ -915,6 +915,26 @@ export function removeLaunchdUnit(unit: Pick<LaunchdUnit, 'label' | 'plistPath'>
 }
 
 /**
+ * The refusal `crew install` prints when another copy of crew already has
+ * scheduler units on this machine (CREW-3875): what was found, why it stopped,
+ * what each remedy does, and each command exactly as it can be run. Neither
+ * remedy touches crew.yaml, routes or tickets, and neither names a route.
+ */
+export function foreignInstallRefusal(blocking: Pick<LaunchdUnit, 'label' | 'program'>[], ownProgram: string): string {
+  const found = blocking.map((u) => `${u.label} runs ${u.program ?? 'an unreadable ProgramArguments'}`).join('; ');
+  const others = [...new Set(blocking.map((u) => u.program).filter((p): p is string => p !== null))];
+  const uninstall = others.length > 0
+    ? `Or remove only that copy's units by running ${others.map((p) => `\`${p} uninstall\``).join(' / ')} instead (the copy at ${ownProgram} is not changed).`
+    : 'The unit has no readable program, so only --replace can remove it.';
+  return (
+    `scheduler units on this machine start a different copy of crew than this one (${ownProgram}): ${found}. ` +
+    'Nothing was changed. Two sets of units would run two crews against the same board, so install stopped. ' +
+    "`crew install --replace` removes the other copy's scheduler units and installs this copy's, so this ship keeps serving the same routes from this copy. " +
+    `${uninstall} Neither command touches crew.yaml, routes or tickets.`
+  );
+}
+
+/**
  * `crew install`'s pre-write step on macOS. Units of another checkout whose
  * program is gone are removed. A unit whose program still exists belongs to a
  * live different checkout, and a unit with no readable ProgramArguments is of
@@ -928,10 +948,7 @@ export function clearForeignLaunchdUnits(crewHome: string, replace: boolean, dry
   // An orphan has no plist, so a null program is not "unknown ownership": nothing can restart it.
   const blocking = foreign.filter((u) => !u.orphan && (u.program === null || u.programExists));
   if (blocking.length > 0 && !replace) {
-    log.warn(
-      `two crew installs target this machine: ${blocking.map((u) => `${u.label} runs ${u.program ?? 'an unreadable ProgramArguments'}`).join('; ')}. ` +
-        'Run `crew uninstall` from the other one, or pass --replace.',
-    );
+    log.warn(foreignInstallRefusal(blocking, crewInvocation(crewHome).at(-1) ?? crewHome));
     return false;
   }
   for (const unit of foreign) {

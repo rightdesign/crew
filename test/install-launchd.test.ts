@@ -110,8 +110,8 @@ test('install refuses, before writing anything, when a foreign unit still points
   const log = recorder();
   assert.equal(clearForeignLaunchdUnits(home, false, false, log, agents), false);
   assert.equal(log.warnings.length, 1);
-  assert.match(log.warnings[0]!, /two crew installs target this machine/);
-  assert.match(log.warnings[0]!, /crew uninstall/);
+  assert.match(log.warnings[0]!, /start a different copy of crew/);
+  assert.match(log.warnings[0]!, new RegExp(`${program} uninstall`));
   assert.match(log.warnings[0]!, /--replace/);
   assert.deepEqual(log.lines, []);
 });
@@ -133,7 +133,7 @@ test('install refuses a foreign unit with no readable ProgramArguments, and remo
 
   const log = recorder();
   assert.equal(clearForeignLaunchdUnits(home, false, false, log, agents), false);
-  assert.match(log.warnings[0]!, /two crew installs target this machine/);
+  assert.match(log.warnings[0]!, /start a different copy of crew/);
   assert.match(log.warnings[0]!, new RegExp(`${unknown} runs an unreadable ProgramArguments`));
   assert.deepEqual(log.lines, []);
   assert.ok(listLaunchdUnits(agents).some((u) => u.label === unknown), 'plist must still be on disk');

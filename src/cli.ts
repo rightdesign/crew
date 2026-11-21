@@ -960,6 +960,8 @@ const named = worktreeArgs
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
 const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'whoami' || command === 'sandbox' || releaseFleetWide ||
+  // CREW-3875: the scheduler units are per ship and name no route, so a route given is ignored.
+  command === 'install' || command === 'uninstall' ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
   (FLEET_CAPABLE.has(command) && !named && cfg.routes.length > 1) ||
   (worktreeArgs !== undefined && !named && cfg.routes.length > 1);
