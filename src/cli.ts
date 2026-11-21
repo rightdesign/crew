@@ -164,6 +164,7 @@ import { mcpUrlFor } from './claude-mcp.ts';
 import { pairInstallerFor, harnessPromptNote, isPairHarness } from './pair-install.ts';
 import { adapterFor, resolveSeat, resolveToolchain, shipToolchains, toolchainVendor, isOriLauncher, isOmlxLauncher } from './toolchain.ts';
 import { launcherExecutable, readOmlxSettings, interpretOmlxProbe, omlxModelPresent } from './launcher.ts';
+import { refreshForRoute as refreshSnapshotFor } from './interface-refresh.ts';
 import { compareSnapshot, isStale, liveReleaseSeat, snapshotAge, staleSnapshotMessage, type SnapshotDiff } from './snapshot-staleness.ts';
 import { gatherHealth, planFix, planEnable, routesInScope, schedulerInstalled } from './doctor-fix.ts';
 import { DoctorReport, renderDoctor, fixPhaseNothingToOffer } from './doctor-report.ts';
@@ -1804,7 +1805,7 @@ async function routeProblems(c: Route): Promise<{ problems: string[]; readiness:
   }
   // CREW-3144: the acceptor is read from the event log's status rows.
   if ((await tracker.eventLogTracksStatus()) === false) problems.push(EVENT_LOG_STATUS_UNTRACKED(tracker.contract.columns.status));
-  for (const l of interfaceReport(await readForRoute(c, cfg.ship), { storedMappingKey: c.resolved?.trackerInterface?.mappingKey, contractAuthored: c.contractAuthored })) {
+  for (const l of interfaceReport(await readForRoute(c, cfg.ship), { storedMappingKey: c.resolved?.trackerInterface?.mappingKey, contractAuthored: c.contractAuthored, stored: c.resolved })) {
     if (l.problem) problems.push(l.line);
   }
   const diff = await snapshotDiffFor(c);
@@ -6513,6 +6514,8 @@ switch (command) {
       if (at < 0) { die('crew ask', `--answer "${raw}" needs a label and a detail separated by "::"`, usageA); }
       answersA.push({ label: raw.slice(0, at).trim(), detail: raw.slice(at + 2).trim() });
     });
+    // CREW-3922: a file connected before the app declared the part has no ids; ask the app before saying no.
+    if (!new Tracker(route, cfg.ship).questionsPart()) await refreshSnapshotFor(route, cfg.ship, !dryRun);
     const trA = new Tracker(route, cfg.ship);
     const partA = trA.questionsPart();
     if (!partA) {
@@ -7752,7 +7755,7 @@ switch (command) {
     // A workspace's contract can be internally inconsistent — a status named
     // as `approved` that is not in `open`, a `handoff` listed as resolved.
     // Checked here rather than left to fail as odd behaviour later.
-    for (const l of interfaceReport(await readForRoute(route, cfg.ship), { storedMappingKey: route.resolved?.trackerInterface?.mappingKey, contractAuthored: route.contractAuthored })) {
+    for (const l of interfaceReport(await readForRoute(route, cfg.ship), { storedMappingKey: route.resolved?.trackerInterface?.mappingKey, contractAuthored: route.contractAuthored, stored: route.resolved })) {
       R.line(`${l.line.startsWith('  ') ? '' : `${l.problem ? 'WARN ' : ''}`}${l.line}\n`);
     }
     const contractProblems = validateContract(tracker.contract);

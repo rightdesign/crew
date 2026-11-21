@@ -30,7 +30,8 @@ import { dirForRepo, reposOf } from './config.ts';
 import { planFootprintsFor, readFootprintEvents, type FootprintEvents } from './footprint-run.ts';
 import { footprintDigestSection, footprintOf, type FootprintPlan } from './footprint.ts';
 import { checkCrewFloor } from './crew-floor.ts';
-import { checkTrackerInterface } from './tracker-interface-read.ts';
+import { checkTrackerInterface, readForRoute, type InterfaceState } from './tracker-interface-read.ts';
+import { refreshForRoute } from './interface-refresh.ts';
 import { diskFullStop } from './sandbox-hygiene.ts';
 import { openShipAttention, clearShipAttention, raiseShipAttention, listTruncatedItem, listTruncatedKey, recheckBaseStops, recheckEnvironmentStops, checkRepoDisks, repoStopFor } from './ship-attention.ts';
 import { branchRenderer, existingBranchForTicket, locateBranchForTicket, worktreeForTicket } from './ticket-branch.ts';
@@ -107,6 +108,17 @@ export interface CycleOptions {
  * slicing: a blocker can belong to another role's slice, so a per-role
  * computation would read a cross-role dependency as resolved.
  */
+/**
+ * CREW-3922: the interface read this cycle already makes, then a refresh of the
+ * snapshot's interface-derived fields when it is older than the declaration.
+ * No extra declaration read; the file rewrite makes the daemon reload.
+ */
+async function readAndRefresh(route: Route, ship: Ship): Promise<InterfaceState> {
+  const s = await readForRoute(route, ship);
+  await refreshForRoute(route, ship, true, s);
+  return s;
+}
+
 export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   const { route, ship, state, emit } = o;
   const tracker = new Tracker(route, ship);
@@ -327,7 +339,7 @@ export async function decideCycle(o: CycleOptions): Promise<CycleDecision> {
   // EPIC-053 §4: below the workspace's crew floor nothing is picked; the
   // heartbeat and sweeps still run, and the item clears the cycle it is met.
   // CREW-3579: an app declaring an interface this crew cannot read, or not conforming to it, stops the same way.
-  const floorStop = (await checkCrewFloor({ state, emit, route, ship })) ?? (await checkTrackerInterface({ state, emit, route, ship }));
+  const floorStop = (await checkCrewFloor({ state, emit, route, ship })) ?? (await checkTrackerInterface({ state, emit, route, ship }, { read: (r) => readAndRefresh(r, ship) }));
   const itemStop = repoStopFor(openShipAttention(state), route);
   // CREW-3034: a full docker host stops every repo, not one.
   const diskStop = diskFullStop(state);

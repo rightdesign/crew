@@ -9,13 +9,13 @@
  * per condition, not repeated while open, cleared the cycle it is resolved.
  */
 
-import type { Route, Ship } from './config.ts';
+import type { ResolvedIds, Route, Ship } from './config.ts';
 import { resolveApiKey } from './config.ts';
 import {
   clearShipAttention, raiseShipAttention, type RaiseOptions, type ShipAttentionItem,
 } from './ship-attention.ts';
 import {
-  ALLOW_UNDECLARED_TRACKER_APPS, TRACKER_INTERFACE_NAME, acceptedLabel, describeDifferences, sideToUpdate,
+  ALLOW_UNDECLARED_TRACKER_APPS, TRACKER_INTERFACE_NAME, questionsPartMapped, acceptedLabel, describeDifferences, sideToUpdate,
   versionAccepted, versionLabel,
   type InterfaceMapping, type InterfaceVersion, type UnmetRoleLike,
 } from './tracker-interface.ts';
@@ -196,19 +196,23 @@ export async function checkTrackerInterface(
   return null;
 }
 
-/** The live read for a route, with the route's own key. */
-export async function readForRoute(route: Route, ship: Pick<Ship, 'userAgent'>): Promise<InterfaceState> {
-  const r = route.resolved;
-  if (!r?.projectId) return { kind: 'unreadable' };
-  const get: Getter = async <T>(path: string): Promise<T> => {
+/** A GET against the route's platform with the route's own key. */
+export function getterFor(route: Route, ship: Pick<Ship, 'userAgent'>): Getter {
+  return async <T>(path: string): Promise<T> => {
     const res = await fetch(`${route.baseUrl.replace(/\/+$/, '')}/api${path}`, {
       headers: { Authorization: `Bearer ${resolveApiKey(route)}`, 'User-Agent': ship.userAgent },
     });
     if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
     return (await res.json()) as T;
   };
+}
+
+/** The live read for a route, with the route's own key. */
+export async function readForRoute(route: Route, ship: Pick<Ship, 'userAgent'>): Promise<InterfaceState> {
+  const r = route.resolved;
+  if (!r?.projectId) return { kind: 'unreadable' };
   try {
-    return await readInterfaceState(get, r.workspaceId, r.projectId);
+    return await readInterfaceState(getterFor(route, ship), r.workspaceId, r.projectId);
   } catch {
     return { kind: 'unreadable' };
   }
@@ -219,7 +223,7 @@ export async function readForRoute(route: Route, ship: Pick<Ship, 'userAgent'>):
  * and whether any of them is a problem (a blocking one). Reads live.
  */
 export function interfaceReport(
-  state: InterfaceState, o: { storedMappingKey?: string; contractAuthored?: boolean },
+  state: InterfaceState, o: { storedMappingKey?: string; contractAuthored?: boolean; stored?: ResolvedIds },
 ): { line: string; problem: boolean }[] {
   if (state.kind === 'unreadable') return [{ line: 'work tracker interface: could not be read from the platform', problem: false }];
   if (state.kind === 'undeclared') {
@@ -232,11 +236,25 @@ export function interfaceReport(
   }
   const lines: { line: string; problem: boolean }[] = [];
   const blocking = blockingMessage(state, o.storedMappingKey);
+  // CREW-3922: a snapshot older than the declaration reads as "the app maps no part".
+  const unresolved = state.accepted && state.conforms !== false && !blocking && o.stored && !o.stored.trackerInterface
+    ? 'this route was connected before the app declared the interface, so it is still read by default names'
+    : state.accepted && state.conforms !== false && !blocking && o.stored && questionsPartMapped(state.mapping) && !(o.stored.questionsModelId && o.stored.answersModelId)
+      ? 'the questions part is declared by the app but not resolved on this ship, so `crew ask` would write nothing'
+      : null;
+  // A snapshot the refresh already brought up to this declaration cannot fix itself: the mapped tables are not in the project.
+  const refreshed = o.stored?.trackerInterface?.mappingKey === mappingKey(state.mapping);
   if (!state.accepted) lines.push({ line: `work tracker interface: ${versionMismatchMessage(state.version)}`, problem: true });
   else if (state.conforms === false) {
     lines.push({ line: `work tracker interface ${versionLabel(state.version)}: does not conform`, problem: true });
     for (const d of describeDifferences(state.unmet)) lines.push({ line: `  - ${d}`, problem: true });
   } else if (blocking) lines.push({ line: `work tracker interface: ${blocking}`, problem: true });
+  else if (unresolved) lines.push({
+    line: refreshed
+      ? `work tracker interface: ${unresolved} — the Questions and Answers tables the app maps were not found in this project, so a refresh cannot resolve them; fix the app's mapping`
+      : `work tracker interface: ${unresolved} — the daemon refreshes it on its next poll, or run \`crew connect\``,
+    problem: true,
+  });
   else lines.push({ line: `work tracker interface ${versionLabel(state.version)}: ${state.conforms ? 'conforms' : 'declared (conformance not visible to this key)'}`, problem: false });
   if (o.contractAuthored) lines.push({ line: `work tracker interface: ${OVERRIDE_IGNORED_MESSAGE}`, problem: false });
   return lines;
