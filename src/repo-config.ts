@@ -425,6 +425,12 @@ export interface RepoConfig {
      */
     rightOfWayMinutes?: number;
     /**
+     * Run the build gate at the same time as the test gate (CREW-3865). Off
+     * unless the repo opts in: the version is bumped first, then both hooks
+     * start together. Costs load on a busy ship; see docs/REPO_SPEC.md.
+     */
+    parallelGates?: boolean;
+    /**
      * Rebuild the primary checkout with `hooks.build` after a release
      * fast-forwards it (CREW-3864). Off unless a repo executes its own built
      * output from the primary checkout (the crew repo's `dist/cli.js`).
@@ -519,6 +525,7 @@ export function worktreeNameProblem(template: string): string | null {
   return null;
 }
 const RELEASE_KEYS = new Set([
+  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'parallelGates', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
   'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'rebuildPrimary', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
 /** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
@@ -822,6 +829,10 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
 
   const rightOfWay = parseRightOfWayMinutes(raw.release?.rightOfWayMinutes, (m) => new RepoConfigError(`${file}: ${m}`));
 
+  const parallelGatesRaw = raw.release?.parallelGates;
+  if (parallelGatesRaw !== undefined && typeof parallelGatesRaw !== 'boolean') {
+    throw new RepoConfigError(`${file}: release.parallelGates must be true or false (got "${String(parallelGatesRaw)}")`);
+  }
   const rebuildPrimary = parseRebuildPrimary(raw.release?.rebuildPrimary, (m) => new RepoConfigError(`${file}: ${m}`));
 
   const versioning = String(raw.release?.versioning ?? 'auto') as Versioning;
@@ -923,6 +934,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
       verify,
       isolateFailures: isolateMax === undefined ? undefined : { maxCandidates: isolateMax },
       rightOfWayMinutes: rightOfWay,
+      ...(parallelGatesRaw ? { parallelGates: true } : {}),
       rebuildPrimary,
       versioning,
       versionFiles,
@@ -1228,6 +1240,7 @@ export function resolveRepoConfig(
           ship?.release?.isolateFailures?.maxCandidates, DEFAULT_ISOLATE_MAX_CANDIDATES),
       },
       rightOfWayMinutes: repo?.release.rightOfWayMinutes ?? ship?.release?.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES,
+      ...(repo?.release.parallelGates ? { parallelGates: true } : {}),
       rebuildPrimary: repo?.release.rebuildPrimary ?? false,
       versioning: pick('release.versioning',
         repo?.release.versioning === 'auto' ? undefined : repo?.release.versioning,

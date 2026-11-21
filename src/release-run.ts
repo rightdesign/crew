@@ -1928,90 +1928,134 @@ async function mergeAndReleaseBody(
     }
   }
 
-  if (!(o.isDeployCommand && nothingToDeploy) && !o.skipTests && o.repo.hooks.test) {
-    if (o.dryRun) o.emit.emit(`would run the test gate: ${hookLabel(o.repo, 'test')}`);
-    else {
-      let r = await hook(o, 'test');
-      if (r && r.code !== 0 && !o.dryRun) r = await rerunOnce(o, 'test', r);
-      if (r && r.code !== 0 && !isolated) {
-        const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch);
-        if (out && 'tried' in out) isolation = out.tried;
-        else if (out) return out;
-      }
-      if (r && r.code !== 0) {
-        o.emit.error(withFix('test gate FAILED — not deploying; the target stays on the previous release', '`crew doctor`, then fix the failing tests on the branch'));
-        const sha = headSha(o.cwd);
-        const count = o.state?.noteTestGateFailed?.(sha) ?? 1;
-        const gateRed = count >= GATE_RED_AFTER && !o.state?.testGateReported?.(sha)
-          ? { sha, count, hook: hookLabel(o.repo, 'test'), tail: lastLines(r.output, 15) }
-          : undefined;
-        const composition: GateComposition = {
-          head: sha, base: preMerge,
-          branches: merged.filter((c) => c.branch).map((c) => ({
-            key: c.ticket.issue_tag ?? c.ticket.issue_id, branch: c.branch!, tip: resolve(o.cwd, c.branch!) ?? '',
-          })),
-        };
-        const hookFailure = {
-          hook: 'test', label: hookLabel(o.repo, 'test'), tail: failureSummary(r.output, HOOK_FAILURE_TAIL_LINES),
-        };
-        return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed, hookFailure, composition, ...(isolation ? { isolation } : {}) };
-      }
-      o.state?.clearTestGateFailed?.();
-    }
-  }
+  const testGateRuns = !(o.isDeployCommand && nothingToDeploy) && !o.skipTests && !!o.repo.hooks.test;
+  const buildGateRuns = !!o.repo.hooks.build;
+  // CREW-3865: with `release.parallelGates` the version is cut first and the
+  // two gates run together. A dry run only describes the steps, so it keeps
+  // the sequential order.
+  const parallelGates = !!o.repo.release.parallelGates && testGateRuns && buildGateRuns && !o.dryRun;
 
   // Read off the BRANCHES, before the squash flattened them — not out of the
   // merged history, where the crew's own commit subject has replaced them.
   const size: 'major' | 'minor' | 'patch' =
     merged.some((m) => m.bump === 'minor') ? 'minor' : 'patch';
   const majorRequested = merged.some((m) => m.majorRequested);
-  if (majorRequested) {
-    o.emit.warn('a branch asked for a MAJOR bump — honoured as minor; major is the operator\'s call');
-  }
   // Where `base` stood before the Release commit, so a failed build can
   // take that commit back (CREW-1326).
-  const preBump = headSha(o.cwd);
-  const version = (await bump(o, size)) ?? undefined;
-  if (!version && o.dryRun && o.repo.hooks.bump) {
-    o.emit.emit('would then commit the version bump and changelog');
-  } else if (version) {
-    writeChangelog(o, version, merged.flatMap((m) => m.entries));
-    if (!o.dryRun) {
-      git(o.cwd, ['add', '-A']);
-      git(o.cwd, ['commit', '-m', `Release ${o.repo.release.tag ? renderTag(o.repo.release.tag, version) : version}`]);
-    } else {
-      o.emit.emit(`would commit the version bump and changelog`);
+  let preBump = '';
+  let version: string | undefined;
+  const cutVersion = async (): Promise<void> => {
+    if (majorRequested) {
+      o.emit.warn('a branch asked for a MAJOR bump — honoured as minor; major is the operator\'s call');
     }
-  }
+    preBump = headSha(o.cwd);
+    version = (await bump(o, size)) ?? undefined;
+    if (!version && o.dryRun && o.repo.hooks.bump) {
+      o.emit.emit('would then commit the version bump and changelog');
+    } else if (version) {
+      writeChangelog(o, version, merged.flatMap((m) => m.entries));
+      if (!o.dryRun) {
+        git(o.cwd, ['add', '-A']);
+        git(o.cwd, ['commit', '-m', `Release ${o.repo.release.tag ? renderTag(o.repo.release.tag, version) : version}`]);
+      } else {
+        o.emit.emit(`would commit the version bump and changelog`);
+      }
+    }
+  };
+  // The Release commit must not outlive the release it describes: left
+  // in place, every failed cycle stacked another bump on the base
+  // branch and the eventual real release skipped version numbers. The
+  // merge commits stay (they are verified work); only the bump goes.
+  const dropVersionCommit = (): void => {
+    if (version && !o.dryRun && headSha(o.cwd) !== preBump) {
+      git(o.cwd, ['reset', '--hard', preBump]);
+      o.emit.warn(`dropped the unreleased version commit for ${version} (reset ${o.repo.branch.base} to ${preBump.slice(0, 8)}) so a retry starts clean`);
+    }
+  };
 
-  if (o.repo.hooks.build) {
-    if (o.dryRun) {
-      o.emit.emit(`would run: ${hookLabel(o.repo, 'build')}`);
-      if (applied >= 1) {
-        o.emit.emit(
-          `if it fails, would find the one of ${applied} merged branches that broke it (by the files it names, ` +
-            `else by building each alone, up to ${isolateCap(o)}), hand that back to the dev lane and ship the rest`,
-        );
+  type GateRun = Awaited<ReturnType<typeof hook>>;
+  /** After the test hook ran: rerun, isolate, and fail the release, or return undefined to go on. */
+  const settleTest = async (first: GateRun): Promise<ReleaseOutcome | undefined> => {
+    let r = first;
+    if (r && r.code !== 0 && !o.dryRun) r = await rerunOnce(o, 'test', r);
+    if (r && r.code !== 0 && !isolated) {
+      const out = await isolateAndRetry(o, 'test', r.output, merged, preMerge, decision, fresh, releaseBranch);
+      if (out && 'tried' in out) isolation = out.tried;
+      else if (out) return out;
+    }
+    if (r && r.code !== 0) {
+      o.emit.error(withFix('test gate FAILED — not deploying; the target stays on the previous release', '`crew doctor`, then fix the failing tests on the branch'));
+      // Before the sha is read: the failure is keyed to the composition that
+      // was tested, which must not include a version commit that is gone.
+      if (parallelGates) dropVersionCommit();
+      const sha = headSha(o.cwd);
+      const count = o.state?.noteTestGateFailed?.(sha) ?? 1;
+      const gateRed = count >= GATE_RED_AFTER && !o.state?.testGateReported?.(sha)
+        ? { sha, count, hook: hookLabel(o.repo, 'test'), tail: lastLines(r.output, 15) }
+        : undefined;
+      const composition: GateComposition = {
+        head: sha, base: preMerge,
+        branches: merged.filter((c) => c.branch).map((c) => ({
+          key: c.ticket.issue_tag ?? c.ticket.issue_id, branch: c.branch!, tip: resolve(o.cwd, c.branch!) ?? '',
+        })),
+      };
+      const hookFailure = {
+        hook: 'test', label: hookLabel(o.repo, 'test'), tail: failureSummary(r.output, HOOK_FAILURE_TAIL_LINES),
+      };
+      return { merged, conflicts, unbuildable, deployed: false, stopped: 'tests failed', decision, gateRed, hookFailure, composition, ...(isolation ? { isolation } : {}) };
+    }
+    o.state?.clearTestGateFailed?.();
+    return undefined;
+  };
+  /** After the build hook ran: rerun, isolate, and fail the release, or return undefined to go on. */
+  const settleBuild = async (first: GateRun): Promise<ReleaseOutcome | undefined> => {
+    let r = first;
+    if (r && r.code !== 0) r = await rerunOnce(o, 'build', r);
+    if (r && r.code !== 0 && !isolated) {
+      const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch);
+      if (out && 'tried' in out) isolation = out.tried;
+      else if (out) return out;
+    }
+    if (r && r.code !== 0) {
+      o.emit.error(withFix('build failed — not deploying', '`crew doctor`, then run the repo\'s build hook in the release checkout'));
+      dropVersionCommit();
+      return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision, hookFailure: hookFailure(o, 'build', r.output), ...(isolation ? { isolation } : {}) };
+    }
+    return undefined;
+  };
+
+  if (parallelGates) {
+    o.emit.emit(`release.parallelGates: cutting the version, then running the ${hookLabel(o.repo, 'test')} and ${hookLabel(o.repo, 'build')} gates together`);
+    await cutVersion();
+    const [testRun, buildRun] = await Promise.all([hook(o, 'test'), hook(o, 'build')]);
+    // Both gates have finished before either failure is handled: rerun and
+    // isolation rewrite the checkout, which a hook still running would read.
+    // The test failure goes first, so two failures make one alert.
+    const testOut = await settleTest(testRun);
+    if (testOut) return testOut;
+    const buildOut = await settleBuild(buildRun);
+    if (buildOut) return buildOut;
+  } else {
+    if (testGateRuns) {
+      if (o.dryRun) o.emit.emit(`would run the test gate: ${hookLabel(o.repo, 'test')}`);
+      else {
+        const testOut = await settleTest(await hook(o, 'test'));
+        if (testOut) return testOut;
       }
-    } else {
-      let r = await hook(o, 'build');
-      if (r && r.code !== 0) r = await rerunOnce(o, 'build', r);
-      if (r && r.code !== 0 && !isolated) {
-        const out = await isolateAndRetry(o, 'build', r.output, merged, preMerge, decision, fresh, releaseBranch);
-        if (out && 'tried' in out) isolation = out.tried;
-        else if (out) return out;
-      }
-      if (r && r.code !== 0) {
-        o.emit.error(withFix('build failed — not deploying', '`crew doctor`, then run the repo\'s build hook in the release checkout'));
-        // The Release commit must not outlive the release it describes: left
-        // in place, every failed cycle stacked another bump on the base
-        // branch and the eventual real release skipped version numbers. The
-        // merge commits stay (they are verified work); only the bump goes.
-        if (version && !o.dryRun && headSha(o.cwd) !== preBump) {
-          git(o.cwd, ['reset', '--hard', preBump]);
-          o.emit.warn(`dropped the unreleased version commit for ${version} (reset ${o.repo.branch.base} to ${preBump.slice(0, 8)}) so a retry starts clean`);
+    }
+    await cutVersion();
+    if (buildGateRuns) {
+      if (o.dryRun) {
+        o.emit.emit(`would run: ${hookLabel(o.repo, 'build')}`);
+        if (applied >= 1) {
+          o.emit.emit(
+            `if it fails, would find the one of ${applied} merged branches that broke it (by the files it names, ` +
+              `else by building each alone, up to ${isolateCap(o)}), hand that back to the dev lane and ship the rest`,
+          );
         }
-        return { merged, conflicts, unbuildable, version, deployed: false, stopped: 'build failed', decision, hookFailure: hookFailure(o, 'build', r.output), ...(isolation ? { isolation } : {}) };
+      } else {
+        const buildOut = await settleBuild(await hook(o, 'build'));
+        if (buildOut) return buildOut;
       }
     }
   }
