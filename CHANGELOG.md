@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.169.6] — 2026-11-21
+
+- CREW-3912 `crew connect <workspace>` uses a key that belongs to that workspace, reuses a sibling project's key, or asks for a sign-in, instead of sending another workspace's key.
+
 ## [0.169.5] — 2026-11-21
 
 - CREW-3910 A verified branch that conflicts on merge is now handed back in the same release cycle instead of failing the same three ways every cycle.
