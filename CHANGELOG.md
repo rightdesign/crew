@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.167.0] — 2026-11-21
+
+- CREW-3865 A release can run its build gate beside its test gate (`release.parallelGates`), off by default.
+
 ## [0.166.0] — 2026-11-21
 
 - CREW-3864 A release no longer rebuilds the primary checkout unless the repo sets `release.rebuildPrimary`, and when it does the rebuild runs after the tickets are stamped and the release lock is released.
