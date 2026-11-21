@@ -25,7 +25,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StaleWriteError } from '@tablation/client';
-import { worktreeForBranch } from './conflict.ts';
+import { worktreeForBranch, writeUnlessMoved } from './conflict.ts';
 import type { ConflictWriter, ConflictLog } from './conflict.ts';
 import type { Contract } from './contract.ts';
 import { displayKey, type RunnerEvent, type Ticket } from './tracker.ts';
@@ -337,11 +337,15 @@ export async function applyBuildFailureBounce(
       return { kind: 'escalated' };
     }
     try {
-      await writer.updateTicket(
-        b.ticket.id,
+      const w = await writeUnlessMoved(
+        writer, b.ticket,
         { status: contract.statuses.needsHuman, ...(prior.operatorId ? { assignee_id: prior.operatorId } : {}) },
-        b.ticket.updated_at,
+        contract, memberId,
       );
+      if (!w.ok) {
+        log.emit(`${displayKey(b.ticket)} changed on the board since this run read it (${w.moved}) — not escalating over it`, t);
+        return { kind: 'stale' };
+      }
       await writer.postEvent(b.ticket.id, buildFailureEscalation(b, prior.previousNote), memberId, 'build_failed_escalated').catch(() => {
         log.warn('escalated, but the note failed to post', t);
       });
@@ -357,9 +361,13 @@ export async function applyBuildFailureBounce(
     return { kind: 'handed-back' };
   }
   try {
-    await writer.updateTicket(
-      b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
+    const w = await writeUnlessMoved(
+      writer, b.ticket, { status: contract.statuses.building, assignee_id: null }, contract, memberId,
     );
+    if (!w.ok) {
+      log.emit(`${displayKey(b.ticket)} changed on the board since this run read it (${w.moved}) — not handing it back over it`, t);
+      return { kind: 'stale' };
+    }
     await writer.postEvent(b.ticket.id, buildFailureComment(b, repeat), memberId, 'build_failed').catch(() => {
       log.warn('handed back, but the note failed to post', t);
     });

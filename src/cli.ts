@@ -2618,11 +2618,12 @@ async function releasePhase(
         // The prior holder is written to the log first, so a later cycle's stamp can hand the ticket back.
         await tracker.postEvent(ticket.id, 'release took the ticket while it merges and ships it', seat, RELEASE_CLAIMED_EVENT, { prior_assignee: prior });
         claimed.set(ticket.id, prior);
-        await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: seat });
+        // Carry the new stamp so the hand-back, which is conditioned on it, is not made stale by the release's own write (CREW-3910).
+        ticket.updated_at = (await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: seat })).updated_at;
       },
       onUnclaim: async (ticket) => {
         if (!claimed.has(ticket.id)) return;
-        await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: claimed.get(ticket.id) ?? null });
+        ticket.updated_at = (await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: claimed.get(ticket.id) ?? null })).updated_at;
         claimed.delete(ticket.id);
       },
       onBasePushed: async (merged) => {

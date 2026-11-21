@@ -36,6 +36,8 @@
  * real wherever the branch lives, and the ship that owns it will find it.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { git, gitOk, worktrees, isAncestor, GitError } from './git.ts';
 import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
@@ -157,6 +159,39 @@ export function planConflictBounce(
 }
 
 /**
+ * Whether the worktree's only uncommitted state is an unresolved merge of the
+ * base that `refreshBranch` itself started on an earlier cycle: a `MERGE_HEAD`
+ * that is an ancestor of the base tip, `Merge ... '<base>'` as its message,
+ * every unmerged file still carrying its conflict markers, and no other change
+ * (unstaged edits to a file that did not conflict, untracked files).
+ */
+function isOwnUnresolvedMerge(worktree: string, base: string): boolean {
+  const mergeHead = gitOk(worktree, ['rev-parse', '-q', '--verify', 'MERGE_HEAD']);
+  if (!mergeHead) return false;
+  const baseTip = gitOk(worktree, ['rev-parse', '--verify', '-q', base]);
+  if (!baseTip || !isAncestor(worktree, mergeHead, baseTip)) return false;
+  const msgPath = gitOk(worktree, ['rev-parse', '--git-path', 'MERGE_MSG']);
+  if (!msgPath) return false;
+  try {
+    const first = readFileSync(resolve(worktree, msgPath), 'utf8').split('\n')[0] ?? '';
+    if (!/^Merge (?:remote-tracking )?branch '/.test(first)) return false;
+  } catch { return false; }
+  const unmerged = new Set((gitOk(worktree, ['diff', '--name-only', '--diff-filter=U']) ?? '').split('\n').filter(Boolean));
+  // Porcelain v1: XY then path. A path that is not unmerged must have no
+  // worktree-side change (Y blank) and must not be untracked.
+  for (const line of (gitOk(worktree, ['status', '--porcelain']) ?? '').split('\n').filter(Boolean)) {
+    const xy = line.slice(0, 2);
+    const path = line.slice(3);
+    if (unmerged.has(path)) continue;
+    if (xy === '??' || xy[1] !== ' ') return false;
+  }
+  for (const path of unmerged) {
+    try { if (!/^<{7} /m.test(readFileSync(resolve(worktree, path), 'utf8'))) return false; } catch { return false; }
+  }
+  return true;
+}
+
+/**
  * Merge the base branch into the ticket's branch, in its own worktree.
  *
  * A real merge, not a squash: it writes MERGE_HEAD, so `git merge --abort`
@@ -171,8 +206,20 @@ export function refreshBranch(
   // git would refuse anyway, and forcing it would destroy work nobody has
   // seen. Treat it as a conflict to hand back — a person or agent looking at
   // that worktree is the right resolver.
-  const dirty = gitOk(worktree, ['status', '--porcelain']);
-  if (dirty) return { clean: false, paths: [], why: 'the worktree has uncommitted changes' };
+  //
+  // The exception is this module's own leftover: a conflicting merge of an
+  // earlier base tip that nobody resolved (CREW-3910). Backing that out and
+  // merging the current tip loses nothing, so the retry does not have to wait
+  // for a person to clear it.
+  if (gitOk(worktree, ['status', '--porcelain'])) {
+    if (!isOwnUnresolvedMerge(worktree, base)) {
+      return { clean: false, paths: [], why: 'the worktree has uncommitted changes' };
+    }
+    gitOk(worktree, ['merge', '--abort']);
+    if (gitOk(worktree, ['status', '--porcelain'])) {
+      return { clean: false, paths: [], why: 'the worktree has uncommitted changes' };
+    }
+  }
   // CREW-1636: merging base into a branch that is behind its own remote
   // produces a "conflict" the pushed tip may already have resolved. Behind
   // the remote is the finding, not a conflict to hand back.
@@ -231,6 +278,8 @@ That is a call for a person, not another lap through the lanes.`;
 
 export interface ConflictWriter {
   updateTicket(id: string, patch: Record<string, unknown>, expectedUpdatedAt?: string): Promise<unknown>;
+  /** Re-reads the row, so a stale write can tell an unrelated touch from a real move (CREW-3910). */
+  ticket?(id: string): Promise<Ticket>;
   postEvent(
     ticketId: string, body: string, memberId: string, type?: string, extra?: Record<string, unknown>,
   ): Promise<void>;
@@ -239,6 +288,55 @@ export interface ConflictWriter {
 export interface ConflictLog {
   emit(msg: string, extra?: Record<string, unknown>): unknown;
   warn(msg: string, extra?: Record<string, unknown>): unknown;
+}
+
+/** How many times a stale hand-back write is retried against a re-read row before it is left alone. */
+const STALE_RETRIES = 3;
+
+const cell = (t: Ticket, column: string): unknown => (t as unknown as Record<string, unknown>)[column] ?? null;
+
+/**
+ * What changed on the ticket between the board read and now, in words; empty
+ * when only unrelated columns moved. The release seat's own claim (assignee
+ * `seat`) counts as nothing: it is the release's own write.
+ */
+export function ticketMoves(read: Ticket, now: Ticket, contract: Contract, seat: string): string[] {
+  const moves: string[] = [];
+  if (now.status !== read.status) moves.push(`status ${read.status} -> ${now.status}`);
+  const assignee = cell(now, contract.columns.assignee);
+  if (assignee !== cell(read, contract.columns.assignee) && assignee !== seat) moves.push(`assignee is now ${String(assignee)}`);
+  const held = cell(now, contract.columns.heldBy);
+  if (held !== cell(read, contract.columns.heldBy)) moves.push(`held by ${String(held)}`);
+  return moves;
+}
+
+/**
+ * A conditional write that survives an unrelated touch of the row (CREW-3910).
+ *
+ * ISSUE-821's rule stands: a ticket that actually moved is never written over.
+ * But the stale stamp also trips on a column nobody cares about (the release's
+ * own claim and unclaim bump `updated_at`), so on `StaleWriteError` the row is
+ * re-read: unchanged status, assignee and hold mean the decision still stands
+ * and the write is repeated against the fresh stamp.
+ */
+export async function writeUnlessMoved(
+  writer: ConflictWriter, ticket: Ticket, patch: Record<string, unknown>, contract: Contract, seat: string,
+): Promise<{ ok: true } | { ok: false; moved: string }> {
+  let stamp = ticket.updated_at;
+  for (let i = 0; i <= STALE_RETRIES; i++) {
+    try {
+      await writer.updateTicket(ticket.id, patch, stamp);
+      return { ok: true };
+    } catch (e) {
+      if (!(e instanceof StaleWriteError)) throw e;
+      if (!writer.ticket) return { ok: false, moved: 'the row changed' };
+      const now = await writer.ticket(ticket.id);
+      const moves = ticketMoves(ticket, now, contract, seat);
+      if (moves.length) return { ok: false, moved: moves.join(', ') };
+      stamp = now.updated_at;
+    }
+  }
+  return { ok: false, moved: 'the row kept changing' };
 }
 
 /**
@@ -276,7 +374,11 @@ export async function applyConflictBounce(
       return { kind: 'escalated' };
     }
     try {
-      await writer.updateTicket(b.ticket.id, { status: contract.statuses.needsHuman }, b.ticket.updated_at);
+      const w = await writeUnlessMoved(writer, b.ticket, { status: contract.statuses.needsHuman }, contract, memberId);
+      if (!w.ok) {
+        log.emit(`${displayKey(b.ticket)} changed on the board since this run read it (${w.moved}) — not escalating over it`, t);
+        return { kind: 'stale' };
+      }
       await writer.postEvent(b.ticket.id, escalateComment(b), memberId, 'conflict_escalated').catch((e: unknown) => {
         log.warn(`escalated, but the note failed to post: ${(e as Error).message}`, t);
       });
@@ -333,9 +435,13 @@ export async function applyConflictBounce(
     // successful release just moments before, since a squash-merge conflict
     // can surface from a stale re-attempt of a branch already carried by an
     // earlier squash) must never be clobbered back to `building`.
-    await writer.updateTicket(
-      b.ticket.id, { status: contract.statuses.building, assignee_id: null }, b.ticket.updated_at,
+    const w = await writeUnlessMoved(
+      writer, b.ticket, { status: contract.statuses.building, assignee_id: null }, contract, memberId,
     );
+    if (!w.ok) {
+      log.emit(`${displayKey(b.ticket)} changed on the board since this run read it (${w.moved}) — not handing it back over it`, t);
+      return { kind: 'stale' };
+    }
     await writer.postEvent(b.ticket.id, handBackComment(b, merged), memberId, 'conflict_handed_back',
       { ...(b.baseSha ? { base_sha: b.baseSha } : {}), ...(b.paths.length ? { paths: b.paths } : {}) }).catch((e: unknown) => {
       log.warn(`handed back, but the note failed to post: ${(e as Error).message}`, t);
