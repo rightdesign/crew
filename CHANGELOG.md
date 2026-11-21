@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.169.5] — 2026-11-21
+
+- CREW-3910 A verified branch that conflicts on merge is now handed back in the same release cycle instead of failing the same three ways every cycle.
+
 ## [0.169.4] — 2026-11-21
 
 - CREW-3887 Messages, generated files and published docs no longer cite internal ticket ids, and a test keeps them out.
