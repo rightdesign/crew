@@ -117,7 +117,7 @@ test('showLogEntry --prompt reports not_recorded for a pre-ISSUE-529 entry (no p
   t.after(restore);
   const { reconstruction } = await showLogEntry(makeRoute(), 'e1', { withPrompt: true });
   assert.equal(reconstruction.status, 'not_recorded');
-  assert.match(reconstruction.reason!, /ISSUE-377\/529/);
+  assert.match(reconstruction.reason!, /predates prompt versioning/);
 });
 
 test('showLogEntry --prompt reports exact when the history entry\'s prompt hashes to the recorded prompt_sha', async (t) => {

@@ -416,7 +416,7 @@ StandardOutput=append:${schedulerLog}
 StandardError=append:${schedulerLog}
 Restart=always
 RestartSec=5
-# CREW-1775: a restart stops only the daemon; agent runs it started live in
+# A restart stops only the daemon; agent runs it started live in
 # their own process groups and the next daemon reattaches to them.
 KillMode=process
 
@@ -452,7 +452,7 @@ WorkingDirectory=${crewHome}
 ${systemdEnvLines(ship)}
 StandardOutput=append:${schedulerLog}
 StandardError=append:${schedulerLog}${job === 'passengers' ? `
-# CREW-2994: the sync spawns the relay tunnel (a detached ssh) and exits. The
+# The sync spawns the relay tunnel (a detached ssh) and exits. The
 # default KillMode=control-group would kill that ssh with the rest of this
 # one-shot unit's cgroup, so no tunnel would ever survive to "connected".
 KillMode=process` : ''}

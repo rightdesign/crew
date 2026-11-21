@@ -310,7 +310,7 @@ hook), or one line with the reason the hook failed. A failing hook never stops t
 
 **Known limit.** The session that ran `periscope up` from the main checkout does not get the `code` server, because a
 harness reads its project configuration when it starts. A session started in the worktree does. Lane runs, where crew builds
-the session itself, are a separate piece of work (CREW-2912).
+the session itself, are a separate piece of work.
 
 ## Limits and settings
 

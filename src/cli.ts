@@ -714,8 +714,8 @@ if (sessionRole && (
   process.stderr.write(
     `crew: refusing to run "${full}" — this process is a crew-launched agent session ` +
       `(${CREW_LANE_ROLE_VAR}=${sessionRole}), and "${full}" writes to this ship's real ` +
-      `crew.yaml/stateDir. A session must never touch the live config (CREW-978 — this took ` +
-      `down polling for every lane, once). If exercising the CLI genuinely needs to run, point ` +
+      `crew.yaml/stateDir. A session must never touch the live config (a session once took ` +
+      `down polling for every lane). If exercising the CLI genuinely needs to run, point ` +
       `it at a throwaway config first: CREW_CONFIG=/tmp/... crew ${full} ...\n`,
   );
   process.exit(2);

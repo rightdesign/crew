@@ -46,7 +46,7 @@ export const serenaFolderFor = (stateDir: string, route: string, ticket: string)
 /** `serena_config.yml` for the per-ship home. `projectFolder` is the folder this service keeps its project state in. */
 export function serenaConfigYaml(projectFolder: string): string {
   return [
-    '# Written by crew (CREW-2914); regenerated on every start.',
+    '# Written by crew; regenerated on every start.',
     'web_dashboard: False',
     `project_serena_folder_location: ${JSON.stringify(projectFolder)}`,
     '',

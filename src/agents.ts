@@ -588,7 +588,7 @@ export async function syncPersonas(
   } catch (e) {
     if (e instanceof TablationApiError && e.status === 404) {
       throw new AgentsSyncError(
-        `workspace ${workspaceId} has no Agents table yet — every workspace auto-provisions one (ISSUE-465); ` +
+        `workspace ${workspaceId} has no Agents table yet — every workspace auto-provisions one; ` +
           `an older workspace may still need its one-time backfill`,
       );
     }
@@ -958,7 +958,7 @@ async function ensureCrewAgentField(
       name: CREW_AGENT_FIELD_NAME,
       columnName: CREW_AGENT_COLUMN,
       fieldTypeId: fieldType.id,
-      description: "The Agents-table row backing this seat's persona — set by `crew agents sync` (ISSUE-416), never edited by hand.",
+      description: "The Agents-table row backing this seat's persona — set by `crew agents sync`, never edited by hand.",
     }),
   });
   if (createRes.status === 403) throw new CrewAgentFieldMissing();

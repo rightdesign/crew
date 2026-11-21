@@ -190,7 +190,7 @@ export async function showLogEntry(
         status: 'not_recorded',
         reason: !entry.agent_id
           ? 'this entry has no linked Agents row (predates crew agents sync being run for its role)'
-          : 'this entry predates ISSUE-377/529 — no prompt_version was recorded',
+          : 'this entry predates prompt versioning — no prompt_version was recorded',
       },
     };
   }

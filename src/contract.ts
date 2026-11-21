@@ -529,7 +529,7 @@ export function orderFromChoiceOptions(
 
 /** What `crew connect` and doctor say when the Issues table has no event log (CREW-1574). */
 export const EVENT_LOG_MISSING =
-  "the Issues table has no event log — crew writes its audit trail there (CREW-1574). In the app, open the Issues table's Data & lifecycle tab and turn on Event log, then rerun.";
+  "the Issues table has no event log — crew writes its audit trail there. In the app, open the Issues table's Data & lifecycle tab and turn on Event log, then rerun.";
 
 /** What `crew connect` and doctor say when the event log does not track the status column (CREW-3144). */
 export const EVENT_LOG_STATUS_UNTRACKED = (column: string): string =>

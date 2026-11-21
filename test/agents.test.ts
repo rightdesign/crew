@@ -89,7 +89,7 @@ test('personaDefaultPrompt skips common.md for triage — it classifies, it neve
   assert.equal(personaDefaultPrompt(promptsDir, 'triage'), 'TRIAGE BRIEF\n');
 });
 
-test('a workspace with no Agents table yet fails with a message naming ISSUE-465, not a raw 404', async (t) => {
+test('a workspace with no Agents table yet fails with a message naming the backfill, not a raw 404', async (t) => {
   const { restore } = mockFetch({
     'GET /api/data-models/agents?workspaceId=ws-1': () => ({ status: 404, body: { message: 'not found' } }),
   });
@@ -97,7 +97,7 @@ test('a workspace with no Agents table yet fails with a message naming ISSUE-465
   const route = makeRoute();
   await assert.rejects(
     syncPersonas(route, {}),
-    (e: unknown) => e instanceof AgentsSyncError && /ISSUE-465/.test((e as Error).message),
+    (e: unknown) => e instanceof AgentsSyncError && /auto-provisions one/.test((e as Error).message),
   );
 });
 
@@ -356,7 +356,7 @@ test('a workspace with no Agent field yet gets one created, then every seated ro
     name: 'Agent',
     columnName: 'agent_id',
     fieldTypeId: 'agents-ref-type',
-    description: "The Agents-table row backing this seat's persona — set by `crew agents sync` (ISSUE-416), never edited by hand.",
+    description: "The Agents-table row backing this seat's persona — set by `crew agents sync`, never edited by hand.",
   });
   assert.deepEqual(patched, {
     dev: { agent_id: 'row-dev' }, design: { agent_id: 'row-design' }, qa: { agent_id: 'row-qa' }, triage: { agent_id: 'row-triage' },

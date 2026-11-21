@@ -144,7 +144,7 @@ export GIT_TERMINAL_PROMPT=0
 git config --global --add safe.directory '*'
 if [ -n "$CREW_FORGE_TOKEN" ]; then
   # An inline credential helper, not http.extraHeader: GitHub answers a preemptive Basic header
-  # with 401 and git then prompts (CREW-2965). The helper body is single-quoted so the shell passes
+  # with 401 and git then prompts. The helper body is single-quoted so the shell passes
   # it literally and git's own shell expands the env when it runs the helper: no token in argv.
   git() { command git -c credential.helper= -c 'credential.helper=!f() { echo username=\${CREW_FORGE_USER:-x-access-token}; echo password=\$CREW_FORGE_TOKEN; }; f' "$@"; }
 fi

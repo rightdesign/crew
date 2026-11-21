@@ -17,15 +17,15 @@ to mean exactly this, and needs no configuration at all.
 
 ### Which column plays which part
 
-The tables and columns crew reads, with their default names, shapes and what goes wrong without each, are the [work tracker reference](/work-tracker), generated from the interface definition in `src/tracker-interface.ts` (CREW-3579). An app that implements the interface declares its own names in a mapping and crew reads it through that; an app that declares nothing is read by the default names in that reference. Version 1.2 adds optional roles the platform reads (Repos, Crew membership, ticket description and needs-planning; CREW-3633). Version 1.1 adds an optional questions part (a Questions and an Answers table): an app that maps it lets a seat's park also write the question as a record with proposed answers, and an app at 1.0 still conforms and gets the comment alone (CREW-3588). A `contract:` override in `crew.yaml` is for an app that cannot declare; once the app does declare, the declaration wins and the override is reported as ignored.
+The tables and columns crew reads, with their default names, shapes and what goes wrong without each, are the [work tracker reference](/work-tracker), generated from the interface definition in `src/tracker-interface.ts`. An app that implements the interface declares its own names in a mapping and crew reads it through that; an app that declares nothing is read by the default names in that reference. Version 1.2 adds optional roles the platform reads (Repos, Crew membership, ticket description and needs-planning). Version 1.1 adds an optional questions part (a Questions and an Answers table): an app that maps it lets a seat's park also write the question as a record with proposed answers, and an app at 1.0 still conforms and gets the comment alone. A `contract:` override in `crew.yaml` is for an app that cannot declare; once the app does declare, the declaration wins and the override is reported as ignored.
 
 Notes on specific columns:
 
 - **work mode** (`work_mode`, on the Projects row): `automatic` (default; missing column or null) means every lane works by status. `manual` (`manualWorkMode`): no lane selects or claims the project's tickets. `hybrid` (`hybridWorkMode`): a lane considers a ticket only when its assignee is a Crew row linked to an Agent and not a hold of this ship; dev/design/QA only, triage works automatic projects alone. A ticket with no project is treated as manual.
-- **attachments** is a reference into the workspace's Media Library, holding record ids. Crew never writes it; it reads the field type's target table so the Environment section can name the table and the download recipe (CREW-1558).
-- **report type**: `coordinating` marks a coordinating parent (ISSUE-354); `coordinating`, `question` and `investigation` are all exempt from needing a Repo (ISSUE-387), but only `coordinating` rolls up children.
-- **epic** is only rendered when the workspace has an `Epics` table (ISSUE-384).
-- **comment public reply / author name** (CREW-1811): a reply from a public intake form carries no `team_member_id`, so the digest labels a flagged comment `<author_name or anonymous> (public reporter)` and never resolves it through the roster. A Comments table without the column is read as having no public replies; `crew doctor` reports which case applies.
+- **attachments** is a reference into the workspace's Media Library, holding record ids. Crew never writes it; it reads the field type's target table so the Environment section can name the table and the download recipe.
+- **report type**: `coordinating` marks a coordinating parent; `coordinating`, `question` and `investigation` are all exempt from needing a Repo, but only `coordinating` rolls up children.
+- **epic** is only rendered when the workspace has an `Epics` table.
+- **comment public reply / author name**: a reply from a public intake form carries no `team_member_id`, so the digest labels a flagged comment `<author_name or anonymous> (public reporter)` and never resolves it through the roster. A Comments table without the column is read as having no public replies; `crew doctor` reports which case applies.
 
 **Optional columns on Issues** (a table without one has simply not adopted the
 feature, and the crew writes around it): `held_by_ship_id` (the ship holding a
@@ -33,7 +33,7 @@ ticket), `verified_sha` (the branch head QA verified — written by QA with the
 move to `verified`) and `pr_ref` (the pull request a ticket was handed off
 under — a number or URL, written by the crew). The last two belong to the
 review hand-off (`statuses.reviewing`, see `docs/REPO_SPEC.md`). `branch_url`
-and `pr_url` (CREW-3255) are web links to the code under review. `branch_url`
+and `pr_url` are web links to the code under review. `branch_url`
 is the forge's page for the pushed branch (`branch.push`, not the local name),
 built from the Repos row's `remote` and `forge_host` and written where the
 `pushed` event is posted; it is cleared when the sweep deletes the remote
@@ -48,13 +48,13 @@ one); `pr_ref` is filled too when its column exists and is empty, so
 on a forge error, and `pr_url` is kept after release as the record of the
 review. `crew doctor` notes whether each column exists and which repos have no
 forge token. `position`
-(a nullable NUMBER, `columns.position`, CREW-1552) is a manual order: within
+(a nullable NUMBER, `columns.position`) is a manual order: within
 one effective-priority band a lower position goes first and an unpositioned
 ticket goes after any positioned one. It is a tiebreak, never an override — it
 beats the severity and epic tiebreakers but can never move a ticket across an
 effective-priority band.
 
-`crew_assisted` (a Yes/No, `columns.crewAssisted`, CREW-3258) records that the
+`crew_assisted` (a Yes/No, `columns.crewAssisted`) records that the
 crew's building or verifying lane worked the ticket. When a run of a role in
 the route's `assistedRoles` (default `[dev, qa]`; `[]` turns it off; see
 `crew.example.yaml`) is about to launch on a ticket, the crew sets it true with
@@ -65,7 +65,7 @@ from the claim, so a run refused after the claim (a lost hold) does not mark it;
 a run that turns out signed out is only detected after launch and has already
 marked it.
 
-The run-spend counters (CREW-2580) are optional numbers on Issues:
+The run-spend counters are optional numbers on Issues:
 `agent_runs`, `tokens_in`, `tokens_out`, `cache_read_tokens`,
 `cache_write_tokens` (Integer) and `cost_usd` (Float), named in the contract as
 `columns.agentRuns`, `columns.tokensIn`, `columns.tokensOut`,
@@ -105,7 +105,7 @@ ticket blocked by one is still genuinely blocked. A contract that called it
 resolved would have the crew build on unverified work. No naming convention
 conveys that; it has to be stated.
 
-**`verified` resolves a blocker only once it has landed (CREW-1549).** A
+**`verified` resolves a blocker only once it has landed.** A
 blocker at `verified` in the **same repository** as the blocked ticket is still
 just an unmerged branch until the release phase squash-merges it, so the
 dependent stays `blocked` until the blocker's `merged_at`/`commit_sha` is
@@ -123,7 +123,7 @@ branch and worktree). The poll's sweep parks it at `blocked` and restores it
 once every blocker is in a resolved status. QA bounces a hand-off that names
 needed work no ticket covers.
 
-**Parking on a shared file (CREW-3387).** Tickets that would change the same
+**Parking on a shared file.** Tickets that would change the same
 files should not be built at the same time: they conflict one release at a time.
 Nothing is configured for this. Every ticket in flight has a **footprint**, the
 repo-relative files it is expected to change, kept in the Issues event log so
@@ -154,7 +154,7 @@ the same files the oldest is restored first and the others wait on it. `crew
 status` lists each waiting ticket, what it waits for and the files.
 
 Only starts are held: a ticket in flight is never stopped because a push grows
-into another footprint (right of way after a conflict hand-back, CREW-3386,
+into another footprint (right of way after a conflict hand-back
 handles that). A ticket with no declaration, an empty one, or one from a ship
 that cannot declare simply runs.
 
@@ -181,7 +181,7 @@ field on its own table, so it is named separately from a ticket's.
 | role | value | |
 | --- | --- | --- |
 | planned | `planned` | |
-| building | `in_progress` | also what the epic-in-progress ranking tiebreaker reads (ISSUE-385) |
+| building | `in_progress` | also what the epic-in-progress ranking tiebreaker reads |
 | done | `done` | |
 | cancelled | `cancelled` | a person's call — the runner never moves an epic into or out of it |
 
@@ -189,7 +189,7 @@ The status lives in the epic's `status` column, and `epic_id` is what it is
 called in the log; both are overridable as `epics.statusColumn` /
 `epics.keyColumn`, the values as `epics.statuses`.
 
-**The runner keeps an epic's status in step with its tickets (CREW-1255)**,
+**The runner keeps an epic's status in step with its tickets**,
 every poll, across the whole epic rather than one route's area:
 
 - every ticket closed (`resolved` minus `verified` — verified work has not
@@ -202,7 +202,7 @@ An epic with no tickets, a `cancelled` one, one at a status not named here,
 and one whose remaining tickets are open but untouched are all left as they
 are. See `src/epics.ts`.
 
-### The optional Maps table (CREW-3444)
+### The optional Maps table
 
 An epic's requirements document ("Map") is a row of a `Maps` table linked to
 the epic. A ticket filed from it cites it ("Map v1 §11"), and the document is
@@ -227,7 +227,7 @@ not read it. A document over 20,000 characters is cut to the sections the
 ticket cites (headings numbered `## 11.` or `## §11`), an outline, and the
 `records_controller_find_one` call that reads the rest. See `src/map-brief.ts`.
 
-### The optional Periscopes table (EPIC-077)
+### The optional Periscopes table
 
 A workspace may have a table named `Periscopes`, found by name the way `Epics`
 is and recorded as `resolved.periscopesModelId` by `crew connect`. A workspace
@@ -262,7 +262,7 @@ route, `route`, `workspaceId`, `previewHostSet`, `maxPeriscopes`, `live` and
 [Host Passengers](/host-passengers).
 
 `POST /streams/<run>/messages` with `{ text, author? }` sends a note to a live run
-(CREW-3119). Crew records it on the run's Agent Log row as a `user` cycle, writes it to
+. Crew records it on the run's Agent Log row as a `user` cycle, writes it to
 the harness when the run still reads input (`acceptsInput` in each `crew status --json`
 run entry, true only for a Claude run on the host whose final result has not arrived),
 and answers `{ cycleId, state, acceptsInput }`, `state` being `delivered` or
@@ -270,7 +270,7 @@ and answers `{ cycleId, state, acceptsInput }`, `state` being `delivered` or
 carry-forward path: a note posted to the work item reaches its next run's brief.
 
 `POST /seats/<role>/notes` with `{ text, ticket?, author? }` leaves a note for a seat with no
-live run (CREW-3249), for an idle or paused seat. Crew spools it on the ship and the seat's
+live run, for an idle or paused seat. Crew spools it on the ship and the seat's
 next run reads it in its brief under "Notes left for this seat", then discards it. With
 `ticket` the note waits for a run on that ticket; without, for the role's next run of any
 ticket. It answers `{ id, state: "carried_forward", carriedForward: true }`; an unknown role,
@@ -341,8 +341,8 @@ override already said about columns, priority order, or anything else.
 
 A few files under `<stateDir>` are scoped to one route (`State.safe(route)`
 in state.ts) rather than shared across the whole ship: `.fairness-<route>-*`
-(ISSUE-382, starvation), `.release-blocked-<route>`/`.deploy-failed-sha-<route>`
-(release bookkeeping), and `.attention-<route>.json` (ISSUE-928) — the
+(starvation), `.release-blocked-<route>`/`.deploy-failed-sha-<route>`
+(release bookkeeping), and `.attention-<route>.json` — the
 previous cycle's `{ ticketId: [reason, ...] }` set the poll diffs against to
 emit a one-shot "needs a person" event only on a NEW (ticket, reason)
 transition, never on every cycle a ticket happens to still be waiting.

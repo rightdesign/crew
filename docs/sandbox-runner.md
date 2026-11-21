@@ -86,7 +86,7 @@ On Docker Desktop it lives inside the engine's virtual machine; it is never a ho
 ```
 mirrors/<forge host>/<remote path>.git                   bare mirror, plus a crew-last-refresh stamp
 cache/deps/<forge host>/<remote path>/<lockfile hash>/   node_modules trees, relative paths kept
-intel/<forge host>/<remote path>/                        symbol cache (`cache/`) + `indexed-commit` of the default branch; `intel: serena` repos only (CREW-2924)
+intel/<forge host>/<remote path>/                        symbol cache (`cache/`) + `indexed-commit` of the default branch; `intel: serena` repos only
 ```
 
 - **Refresh.** At the start of each daemon pass (at most once a minute) crew refreshes every served repository's
@@ -110,7 +110,7 @@ intel/<forge host>/<remote path>/                        symbol cache (`cache/`)
   A fresh ship's daemon does the same at start, before it reads any contract from a mirror, and does not exit
   over a repository whose mirror is merely absent.
 
-## The ship's image (CREW-2956)
+## The ship's image
 
 Sandboxing is a ship property. On a ship with `ship.runner: sandbox`, the build tick builds the
 crew layer on its own (ca-certificates, curl, git, the credential helper, Claude Code at
