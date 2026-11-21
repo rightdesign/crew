@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.170.0] — 2026-11-21
+
+- CREW-3915 `crew routes available [--json]` lists the tracker apps you can reach that this machine has no route for, without starting a sign-in.
+
 ## [0.169.6] — 2026-11-21
 
 - CREW-3912 `crew connect <workspace>` uses a key that belongs to that workspace, reuses a sibling project's key, or asks for a sign-in, instead of sending another workspace's key.
