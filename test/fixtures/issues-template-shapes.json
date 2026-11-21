@@ -1,5 +1,5 @@
 {
- "_note": "Column shapes of the live Issues app (read from the platform on 2026-11-17, CREW-3638); epics.epic_id is stated by the ticket as computed. Built-in columns (created_at, updated_at) are not listed. Refresh when the Issues template changes.",
+ "_note": "Column shapes of the live Issues app (read from the platform on 2026-11-17, CREW-3638); epics.epic_id is stated by the ticket as computed. Built-in columns (created_at, updated_at) are not listed. Last brought in line on 2026-11-20 for the removal of the Resolved on formula column (CREW-3885). Refresh when the Issues template changes.",
  "tables": {
   "epics": {
    "epic_id": {
@@ -93,10 +93,6 @@
    "f_resolution_time": {
     "computed": true,
     "kind": "number"
-   },
-   "f_resolved_on": {
-    "computed": true,
-    "kind": "text"
    },
    "filed_by_id": {
     "computed": false,
