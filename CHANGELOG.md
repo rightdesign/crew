@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.169.2] — 2026-11-21
+
+- CREW-3876 The compiled crew binary no longer fails the passenger sync-daemon lifecycle, the git lock wait or crew daemon start with "SharedArrayBuffer is not defined"; the build now checks the synchronous sleep on each compiled binary.
+
 ## [0.169.1] — 2026-11-21
 
 - CREW-3875 `crew install` and `crew uninstall` no longer ask for a route name on a ship with several routes, and the "two crew installs" refusal now names both copies and the exact command for each remedy.
