@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.169.3] — 2026-11-21
+
+- CREW-3885 The Issues template shapes fixture no longer lists the deleted Resolved on formula column.
+
 ## [0.169.2] — 2026-11-21
 
 - CREW-3876 The compiled crew binary no longer fails the passenger sync-daemon lifecycle, the git lock wait or crew daemon start with "SharedArrayBuffer is not defined"; the build now checks the synchronous sleep on each compiled binary.
