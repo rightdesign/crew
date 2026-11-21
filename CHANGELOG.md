@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.169.0] — 2026-11-21
+
+- CREW-3872 A failing release batch over the isolation limit shrinks instead of giving up, the next batch is capped until a release ships, and isolation bisects.
+
 ## [0.168.0] — 2026-11-21
 
 - CREW-3874 A repo contract can declare `minCrewVersion`, so a crew older than the contract keeps serving the repository, ignoring keys it does not know in safe groups and naming the upgrade it needs otherwise.
