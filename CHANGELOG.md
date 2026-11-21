@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.169.1] — 2026-11-21
+
+- CREW-3875 `crew install` and `crew uninstall` no longer ask for a route name on a ship with several routes, and the "two crew installs" refusal now names both copies and the exact command for each remedy.
+
 ## [0.169.0] — 2026-11-21
 
 - CREW-3872 A failing release batch over the isolation limit shrinks instead of giving up, the next batch is capped until a release ships, and isolation bisects.
