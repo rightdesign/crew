@@ -107,6 +107,7 @@ import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, relo
 import { Tracker, type Ticket, displayKey } from './tracker.ts';
 import { discoverForRoute, linkDoctorLines } from './pr-links.ts';
 import { reportStartFailure, clearStartFailure, fallbackStateDir } from './daemon-start-failure.ts';
+import { buildRoutesAvailable, formatRoutesAvailable } from './routes-available.ts';
 import { buildProjectsReport, formatProjectsReport, createProject, offerFirstProject, ProjectsError } from './projects-cmd.ts';
 import { runCredential, runForge } from './forge-cmd.ts';
 import { repositoryEnvCount } from './repo-env.ts';
@@ -461,6 +462,7 @@ function usage(problem?: string, requested = false): never {
   crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
   crew status [route] [--json] [--verbose]   what is running and what needs a person; --verbose adds configuration and full lists; --json for a machine reader
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
+  crew routes available [--json]   the tracker apps you can reach that this machine has no route for (read-only; starts no sign-in)
   crew projects add [route] NAME --prefix P [--work-mode automatic|hybrid|manual] [--json] [--dry-run]   create a Projects row
   crew provision --key K --route WS[/PROJECT] [--forge-host H] [--ship-name N] [--json]   one non-interactive run: connect, forge tokens,
                                  enable routes, install units with lingering, start the daemon; safe to re-run (CREW_CONNECT_KEY,
@@ -600,7 +602,7 @@ if (!command) usage(argv.length ? `unknown option "${argv[0]}"` : undefined);
  */
 const KNOWN_COMMANDS = new Set([
   'passenger-sync-daemon', 'periscope-proxy', 'intel', 'agents', 'connect', 'credential', 'provision', 'pool-member', 'deprovision', 'forge', 'daemon', 'deploy', 'disconnect', 'doctor', 'drop', 'inbox',
-  'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release',
+  'install', 'log', 'logbook', 'merge', 'passengers', 'pause', 'periscope', 'poll', 'ports', 'projects', 'reap', 'release', 'routes',
   'reload', 'repos', 'resume', 'rotate-passenger-url', 'run', 'sample-ticket', 'sandbox', 'selftest', 'shell-init', 'ship', 'skills', 'status',
   'sync', 'unassign', 'footprint', 'ask', 'uninstall', 'watch', 'whoami', 'worktree',
 ]);
@@ -870,12 +872,12 @@ try {
   } else {
     // `repos` edits a route that may be dropped for lacking a checkout, so it
     // must load even when every route is (CREW-1287).
-    const toleratesNoRoutes = command === 'credential' || command === 'forge' || command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || command === 'deprovision' || (command === 'connect' && flag('sign-out'));
+    const toleratesNoRoutes = command === 'routes' || command === 'credential' || command === 'forge' || command === 'repos' || command === 'ship' || (command === 'disconnect' && flag('reset')) || command === 'deprovision' || (command === 'connect' && flag('sign-out'));
     // CREW-2443: sign-out and reset exist for a machine whose only trace is a
     // dry-run connect's keychain session, so they must load with NO crew.yaml.
     // Load an empty ship block at the path a config-less connect would have
     // used, which puts stateDir where that connect's `rememberSession` wrote.
-    const configless = (command === 'connect' && flag('sign-out')) || (command === 'disconnect' && flag('reset')) || command === 'deprovision';
+    const configless = command === 'routes' || (command === 'connect' && flag('sign-out')) || (command === 'disconnect' && flag('reset')) || command === 'deprovision';
     if (configless && !existsSync(findConfigFile(CREW_HOME))) {
       cfg = loadConfig(CREW_HOME, firstRunConfigPath(), { text: 'ship: {}\n', allowNoRoutes: true });
     } else {
@@ -967,7 +969,7 @@ const named = worktreeArgs
 // `pause`/`resume` (CREW-1372) need no route: their markers live in the ship's
 // own stateDir, so the word `release` or a role name sits at positional[1] and
 // must never be read as a route name (QA, on a one-route ship).
-const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'periscope' || command === 'whoami' || command === 'sandbox' || releaseFleetWide ||
+const fleetWide = command === 'inbox' || command === 'connect' || command === 'disconnect' || command === 'deprovision' || command === 'agents' || command === 'skills' || command === 'logbook' || command === 'repos' || command === 'ship' || command === 'projects' || command === 'routes' || command === 'periscope' || command === 'whoami' || command === 'sandbox' || releaseFleetWide ||
   // CREW-3875: the scheduler units are per ship and name no route, so a route given is ignored.
   command === 'install' || command === 'uninstall' ||
   command === 'pause' || command === 'resume' || command === 'reload' ||
@@ -7045,6 +7047,23 @@ switch (command) {
     });
     process.stdout.write(flag('json') ? `${JSON.stringify(report.length === 1 && only ? report[0] : report, null, 2)}\n` : formatWhoami(report));
     if (report.some((r) => !r.ok)) process.exitCode = 1;
+    break;
+  }
+
+  case 'routes': {
+    // CREW-3915: read-only. Lists the tracker apps the person can reach that no route here covers.
+    if (positional[1] !== 'available') die('crew routes', 'unknown subcommand', '`crew routes available [--json]`', 2);
+    const report = await buildRoutesAvailable(cfg.routes, {
+      userAgent: cfg.ship.userAgent,
+      hostOf: hostFromUrl,
+      holdsCredential: async (host, address) => {
+        const s = getSessionStore();
+        return !!(await s.get(host, address))?.apiKey;
+      },
+    });
+    process.stdout.write(flag('json') ? `${JSON.stringify({ hosts: report }, null, 2)}\n` : formatRoutesAvailable(report, cfg.routes.length > 0));
+    // Non-zero only when every host failed.
+    if (report.length > 0 && report.every((h) => 'error' in h)) process.exitCode = 1;
     break;
   }
 
