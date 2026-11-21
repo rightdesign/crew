@@ -83,7 +83,7 @@ import { runProvision, provisionOptionsFrom, realProvisionDeps, isManagedShipKin
 import { collectDiagnostics } from './diagnostics.ts';
 import { schedulerLogFor } from './install.ts';
 import { crewInvocation, unitAbandonsAgents, installContext, planInstall, planUninstall, applyInstall, applyUninstall, detectSystemd, planDaemonControl, labelFor, systemUnitPathFor, pathFor, findOnPath, dockerPathProblem, COMMON_DOCKER_DIRS, clearForeignLaunchdUnits, removeAllLaunchdUnits, loadedCrewLabels, describeForeignLaunchdUnits, withUserBusEnv } from './install.ts';
-import { DEFAULT_RIGHT_OF_WAY_MINUTES, REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
+import { DEFAULT_RIGHT_OF_WAY_MINUTES, setRunningCrewVersion, REPO_CONFIG_FILENAMES, parseRepoConfig, loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, validateEffective, renderBranchName, effectiveBranchTemplate, type ShipRepoSettings, type RepoConfig } from './repo-config.ts';
 import { runRelease, runFleetPasses, selfRepairLine, summarizeOutcome, emitReleaseSummary, type RepoReleaseSummary, type RoutedReleaseSummary } from './release-run.ts';
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
@@ -208,7 +208,7 @@ import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { contractFixers } from './contract-refusal.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, clearShipAttentionKind, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, clearShipAttentionKind, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoContractNewerItem, repoContractNewerKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
 import {
   runDaemonLoop, runFleetPass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -225,6 +225,8 @@ import { readPeriscopeSidecars } from './periscope-state.ts';
 const CREW_HOME = isCompiledBinary(import.meta.url)
   ? dirname(process.execPath)
   : resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// CREW-3874: contracts declare the crew they were written for; '0.0.0' is the unreadable-package fallback, not a version.
+{ const v = crewVersion(CREW_HOME); if (v !== '0.0.0') setRunningCrewVersion(v); }
 
 /**
  * How long an unreleased board lock claim (ISSUE-394) stays valid before
@@ -1940,6 +1942,12 @@ async function resolveRoute(c: typeof route) {
   }
   const refused = new Set(errors.map((e) => e.repo));
   for (const t of reposOf(c)) if (!refused.has(t.name)) clearShipAttention(state, repoContractRefusedKey(t.name));
+  // CREW-3874: a newer contract served with keys ignored is one item, raised once and cleared when it stops applying.
+  const newer = new Map(settled.filter((r) => r.config.newerContract).map((r) => [r.name, r.config.newerContract!]));
+  for (const [repo, note] of newer) {
+    try { await raiseShipAttention({ state, emit }, repoContractNewerItem(repo, note)); } catch { /* the repository is served regardless */ }
+  }
+  for (const t of reposOf(c)) if (!newer.has(t.name)) clearShipAttention(state, repoContractNewerKey(t.name));
   return { settled, errors };
 }
 

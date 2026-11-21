@@ -16,20 +16,8 @@ import { resolveApiKey } from './config.ts';
 
 export const CREW_OUTDATED_KEY = 'crew_outdated';
 
-/** `x.y.z` (a leading `v` and any `-pre`/`+build` suffix ignored) as numbers, or null when it is not one. */
-export function parseVersion(v: string): [number, number, number] | null {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v.trim());
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-}
-
-/** Negative when `a` < `b`, 0 when equal, positive when `a` > `b`; null when either is not a version. */
-export function compareVersions(a: string, b: string): number | null {
-  const pa = parseVersion(a);
-  const pb = parseVersion(b);
-  if (!pa || !pb) return null;
-  for (let i = 0; i < 3; i++) if (pa[i]! !== pb[i]!) return pa[i]! - pb[i]!;
-  return 0;
-}
+export { parseVersion, compareVersions } from './version-compare.ts';
+import { compareVersions } from './version-compare.ts';
 
 /** True only when both parse and `have` is below `floor`; an unreadable floor never stops a ship. */
 export function belowFloor(have: string, floor: string | null | undefined): boolean {

@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import {
-  RepoConfigError, effectiveBranchTemplate, effectiveWorktreeDirName, findRepoConfig, hookLabel,
+  RepoConfigError, newerContractSummary, effectiveBranchTemplate, effectiveWorktreeDirName, findRepoConfig, hookLabel,
   parseRepoConfig, renderBranchName, renderWorktreeName, resolveRepoConfig, validateEffective,
   type BranchContext, type EffectiveRepoConfig, type RepoConfig, type RepoHooks, type ShipRepoSettings,
 } from './repo-config.ts';
@@ -155,6 +155,7 @@ export function renderRepoCheck(r: RepoCheckReport): string {
     `  branch.name        ${e.branch.name}`,
     `  branch.push        ${e.branch.push}`,
   ];
+  if (e.newerContract) lines.push(`  newer contract: ${newerContractSummary(e.newerContract)}`);
   for (const s of r.samples) lines.push(`  ${s.case}: branch ${s.branch}, worktree ../${s.worktree}`);
   if (r.mapFile) {
     const m = r.mapFile;

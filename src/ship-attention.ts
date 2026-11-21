@@ -22,10 +22,10 @@ import { INTERVAL_SECONDS, findOnPath, pathFor, dockerPathProblem } from './inst
 import { existsSync, statfsSync } from 'node:fs';
 import type { State } from './state.ts';
 import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefreshOutcome } from './git.ts';
-import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig } from './repo-config.ts';
+import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, NEWER_CONTRACT_PHRASE, newerContractSummary, type NewerContractNote } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing' | 'ci_run_failed' | 'tracker_interface';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'repo_contract_newer' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing' | 'ci_run_failed' | 'tracker_interface';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -163,9 +163,31 @@ export const repoContractRefusedKey = (repo: string): string => `repo_contract_r
  * repositories carry on. Cleared the next time the file loads.
  */
 export function repoContractRefusedItem(repo: string, detail: string, nowIso = new Date().toISOString()): ShipAttentionItem {
+  // CREW-3874: a contract this crew is too old for is not an invalid file, and waiting does not fix it.
+  if (detail.includes(NEWER_CONTRACT_PHRASE)) {
+    return {
+      kind: 'repo_contract_refused', key: repoContractRefusedKey(repo), since: nowIso,
+      message: `${repo}: this crew is older than its repo contract needs and the repository is skipped — ${detail}. Upgrade crew to resume; \`crew doctor\` names the versions`,
+    };
+  }
   return {
     kind: 'repo_contract_refused', key: repoContractRefusedKey(repo), since: nowIso,
     message: `${repo}: its repo contract is refused and the repository is skipped — ${detail}. Resumes automatically once the file is valid on its base; \`crew doctor\` names the problem`,
+  };
+}
+
+/** The key of a repo's `repo_contract_newer` item; one per repo. */
+export const repoContractNewerKey = (repo: string): string => `repo_contract_newer:${repo}`;
+
+/**
+ * A repository whose contract was written for a newer crew, served anyway with
+ * the keys this crew does not know ignored (CREW-3874). Cleared once the crew
+ * meets the minimum or the file stops using the keys.
+ */
+export function repoContractNewerItem(repo: string, note: NewerContractNote, nowIso = new Date().toISOString()): ShipAttentionItem {
+  return {
+    kind: 'repo_contract_newer', key: repoContractNewerKey(repo), since: nowIso,
+    message: `${repo}: ${newerContractSummary(note)}; the repository is still served`,
   };
 }
 

@@ -200,6 +200,7 @@ release:
 | field | required | default | meaning |
 | --- | --- | --- | --- |
 | `version` | yes | — | Spec version this file targets. Currently `1`. |
+| `minCrewVersion` | no | — | The oldest crew (`x.y.z`) that understands everything in this file. Set it only when the file uses something a newer crew added; never required. An older crew reads it first — see "A contract written for a newer crew". |
 | `platform` | no | `any` | `any` / `unix` / `macos` / `linux` / `windows` |
 | `branch.base` | no | `main` | The integration branch — `master`, `develop`, a release train. Never assumed. |
 | `branch.name` | no | `issue-{number}`, or `{prefix}-{number}` for a ticket carrying a project tag | Local working branch. Must name at least one placeholder. Set explicitly here only to override the per-ticket default (ISSUE-969) — an explicit value always wins over a ticket's own tag. |
@@ -253,6 +254,24 @@ release:
 | `release.changelog` | no | `CHANGELOG.md` | `false` for a repo that keeps none. |
 | `sandbox.hosts` | no | `[]` | Extra hosts (`host` or `host:port`) a sandboxed run may reach, for a test that calls a public API. Everything else, package registries included, is denied. Loopback, private and cloud-metadata addresses are refused. Recorded in the run's event stream. |
 | `sandbox.toolchains` | no | `[]` | Toolchains whose run-time downloads the policy must allow: `corepack`, `pnpm`, `yarn`, `npm`, `prisma`, `playwright`, `pip`, `cargo`, `go`, `swift`. |
+
+### A contract written for a newer crew
+
+An unknown key is normally an error, because a typo in a hook name would otherwise mean a suite that silently never runs. A key that a *newer* crew added looks the same to an older crew, and refusing it would take the repository out of service on every ship that has not upgraded yet. `minCrewVersion` tells the two apart. It is not a client floor on the tracker and does not stop an older crew from reading anything it understands.
+
+| the file | on a crew older than `minCrewVersion` | on a crew that meets it, or with no `minCrewVersion` |
+| --- | --- | --- |
+| an unknown key under `release`, `release.isolateFailures`, `labels`, `periscope` or `docs` | the key is ignored, every key the crew knows is kept and the repository is served | refused as a typo: `unknown release key: …` with the allowed list |
+| an unknown key anywhere else (the top level, `hooks`, `release.verify`, `release.ci`, `branch`, `worktrees`, `platform`, `sandbox`) | the repository is skipped, and the message says it needs a newer crew | refused as a typo, as above |
+
+The second row is the short list of groups where ignoring a key could cause harm: anything that gates, redirects or builds a release. The list is `IGNORABLE_UNKNOWN_KEY_GROUPS` in `src/repo-config.ts`; a group not on it is never ignored.
+
+What an operator sees:
+
+- **Served with keys ignored:** one `repo_contract_newer` attention item naming the repository, the contract's minimum, the running version and the ignored keys, announced once when it is raised (not each cycle) and cleared once the crew meets the minimum or the file stops using the keys. `crew doctor` / `crew repos check` prints the same sentence on a `newer contract:` line.
+- **Skipped:** the usual `repo_contract_refused` attention item, but worded as "this crew is older than its repo contract needs … Upgrade crew to resume", not "invalid … resumes automatically", because waiting does not fix it. `crew doctor` prints the same message.
+
+A change that introduces a contract key and uses it in this repository's own `.crew.yaml` must set `minCrewVersion` to the release that adds the key, in the same change. Crews older than this feature do not know `minCrewVersion` itself and still refuse the file; that cannot be fixed retroactively, so upgrade them before a repository adopts the key.
 
 ### Sandbox images
 

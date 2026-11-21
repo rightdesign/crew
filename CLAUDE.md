@@ -59,3 +59,7 @@ Workspace-level system tables (Agents; Agent Log parent + Agent Log Cycles child
 - **jira-tablation-sync** — a separate one-way Jira→Tablation mirror service (own repo) that feeds day-job tickets into a *different* tracker workspace (Paradium) for the crew to work — distinct ownership split (Jira owns title/description/`jira_*` columns; local/crew columns like `status`/`assignee_id`/`blocked_by` are written once at create and never overwritten by sync).
 
 **Docs pages are compiled as Vue templates (`docs/`, VitePress).** A placeholder in prose such as `<epic>` goes in inline code, never bare: a bare angle-bracket word parses as an unclosed HTML element and fails the `Docs` workflow after the release merges. `test/docs-build.test.ts` builds the site in the test hook so the failure shows on the ticket's own branch.
+
+## Adding a repo contract key
+
+A change that introduces a `.crew.yaml` key and uses it in this repository's own `.crew.yaml` must set `minCrewVersion` there to the release that adds the key, in the same change; otherwise every ship still on an older crew drops this repository (CREW-3874, `docs/REPO_SPEC.md` "A contract written for a newer crew"). Ships running a crew older than that feature cannot read `minCrewVersion` at all, so upgrade them before the key is turned on here.

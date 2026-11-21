@@ -158,7 +158,7 @@ Finish with a short report:
 
 ## Reference
 
-Top-level keys: `version`, `platform`, `shell`, `branch`, `worktrees`, `docs`, `hooks`, `labels`, `release`, `sandbox`, `periscope`. Nothing else is accepted. The tables list the settings this task can need. The specification has the rest (branch and worktree naming, `shell`, `periscope`, `sandbox`, per-machine release settings); leave those unset unless I ask for them.
+Top-level keys: `version`, `minCrewVersion` (leave it unset), `platform`, `shell`, `branch`, `worktrees`, `docs`, `hooks`, `labels`, `release`, `sandbox`, `periscope`. Nothing else is accepted. The tables list the settings this task can need. The specification has the rest (branch and worktree naming, `shell`, `periscope`, `sandbox`, per-machine release settings); leave those unset unless I ask for them.
 
 | Key | Values and meaning |
 | --- | --- |

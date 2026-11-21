@@ -17,6 +17,7 @@ import { existsAt, readTextAt } from './remote-dir.ts';
 import { join, basename, dirname } from 'node:path';
 import { parse } from 'yaml';
 import { parseSandboxNetwork } from './sandbox-policy.ts';
+import { compareVersions, parseVersion } from './version-compare.ts';
 import { isPlatformRequirement, type PlatformRequirement } from './platform.ts';
 
 export const SPEC_VERSION = 1;
@@ -381,6 +382,8 @@ export interface RepoPeriscope {
 
 export interface RepoConfig {
   version: number;
+  /** Set when an older crew ignored keys of a newer contract and still serves the repository (CREW-3874). */
+  newerContract?: NewerContractNote;
   /** Absent means the defaults (`inspector: proxy`). */
   periscope?: RepoPeriscope;
   sandbox?: RepoSandbox;
@@ -460,6 +463,47 @@ export interface RepoConfig {
 export class RepoConfigError extends Error {}
 
 /**
+ * A contract written for a newer crew than the one running (CREW-3874): it
+ * declares `minCrewVersion` above this crew's version and uses a key this crew
+ * does not know in a group that cannot safely be ignored. The file is not
+ * invalid and waiting does not fix it, so the message says to upgrade.
+ */
+export class NewerContractError extends RepoConfigError {}
+
+/** The words every surface (loader, attention item, `crew doctor`) uses for a repo this crew is too old to serve. */
+export const NEWER_CONTRACT_PHRASE = 'needs a newer crew';
+
+/** What an older crew skipped in a newer contract and still served the repository (CREW-3874). */
+export interface NewerContractNote {
+  /** The `minCrewVersion` the contract declares. */
+  required: string;
+  /** The crew version that read it. */
+  running: string;
+  /** Dotted paths of the unknown keys that were ignored, e.g. `release.rebuildPrimary`. */
+  keys: string[];
+}
+
+/** One sentence naming the versions and keys; shared so `crew doctor` and the attention item agree. */
+export function newerContractSummary(n: NewerContractNote): string {
+  return `this contract was written for crew ${n.required} and this is crew ${n.running}; ignoring ${n.keys.join(', ')}. Upgrading crew clears this`;
+}
+
+/**
+ * The crew version reading contracts, set once at startup. Unset means unknown,
+ * and an unknown version never excuses an unknown key.
+ */
+let runningCrewVersion: string | undefined;
+export function setRunningCrewVersion(v: string | undefined): void { runningCrewVersion = v; }
+
+/**
+ * Where an unknown key is safe to ignore on a crew older than the contract.
+ * Anything not listed (the top level, `hooks`, `release.verify`, `release.ci`,
+ * `branch`, `worktrees`, `platform`, `sandbox`) can gate or redirect a release,
+ * so an unknown key there still takes the repository out of service.
+ */
+export const IGNORABLE_UNKNOWN_KEY_GROUPS = new Set(['release', 'release.isolateFailures', 'labels', 'periscope', 'docs']);
+
+/**
  * Why `text` cannot serve as a built-in version file, or null when it can.
  * The built-in bump path reads and rewrites a JSON object with a string
  * `version`; anything else (a plain `VERSION` file, say) needs `hooks.bump`.
@@ -489,7 +533,7 @@ export const HOOK_NAMES: Array<keyof RepoHooks> = [
 export const BUMP_SIZES = ['major', 'minor', 'patch'] as const;
 export type BumpSize = (typeof BUMP_SIZES)[number];
 export const TOP_LEVEL = new Set([
-  'version', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release', 'sandbox', 'periscope',
+  'version', 'minCrewVersion', 'platform', 'shell', 'branch', 'worktrees', 'docs', 'hooks', 'labels', 'release', 'sandbox', 'periscope',
 ]);
 /** The keys the loader accepts under `sandbox`. */
 export const SANDBOX_KEYS = new Set(['image', 'packages', 'setup', 'warm', 'hosts', 'toolchains']);
@@ -579,10 +623,21 @@ export function findRepoConfig(dir: string): string | null {
  * otherwise mean a suite that silently never runs, which is the worst
  * outcome available for a test hook.
  */
-function rejectUnknown(obj: unknown, allowed: Set<string>, where: string, file: string): void {
+function rejectUnknown(obj: unknown, allowed: Set<string>, where: string, file: string, newer?: NewerContext): void {
   if (!obj || typeof obj !== 'object') return;
   const unknown = Object.keys(obj as object).filter((k) => !allowed.has(k));
   if (unknown.length > 0) {
+    if (newer) {
+      const paths = unknown.map((k) => (where === 'top-level' ? k : `${where}.${k}`));
+      if (IGNORABLE_UNKNOWN_KEY_GROUPS.has(where)) {
+        newer.ignored.push(...paths);
+        return;
+      }
+      throw new NewerContractError(
+        `${file}: ${paths.join(', ')} ${paths.length === 1 ? 'is' : 'are'} not known to crew ${newer.running}, and the file declares minCrewVersion ${newer.required}: ` +
+          `this repository ${NEWER_CONTRACT_PHRASE} (${newer.required} or later) and is skipped until crew is upgraded`,
+      );
+    }
     throw new RepoConfigError(
       `${file}: unknown ${where} ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}` +
         ` (allowed: ${[...allowed].sort().join(', ')})`,
@@ -601,6 +656,9 @@ function stringList(raw: unknown, where: string, file: string): string[] {
     return v;
   });
 }
+
+/** Present only when the contract declares a minimum above the running crew; collects what gets ignored. */
+interface NewerContext { required: string; running: string; ignored: string[] }
 
 function parseSandbox(raw: unknown, file: string): RepoSandbox | undefined {
   if (raw === undefined || raw === null) return undefined;
@@ -634,7 +692,7 @@ function parseSandbox(raw: unknown, file: string): RepoSandbox | undefined {
   return { ...(image ? { image } : {}), packages, setup, warm };
 }
 
-export function parseRepoConfig(text: string, file: string): RepoConfig {
+export function parseRepoConfig(text: string, file: string, opts: { crewVersion?: string } = {}): RepoConfig {
   let raw: any;
   try {
     raw = file.endsWith('.json') ? JSON.parse(text) : parse(text);
@@ -643,18 +701,29 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
   }
   if (!raw || typeof raw !== 'object') throw new RepoConfigError(`${file} is empty or not a mapping`);
 
-  rejectUnknown(raw, TOP_LEVEL, 'top-level', file);
-  rejectUnknown(raw.hooks, new Set(HOOK_NAMES), 'hooks', file);
-  rejectUnknown(raw.labels, new Set(HOOK_NAMES), 'labels', file);
-  rejectUnknown(raw.release, RELEASE_KEYS, 'release', file);
-  rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file);
-  rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file);
-  rejectUnknown(raw.release?.isolateFailures, ISOLATE_KEYS, 'release.isolateFailures', file);
-  rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file);
-  rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file);
-  rejectUnknown(raw.periscope, new Set(['inspector']), 'periscope', file);
-  rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file);
-  rejectUnknown(raw.sandbox, SANDBOX_KEYS, 'sandbox', file);
+  // `minCrewVersion` is read before anything else: it decides whether an
+  // unknown key below is a typo or a key a newer crew added (CREW-3874).
+  const minRaw = raw.minCrewVersion;
+  if (minRaw !== undefined && (typeof minRaw !== 'string' || !/^\d+\.\d+\.\d+$/.test(minRaw.trim()))) {
+    throw new RepoConfigError(`${file}: minCrewVersion must be a version like "0.167.0" (got "${String(minRaw)}")`);
+  }
+  const running = opts.crewVersion ?? runningCrewVersion;
+  const newerThanRunning = typeof minRaw === 'string' && running !== undefined && parseVersion(running) !== null
+    && (compareVersions(running, minRaw) ?? 0) < 0;
+  const newer: NewerContext | undefined = newerThanRunning ? { required: (minRaw as string).trim(), running: running as string, ignored: [] } : undefined;
+
+  rejectUnknown(raw, TOP_LEVEL, 'top-level', file, newer);
+  rejectUnknown(raw.hooks, new Set(HOOK_NAMES), 'hooks', file, newer);
+  rejectUnknown(raw.labels, new Set(HOOK_NAMES), 'labels', file, newer);
+  rejectUnknown(raw.release, RELEASE_KEYS, 'release', file, newer);
+  rejectUnknown(raw.release?.ci, CI_KEYS, 'release.ci', file, newer);
+  rejectUnknown(raw.release?.verify, VERIFY_KEYS, 'release.verify', file, newer);
+  rejectUnknown(raw.release?.isolateFailures, ISOLATE_KEYS, 'release.isolateFailures', file, newer);
+  rejectUnknown(raw.branch, BRANCH_KEYS, 'branch', file, newer);
+  rejectUnknown(raw.worktrees, new Set(['copy', 'prefix', 'name']), 'worktrees', file, newer);
+  rejectUnknown(raw.periscope, new Set(['inspector']), 'periscope', file, newer);
+  rejectUnknown(raw.docs, new Set(['triagePolicy', 'designGuide']), 'docs', file, newer);
+  rejectUnknown(raw.sandbox, SANDBOX_KEYS, 'sandbox', file, newer);
 
   const sandboxNetwork = parseSandboxNetwork(raw.sandbox, file, (m) => new RepoConfigError(m));
 
@@ -917,6 +986,7 @@ export function parseRepoConfig(text: string, file: string): RepoConfig {
 
   return {
     version: SPEC_VERSION,
+    ...(newer && newer.ignored.length > 0 ? { newerContract: { required: newer.required, running: newer.running, keys: newer.ignored } } : {}),
     branch,
     worktrees,
     ...(inspectorRaw ? { periscope: { inspector: inspectorRaw as PeriscopeInspector } } : {}),
@@ -1176,6 +1246,7 @@ export function resolveRepoConfig(
 
   return {
     version: SPEC_VERSION,
+    ...(repo?.newerContract ? { newerContract: repo.newerContract } : {}),
     // Repo-only, like platform: what a repo needs installed is a fact about it.
     ...(repo?.sandbox ? { sandbox: repo.sandbox } : {}),
     worktrees: {
