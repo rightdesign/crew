@@ -28,6 +28,7 @@ import { settleRepos, probePushAuth, toolChecks, isPrBased, mentionsNode, format
 import { describeClaudeAuth, inferenceBaseUrl } from './adapters/claude.ts';
 import { runSelftest, recordSelftest, readSelftest, formatResult, doctorSelftestLines, REMEDY, type SelftestResult } from './selftest.ts';
 import { runSelfLaunchCheck } from './self-launch-check.ts';
+import { sleepSyncCheck } from './sleep-sync.ts';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostname, homedir, userInfo } from 'node:os';
@@ -565,6 +566,12 @@ if (versionReq) {
 // version and compiled flag. scripts/build-binaries.sh runs it on the built binary.
 if (argv[0] === 'self-launch-check') {
   const verdict = await runSelfLaunchCheck({ version: crewVersion(CREW_HOME), compiled: isCompiledBinary(import.meta.url) });
+  (verdict.ok ? process.stdout : process.stderr).write(`${verdict.message}\n`);
+  process.exit(verdict.ok ? 0 : 1);
+}
+// CREW-3876: undocumented build-time check of the synchronous sleep helper; scripts/build-binaries.sh runs it on each compiled binary.
+if (argv[0] === 'sleep-sync-check') {
+  const verdict = sleepSyncCheck();
   (verdict.ok ? process.stdout : process.stderr).write(`${verdict.message}\n`);
   process.exit(verdict.ok ? 0 : 1);
 }

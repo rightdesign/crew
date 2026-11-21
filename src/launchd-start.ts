@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { parseLaunchctlPrint } from './daemon-liveness.ts';
+import { sleepSync } from './sleep-sync.ts';
 
 /**
  * CREW-3237: `crew daemon start` on launchd. `launchctl load` on a unit that is
@@ -68,10 +69,6 @@ function defaultRun(cmd: string[]): CommandResult | null {
   return r.error ? null : { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
-function defaultSleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 function defaultReadLog(path: string): string | null {
   try { return readFileSync(path, 'utf8'); } catch { return null; }
 }
@@ -84,7 +81,7 @@ export function logTail(text: string | null, n = LOG_TAIL_LINES): string[] {
 
 export function startLaunchdDaemon(o: StartLaunchdOptions): StartLaunchdResult {
   const run = o.run ?? defaultRun;
-  const sleep = o.sleep ?? defaultSleep;
+  const sleep = o.sleep ?? sleepSync;
   const readLog = o.readLog ?? defaultReadLog;
   let out = '';
   let err = '';

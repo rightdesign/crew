@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, basename, join } from 'node:path';
 import { forgeDescriptorFor, normalizeForgeHost } from './forges.ts';
 import { remoteOf, execRemoteSync } from './remote-dir.ts';
+import { sleepSync } from './sleep-sync.ts';
 
 export class GitError extends Error {}
 
@@ -1105,10 +1106,6 @@ export function checkoutLockPath(dir: string): string {
   return `${dir}.sync.lock`;
 }
 
-/** Synchronous sleep via `Atomics.wait` — consistent with the rest of this module's synchronous-git style; a short busy-wait is fine for a lock two callers hold for well under a second each. */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /**
  * Cross-process advisory lock keyed on the checkout directory, so the

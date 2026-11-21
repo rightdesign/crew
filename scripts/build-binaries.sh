@@ -76,8 +76,11 @@ case "$(uname -s)-$(uname -m)" in
 esac
 if [ -n "$host_dir" ]; then
   "dist-bin/${host_dir}/crew" self-launch-check
+  # CREW-3876: the synchronous sleep helper must work in the compiled runtime.
+  "dist-bin/${host_dir}/crew" sleep-sync-check
   if [ -x dist-bin/darwin-universal/crew ]; then
     dist-bin/darwin-universal/crew self-launch-check
+    dist-bin/darwin-universal/crew sleep-sync-check
   fi
 else
   echo "note: no host binary to run the self-launch check on"

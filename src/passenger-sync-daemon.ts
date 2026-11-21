@@ -66,6 +66,7 @@ import { materializeMirrorCheckouts, mirrorOutcome } from './passenger-mirror.ts
 import { isPidAlive } from './tunnel.ts';
 import { secretsMatch } from './secret-compare.ts';
 import { selfLaunch } from './runtime-info.ts';
+import { sleepSync } from './sleep-sync.ts';
 
 export function generateSyncSecret(): string {
   return randomBytes(32).toString('hex');
@@ -262,10 +263,6 @@ function removePersistedSyncDaemon(stateDir: string, workspaceId: string): void 
   try { unlinkSync(path); } catch { /* already gone */ }
 }
 
-/** Synchronous sleep via `Atomics.wait` — the reconcile loop below is itself synchronous (called once per `crew run`/`poll` cycle), so a short busy-wait fits its existing style. */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /**
  * `SIGTERM` is asynchronous — the kernel doesn't guarantee the old process
