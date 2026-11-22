@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.172.0] — 2026-11-22
+
+- CREW-2290 release.mode: pipeline for repos whose pipeline deploys to QA and a person releases production; tickets go released to QA, then deployed when production reports their commit
+
 ## [0.171.1] — 2026-11-21
 
 - CREW-3922 A route connected before the app declared its interface now picks up the questions part (and other mapped tables) from the app's declaration without `crew connect`, so `crew ask` no longer silently writes nothing.
