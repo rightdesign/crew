@@ -90,6 +90,7 @@ import { runRelease, runFleetPasses, batchCapActive, BATCH_CAPPED_EVENT, BATCH_C
 import { decideRelease, describeHeld, heldByBlockers, planReleasedBranches, releaseIdle, reportUnplaceable } from './release.ts';
 import { locateBranchForTicket, pushedBranchForTicket } from './ticket-branch.ts';
 import { remoteOf } from './remote-dir.ts';
+import { sweepPipelineRoute } from './pipeline-sweep.ts';
 import { planStamp, applyStamp, RELEASE_CLAIMED_EVENT, applyMergeStamp, applyExternalClosures } from './stamp.ts';
 import { applyReview } from './review.ts';
 import { verifiedShaFor } from './verified-tip.ts';
@@ -2425,6 +2426,23 @@ async function releasePhase(
     if (releaseIdentity.kind === 'ship') remit.warn(`release writes as the ship, not its own agent: ${releaseIdentity.reason}`, { step: 'release' });
     const tracker = new Tracker(c, cfg.ship, { apiKey: releaseIdentity.apiKey });
 
+    // `release.mode: pipeline` (CREW-2290): follow the pipeline run for the newest release and watch
+    // production BEFORE deciding anything, outside the board lock (waiting is never done under it).
+    // A run still going holds back the next release; a missing status or provider stops this one.
+    let pipelineInFlight: { why: string; url?: string } | undefined;
+    if (repo.release.mode === 'pipeline' && !dryRun) {
+      const swept = await sweepPipelineRoute({
+        route: c, ship: cfg.ship, scope, dir: target.dir, repo, tracker, state, emit: remit, seat: releaseSeat(c),
+        repoTickets: async () => ticketsByRepo(c, await tracker.openTickets()).byRepo.get(target.name) ?? [],
+        firstReport: (k) => firstReport(`${scope}:pipeline:${k}`),
+      });
+      if ('stop' in swept) {
+        remit.warn(`${scope}: not releasing — ${swept.stop}`, { step: 'release' });
+        return { scope, tests: 'skipped', outcome: 'skipped', detail: swept.stop };
+      }
+      pipelineInFlight = swept.inFlight;
+    }
+
     // Lock-free pre-check (CREW-1415): the lock exists to cover a decision to
     // release, so a repo with nothing verified and a base level with its last
     // tag never needs it. One ticket read per route per cycle, shared by
@@ -2477,7 +2495,8 @@ async function releasePhase(
         tagPattern: repo.release.tagPattern ?? 'v*', base: repo.branch.base,
         ...(remoteBase ? { ref: `${repo.branch.remote}/${repo.branch.base}`, guard: false } : {}),
       });
-      const unstamped = planReleasedBranches(
+      // A pipeline release's tickets are not stamped from the tag: the sweep above moves them (CREW-2290).
+      const unstamped = repo.release.mode === 'pipeline' ? 0 : planReleasedBranches(
         target.dir, pre, tracker.contract,
         (t) => locateBranchForTicket(target.dir, repo, t)?.branch ?? null,
         repo.branch.base, repo.release.tagPattern ?? 'v*',
@@ -2631,6 +2650,7 @@ async function releasePhase(
         ticket.updated_at = (await tracker.updateTicket(ticket.id, { [tracker.contract.columns.assignee]: claimed.get(ticket.id) ?? null })).updated_at;
         claimed.delete(ticket.id);
       },
+      ...(pipelineInFlight ? { pipelineInFlight } : {}),
       onBasePushed: async (merged) => {
         remit.enter('reconcile');
         await applyMergeStamp(
@@ -2657,7 +2677,7 @@ async function releasePhase(
     // already live, and a tracker blip must not turn a good release into a
     // failed one. Untouched tickets are still `verified` and still named in
     // the released range, so the next cycle picks them up.
-    if (outcome.deployed || outcome.confirmed || outcome.alreadyLive || outcome.integrated) {
+    if (repo.release.mode !== 'pipeline' && (outcome.deployed || outcome.confirmed || outcome.alreadyLive || outcome.integrated)) {
       remit.enter('reconcile');
       const plan = planStamp(
         target.dir, tickets, tracker.contract,
@@ -2682,6 +2702,8 @@ async function releasePhase(
     // stamp them against the tag that actually carries the commit (CREW-1368).
     // Non-fatal, like the stamp above.
     for (const m of outcome.decision.merges) {
+      // A pipeline release is deployed when production reports it, never from its tag (CREW-2290).
+      if (repo.release.mode === 'pipeline') break;
       if (m.skipReason !== 'already-released' || !m.mergedSha) continue;
       const tag = firstReleaseTagContaining(target.dir, m.mergedSha, repo.release.tagPattern ?? 'v*');
       if (!tag) continue;
@@ -2695,7 +2717,7 @@ async function releasePhase(
     // A ticket another ship released and a second ship bounced back to
     // `in_progress`/`needs_info`: its branch tip is the one a tagged squash
     // recorded, so nothing new was built — stamp it (CREW-1408).
-    for (const r of planReleasedBranches(
+    for (const r of repo.release.mode === 'pipeline' ? [] : planReleasedBranches(
       target.dir, tickets, tracker.contract,
       (t) => locateBranchForTicket(target.dir, repo, t)?.branch ?? null,
       repo.branch.base, repo.release.tagPattern ?? 'v*',

@@ -34,6 +34,13 @@ export const REPO_CONFIG_FILENAMES = ['.crew.yaml', '.crew.yml', '.crew.json'] a
  *              because there is nothing to verify against.
  *   ci_manual  the crew merges, then triggers CI and waits
  *   ci_auto    the crew merges; CI releases on its own and the crew watches
+ *   pipeline   the crew merges, versions and pushes the release commit; a CI
+ *              pipeline builds it and deploys it to QA by itself, and a person
+ *              releases production from the same pipeline. The crew never
+ *              triggers or deploys anything: it waits for the run, confirms
+ *              QA reports the commit, marks the tickets released to QA, and
+ *              marks them deployed when production reports their commit
+ *              (CREW-2290; `release.pipeline`).
  *   external   the crew does NOT release at all. It pushes a branch and
  *              stops — a human merges the PR and someone else's pipeline
  *              takes it from there. No merge, no version, no changelog, no
@@ -52,7 +59,7 @@ export const REPO_CONFIG_FILENAMES = ['.crew.yaml', '.crew.yml', '.crew.json'] a
  * declared `external`, which meant its verified branches were never merged and
  * every Crew ticket had to be closed by hand.
  */
-export type ReleaseMode = 'local' | 'integrate' | 'ci_manual' | 'ci_auto' | 'external';
+export type ReleaseMode = 'local' | 'integrate' | 'ci_manual' | 'ci_auto' | 'external' | 'pipeline';
 export type CiProvider = 'github' | 'buildkite' | 'other' | 'none';
 
 export interface RepoHooks {
@@ -220,6 +227,28 @@ export interface RepoHooks {
 }
 
 export type VerifyMatch = 'commit' | 'version';
+
+/** One deployed role of the service (`web`, `worker`) and the address that answers for it. */
+export interface PipelineRole { role: string; url: string }
+
+/**
+ * `release.pipeline` (CREW-2290): what `release.mode: pipeline` needs to know
+ * that the crew does not do itself. The CI provider is `release.ci.provider`.
+ */
+export interface PipelineSettings {
+  /** QA's address per role. A bare string is the single role `app`. */
+  qa: PipelineRole[];
+  /** Production's address per role, watched but never released to by the crew. */
+  production: PipelineRole[];
+  /** The provider's pipeline identifier: `org/slug` for Buildkite. */
+  pipeline: string;
+  /** How long after a passed run QA has to report the release commit before the release is called failed. */
+  qaTimeoutSeconds: number;
+  /** How often QA is asked inside that window. */
+  qaIntervalSeconds: number;
+  /** How long a pushed release may go without the pipeline showing any run for it before that is reported. */
+  startTimeoutSeconds: number;
+}
 
 /**
  * Whether the crew touches this repo's version at all.
@@ -415,6 +444,8 @@ export interface RepoConfig {
     ship: string | null;
     ci: { provider: CiProvider; ref?: string };
     verify: ReleaseVerify;
+    /** `release.mode: pipeline` only (CREW-2290); repo-only, like `ship`. */
+    pipeline?: PipelineSettings;
     /**
      * When the combined release build/test fails with several branches merged,
      * how many may be built one at a time to find the culprit. Unset means
@@ -570,11 +601,12 @@ export function worktreeNameProblem(template: string): string | null {
 }
 const RELEASE_KEYS = new Set([
   'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'parallelGates', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
-  'mode', 'ship', 'ci', 'verify', 'isolateFailures', 'rightOfWayMinutes', 'rebuildPrimary', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
+  'mode', 'ship', 'ci', 'verify', 'pipeline', 'isolateFailures', 'rightOfWayMinutes', 'rebuildPrimary', 'versioning', 'versionFiles', 'changelog', 'tag', 'tagPattern',
 ]);
 /** Exported so `config.ts` validates a ship's `release:` fallback against the same lists. */
 export const VERSIONINGS: Versioning[] = ['auto', 'none'];
 const CI_KEYS = new Set(['provider', 'ref']);
+const PIPELINE_KEYS = new Set(['qa', 'production', 'pipeline', 'qaTimeoutSeconds', 'qaIntervalSeconds', 'startTimeoutSeconds']);
 const VERIFY_KEYS = new Set(['match', 'timeoutSeconds', 'intervalSeconds']);
 const ISOLATE_KEYS = new Set(['maxCandidates']);
 /** How many merged branches a failed release build may build one by one. */
@@ -606,7 +638,25 @@ export function parseIsolateMax(raw: unknown, where: string, fail: (m: string) =
   return n;
 }
 export const MATCHES: VerifyMatch[] = ['commit', 'version'];
-export const MODES: ReleaseMode[] = ['local', 'integrate', 'ci_manual', 'ci_auto', 'external'];
+export const MODES: ReleaseMode[] = ['local', 'integrate', 'ci_manual', 'ci_auto', 'external', 'pipeline'];
+
+/**
+ * `release.pipeline.qa` / `.production`: a URL (the single role `app`) or a
+ * map of role to URL. Each address is the service root; `/api/ready` and
+ * `/api/health-check` are read below it.
+ */
+export function parsePipelineRoles(raw: unknown, where: string, fail: (m: string) => Error): PipelineRole[] {
+  const url = (v: unknown, at: string): string => {
+    if (typeof v !== 'string' || !/^https?:\/\/[^\s/]+/i.test(v.trim())) throw fail(`${at} must be an http(s) address (got "${String(v)}")`);
+    return v.trim().replace(/\/+$/, '');
+  };
+  if (typeof raw === 'string') return [{ role: 'app', url: url(raw, where) }];
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const roles = Object.entries(raw as Record<string, unknown>).map(([role, v]) => ({ role, url: url(v, `${where}.${role}`) }));
+    if (roles.length) return roles;
+  }
+  throw fail(`${where} must be an address, or a map of role to address`);
+}
 export const PROVIDERS: CiProvider[] = ['github', 'buildkite', 'other', 'none'];
 
 /** The path of the repo contract in `dir`, or null if it has none. */
@@ -856,9 +906,43 @@ export function parseRepoConfig(text: string, file: string, opts: { crewVersion?
         'remove one, or use ci_manual/ci_auto if the crew should be involved',
     );
   }
+  if (mode === 'pipeline' && hooks.deploy) {
+    throw new RepoConfigError(
+      `${file}: release.mode "pipeline" means a pipeline deploys, but hooks.deploy is defined — ` +
+        'the crew never runs a deploy script in this mode. Remove it',
+    );
+  }
+  rejectUnknown(raw.release?.pipeline, PIPELINE_KEYS, 'release.pipeline', file, newer);
+  let pipeline: PipelineSettings | undefined;
+  if (raw.release?.pipeline !== undefined && raw.release?.pipeline !== null) {
+    const pr = raw.release.pipeline;
+    const fail = (m: string): Error => new RepoConfigError(`${file}: ${m}`);
+    if (typeof pr !== 'object' || Array.isArray(pr)) throw fail('release.pipeline must be a map');
+    if (typeof pr.pipeline !== 'string' || !pr.pipeline.trim()) throw fail('release.pipeline.pipeline must name the CI pipeline (for Buildkite, org/slug)');
+    const pnum = (v: unknown, key: string, dflt: number): number => {
+      if (v === undefined || v === null) return dflt;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) throw fail(`release.pipeline.${key} must be a positive number (got "${String(v)}")`);
+      return n;
+    };
+    pipeline = {
+      qa: parsePipelineRoles(pr.qa, 'release.pipeline.qa', fail),
+      production: parsePipelineRoles(pr.production, 'release.pipeline.production', fail),
+      pipeline: pr.pipeline.trim(),
+      qaTimeoutSeconds: pnum(pr.qaTimeoutSeconds, 'qaTimeoutSeconds', 600),
+      qaIntervalSeconds: pnum(pr.qaIntervalSeconds, 'qaIntervalSeconds', 15),
+      startTimeoutSeconds: pnum(pr.startTimeoutSeconds, 'startTimeoutSeconds', 1800),
+    };
+  }
+  if (mode === 'pipeline' && !pipeline) {
+    throw new RepoConfigError(`${file}: release.mode "pipeline" needs release.pipeline (qa, production and pipeline)`);
+  }
+  if (mode !== 'pipeline' && pipeline) {
+    throw new RepoConfigError(`${file}: release.pipeline only applies to release.mode "pipeline" (got "${mode}")`);
+  }
   // Without this the crew would report a CI release as successful purely on
   // the basis of having pushed. Refuse at load, not at release time.
-  if (mode !== 'local' && mode !== 'external' && mode !== 'integrate' && !hooks.released) {
+  if (mode !== 'local' && mode !== 'external' && mode !== 'integrate' && mode !== 'pipeline' && !hooks.released) {
     throw new RepoConfigError(
       `${file}: release.mode "${mode}" needs a hooks.released — the crew cannot ` +
         'observe a release it did not perform without one',
@@ -1002,6 +1086,7 @@ export function parseRepoConfig(text: string, file: string, opts: { crewVersion?
       ship,
       ci: { provider, ref: raw.release?.ci?.ref ? String(raw.release.ci.ref) : undefined },
       verify,
+      ...(pipeline ? { pipeline } : {}),
       isolateFailures: isolateMax === undefined ? undefined : { maxCandidates: isolateMax },
       rightOfWayMinutes: rightOfWay,
       ...(parallelGatesRaw ? { parallelGates: true } : {}),
@@ -1306,6 +1391,7 @@ export function resolveRepoConfig(
           repo?.release.verify.intervalSeconds === DEFAULTS.intervalSeconds ? undefined : repo?.release.verify.intervalSeconds,
           ship?.release?.verify?.intervalSeconds, DEFAULTS.intervalSeconds),
       },
+      ...(repo?.release.pipeline ? { pipeline: repo.release.pipeline } : {}),
       isolateFailures: {
         maxCandidates: pick('release.isolateFailures.maxCandidates', repo?.release.isolateFailures?.maxCandidates,
           ship?.release?.isolateFailures?.maxCandidates, DEFAULT_ISOLATE_MAX_CANDIDATES),
@@ -1428,9 +1514,15 @@ export function validateEffective(cfg: EffectiveRepoConfig): string[] {
         'has no reliable way to learn whether it landed',
     );
   }
+  if (cfg.release.mode === 'pipeline' && !cfg.release.pipeline) {
+    problems.push('release.mode "pipeline" needs release.pipeline (qa, production and pipeline) in the repo\'s .crew.yaml');
+  }
+  if (cfg.release.mode === 'pipeline' && cfg.hooks.deploy) {
+    problems.push('release.mode "pipeline" never runs a deploy hook — the pipeline deploys');
+  }
   if (
     cfg.release.mode !== 'local' && cfg.release.mode !== 'external'
-    && cfg.release.mode !== 'integrate' && !cfg.hooks.released
+    && cfg.release.mode !== 'integrate' && cfg.release.mode !== 'pipeline' && !cfg.hooks.released
   ) {
     problems.push(
       `release.mode "${cfg.release.mode}" needs a released hook — without one a CI release ` +

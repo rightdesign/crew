@@ -275,6 +275,7 @@ export class State {
     const gateFailed = `.test-gate-failed-${suffix}`;
     const gateReported = `.test-gate-reported-${suffix}`;
     const heldReported = `.release-held-${suffix}`;
+    const prodSeen = `.pipeline-production-${suffix}`;
     const read = (f: string): string | null => {
       try { return readFileSync(this.path(f), 'utf8').trim() || null; } catch { return null; }
     };
@@ -317,6 +318,9 @@ export class State {
       },
       noteHeldReported: (signature: string): void => { writeFileSync(this.path(heldReported), `${signature}\n`); },
       clearHeldReported: (): void => { rmSync(this.path(heldReported), { force: true }); },
+      /** `release.mode: pipeline` (CREW-2290): the commit production reported on the last look, for rollback detection. */
+      pipelineProductionSeen: (): string | null => read(prodSeen),
+      notePipelineProductionSeen: (sha: string): void => { writeFileSync(this.path(prodSeen), `${sha}\n`); },
       testGateReported: (sha: string): boolean => read(gateReported) === sha,
       noteTestGateReported: (sha: string): void => { writeFileSync(this.path(gateReported), `${sha}\n`); },
     };

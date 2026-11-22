@@ -105,6 +105,13 @@ export interface ReleaseRunOptions {
   stillHoldsLock?: () => Promise<boolean>;
   onBasePushed?: (merged: MergeCandidate[]) => Promise<void>;
   /**
+   * `release.mode: pipeline` (CREW-2290): set when the pipeline run for the
+   * newest release is still going or cannot be read. The release then merges
+   * and pushes nothing, so tickets verified meanwhile join the next release.
+   * `crew merge` (which pushes nothing) is not held back.
+   */
+  pipelineInFlight?: { why: string; url?: string };
+  /**
    * Called just before a verified branch is squash-merged (never in a dry run),
    * so the caller can assign the ticket to the release seat while the release
    * holds it (CREW-3811). Failures are warned and never stop the merge.
@@ -1441,6 +1448,14 @@ async function runReleaseCycle(
     }
   }
 
+  // CREW-2290: one pipeline run at a time. A second release commit pushed while
+  // the first is still being built would put two runs on the same QA environment.
+  if (o.repo.release.mode === 'pipeline' && o.pipelineInFlight && !o.mergeOnly && !o.dryRun) {
+    const f = o.pipelineInFlight;
+    o.emit.emit(scoped(`not releasing — a pipeline run is in flight: ${f.why}${f.url ? ` (${f.url})` : ''}; verified tickets wait for the next release`), { step: 'release' });
+    return { merged: [], deployed: false, stopped: 'pipeline run in flight', decision };
+  }
+
   // `external` means the crew is not the thing that releases. It must not
   // merge, version, changelog, tag or deploy — doing any of them would fight
   // whatever does.
@@ -2216,7 +2231,7 @@ async function mergeAndReleaseBody(
     }
   }
 
-  if (o.repo.release.mode === 'ci_auto' || o.repo.release.mode === 'ci_manual') {
+  if (o.repo.release.mode === 'ci_auto' || o.repo.release.mode === 'ci_manual' || o.repo.release.mode === 'pipeline') {
     try { await o.onBasePushed?.(merged); }
     catch (e) { o.emit.warn(`could not record merged tickets: ${(e as Error).message}`); }
   }
@@ -2251,6 +2266,8 @@ async function mergeAndReleaseBody(
       deployed = true;
       o.state?.clearDeployFailed();
     }
+  } else if (o.repo.release.mode === 'pipeline') {
+    o.emit.emit('release.mode is pipeline — the pipeline builds and deploys to QA; the tickets are marked released to QA once the run passes and QA reports this commit');
   } else if (o.repo.release.mode !== 'local') {
     o.emit.emit(`release.mode is ${o.repo.release.mode} — CI takes it from here`);
   }

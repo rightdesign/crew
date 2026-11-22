@@ -49,6 +49,8 @@ export interface CiQuery {
   /** The release tag, when the release cut one. */
   tag?: string;
   base: string;
+  /** The provider's own pipeline identifier (Buildkite: `org/slug`), for providers that are not keyed by repository. */
+  pipeline?: string;
 }
 
 export type CiQueryOutcome = { ok: true; runs: CiRun[] } | { ok: false; why: string };
@@ -67,13 +69,26 @@ export interface CiProviderDeps {
   fetch?: typeof fetch;
 }
 
-/** Providers with an implementation. `buildkite`, `other` and `none` are never queried. */
+/** Providers a `ci_*` release can query. `buildkite`, `other` and `none` are never queried by it. */
 export function ciProviderFor(name: string, deps: CiProviderDeps): CiProvider | null {
   return name === 'github' ? githubProvider(deps) : null;
 }
 
-/** True when the provider has an implementation, so a release (and `crew doctor`) can query it. */
+/** The provider `release.mode: pipeline` reads its runs from (CREW-2290); only Buildkite has one. */
+export function pipelineProviderFor(name: string, deps: CiProviderDeps): CiProvider | null {
+  return name === 'buildkite' ? buildkiteProvider(deps) : null;
+}
+
+/**
+ * True when a `ci_auto`/`ci_manual` release (and `crew doctor`) can query the
+ * provider by repository and commit. Buildkite is keyed by a pipeline instead
+ * and is read only by `release.mode: pipeline` (`isPipelineCiProvider`), so a
+ * `ci_*` repo that names it behaves exactly as before (CREW-2290).
+ */
 export const isQueryableCiProvider = (name: string): boolean => name === 'github';
+
+/** True when `release.mode: pipeline` can read this provider's runs. */
+export const isPipelineCiProvider = (name: string): boolean => name === 'buildkite';
 
 /** The last `n` non-empty lines of a log, with the timestamp prefix GitHub puts on each stripped. */
 export function logTail(log: string, n = 40): string {
@@ -160,6 +175,109 @@ export function githubProvider(deps: CiProviderDeps): CiProvider {
 }
 
 class CiAccessError extends Error {}
+
+interface BkJob { id?: string; name?: string | null; label?: string | null; type?: string; state?: string | null; log_url?: string | null }
+interface BkBuild { id: string; number?: number; state?: string; web_url?: string; branch?: string | null; commit?: string; jobs?: BkJob[] }
+
+export const BUILDKITE_HOST = 'buildkite.com';
+const BUILDKITE_API = 'https://api.buildkite.com/v2';
+
+/**
+ * A Buildkite build's state as a run state.
+ *
+ * `blocked` counts as passed: a build whose every non-block step finished and
+ * that now waits on a manual block is the normal resting place of a pipeline
+ * with a gated production button (CREW-2290), and the gate is a person's, not a
+ * failure. A canceled build will never deploy, so it is failed rather than slow.
+ */
+export function buildkiteState(state: string | undefined): CiRunState {
+  switch (state) {
+    case 'passed': case 'blocked': case 'finished': return 'passed';
+    case 'failed': case 'failing': case 'canceled': case 'canceling': return 'failed';
+    case 'skipped': case 'not_run': return 'other';
+    default: return 'pending';
+  }
+}
+
+/**
+ * Buildkite, read through its REST API with the token the ship holds for
+ * `buildkite.com` (a read-only API access token with the `read_builds`,
+ * `read_build_logs` scopes). A run is a build; builds are found by commit in the
+ * pipeline `q.pipeline` (`org/slug`).
+ */
+export function buildkiteProvider(deps: CiProviderDeps): CiProvider {
+  const doFetch = deps.fetch ?? fetch;
+  const get = async (path: string, accept = 'application/json'): Promise<Response> => {
+    const token = deps.token(BUILDKITE_HOST);
+    if (!token) throw new CiAccessError(`no readable credential for ${BUILDKITE_HOST}`);
+    return doFetch(path.startsWith('http') ? path : `${BUILDKITE_API}${path}`, {
+      headers: { authorization: `Bearer ${token}`, accept, 'user-agent': 'crew' },
+      redirect: 'follow',
+    });
+  };
+  const slug = (q: CiQuery): string | null => {
+    const m = /^([^/\s]+)\/([^/\s]+)$/.exec(q.pipeline ?? '');
+    return m ? `/organizations/${m[1]}/pipelines/${m[2]}` : null;
+  };
+  const describe = (res: Response, q: CiQuery): string => {
+    if (res.status === 429) return `${BUILDKITE_HOST} is rate limiting this token`;
+    if (res.status === 401 || res.status === 403) return `the ${BUILDKITE_HOST} token cannot read ${q.pipeline}'s builds (HTTP ${res.status})`;
+    if (res.status === 404) return `pipeline ${q.pipeline} is not visible to the ${BUILDKITE_HOST} token (HTTP 404)`;
+    return `${BUILDKITE_HOST} answered HTTP ${res.status}`;
+  };
+
+  return {
+    name: 'buildkite',
+
+    async runs(q) {
+      const base = slug(q);
+      if (!base) return { ok: false, why: `release.pipeline.pipeline "${q.pipeline ?? ''}" is not org/slug` };
+      let res: Response;
+      try {
+        res = await get(`${base}/builds?commit=${encodeURIComponent(q.sha)}&per_page=100`);
+      } catch (e) {
+        if (e instanceof CiAccessError) return { ok: false, why: e.message };
+        return { ok: false, why: `${BUILDKITE_HOST} unreachable: ${(e as Error).message}` };
+      }
+      if (!res.ok) return { ok: false, why: describe(res, q) };
+      let builds: BkBuild[];
+      try { builds = await res.json() as BkBuild[]; } catch { return { ok: false, why: `${BUILDKITE_HOST} sent a reply that is not JSON` }; }
+      if (!Array.isArray(builds)) return { ok: false, why: `${BUILDKITE_HOST} sent a reply that is not a list of builds` };
+      return {
+        ok: true,
+        runs: builds
+          // `commit=` is a prefix match on some accounts; a build for another commit is not this release's.
+          .filter((b) => !b.commit || b.commit.startsWith(q.sha) || q.sha.startsWith(b.commit))
+          .map((b): CiRun => ({
+            // The REST path addresses a build by its number, so that is the id `failure` needs.
+            id: String(b.number ?? b.id),
+            name: `${q.pipeline} #${b.number ?? b.id}`,
+            url: b.web_url ?? '',
+            state: buildkiteState(b.state),
+            ref: q.tag && b.branch === q.tag ? 'tag' : b.branch === q.base ? 'base' : 'other',
+          })),
+      };
+    },
+
+    async failure(q, run) {
+      const out: CiRunFailure = { run };
+      const base = slug(q);
+      if (!base) return out;
+      try {
+        const res = await get(`${base}/builds/${run.id}`);
+        if (!res.ok) return out;
+        const job = ((await res.json()) as BkBuild).jobs?.find((j) => j.type === 'script' && (j.state === 'failed' || j.state === 'timed_out'));
+        if (!job) return out;
+        out.job = job.name ?? job.label ?? undefined;
+        if (job.log_url) {
+          const log = await get(job.log_url, 'text/plain');
+          if (log.ok) out.logTail = logTail(await log.text());
+        }
+      } catch { /* the run alone is still worth reporting */ }
+      return out;
+    },
+  };
+}
 
 function describeHttp(res: Response, q: CiQuery): string {
   if (res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0')) {

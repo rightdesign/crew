@@ -170,6 +170,10 @@ release:
   #   ci_manual  the crew triggers CI and waits for its result
   #   ci_auto    CI releases on its own; the crew pushes, then WATCHES.
   #              It must not also deploy, or the release happens twice.
+  #   pipeline   a CI pipeline deploys each release to QA by itself and a
+  #              person releases production from it; the crew pushes, follows
+  #              the run, and marks tickets released to QA, then deployed when
+  #              production reports their commit. See `release.mode: pipeline`.
   mode: local
 
   # Where CI lives, when mode is not `local`.
@@ -236,9 +240,14 @@ release:
 | `hooks.merged` | when a human merges | — | Did this ticket's work land? Exit 0 = yes. The only *definitive* closure signal; without it the crew guesses from commit subjects. |
 | `hooks.released` | for `ci_*`; optional for `external` | — | Prints what is live now, on one line. The only way the crew can observe a release it did not perform. For `ci_*` this is matched against the crew's own release by prefix; for `external` it confirms each landed ticket by ancestry instead, since a batched external build commonly reports a later commit than any one ticket's own merge. |
 | `labels.*` | no | the script | Readable names for log lines and filed tickets. |
-| `release.mode` | no | `local` | `local` / `integrate` / `ci_manual` / `ci_auto` / `external` |
+| `release.mode` | no | `local` | `local` / `integrate` / `ci_manual` / `ci_auto` / `external` / `pipeline` |
+| `release.pipeline.qa` | `pipeline` | — | QA's address: a URL (the one role `app`) or a map of role to URL (`web:`, `worker:`). `/api/ready` and `/api/health-check` are read below each. |
+| `release.pipeline.production` | `pipeline` | — | Production's address, same shape. Only `/api/health-check` is read; the crew never releases to it. |
+| `release.pipeline.pipeline` | `pipeline` | — | The CI pipeline to read runs from: `org/slug` for Buildkite. |
+| `release.pipeline.qaTimeoutSeconds` / `qaIntervalSeconds` | no | `600` / `15` | How long, and how often, QA is asked after a run passed before the release is called failed. |
+| `release.pipeline.startTimeoutSeconds` | no | `1800` | How long a pushed release may show no run at all before that is reported. |
 | `release.ship` | no | any ship | The one ship (a `Ships` row name) that runs the release phase for this repo — `local` and `integrate` only; refused for `ci_*`/`external`, which keep multi-ship merging behind the board lock and the fast-forward-only push. Every other ship skips the repo and reports `release for <repo> runs on <ship>`. With none named, `crew doctor` warns when more than one ship has been seen in the last day. `crew status` shows the releaser and the repo's lock row. |
-| `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none`. `github` is queried: while a `ci_*` release waits for `hooks.released`, and again on the later-cycle re-check of a release never confirmed live, the crew asks GitHub for every Actions run on the release commit, matched by commit and ref (the run the tag started and the one the push to the base branch started), using the ship's forge credential for the remote's host (`ship.forges`). A failed run stops the wait for a tag run that failed, raises a `ci_run_failed` ship attention item (key `ci_run_failed:<repo>/<version>`) and files one alert ticket per repository and version carrying the failing job, step, log tail and the batch's tickets; the batch stays `verified` unless `released` matches. A failed run while the version did go live is worded as not blocking the release. The item also carries a structured `ci` object in `crew status --json`'s `ship.attention` and the Ships row's `attention` column: `{ url?, blocking, repo, version }`, where `url` is the failing run's URL (absent, never empty, when the provider gave none) and `blocking` is true while `released` has not reported the version and false once it has, updated on the same item with `since` kept; `message` is unchanged for older clients. Green runs change nothing: `hooks.released` stays the authority for stamping. The item clears when the run is re-run and passes or a later release is confirmed live with its runs green. A credential that is missing, lacks permission, is rate limited or a forge that is unreachable is noted once per release and the release waits as before; `crew doctor` reports whether the crew can read each repository's runs. `buildkite` has no implementation yet and behaves like `other`, as does `none`: never queried. |
+| `release.ci.provider` | when not `local` | `none` | `github` / `buildkite` / `other` / `none`. `github` is queried: while a `ci_*` release waits for `hooks.released`, and again on the later-cycle re-check of a release never confirmed live, the crew asks GitHub for every Actions run on the release commit, matched by commit and ref (the run the tag started and the one the push to the base branch started), using the ship's forge credential for the remote's host (`ship.forges`). A failed run stops the wait for a tag run that failed, raises a `ci_run_failed` ship attention item (key `ci_run_failed:<repo>/<version>`) and files one alert ticket per repository and version carrying the failing job, step, log tail and the batch's tickets; the batch stays `verified` unless `released` matches. A failed run while the version did go live is worded as not blocking the release. The item also carries a structured `ci` object in `crew status --json`'s `ship.attention` and the Ships row's `attention` column: `{ url?, blocking, repo, version }`, where `url` is the failing run's URL (absent, never empty, when the provider gave none) and `blocking` is true while `released` has not reported the version and false once it has, updated on the same item with `since` kept; `message` is unchanged for older clients. Green runs change nothing: `hooks.released` stays the authority for stamping. The item clears when the run is re-run and passes or a later release is confirmed live with its runs green. A credential that is missing, lacks permission, is rate limited or a forge that is unreachable is noted once per release and the release waits as before; `crew doctor` reports whether the crew can read each repository's runs. `buildkite` is read only by `release.mode: pipeline`; in a `ci_*` release it behaves like `other`, as does `none`: never queried. |
 | `release.ci.ref` | when not `local` | — | Workflow file or pipeline slug. Same: validated, not yet read. |
 | `release.tag` | no | `v{version}` | Template for the annotated tag the release creates (and, in `ci_*`, pushes). `false` for none. |
 | `release.tagPattern` | no | `v*` | Glob the crew uses to find the last release tag. Must match what `release.tag` produces. |
@@ -487,6 +496,35 @@ first instance; before this mode existed it declared `external`, which meant
 its verified branches were never merged and every ticket had to be closed by
 hand.
 
+### `release.mode: pipeline`
+
+For a service whose release **is a pipeline's, in two steps**: pushing the
+release commit starts a build that deploys to a QA environment by itself (tens
+of minutes), and production is released from the same pipeline by a person
+pressing a gated button, far less often. The crew never triggers or deploys
+anything in this mode, and it takes no `hooks.deploy` or `hooks.released`. A
+route that does not select it is unaffected.
+
+```yaml
+release:
+  mode: pipeline
+  ci: { provider: buildkite }
+  pipeline:
+    qa: { web: https://qa.example.com, worker: https://qa-worker.example.com }
+    production: https://app.example.com
+    pipeline: acme/widgets
+```
+
+What the operator sees, in order:
+
+1. **Release.** The release step composes and gates the release as in any mode, pushes the release commit (and its tag) and stops. Each squash-merged ticket gets its `commit_sha`; it stays `verified`.
+2. **Waiting, across cycles.** Every release cycle first reads the pipeline run for the newest release commit (Buildkite builds found by commit, using the ship's token for `buildkite.com` in `ship.forges`). While it is running, or its status cannot be read, **no further release is pushed**: tickets verified meanwhile are composed into the next one, and the release cadence settings still apply on top. A build resting at the production gate (`blocked`) counts as passed.
+3. **Released to QA.** When the run has passed, the crew asks QA for `GET /api/ready` and `GET /api/health-check` on every role listed; once each is ready and reports the release commit (the `commit` field, matched by prefix), the tickets whose merged work the commit contains move from `verified` to **released to QA** and record the version. `released_at` is left for production.
+4. **A failed run**, no run appearing within `startTimeoutSeconds`, or QA not reporting the commit within `qaTimeoutSeconds`, is reported with the pipeline link (the log, and a `ci_run_failed` ship attention item); the tickets stay `verified` and join a later release that passes.
+5. **Deployed.** Separately from releasing, each cycle the crew reads production's `/api/health-check`. Every ticket released to QA whose merged work production's commit contains moves to **deployed**, with the time and the version it carried; one production release may close many. A commit that does not contain a ticket's work leaves it alone, so a rollback closes nothing. When production's commit changes to one that does not contain the work of tickets deployed in the last 30 days, a `ci_run_failed` attention item names them; they are never reopened automatically. Roles reporting different commits (a rollout in progress) change nothing until they agree.
+
+**The status.** Released to QA is a status of the tracker's Issues app, which only a person edits: add a choice with the stored value `released_to_qa` (`contract.statuses.releasedToQa`). Without it the release step stops before pushing anything, with a message naming the status it needs. It counts as finished for every lane (nothing polls it, and a ticket it blocked is free) and not as deployed: epics and worktree cleanup treat it as unfinished.
+
 ### `release.mode: external`
 
 For a repository where **the crew does not release at all** — a `verified`
@@ -660,6 +698,7 @@ in — so the hook prints that, and the crew carries it.
 - `platform` and `shell` are separate on purpose: `linux` does not imply bash.
   But `shell` is a local execution detail and is deliberately **not** on the
   Ship record.
+- **`pipeline` requires `release.pipeline` and a `release.ci.provider` of `buildkite`, and refuses `hooks.deploy`.** The crew observes the pipeline's runs and the two environments' health-checks instead of a `released` hook.
 - **`ci_manual` and `ci_auto` require `hooks.released`.** Without it the crew
   has no way to tell whether a release it triggered — or merely pushed to —
   ever landed, and would report success on the basis of having pushed. That is

@@ -12,7 +12,7 @@ import { hostname } from 'node:os';
 import { TablationApiError, TablationClient } from '@tablation/client';
 import type { Route, Ship } from './config.ts';
 import { ConfigError, resolveApiKey } from './config.ts';
-import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, PERISCOPE_COLUMNS, closedStatuses, resolveContract, type Contract } from './contract.ts';
+import { DEFAULT_CONTRACT, EVENT_LOG_MISSING, PERISCOPE_COLUMNS, closedStatuses, resolveContract, withReleasedToQaResolved, type Contract } from './contract.ts';
 import type { EpicRow } from './epics.ts';
 import type { MapRow } from './map-brief.ts';
 import type { ClaimAffinity } from './claim.ts';
@@ -404,7 +404,8 @@ export class Tracker {
       );
     }
     this.models = route.resolved.models;
-    this.contract = resolveContract(route.contract);
+    // Released to QA (CREW-2290) is finished for a blocker whatever resolved list the workspace declared.
+    this.contract = withReleasedToQaResolved(resolveContract(route.contract));
     this.userAgent = ship.userAgent;
     this.shipName = ship.name;
     this.stateDir = ship.stateDir;
@@ -442,6 +443,33 @@ export class Tracker {
       for (const t of await this.listAll<Ticket>(this.models.issues, 'open tickets', encodeFilters([...base, ...q]))) seen.set(t.id, t);
     }
     return [...seen.values()];
+  }
+
+  /**
+   * Every ticket of this route's area at `status`, which need not be an open
+   * one (CREW-2290: the pipeline mode reads tickets released to QA, a status no
+   * lane polls). `extra` narrows it, e.g. to a recent `released_at`.
+   */
+  async ticketsAtStatus(status: string, extra: Filter[] = []): Promise<Ticket[]> {
+    const conds: Filter[] = [{ columnName: this.contract.columns.status, operator: 'EQ', value: status }, ...extra];
+    const areaId = this.route.resolved?.areaId;
+    if (areaId) conds.push({ columnName: this.contract.columns.slice, operator: 'EQ', value: areaId });
+    return this.listAll<Ticket>(this.models.issues, `tickets at ${status}`, encodeFilters(conds));
+  }
+
+  /**
+   * Whether the Issues status field offers `value`. `undefined` when the field
+   * metadata cannot be read, which callers treat as "unknown", not "missing".
+   */
+  async statusOptionExists(value: string): Promise<boolean | undefined> {
+    try {
+      const model = await this.client.dataModels.get(this.models.issues);
+      const field = model.fields.find((f) => f.columnName === this.contract.columns.status);
+      const opts = (field as { fieldType?: { choiceOptions?: Array<{ value: string }> } } | undefined)?.fieldType?.choiceOptions;
+      return Array.isArray(opts) ? opts.some((o) => o.value === value) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

@@ -98,3 +98,65 @@ test('ciRemoteOf reads https and scp-style remotes', () => {
 test('logTail keeps the last lines only', () => {
   assert.equal(logTail('a\nb\nc\nd\n', 2), 'c\nd');
 });
+
+// ---- Buildkite (CREW-2290): recorded responses ------------------------------
+
+import { readFileSync } from 'node:fs';
+import { buildkiteProvider, buildkiteState, isPipelineCiProvider, pipelineProviderFor } from '../src/ci-provider.ts';
+
+const bk = (name: string): string => readFileSync(new URL(`./fixtures/buildkite/${name}`, import.meta.url), 'utf8');
+const BQ: CiQuery = { host: 'github.com', remote: 'acme/widgets', sha: 'abc1234def5678901234567890abcdef12345678', base: 'main', pipeline: 'acme/widgets' };
+const bkFetch = (body: string, seen: Array<{ url: string; auth: string | null }> = []): typeof fetch =>
+  fakeFetch({ '/builds?': () => new Response(body, { status: 200 }) }, seen);
+
+test('buildkite: a running build is pending', async () => {
+  const seen: Array<{ url: string; auth: string | null }> = [];
+  const got = await buildkiteProvider({ token: () => 'bk', fetch: bkFetch(bk('build-running.json'), seen) }).runs(BQ);
+  assert.ok(got.ok);
+  assert.deepEqual(got.runs.map((r) => [r.id, r.state, r.ref, r.url]), [['412', 'pending', 'base', 'https://buildkite.com/acme/widgets/builds/412']]);
+  assert.match(seen[0]!.url, /^https:\/\/api\.buildkite\.com\/v2\/organizations\/acme\/pipelines\/widgets\/builds\?commit=abc1234def/);
+  assert.equal(seen[0]!.auth, 'Bearer bk');
+});
+
+test('buildkite: a passed build is passed, and so is one resting at the production gate', async () => {
+  for (const f of ['build-passed.json', 'build-blocked.json']) {
+    const got = await buildkiteProvider({ token: () => 'bk', fetch: bkFetch(bk(f)) }).runs(BQ);
+    assert.ok(got.ok);
+    assert.equal(got.runs[0]!.state, 'passed', f);
+  }
+});
+
+test('buildkite: a failed build is failed, with its link', async () => {
+  const got = await buildkiteProvider({ token: () => 'bk', fetch: bkFetch(bk('build-failed.json')) }).runs(BQ);
+  assert.ok(got.ok);
+  assert.deepEqual(got.runs.map((r) => [r.state, r.url]), [['failed', 'https://buildkite.com/acme/widgets/builds/415']]);
+});
+
+test('buildkite: failure names the failing job and tails its log', async () => {
+  const p = buildkiteProvider({ token: () => 'bk', fetch: fakeFetch({
+    '/builds/415/jobs/j2/log': () => new Response('step 1 ok\nDeploy failed: exit 2\n'),
+    '/builds/415': () => new Response(bk('build-415.json'), { status: 200 }),
+  }) });
+  const f = await p.failure(BQ, { id: '415', name: 'acme/widgets #415', url: 'u', state: 'failed', ref: 'base' });
+  assert.equal(f.job, 'Deploy QA');
+  assert.equal(f.logTail, 'step 1 ok\nDeploy failed: exit 2');
+});
+
+test('buildkite: no token, a bad pipeline id and HTTP errors are reasons, never throws', async () => {
+  const noToken = await buildkiteProvider({ token: () => null, fetch: bkFetch('[]') }).runs(BQ);
+  assert.deepEqual(noToken, { ok: false, why: 'no readable credential for buildkite.com' });
+  const bad = await buildkiteProvider({ token: () => 'bk', fetch: bkFetch('[]') }).runs({ ...BQ, pipeline: 'widgets' });
+  assert.ok(!bad.ok && /org\/slug/.test(bad.why));
+  const denied = await buildkiteProvider({ token: () => 'bk', fetch: (async () => new Response('', { status: 401 })) as typeof fetch }).runs(BQ);
+  assert.ok(!denied.ok && /cannot read acme\/widgets/.test(denied.why));
+});
+
+test('buildkite: states, and which modes may query it', () => {
+  assert.deepEqual(['passed', 'blocked', 'failed', 'failing', 'canceled', 'skipped', 'scheduled', 'running'].map(buildkiteState),
+    ['passed', 'passed', 'failed', 'failed', 'failed', 'other', 'pending', 'pending']);
+  assert.equal(isPipelineCiProvider('buildkite'), true);
+  // A `ci_*` repo that names buildkite is still never queried by its own flow.
+  assert.equal(isQueryableCiProvider('buildkite'), false);
+  assert.equal(ciProviderFor('buildkite', { token: () => null }), null);
+  assert.ok(pipelineProviderFor('buildkite', { token: () => null }));
+});

@@ -111,6 +111,7 @@ Ask once, in a single message, with your best reading of the evidence beside eac
    - `ci_manual`: Crew triggers CI and waits for it. Needs `hooks.released`.
    - `local`: Crew runs a deploy command itself after merging and pushing, and the command's exit status is the result. Needs `hooks.deploy`. Right when a person ships by running a command today, including one that dispatches a pipeline and waits for it.
    - `external`: Crew does not merge at all. A person or another tool merges pull requests. Needs `hooks.merged`; `hooks.pr` opens the pull request.
+   - `pipeline`: pushing the release commit starts a pipeline that deploys to a QA environment by itself, and a person releases production from the same pipeline. Crew pushes, follows the run, marks tickets released to QA, and marks them deployed when production reports their commit. Needs `release.pipeline` (QA and production addresses, the pipeline) and the Buildkite provider; no `hooks.deploy` or `hooks.released`. Do not propose it unless the repo's own instructions describe this two-step release.
    For `local`, also confirm the exact command I run to ship.
 2. **What single command prints what is live right now**, as a version or a commit sha? A registry query and a health endpoint are the usual answers. The `ci_*` modes cannot work without it, so ask whenever one of them is likely; for the other modes it is optional and not worth a question. It becomes `hooks.released`, with `release.verify.match` set to `version` or `commit` to match, and `release.verify.timeoutSeconds` sized to how long the release pipeline takes.
 3. **Should Crew set versions**, if the evidence was mixed? If a lockfile or second file records the version, confirm it has to stay in step.
@@ -194,7 +195,7 @@ Release (keys under `release`):
 
 | Key | Values and meaning |
 | --- | --- |
-| `mode` | `local` (default), `integrate`, `ci_manual`, `ci_auto`, `external`. |
+| `mode` | `local` (default), `integrate`, `ci_manual`, `ci_auto`, `external`, `pipeline` (needs `release.pipeline`: `qa`, `production`, `pipeline`). |
 | `versioning` | `auto` (default) or `none`. |
 | `versionFiles` | JSON files with a string `version` field that Crew rewrites. Default `[package.json]`. A plain-text file is refused. |
 | `changelog` | Path of the changelog Crew writes. Default `CHANGELOG.md`. `false` for none. |

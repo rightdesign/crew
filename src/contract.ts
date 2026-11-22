@@ -201,6 +201,16 @@ export interface ContractStatuses {
   handoff: string;
   verifying: string;
   verified: string;
+  /**
+   * `release.mode: pipeline` (CREW-2290): released to the QA environment,
+   * not yet to production. Finished from every lane's point of view (nothing
+   * picks it up, a ticket blocked by it is free) and NOT deployed: the epic
+   * sync and the worktree sweep do not treat it as closed. Must exist in the
+   * tracker's status list, which only a person edits; a pipeline release stops
+   * naming it when it does not. Unlike the other roles it has no place in the
+   * work tracker interface: the default is assumed, and only `pipeline` mode reads it.
+   */
+  releasedToQa: string;
   deployed: string;
   /** A person owes an answer. The runner surfaces these, never moves them. */
   needsHuman: string;
@@ -377,6 +387,16 @@ const EPIC_DEFAULTS = defaultGroup<{ statusColumn: string; keyColumn: string }>(
 const MAP_DEFAULTS = defaultGroup<Omit<ContractMaps, 'activeStatus'>>('maps');
 const single = (k: string): string => STATUS_DEFAULTS.single[k]!;
 
+/** The stored value a pipeline release writes for "released to QA" (CREW-2290); documented in docs/REPO_SPEC.md. */
+export const RELEASED_TO_QA_DEFAULT = 'released_to_qa';
+
+/** `resolved`, plus the released-to-QA value: a ticket there is finished for a blocker's purposes. */
+export function withReleasedToQaResolved(c: Contract): Contract {
+  const v = c.statuses.releasedToQa;
+  if (!v || c.statuses.resolved.includes(v)) return c;
+  return { ...c, statuses: { ...c.statuses, resolved: [...c.statuses.resolved, v] } };
+}
+
 export const DEFAULT_CONTRACT: Contract = {
   columns: defaultGroup<ContractColumns>('columns'),
   comments: defaultGroup<ContractComments>('comments'),
@@ -385,6 +405,7 @@ export const DEFAULT_CONTRACT: Contract = {
     resolved: STATUS_DEFAULTS.resolved,
     approved: single('approved'), parked: single('parked'), building: single('building'),
     handoff: single('handoff'), verifying: single('verifying'), verified: single('verified'),
+    releasedToQa: RELEASED_TO_QA_DEFAULT,
     deployed: single('deployed'), needsHuman: single('needsHuman'), reviewing: STATUS_DEFAULTS.single.reviewing ?? null,
     wontFix: single('wontFix'), draft: single('draft'),
   },
@@ -417,7 +438,7 @@ export class ContractError extends Error {}
  * worktree is what the release phase is about to ship.
  */
 export function closedStatuses(c: Contract): string[] {
-  return c.statuses.resolved.filter((s) => s !== c.statuses.verified);
+  return c.statuses.resolved.filter((s) => s !== c.statuses.verified && s !== c.statuses.releasedToQa);
 }
 
 /** Deep-merge an override onto the default. Absent keys keep the default. */

@@ -213,6 +213,38 @@ export async function applyStamp(
 }
 
 /**
+ * `release.mode: pipeline` (CREW-2290): the release's tickets move from
+ * `verified` to released-to-QA once the pipeline run passed and QA reports the
+ * release commit. Records the version it shipped in; `released_at` is left for
+ * the deploy to production, which is the release a customer sees. Hands a
+ * ticket the release seat claimed back to who held it, like `applyStamp`.
+ * Non-fatal per ticket, for the same reason: the work is already in QA.
+ */
+export async function applyQaStamp(
+  tracker: Tracker, tickets: Ticket[], version: string | undefined,
+  contract: Contract, emit: Emitter, seat?: string,
+): Promise<number> {
+  let stamped = 0;
+  const priorAssignee = seat
+    ? await priorAssignees(tracker, tickets.map((ticket) => ({ ticket, reason: 'released to QA' })), seat, contract, emit)
+    : new Map<string, string | null>();
+  for (const ticket of tickets) {
+    try {
+      await tracker.updateTicket(ticket.id, {
+        status: contract.statuses.releasedToQa,
+        ...(priorAssignee.has(ticket.id) ? { [contract.columns.assignee]: priorAssignee.get(ticket.id) ?? null } : {}),
+        ...(version ? { released_version: version } : {}),
+      });
+      emit.emit(`stamped ${contract.statuses.releasedToQa}${version ? ` (${version})` : ''}`, { ticket: ticket.issue_id });
+      stamped++;
+    } catch (e) {
+      emit.warn(`could not stamp: ${(e as Error).message}`, { ticket: ticket.issue_id });
+    }
+  }
+  return stamped;
+}
+
+/**
  * `release.mode: external` only: write `commit_sha`/`merged_at` onto a
  * ticket once `detectClosure` confirms it landed on the other side of the
  * hand-off — the same two fields dev-loop.sh's `stamp_merge_commit` writes

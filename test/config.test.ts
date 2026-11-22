@@ -747,7 +747,7 @@ test('release.mode is validated against the same enum a repo\'s own .crew.yaml u
   ].join('\n'));
   assert.throws(() => loadConfig(dir, join(dir, 'crew.yaml')), (e) => {
     assert.ok(e instanceof ConfigError);
-    assert.match((e as Error).message, /release\.mode must be one of local\|integrate\|ci_manual\|ci_auto\|external \(got "yolo"\)/);
+    assert.match((e as Error).message, /release\.mode must be one of local\|integrate\|ci_manual\|ci_auto\|external\|pipeline \(got "yolo"\)/);
     return true;
   });
 });
