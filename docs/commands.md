@@ -183,7 +183,7 @@ Every request, including one to an unknown path, needs `Authorization: Bearer <k
 
 | Request | Answer |
 | --- | --- |
-| `GET /status` | The `crew status --json` document, plus `daemon` (`alive`, `pid`, `startedAt`, `uptimeSeconds`) and `pause` (`crew`, `release`, `roles`). |
+| `GET /status` | The `crew status --json` document, plus `daemon` (`alive`, `pid`, `startedAt`, `uptimeSeconds`) and `pause` (`crew`, `release`, `roles`). `?tracker=0` returns the light document (`crew status --json --no-tracker`, `tracker.read` false) with the same `daemon` and `pause` blocks and makes no tracker request; without it the answer is unchanged. |
 | `GET /events?after=CURSOR&tail=N&wait=SECONDS` | `{ lines, cursor, reset }`: the event-log lines written since `after`. With no `after`, the last `tail` lines (default 100). `wait` (up to 30) holds the request until a line is written. A rotated log is read to its end before the live file; `reset` is true when the cursor could not be honored and the read restarted. |
 | `GET /streams` | `{ streams }`, one per live run: `run`, `pid`, `ticket`, `role`, `model`, `startedAt`, `deadline` (always `null`: no run limit is enforced). |
 | `GET /streams/RUN?after=CURSOR&tail=N&wait=SECONDS` | The same tail for one run's stream. |

@@ -3892,7 +3892,7 @@ switch (command) {
         ? (req, res, ticket) => handlePeriscopeMcp(periscopeMcpDeps(), req, res, ticket)
         : undefined,
       route: primary.route,
-      status: () => crewJson(['status', primary.route, '--json']),
+      status: (o) => crewJson(['status', primary.route, '--json', ...(o?.tracker === false ? ['--no-tracker'] : [])]),
       doctor: () => crewJson(['doctor', primary.route, '--json', '--offline']),
       diagnostics: () => collectDiagnostics({
         stateDir: cfg.ship.stateDir,

@@ -147,6 +147,26 @@ test('server: status carries the CLI document plus daemon liveness and pause sen
   assert.equal(existsSync(h.srv.path), false);
 });
 
+test('server: GET /status?tracker=0 asks for the light form; a plain GET is unchanged (CREW-4023)', async () => {
+  const asked: Array<{ tracker?: boolean } | undefined> = [];
+  const h = await harness({
+    status: async (o) => {
+      asked.push(o);
+      return { ok: true, doc: { version: 1, tracker: { read: o?.tracker !== false } } };
+    },
+  });
+  try {
+    const light = await h.get('/status?tracker=0');
+    assert.equal(light.status, 200);
+    assert.equal(light.json.tracker.read, false);
+    assert.equal(light.json.daemon.alive, true);
+    assert.deepEqual(light.json.pause, { crew: false, release: false, roles: { dev: false, design: false, qa: false } });
+    const full = await h.get('/status');
+    assert.equal(full.json.tracker.read, true);
+    assert.deepEqual(asked, [{ tracker: false }, undefined]);
+  } finally { await h.srv.close(); }
+});
+
 test('server: no token or a revoked key is 401, a key for an unserved workspace is 403, even on unknown paths', async () => {
   const h = await harness();
   try {

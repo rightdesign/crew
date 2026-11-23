@@ -10,7 +10,8 @@
  * Surface (every request needs a bearer token, even for unknown paths, so the
  * API never reveals which routes exist to an unauthenticated caller):
  *
- *  - `GET /status`            `crew status --json`, plus `daemon` liveness and `pause`.
+ *  - `GET /status`            `crew status --json`, plus `daemon` liveness and `pause`. `?tracker=0` (CREW-4023) runs
+ *                             `crew status --json --no-tracker` instead: no tracker request, `tracker.read` false.
  *  - `GET /events`            incremental tail of the ship event log.
  *  - `GET /streams`           the live run listing.
  *  - `GET /streams/<run>`     incremental tail of one run's stream.
@@ -319,8 +320,8 @@ export interface ControlDeps {
   stateDir: string;
   state: State;
   auth: Pick<ControlAuth, 'verify'>;
-  /** `crew status --json` as an object, or why it could not be produced (CREW-3276). */
-  status: () => Promise<JsonOutcome>;
+  /** `crew status --json` as an object, or why it could not be produced (CREW-3276); `tracker: false` is the light form, `--no-tracker` (CREW-4023). */
+  status: (opts?: { tracker?: boolean }) => Promise<JsonOutcome>;
   /** `crew doctor --json` as an object, or why it could not be produced. */
   doctor: () => Promise<JsonOutcome>;
   /** The route `status` and `doctor` are built for; `/status` names it so doctor can say which route a probe saw. */
@@ -482,7 +483,7 @@ export async function route(deps: ControlDeps, method: string, url: URL, req: In
   }
 
   if (p === '/status' && get) {
-    const out = await deps.status();
+    const out = await deps.status(url.searchParams.get('tracker') === '0' ? { tracker: false } : undefined);
     if (!out.ok) return failureReply('status', out, deps.log);
     return reply(200, {
       ...out.doc,
