@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.172.1] — 2026-11-23
+
+- CREW-4016 The poll no longer rereads the whole open ticket list every few seconds; it reads what changed since the last poll and the full list once a minute.
+
 ## [0.172.0] — 2026-11-22
 
 - CREW-2290 release.mode: pipeline for repos whose pipeline deploys to QA and a person releases production; tickets go released to QA, then deployed when production reports their commit
