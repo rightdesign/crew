@@ -474,10 +474,17 @@ written before this existed carry no paths and grant nothing.
 
 `crew connect` creates one `Locks` row per `<route>/<repo>` (every repo on the
 board's Repos table plus every checkout this ship configures), idempotently
-and safe when two ships connect at once. When a workspace has a `Locks` table
-but no row for a repo, the release is refused with `run crew connect` rather
-than proceeding without a board lock. A workspace with no `Locks` table at
-all still releases with the per-machine lock only.
+and safe when two ships connect at once. A release that finds a `Locks` table
+but no row for its repo creates the row itself (the same race-safe creation,
+then one more claim) and logs that it did; a repo added after the last
+connect needs no operator step. Every reader of a scope acts on the earliest
+row (`created_at`, then `id`), so two ships that briefly have a row each
+still contend on one. Only a refused create is an error: the release for that
+repo is skipped, never run without the row, and a `release_lock_missing` ship
+attention item (with `route`, `repo` and `cause`: `forbidden` or `error`)
+stays open until a claim for the scope succeeds or the repo leaves the route.
+A workspace with no `Locks` table at all still releases with the per-machine
+lock only.
 
 ### `release.mode: integrate`
 

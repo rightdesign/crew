@@ -134,7 +134,7 @@ import { operatorTodo } from './attention.ts';
 import { probeSeats, mergeSeatAttention, seatMissingProblems, type SeatProbe } from './seat-missing.ts';
 import { probeSeatWrites, seatCannotWriteMessage, SEAT_NO_WRITE_REMEDY, probeSeatReads, describeSeatForbidden, describeSeatTables, isForbiddenError, seatForbiddenItem, seatForbiddenRepoLine, SEAT_FORBIDDEN_KEY, SEAT_NO_READ_REMEDY } from './seat-read-probe.ts';
 import { StaleWriteError } from '@tablation/client';
-import { releaseLockScope, type BoardLockResult } from './board-lock.ts';
+import { releaseLockScope, type CreatingLockResult } from './board-lock.ts';
 import { releaserFor, nonReleaserNote, missingReleaserWarning } from './release-ship.ts';
 import { validateContract, DEFAULT_CONTRACT, EVENT_LOG_STATUS_UNTRACKED } from './contract.ts';
 import { OVERRIDE_IGNORED_MESSAGE, UNDECLARED_MESSAGE, readForRoute, interfaceReport } from './tracker-interface-read.ts';
@@ -224,7 +224,7 @@ import { startWorktreeIntel } from './intel-worktree.ts';
 import { materializeMirrorCheckouts } from './passenger-mirror.ts';
 import { describeCause, TRACKER_OUTAGE_KEY } from './outage.ts';
 import { contractFixers } from './contract-refusal.ts';
-import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, clearShipAttentionKind, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoContractNewerItem, repoContractNewerKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
+import { reconcileHeldWorktrees, openShipAttention, raiseShipAttention, clearShipAttention, clearShipAttentionKind, hookCommand, baseAttention, seatKeyUnreadableItem, seatKeyUnreadableKey, repoContractRefusedItem, repoContractRefusedKey, repoContractNewerItem, repoContractNewerKey, repoPlatformUnreleasableItem, repoPlatformUnreleasableKey, releaseLockMissingItem, releaseLockMissingKey, staleReleaseLockKeys, dockerDaemonItem, DOCKER_DAEMON_KEY, DOCKER_REMEDY } from './ship-attention.ts';
 import {
   runDaemonLoop, runFleetPass, makeStaleChecker, SpawnBreaker,
   reloadSentinelFor, readReloadRequestedAt, noteDaemonStarted, readDaemonStarted, configChangedAfter,
@@ -1599,6 +1599,12 @@ async function releaseTargets(
   }
   const summaries: RoutedReleaseSummary[] = [];
   if (!dryRun) state.releaseHeartbeat().touch();
+  // CREW-4026: a repo this route no longer serves cannot be waiting on a lock row.
+  if (!dryRun && !only) {
+    try {
+      for (const k of staleReleaseLockKeys(openShipAttention(state).map((i) => i.key), route.route, targets.map((t) => t.name))) clearShipAttention(state, k);
+    } catch { /* attention is a convenience */ }
+  }
   for (const t of chosen) summaries.push({ ...(await releasePhase(route, t, opts)), route: route.route });
   emitReleaseSummary(emit, summaries);
   if (!dryRun) state.releaseHeartbeat().touch();
@@ -2185,7 +2191,7 @@ async function releaserLine(
   try {
     const st = await tracker.lockState(releaseLockScope(routeName, repo));
     lock = st === undefined ? 'no Locks table'
-      : !st.exists ? 'lock row MISSING (run crew connect)'
+      : !st.exists ? 'lock row not created yet (the next release that needs it creates it)'
       : st.holder ? ((lockHeld = true), `lock held by ${st.holder}`) : 'lock row free';
   } catch (e) {
     lock = `lock unreadable (${(e as Error).message})`;
@@ -2372,7 +2378,7 @@ async function releasePhase(
   // excluded two processes on THIS machine. Taken after the local lock so a
   // dry run and a machine with no other releasing process never pay for a
   // network round trip; released in the `finally` below alongside it.
-  let boardLock: BoardLockResult | undefined;
+  let boardLock: CreatingLockResult | undefined;
   let primaryRebuild: (() => Promise<void>) | undefined;
   try {
 
@@ -2528,11 +2534,16 @@ async function releasePhase(
       const got = await tracker.acquireBoardLock(scope, holderLabel, RELEASE_LOCK_TTL_MS, {
         warn: (m) => remit.warn(m, { step: 'release' }), debug: (m) => remit.emit(m, { step: 'release' }),
       });
-      if (!got.ok && got.reason === 'missing') {
-        const detail = `no Locks row for ${scope} — run \`crew connect ${c.route}\` to provision it`;
+      if (!got.ok && got.reason === 'create_refused') {
+        // CREW-4026: a row that is missing and cannot be created leaves releases for the repo not running; never release without the row.
+        const detail = `no Locks row for ${scope} and it could not be created: ${got.error}; a workspace admin can run \`crew connect ${c.route}\` once to create it`;
         remit.warn(`release for ${scope} refused: ${detail}`, { step: 'release' });
+        try { await raiseShipAttention({ state, emit: remit, route: c, ship: cfg.ship }, releaseLockMissingItem(c.route, target.name, got.cause)); } catch { /* the warning above still says it */ }
         return { scope, tests: 'skipped', outcome: 'skipped', detail };
       }
+      // The row exists (or was just created): whatever the claim's outcome, the item no longer holds.
+      try { clearShipAttention(state, releaseLockMissingKey(scope)); } catch { /* attention is a convenience */ }
+      if (got.ok && got.created) remit.emit(`created the missing Locks row for ${scope}`, { step: 'release' });
       if (!got.ok) {
         const why = got.reason === 'held' ? `held by ${got.heldBy ?? 'another ship'}` : 'claimed by another ship mid-check';
         remit.emit(`release for ${scope} is ${why} on the board — skipping`, { step: 'release' });

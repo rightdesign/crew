@@ -19,7 +19,7 @@ import type { ClaimAffinity } from './claim.ts';
 import { openShipAttention, type ShipAttentionItem } from './ship-attention.ts';
 import { State } from './state.ts';
 import { projectWorkModes, type WorkMode } from './work-mode.ts';
-import { acquireBoardLock as claimBoardLock, lockRowState, type BoardLockResult, type BoardLockLog, type LockRowState } from './board-lock.ts';
+import { acquireOrCreateBoardLock, lockRowState, type CreatingLockResult, type BoardLockLog, type LockRowState } from './board-lock.ts';
 
 export interface Ticket {
   id: string;
@@ -1117,11 +1117,11 @@ export class Tracker {
    * Claim a board-visible lock for `scope` (ISSUE-394) — see board-lock.ts
    * for the CAS mechanics. Resolves to `{ ok: true }` immediately, with a
    * no-op release, only when this workspace has no Locks table at all. A
-   * Locks table with no row for `scope` is `{ ok: false, reason: 'missing' }`
-   * (CREW-1384): `crew connect` provisions the row.
+   * Locks table with no row for `scope` gets one created here (CREW-4026); a refused create is
+   * `{ ok: false, reason: 'create_refused' }`.
    */
-  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number, log?: BoardLockLog, renewEveryMs?: number): Promise<BoardLockResult> {
-    return claimBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs, log, renewEveryMs);
+  acquireBoardLock(scope: string, holderLabel: string, ttlMs: number, log?: BoardLockLog, renewEveryMs?: number): Promise<CreatingLockResult> {
+    return acquireOrCreateBoardLock(this.client.records, this.route.resolved?.locksModelId, scope, holderLabel, ttlMs, log, renewEveryMs);
   }
 
   /** The Locks row for `scope` — present? held by whom? Undefined when this workspace has no Locks table. */

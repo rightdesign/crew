@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { StaleWriteError } from '@tablation/client';
 import {
-  acquireBoardLock, ensureLockRows, lockRowState, type LockRecordsClient, type LockProvisionClient,
+  acquireBoardLock, acquireOrCreateBoardLock, ensureLockRows, lockRowState, type LockRecordsClient, type LockProvisionClient,
 } from '../src/board-lock.ts';
 
 const MODEL = 'locks-model';
@@ -276,4 +276,112 @@ test('release stops the renewal timer, so no write follows it (CREW-3870)', asyn
   const after = f.calls.length;
   await sleep(50);
   assert.equal(f.calls.length, after);
+});
+
+/** A full in-memory Locks table (list, create, remove and CAS update) for the create-on-missing path (CREW-4026). */
+function lockTable(rows: Array<{ id: string; scope: string; holder?: string; created_at: string; updated_at: string }> = [], prefix = 'n') {
+  let n = 0;
+  const t = {
+    rows,
+    creates: 0,
+    createError: undefined as (Error & { status?: number }) | undefined,
+    onCreate: undefined as (() => void) | undefined,
+    async list(_m: string, params?: { filters?: string; limit?: number }) {
+      const want = JSON.parse(params?.filters ?? '[]')[0]?.value;
+      return t.rows.filter((r) => r.scope === want).slice(0, params?.limit ?? 100);
+    },
+    async create(_m: string, body: Record<string, unknown>) {
+      if (t.createError) throw t.createError;
+      t.creates++;
+      const row = {
+        id: `${prefix}-${++n}`, scope: String(body.scope), holder: String(body.holder ?? ''),
+        created_at: new Date(Date.now() + n).toISOString(), updated_at: new Date().toISOString(),
+      };
+      t.rows.push(row);
+      t.onCreate?.();
+      return row;
+    },
+    async remove(_m: string, id: string) { t.rows = t.rows.filter((r) => r.id !== id); },
+    async update(_m: string, id: string, body: Record<string, unknown>, expected?: string) {
+      const row = t.rows.find((r) => r.id === id);
+      if (!row) throw new Error('no such record');
+      if (expected !== undefined && expected !== row.updated_at) throw new StaleWriteError({ conflict: true });
+      row.holder = String(body.holder);
+      row.updated_at = new Date(Date.now() + (++writeCounter)).toISOString();
+      return { ...row };
+    },
+  };
+  return t;
+}
+
+test('CREW-4026: a missing row is created exactly once, then claimed', async () => {
+  const t = lockTable();
+  const got = await acquireOrCreateBoardLock(t, MODEL, 'ws/proj/a', 'shipA:1', TTL);
+  assert.ok(got.ok);
+  if (got.ok) { assert.equal(got.created, true); assert.equal(got.exclusion, 'taken'); await got.release(); }
+  assert.equal(t.rows.length, 1);
+  assert.equal(t.creates, 1);
+  const again = await acquireOrCreateBoardLock(t, MODEL, 'ws/proj/a', 'shipA:1', TTL);
+  assert.ok(again.ok);
+  if (again.ok) { assert.equal(again.created, false); await again.release(); }
+  assert.equal(t.creates, 1, 'an existing row is never created again');
+});
+
+test('CREW-4026: no Locks table means exclusion off and nothing created', async () => {
+  const t = lockTable();
+  const got = await acquireOrCreateBoardLock(t, undefined, 'ws/proj/a', 'shipA:1', TTL);
+  assert.ok(got.ok);
+  if (got.ok) assert.equal(got.exclusion, 'off');
+  assert.equal(t.creates, 0);
+});
+
+test('CREW-4026: two ships creating at once end with one row and one holder', async () => {
+  // Both see "missing"; each ship's row is created inside the other's window, so both rows exist at once.
+  const shared = lockTable();
+  const rowsBefore: string[] = [];
+  let injected = false;
+  shared.onCreate = () => {
+    if (injected) return;
+    injected = true;
+    // The rival's row lands just after ours is created, and is OLDER than it.
+    shared.rows.push({ id: 'rival', scope: 'ws/proj/a', holder: '', created_at: '2000-01-01T00:00:00.000Z', updated_at: new Date().toISOString() });
+    rowsBefore.push(...shared.rows.map((r) => r.id));
+  };
+  const a = await acquireOrCreateBoardLock(shared, MODEL, 'ws/proj/a', 'shipA:1', TTL);
+  assert.equal(rowsBefore.length, 2, 'both rows existed at once');
+  // The rival ship now starts the same release against the surviving row.
+  const b = await acquireOrCreateBoardLock(shared, MODEL, 'ws/proj/a', 'shipB:2', TTL);
+  assert.equal(shared.rows.length, 1);
+  assert.equal(shared.rows[0]?.id, 'rival', 'the earliest row survives');
+  const holders = [a, b].filter((r) => r.ok);
+  assert.equal(holders.length, 1, 'exactly one ship holds the scope');
+  const loser = [a, b].find((r) => !r.ok);
+  assert.ok(loser && !loser.ok && (loser.reason === 'held' || loser.reason === 'contended'));
+  for (const h of holders) if (h.ok) await h.release();
+});
+
+test('CREW-4026: with two rows, acquire and lockRowState both act on the earliest', async () => {
+  const t = lockTable([
+    { id: 'z-late', scope: 's', holder: '', created_at: '2026-02-01T00:00:00.000Z', updated_at: NOW },
+    { id: 'a-early', scope: 's', holder: 'shipB:2', created_at: '2026-01-01T00:00:00.000Z', updated_at: NOW },
+  ]);
+  assert.equal((await lockRowState(t, MODEL, 's')).holder, 'shipB:2');
+  const got = await acquireBoardLock(t, MODEL, 's', 'shipA:1', TTL);
+  assert.equal(got.ok, false);
+  if (!got.ok) assert.equal(got.heldBy, 'shipB:2', 'saw the earliest row, not whichever listed first');
+  assert.equal(t.rows.find((r) => r.id === 'z-late')?.holder, '');
+});
+
+test('CREW-4026: a refused create is reported with its cause and never claims', async () => {
+  const t = lockTable();
+  t.createError = Object.assign(new Error('forbidden'), { status: 403 });
+  const got = await acquireOrCreateBoardLock(t, MODEL, 's', 'shipA:1', TTL);
+  assert.equal(got.ok, false);
+  if (!got.ok && got.reason === 'create_refused') { assert.equal(got.cause, 'forbidden'); assert.match(got.error, /forbidden/); }
+  else assert.fail('expected create_refused');
+  t.createError = Object.assign(new Error('boom'), { status: 500 });
+  const other = await acquireOrCreateBoardLock(t, MODEL, 's', 'shipA:1', TTL);
+  if (!other.ok && other.reason === 'create_refused') assert.equal(other.cause, 'error');
+  else assert.fail('expected create_refused');
+  assert.equal(t.rows.length, 0);
 });

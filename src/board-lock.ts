@@ -13,13 +13,19 @@
  * `StaleWriteError` on conflict) is exactly the primitive a contended claim
  * needs. This wraps that primitive around one row of a `Locks` table.
  *
- * `acquireBoardLock` never creates the row, so a release cannot race two
- * ships on who creates it. Since CREW-1384 `crew connect` provisions one row
- * per repo scope (`ensureLockRows`), and a workspace that HAS a Locks table
- * but no row for a scope is an error, not a silent downgrade to local-only
- * locking: that fallback is how every ship ended up releasing at once while
- * the rows sat stale (CREW-1399). A workspace with no Locks table at all
- * still has no board lock, as before.
+ * `acquireBoardLock` itself never creates the row. Since CREW-1384 `crew
+ * connect` provisions one row per repo scope (`ensureLockRows`); a release
+ * that finds none creates it through `acquireOrCreateBoardLock` (CREW-4026),
+ * which uses the same race-safe `ensureLockRows` and then claims. Only a
+ * refused create is an error, and it is never a silent downgrade to
+ * local-only locking: that fallback is how every ship ended up releasing at
+ * once while the rows sat stale (CREW-1399). A workspace with no Locks table
+ * at all still has no board lock, as before.
+ *
+ * Every reader of a scope picks the same row (`pickLockRow`: earliest
+ * `created_at`, then `id`, the one `ensureLockRows` keeps), so two ships that
+ * briefly have a row each still contend on ONE row and the compare-and-swap
+ * decides.
  */
 
 import { StaleWriteError } from '@tablation/client';
@@ -87,10 +93,8 @@ export async function acquireBoardLock(
 ): Promise<BoardLockResult> {
   if (!modelId) return { ok: true, release: async () => {}, stillHeld: async () => true, renew: async () => {}, exclusion: 'off' };
 
-  const filters = JSON.stringify([{ columnName: 'scope', operator: 'EQ', value: scope }]);
-  const rows = await client.list(modelId, { filters, limit: 1 });
-  const row = rows[0];
-  if (!row) return { ok: false, reason: 'missing' };   // `crew connect` provisions it
+  const row = await readLockRow(client, modelId, scope);
+  if (!row) return { ok: false, reason: 'missing' };   // `acquireOrCreateBoardLock` (or `crew connect`) provisions it
 
   const age = Date.now() - new Date(row.updated_at).getTime();
   const staleOwn = !!row.holder && row.holder !== holderLabel && isDeadOwnClaim(row.holder, holderLabel);
@@ -122,7 +126,7 @@ export async function acquireBoardLock(
         current = (await client.update(modelId, row.id, { holder: holderLabel }, current)).updated_at;
       } catch (e) {
         if (!(e instanceof StaleWriteError)) throw e;
-        const [now] = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+        const now = await readLockRow(client, modelId, scope);
         if (now?.holder !== holderLabel) {
           lost = true;
           log.warn?.(`board lock ${scope} was taken by ${now?.holder || 'another ship'} while this release was running`);
@@ -146,7 +150,7 @@ export async function acquireBoardLock(
     stillHeld: async () => {
       if (lost) return false;
       try {
-        const [now] = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+        const now = await readLockRow(client, modelId, scope);
         if (now?.holder === holderLabel) return true;
         lost = true;
         return false;
@@ -165,7 +169,7 @@ export async function acquireBoardLock(
           if (!(e instanceof StaleWriteError)) throw e;
           // Something touched the row since our claim. If it still names us,
           // the release must still land (CREW-2411); if not, it is not ours.
-          const [now] = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
+          const now = await readLockRow(client, modelId, scope);
           if (now?.holder === holderLabel) await client.update(modelId, row.id, { holder: '' }, now.updated_at);
         }
         log.debug?.(`lock released for ${scope}`);
@@ -197,13 +201,21 @@ export interface LockRowState { exists: boolean; holder?: string; since?: string
 export async function lockRowState(
   client: Pick<LockRecordsClient, 'list'>, modelId: string, scope: string,
 ): Promise<LockRowState> {
-  const rows = await client.list(modelId, { filters: scopeFilter(scope), limit: 1 });
-  const row = rows[0];
+  const row = await readLockRow(client, modelId, scope);
   if (!row) return { exists: false };
   return { exists: true, ...(row.holder ? { holder: row.holder, since: row.updated_at } : {}) };
 }
 
 const scopeFilter = (scope: string): string => JSON.stringify([{ columnName: 'scope', operator: 'EQ', value: scope }]);
+
+/** The row every reader of a scope acts on: earliest `created_at`, then `id` (the one `ensureLockRows` keeps). */
+export function pickLockRow<T extends { id: string; created_at?: string }>(rows: T[]): T | undefined {
+  return [...rows].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id))[0];
+}
+
+async function readLockRow(client: Pick<LockRecordsClient, 'list'>, modelId: string, scope: string): Promise<LockRow | undefined> {
+  return pickLockRow(await client.list(modelId, { filters: scopeFilter(scope), limit: 20 }));
+}
 
 /** The slice of RecordsResource `ensureLockRows` needs on top of `list`. */
 export interface LockProvisionClient extends Pick<LockRecordsClient, 'list'> {
@@ -239,9 +251,7 @@ export async function ensureLockRows(
       }
       throw e;
     }
-    const all = await client.list(modelId, { filters, limit: 20 });
-    const keeper = [...all].sort((a, b) =>
-      (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id))[0];
+    const keeper = pickLockRow(await client.list(modelId, { filters, limit: 20 }));
     if (keeper && keeper.id !== mine.id) {
       await client.remove(modelId, mine.id).catch(() => {});
       continue;
@@ -249,4 +259,37 @@ export async function ensureLockRows(
     created.push(scope);
   }
   return created;
+}
+
+/** Why a missing row could not be created: `forbidden` when the tracker refused the write for lack of permission, `error` otherwise. */
+export type LockCreateCause = 'forbidden' | 'error';
+
+export type CreatingLockResult =
+  | (Extract<BoardLockResult, { ok: true }> & { created: boolean })
+  | Extract<BoardLockResult, { ok: false }>
+  | { ok: false; reason: 'create_refused'; cause: LockCreateCause; error: string };
+
+/**
+ * `acquireBoardLock`, but a scope with no row gets one (CREW-4026): create it
+ * through `ensureLockRows` (safe against a concurrent creator), then claim
+ * once more. `created` is true only when this call's own row survived. A
+ * create that is rejected is `create_refused` and never falls through to a
+ * release without the row.
+ */
+export async function acquireOrCreateBoardLock(
+  client: LockRecordsClient & LockProvisionClient, modelId: string | undefined, scope: string, holderLabel: string, ttlMs: number,
+  log: BoardLockLog = {}, renewEveryMs: number = DEFAULT_RENEW_EVERY_MS,
+): Promise<CreatingLockResult> {
+  const first = await acquireBoardLock(client, modelId, scope, holderLabel, ttlMs, log, renewEveryMs);
+  if (first.ok || first.reason !== 'missing' || !modelId) return first.ok ? { ...first, created: false } : first;
+  let created: string[];
+  try {
+    created = await ensureLockRows(client, modelId, [scope]);
+  } catch (e) {
+    const status = (e as { status?: number }).status;
+    return { ok: false, reason: 'create_refused', cause: status === 403 ? 'forbidden' : 'error', error: (e as Error).message };
+  }
+  const again = await acquireBoardLock(client, modelId, scope, holderLabel, ttlMs, log, renewEveryMs);
+  if (again.ok) return { ...again, created: created.length > 0 };
+  return again;
 }

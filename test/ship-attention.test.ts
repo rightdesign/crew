@@ -254,3 +254,15 @@ test('CREW-3475: upsert flips ci.blocking on the same ci_run_failed key and keep
   assert.equal(flipped[0]!.since, '2026-11-16T10:00:00.000Z');
   assert.equal(flipped[0]!.ci?.blocking, false);
 });
+
+test('CREW-4026: release_lock_missing carries route, repo and cause, names no command, and goes stale with its repo', async () => {
+  const { releaseLockMissingItem, releaseLockMissingKey, staleReleaseLockKeys } = await import('../src/ship-attention.ts');
+  const item = releaseLockMissingItem('ws/proj', 'crew', 'forbidden');
+  assert.equal(item.kind, 'release_lock_missing');
+  assert.equal(item.key, releaseLockMissingKey('ws/proj/crew'));
+  assert.deepEqual([item.route, item.repo, item.cause], ['ws/proj', 'crew', 'forbidden']);
+  assert.doesNotMatch(item.message, /crew connect|`/);
+  assert.match(item.message, /releases for crew are not running/);
+  const keys = [item.key, releaseLockMissingKey('ws/proj/gone'), releaseLockMissingKey('other/x'), 'stalled:1'];
+  assert.deepEqual(staleReleaseLockKeys(keys, 'ws/proj', ['crew']), [releaseLockMissingKey('ws/proj/gone')]);
+});

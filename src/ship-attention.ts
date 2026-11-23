@@ -25,7 +25,7 @@ import { baseBranchUnsafe, describeUnsafeBase, refreshBaseBranch, type BaseRefre
 import { loadRepoConfig, loadRepoConfigTolerant, resolveRepoConfig, NEWER_CONTRACT_PHRASE, newerContractSummary, type NewerContractNote } from './repo-config.ts';
 import { mapFilePath } from './repo-map.ts';
 
-export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'repo_contract_newer' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing' | 'ci_run_failed' | 'tracker_interface';
+export type ShipAttentionKind = 'role_parked' | 'hook_missing' | 'release_stale' | 'docker_missing' | 'base_unsafe' | 'stalled' | 'disk_low' | 'worktree_held' | 'crew_outdated' | 'tracker_unreachable' | 'seat_forbidden' | 'agent_log_refused' | 'periscope_idle' | 'seat_key_unreadable' | 'workspace_auth' | 'workspace_allowance' | 'repo_unservable' | 'sandbox_cache' | 'sandbox_build_failed' | 'repo_contract_refused' | 'repo_contract_newer' | 'tunnel_rejected' | 'relay_control_unsupported' | 'release_merge_failed' | 'signed_out' | 'seat_cannot_write' | 'noop_runs' | 'sandbox_leak' | 'disk_pressure' | 'disk_full' | 'daemon_start_failed' | 'repo_platform_unreleasable' | 'list_truncated' | 'seat_missing' | 'ci_run_failed' | 'tracker_interface' | 'release_lock_missing';
 
 export interface ShipAttentionItem {
   kind: ShipAttentionKind;
@@ -47,6 +47,13 @@ export interface ShipAttentionItem {
    * `url` is the failing run's URL and absent when the provider gave none.
    */
   ci?: { url?: string; blocking: boolean; repo: string; version: string };
+  /**
+   * Present on `release_lock_missing` items (CREW-4026), so a client need not parse `message`.
+   * `cause` is `forbidden` when the tracker refused the write for lack of permission, `error` otherwise.
+   */
+  route?: string;
+  repo?: string;
+  cause?: 'forbidden' | 'error';
 }
 
 /** A worktree the sweep refused to remove (CREW-2051). */
@@ -205,6 +212,34 @@ export function repoPlatformUnreleasableItem(repo: string, detail: string, nowIs
     kind: 'repo_platform_unreleasable', key: repoPlatformUnreleasableKey(repo), since: nowIso,
     message: `${detail}. Resumes automatically once a ship that satisfies the platform serves the route or a verified branch changes it`,
   };
+}
+
+/** The key of a repo's `release_lock_missing` item; `scope` is `releaseLockScope(route, repo)`. */
+export const releaseLockMissingKey = (scope: string): string => `release_lock_missing:${scope}`;
+
+/**
+ * A repository whose release lock row is missing and could not be created
+ * (CREW-4026), so its releases are not running. Names the cause, never a
+ * command to run. Cleared once a claim for the scope succeeds or the repo is
+ * no longer served by the route.
+ */
+export function releaseLockMissingItem(
+  route: string, repo: string, cause: 'forbidden' | 'error', nowIso = new Date().toISOString(),
+): ShipAttentionItem {
+  const why = cause === 'forbidden'
+    ? "this ship's key may not add rows to the workspace's Locks table"
+    : "the tracker could not be reached or refused the write";
+  return {
+    kind: 'release_lock_missing', key: releaseLockMissingKey(`${route}/${repo}`), since: nowIso, route, repo, cause,
+    message: `${route}: releases for ${repo} are not running — its release lock row is missing and could not be created, because ${why}. Resumes automatically once the row exists or can be created`,
+  };
+}
+
+/** Keys of `release_lock_missing` items for `route` whose repo is no longer in `served`. */
+export function staleReleaseLockKeys(openKeys: string[], route: string, served: string[]): string[] {
+  const prefix = releaseLockMissingKey(`${route}/`);
+  const keep = new Set(served.map((r) => releaseLockMissingKey(`${route}/${r}`)));
+  return openKeys.filter((k) => k.startsWith(prefix) && !keep.has(k));
 }
 
 /** The key of a route's `agent_log_refused` item; one per route, so a second refused run does not add another. */

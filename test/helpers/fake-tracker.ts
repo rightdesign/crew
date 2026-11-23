@@ -38,6 +38,13 @@ export class FakeTracker {
     this.raceHooks.set(model, fn);
   }
 
+  /** Models whose POST is answered 403, for a key that may not add rows (CREW-4026). */
+  private refusedPosts = new Set<string>();
+  refuse(model: string, method: 'POST'): this {
+    if (method === 'POST') this.refusedPosts.add(model);
+    return this;
+  }
+
   table(id: string, rows: Row[]): this {
     this.tables.set(id, rows.map((r) => ({ ...r })));
     return this;
@@ -143,7 +150,8 @@ export class FakeTracker {
           return send(201, { id: `event-${this.events.length}`, ...parsed });
         }
         if (req.method === 'POST' && parts[3] === 'records') {
-          const created = { id: `created-${rows.length + 1}`, created_at: '2026-08-24T00:00:00.000Z', ...parsed };
+          if (this.refusedPosts.has(model)) return send(403, { message: 'Forbidden' });
+          const created = { id: `created-${rows.length + 1}`, created_at: '2026-08-24T00:00:00.000Z', updated_at: '2026-08-24T00:00:00.000Z', ...parsed };
           this.writes.push({ method: 'POST', model, body: parsed });
           rows.push(created as Row);
           return send(201, created);

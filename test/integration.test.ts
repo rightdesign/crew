@@ -248,7 +248,7 @@ test('a release held by another ship on the board is skipped, not merged twice (
   } finally { await t.stop(); }
 });
 
-test('CREW-1384: a Locks table with no row for the repo refuses the release and says how to fix it', async () => {
+test('CREW-4026: a Locks table with no row for the repo gets one created, then the release claims it', async () => {
   const LOCKS = 'm-locks';
   const t = await new FakeTracker()
     .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
@@ -257,7 +257,24 @@ test('CREW-1384: a Locks table with no row for the repo refuses the release and 
     .start();
   try {
     const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'test/proj');
-    assert.match(out, /no Locks row for test\/proj\/project — run `crew connect test\/proj`/);
+    assert.match(out, /created the missing Locks row for test\/proj\/project/);
+    assert.match(out, /took board lock test\/proj\/project/);
+    assert.equal(t.writes.filter((w) => w.model === LOCKS && w.method === 'POST').length, 1, 'exactly one row created');
+  } finally { await t.stop(); }
+});
+
+test('CREW-4026: a refused create skips the release, raises an attention item and writes nothing else', async () => {
+  const LOCKS = 'm-locks';
+  const t = await new FakeTracker()
+    .table(MODELS.crew, crewRows()).table(MODELS.comments, [])
+    .table(MODELS.issues, [ticket({ id: 'i1', issue_id: 'ISSUE-1', status: 'verified' })])
+    .table(LOCKS, [])
+    .refuse(LOCKS, 'POST')
+    .start();
+  try {
+    const out = await ship(t, { resolvedExtra: `      locksModelId: ${LOCKS}\n` }).run('run', 'test/proj');
+    assert.match(out, /no Locks row for test\/proj\/project and it could not be created/);
+    assert.match(out, /release_lock_missing|releases for project are not running/);
     assert.ok(!t.writes.some((w) => w.model === MODELS.issues), 'a refused release must not touch the ticket');
   } finally { await t.stop(); }
 });
