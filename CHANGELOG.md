@@ -17,6 +17,11 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.173.0] — 2026-11-23
+
+- CREW-4019 `crew status --json --no-tracker` makes no tracker request on a route that declares repositories; the area worktree prefix is left out of that light read.
+- CREW-4021 A run's sidecar and Recent runs now name a ticket by its project tag (TABL-4009) instead of its ISSUE-nnn key.
+
 ## [0.172.1] — 2026-11-23
 
 - CREW-4016 The poll no longer rereads the whole open ticket list every few seconds; it reads what changed since the last poll and the full list once a minute.
