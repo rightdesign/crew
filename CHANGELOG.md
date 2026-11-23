@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.173.1] — 2026-11-23
+
+- CREW-4023 The control API's GET /status accepts ?tracker=0 and answers the light document with no tracker request, so a remote ship can be watched cheaply.
+
 ## [0.173.0] — 2026-11-23
 
 - CREW-4019 `crew status --json --no-tracker` makes no tracker request on a route that declares repositories; the area worktree prefix is left out of that light read.
