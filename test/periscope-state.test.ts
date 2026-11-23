@@ -27,23 +27,31 @@ test('sidecar is written on up, listed with a probed serving flag, and gone afte
   assert.deepEqual(await periscopesForStatus(dir), []);
 });
 
+/**
+ * Listen on an ephemeral port of `host`, assert it is seen, close it, then assert it is
+ * seen no more. Other test files run in parallel processes and may take the just-freed
+ * port number on either loopback family, so the "gone" half is retried on a fresh port
+ * before it counts as a failure.
+ */
+async function seesListenerThenAbsence(host: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const srv = createServer();
+    const bound = await new Promise<boolean>((r) => { srv.once('error', () => r(false)); srv.listen(0, host, () => r(true)); });
+    if (!bound) return false;
+    const port = (srv.address() as { port: number }).port;
+    assert.equal(await portListening(port), true);
+    await new Promise((r) => srv.close(r));
+    if (!(await portListening(port))) return true;
+  }
+  assert.fail('a freed loopback port kept answering as listening across 5 fresh ports');
+}
+
 test('portListening sees a real listener and then its absence', async () => {
-  const srv = createServer().listen(0, '127.0.0.1');
-  await new Promise((r) => srv.once('listening', r));
-  const port = (srv.address() as { port: number }).port;
-  assert.equal(await portListening(port), true);
-  await new Promise((r) => srv.close(r));
-  assert.equal(await portListening(port), false);
+  assert.equal(await seesListenerThenAbsence('127.0.0.1'), true);
 });
 
 test('portListening sees a listener bound to the IPv6 loopback only', async (t) => {
-  const srv = createServer();
-  const bound = await new Promise<boolean>((r) => { srv.once('error', () => r(false)); srv.listen(0, '::1', () => r(true)); });
-  if (!bound) return t.skip('no IPv6 loopback on this machine');
-  const port = (srv.address() as { port: number }).port;
-  assert.equal(await portListening(port), true);
-  await new Promise((r) => srv.close(r));
-  assert.equal(await portListening(port), false);
+  if (!(await seesListenerThenAbsence('::1'))) return t.skip('no IPv6 loopback on this machine');
 });
 
 test('urlPort', () => {
