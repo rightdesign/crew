@@ -102,6 +102,16 @@ import { applyFailureAlert, applyFailureRecovery } from './failure-alert.ts';
 import { describeRun, liveRuns, settleRunEnd } from './live-runs.ts';
 import { lastRunsBySeat } from './run-snapshot.ts';
 import { resolveRunTags } from './run-tags.ts';
+
+/**
+ * What `crew status --json --no-tracker` leaves out (CREW-4019): each needs a tracker request. The first
+ * four are absent from the document; the seat fields stay but read null/false, and a run's ticket stays the
+ * key it was started with instead of the display tag.
+ */
+const TRACKER_BLOCKS = [
+  'todo', 'ships', 'route.projects', 'route.crewMinVersion', 'ship.rowName', 'ship.nameDrift',
+  'crew.repos[].worktreePrefix(area prefix)', 'crew.seats[].name', 'crew.seats[].personaName', 'crew.seats[].missing', 'runs[].title', 'runs[].ticket(display tag)',
+] as const;
 import { anyRunAcceptsInput, COMMENT_DELIVERY_BACKOFF_MS, runCommentDeliveryPass } from './comment-delivery.ts';
 import { startLaunchdDaemon } from './launchd-start.ts';
 import { probeDaemonUnit, readDaemonStamp, daemonLineText, daemonKnownDead, reloadRequestText, daemonProblem, type DaemonLiveness } from './daemon-liveness.ts';
@@ -464,6 +474,7 @@ function usage(problem?: string, requested = false): never {
   crew watch [route]             live view of what the crew is doing
   crew --version [--json]        print the crew version on one line (also: crew version); --json adds home and compiled
   crew status [route] [--json] [--verbose]   what is running and what needs a person; --verbose adds configuration and full lists; --json for a machine reader
+  crew status [route] --json --no-tracker   the same document from this ship alone, with no tracker request; leaves out todo, ships, projects, crewMinVersion, seat names, rowName/nameDrift and the area worktree prefix
   crew projects [--route R] [--json]   the Projects rows each route can read (id, name, prefix, work mode)
   crew routes available [--json]   the tracker apps you can reach that this machine has no route for (read-only; starts no sign-in)
   crew projects add [route] NAME --prefix P [--work-mode automatic|hybrid|manual] [--json] [--dry-run]   create a Projects row
@@ -1945,13 +1956,13 @@ function buildSandboxCachePass(c: typeof route, ship: Ship, state: State, emit: 
  * thrown: this runs at daemon start (`anyRepoServable`), and one repository's
  * bad file must not take down every lane on the ship.
  */
-async function resolvedRepos(c: typeof route) {
-  return (await resolveRoute(c)).settled;
+async function resolvedRepos(c: typeof route, opts: { noTracker?: boolean } = {}) {
+  return (await resolveRoute(c, opts)).settled;
 }
 
 /** `resolvedRepos` plus the repositories whose contract could not be read, each with why. */
-async function resolveRoute(c: typeof route) {
-  const { settled, errors } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t));
+async function resolveRoute(c: typeof route, opts: { noTracker?: boolean } = {}) {
+  const { settled, errors } = await settleRepos(reposOf(c), (t) => t.name, (t) => resolveOneRepo(c, t, opts));
   for (const e of errors) {
     try { await raiseShipAttention({ state, emit }, repoContractRefusedItem(e.repo, e.detail)); } catch { /* the skip below still holds */ }
   }
@@ -2054,7 +2065,7 @@ async function planContractOf(c: typeof route, repo: string | null | undefined):
 }
 
 /** One repo of a route, resolved on its own so a caller can survive a bad contract in a sibling. */
-async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[number]) {
+async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[number], opts: { noTracker?: boolean } = {}) {
   {
     const id = repoIdForName(c, t.name);
     // This repo's own entry under `repos:` (if it named hooks/labels/release
@@ -2080,7 +2091,8 @@ async function resolveOneRepo(c: typeof route, t: ReturnType<typeof reposOf>[num
         // that declares its own `worktrees.prefix` shadows either, and
         // `doctor` reports that the way it reports every other shadowed
         // setting.
-        worktrees: { prefix: shipWorktreePrefixFor(c) ?? await areaWorktreePrefix(c, id), nameOverride: o?.worktreeName },
+        // CREW-4019: `status --json --no-tracker` makes no tracker request, so the area's prefix is not read.
+        worktrees: { prefix: shipWorktreePrefixFor(c) ?? (opts.noTracker ? undefined : await areaWorktreePrefix(c, id)), nameOverride: o?.worktreeName },
       }, t.dir),
     };
   }
@@ -7207,25 +7219,33 @@ switch (command) {
       }
       process.exit(1);
     }
-    const shipRows = await statusTracker.shipRows();
+    // CREW-4019: `--no-tracker` answers from the ship alone and makes no tracker request. It is the
+    // light read a monitor repeats every few seconds; what it leaves out is named under `tracker.omitted`.
+    const noTracker = flag('no-tracker');
+    if (noTracker && !flag('json')) die('crew status', '--no-tracker applies to --json', '`crew status --json --no-tracker`');
+    // The open board is read once per run and shared by the owes block and the held-releases block (CREW-4019).
+    let openRead: ReturnType<Tracker['openTickets']> | undefined;
+    const openTicketsOnce = () => (openRead ??= statusTracker.openTickets());
+    const trackerReadAt = new Date().toISOString();
+    const shipRows = noTracker ? [] : await statusTracker.shipRows();
     const engagedTicketIds = shipRows.map((s) => s.engaged_ticket_id).filter((id): id is string => !!id);
     const engagedTickets = engagedTicketIds.length ? await statusTracker.ticketsByIds(engagedTicketIds) : [];
     const issueLabelById = new Map(engagedTickets.map((t) => [t.id, displayKey(t)]));
 
     // What a person owes (CREW-1402). A board that cannot be read leaves the
     // block out rather than failing `status`, which is also a health check.
-    const todo = await statusTracker.openTickets()
+    const todo = noTracker ? [] : await openTicketsOnce()
       .then((open) => operatorTodo(open, statusTracker.contract, route.resolved?.operator ?? ''))
       .catch(() => []);
 
-    const projects = projectModeLabels(await statusTracker.projectRowsWithModes().catch(() => []));
-    const crewMinVersion = (await readCrewFloor(route, cfg.ship)) ?? null;
+    const projects = noTracker ? [] : projectModeLabels(await statusTracker.projectRowsWithModes().catch(() => []));
+    const crewMinVersion = noTracker ? null : (await readCrewFloor(route, cfg.ship)) ?? null;
     // Every live run on this ship, read from the run sidecars (CREW-2822), so
     // it is right across daemon restarts and for one-shot `crew run` processes.
     const runs = liveRuns(cfg.ship.stateDir);
     // CREW-3247: titles of the tickets those runs are on, so a monitor shows more than the tag.
     const runTitles = new Map(
-      (await statusTracker.ticketsByIds([...new Set(runs.map((x) => x.ticketRecordId).filter((id): id is string => !!id))]).catch(() => []))
+      (noTracker ? [] : await statusTracker.ticketsByIds([...new Set(runs.map((x) => x.ticketRecordId).filter((id): id is string => !!id))]).catch(() => []))
         .map((t) => [t.id, t.title ?? null] as const),
     );
     const lastRuns = lastRunsBySeat(cfg.ship.stateDir);
@@ -7236,6 +7256,7 @@ switch (command) {
     const thisSlug = routeSlug(route.route);
     const otherSources = new Map<string, Tracker | undefined>();
     const sourceFor = (slug: string): Tracker | undefined => {
+      if (noTracker) return undefined;
       if (slug === thisSlug) return statusTracker;
       if (!otherSources.has(slug)) {
         const rt = cfg.routes.find((x) => routeSlug(x.route) === slug);
@@ -7251,8 +7272,8 @@ switch (command) {
     // CREW-3248: a run's preview is its ticket's periscope, when that one is serving.
     const runPreviews = new Map(periscopes.filter((p) => p.serving).map((p) => [p.ticketRecordId, p.url] as const));
     if (flag('json')) {
-      const nameSync = await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true });
-      const repos = await resolvedRepos(route);
+      const nameSync = noTracker ? undefined : await reconcileRouteShipName({ route, ship: cfg.ship, configFile: cfg.configFile, readOnly: true, rows: async () => shipRows });
+      const repos = await resolvedRepos(route, { noTracker });
       // Per-seat identity (ISSUE-525): crew-macos's menu bar wants the seat's
       // own Crew-row `Name` (an operator can rename a seat to their liking)
       // as the PRIMARY label, with the linked Agent persona's display name
@@ -7260,9 +7281,9 @@ switch (command) {
       // ISSUE-417. Both live on the tracker, not in local config, so this
       // reads the Crew rows fresh rather than trusting anything cached.
       const seatIds = route.resolved?.seats ?? {};
-      const crewRows = Object.keys(seatIds).length ? await statusTracker.crewRows() : [];
+      const crewRows = !noTracker && Object.keys(seatIds).length ? await statusTracker.crewRows() : [];
       // CREW-3449: a stored seat id whose Crew row is gone (a definite 404, not a failed read).
-      const seatProbes = await probeSeats(route, (id) => statusTracker.crewRow(id));
+      const seatProbes = noTracker ? [] : await probeSeats(route, (id) => statusTracker.crewRow(id));
       const seatProbeOf = (role: string): SeatProbe | undefined => seatProbes.find((p) => p.role === role);
       const crewRowById = new Map(crewRows.map((c) => [c.id, c]));
       const agentPersonas = route.resolved?.agentPersonas ?? {};
@@ -7316,15 +7337,19 @@ switch (command) {
           // derived `release_stale`. `version` stays 1.
           attention: mergeSeatAttention(openShipAttention(state), route, seatProbes),
           // Additive (CREW-2495): this ship's Ships-row name and whether it has drifted from `name`.
-          rowName: nameSync.rowName ?? null,
-          nameDrift: nameSync.drift,
+          ...(nameSync ? { rowName: nameSync.rowName ?? null, nameDrift: nameSync.drift } : {}),
           // Additive (CREW-2803): the relay URL this route's tunnel is reachable at, or null.
           relayUrl: routeRelayUrl(route),
           // Additive (CREW-2887): when a `crew reload` request was written and not yet honored, else null.
           reloadRequestedAt: ((at) => (at === null ? null : new Date(at).toISOString()))(readReloadRequestedAt(cfg.ship.stateDir)),
         },
+        // Additive (CREW-4019): when the tracker-derived blocks were read, or that they were left out
+        // (`--no-tracker`) and which. A block named in `omitted` is absent, never empty.
+        tracker: noTracker
+          ? { read: false, readAt: null, omitted: [...TRACKER_BLOCKS] }
+          : { read: true, readAt: trackerReadAt, omitted: [] },
         // Additive (CREW-1402): what the operator owes. `version` stays 1.
-        todo: todo.map((i) => ({ ticket: displayKey(i.ticket), title: i.ticket.title ?? null, reasons: i.reasons })),
+        ...(noTracker ? {} : { todo: todo.map((i) => ({ ticket: displayKey(i.ticket), title: i.ticket.title ?? null, reasons: i.reasons })) }),
         crew: {
           paused: state.isPaused(),
           // The release timer honors the whole-crew pause too, so this is
@@ -7342,9 +7367,9 @@ switch (command) {
           name: route.route,
           // Additive (CREW-2248): the running version and the workspace's floor. `version` stays 1.
           crewVersion: sentVersion(cfg.ship),
-          crewMinVersion,
+          ...(noTracker ? {} : { crewMinVersion }),
           // Additive (CREW-1496): each project and its work mode. `version` stays 1.
-          projects: projects.map((p) => ({ id: p.id, name: p.name, workMode: p.mode })),
+          ...(noTracker ? {} : { projects: projects.map((p) => ({ id: p.id, name: p.name, workMode: p.mode })) }),
           dir: route.dir,
           // Additive (CREW-2548): open tickets with no repository, as of the last cycle.
           unroutable: state.unroutable(route.route).previous().length,
@@ -7386,7 +7411,7 @@ switch (command) {
           })),
           waiting: waiting ? { ticket: waiting.ticket, since: waiting.since, streak: fairness.streak() } : null,
         },
-        ships: shipRows.map((s) => ({
+        ...(noTracker ? {} : { ships: shipRows.map((s) => ({
           ...shipIdentityJson(s),
           name: s.name ?? null,
           lastSeen: s.last_seen ?? null,
@@ -7395,7 +7420,7 @@ switch (command) {
           engagedRoute: s.engaged_connection ?? null,
           engagedTicket: s.engaged_ticket_id ? issueLabelById.get(s.engaged_ticket_id) ?? null : null,
           attention: s.attention ?? [],
-        })),
+        })) }),
       }, null, 2)}\n`);
       break;
     }
@@ -7407,7 +7432,7 @@ switch (command) {
     // Verified tickets the release is holding back on an unresolved blocker
     // (CREW-1506), so "why hasn't this shipped" is answerable from here.
     try {
-      const open = await statusTracker.openTickets();
+      const open = await openTicketsOnce();
       const blockerInfo = blockerInfoMap(open, await statusTracker.ticketsByIds(missingBlockerIds(open)));
       heldReleases = describeHeld(heldByBlockers(open, statusTracker.contract.statuses.verified, blockerInfo, new Set(statusTracker.contract.statuses.resolved)));
       waitViews = [...planFootprintsFor(route, open, await readFootprintEvents(statusTracker), computeBlockedIds(open, blockerInfo, { resolved: new Set(statusTracker.contract.statuses.resolved) })).waits.values()]

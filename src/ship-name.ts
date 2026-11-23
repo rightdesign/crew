@@ -228,6 +228,8 @@ export async function reconcileShipName(i: ReconcileInput): Promise<RouteNameRes
  */
 export async function reconcileRouteShipName(o: {
   route: Route; ship: Ship; configFile: string; emit?: NameEmitter; readOnly?: boolean; machineId?: string;
+  /** Rows the caller already read, so one `status` run lists the Ships table once (CREW-4019). */
+  rows?: () => Promise<ShipRow[]>;
 }): Promise<RouteNameResult> {
   const fallback: RouteNameResult = { status: 'unsupported', drift: 'none', action: 'none', name: o.ship.name };
   if (!o.route.resolved?.shipsModelId) return fallback;
@@ -236,7 +238,7 @@ export async function reconcileRouteShipName(o: {
     const tracker = new Tracker(o.route, o.ship);
     return await reconcileShipName({
       route: o.route.route, configFile: o.configFile, stateDir: o.ship.stateDir, ship: o.ship, machineId,
-      rows: () => tracker.shipRows(), rename: (id, name) => tracker.renameShipRow(id, name),
+      rows: o.rows ?? (() => tracker.shipRows()), rename: (id, name) => tracker.renameShipRow(id, name),
       emit: o.emit, readOnly: o.readOnly,
     });
   } catch {
