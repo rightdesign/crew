@@ -99,6 +99,7 @@ export class FakeTracker {
             if (n.operator === 'IN') return (n.value as unknown[]).includes(v);
             if (n.operator === 'NOT_IN') return !(n.value as unknown[]).includes(v);
             if (n.operator === 'EQ') return v === n.value;
+            if (n.operator === 'GTE') return String(v) >= String(n.value);
             if (n.operator === 'IS_NULL') return v === null || v === undefined;
             if (n.operator === 'IS_NOT_NULL') return v !== null && v !== undefined;
             return true;

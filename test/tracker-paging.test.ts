@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Tracker, scopedTicketQueries, type TicketScope } from '../src/tracker.ts';
+import { Tracker, scopedTicketQueries, resetOpenSetCache, type TicketScope } from '../src/tracker.ts';
 import type { Route } from '../src/config.ts';
 import type { WorkMode } from '../src/work-mode.ts';
 import { State } from '../src/state.ts';
@@ -173,4 +173,31 @@ test('a hold answer on an old ticket is found though newer comments outnumber a 
     assert.ok(got.some((c) => c.id === 'c-old'));
     assert.equal(trackerFor(f).truncated.size, 0);
   } finally { await f.stop(); }
+});
+
+/** CREW-4016: a poll reads the whole open set once a minute and only what changed in between. */
+test('a poll rereads only changed tickets inside the reconcile window', async () => {
+  resetOpenSetCache();
+  const scope: TicketScope = { modes: new Map<string, WorkMode>([['auto', 'automatic']]), agentAssignees: new Set() };
+  const stamp = new Date().toISOString();
+  const f = await board(many(30, () => ({ status: 'accepted', project_id: 'auto', updated_at: '2026-08-01T00:00:00.000Z' })));
+  try {
+    const t = trackerFor(f);
+    assert.equal((await t.openTickets(scope)).length, 30);
+    const full = f.listCalls.filter((c) => c.model === MODELS.issues).length;
+    // One ticket leaves the open set, one joins it, both with a fresh updated_at.
+    const rows = f.tables.get(MODELS.issues)!;
+    Object.assign(rows[0]!, { status: 'closed_deployed', updated_at: stamp });
+    rows.push(ticket({ id: 'added', issue_id: 'ISSUE-added', status: 'accepted', project_id: 'auto', updated_at: stamp }));
+    const again = await t.openTickets(scope);
+    assert.equal(again.length, 30);
+    assert.ok(again.some((x) => x.id === 'added'));
+    assert.ok(!again.some((x) => x.id === rows[0]!.id));
+    const delta = f.listCalls.filter((c) => c.model === MODELS.issues).slice(full);
+    assert.ok(delta.every((c) => String(c.filters).includes('updated_at')), 'no full read inside the window');
+    Tracker.openSetReconcileMs = 0;
+    f.listCalls.length = 0;
+    await t.openTickets(scope);
+    assert.ok(!String(f.listCalls[0]?.filters).includes('updated_at'), 'a full read once the window is up');
+  } finally { Tracker.openSetReconcileMs = 60_000; await f.stop(); }
 });

@@ -247,6 +247,12 @@ const LIST_PAGE_SIZE = 500;
 /** A backstop on a runaway list (a million rows), after which the list is reported as cut off. */
 const LIST_MAX_PAGES = 200;
 const LIST_SORT = encodeSort([{ columnName: 'id', direction: 'asc' }]);
+/** CREW-4016: a delta read starts this far before the last one, so a skewed clock or a write that landed late is read twice, not missed. */
+const OPEN_SET_OVERLAP_MS = 60_000;
+interface OpenSetEntry { rows: Map<string, Ticket>; watermark: string; fullAt: number }
+const openSetCache = new Map<string, OpenSetEntry>();
+/** Drops every cached open set (a test, between cases on one process). */
+export const resetOpenSetCache = (): void => openSetCache.clear();
 type RecordListParams = NonNullable<Parameters<TablationClient['records']['list']>[1]>;
 
 /**
@@ -439,10 +445,57 @@ export class Tracker {
     if (areaId) base.push({ columnName: c.columns.slice, operator: 'EQ', value: areaId });
     const queries = scope && scope.modes.size > 0 ? scopedTicketQueries(c, scope) : [[{ columnName: c.columns.status, operator: 'IN', value: c.statuses.open } as Filter]];
     const seen = new Map<string, Ticket>();
+    // CREW-4016: the poll runs every few seconds, and re-reading the whole open
+    // set each time was 39 percent of production database time. Only a poll
+    // (`scope`) keeps a cache; a one-shot command reads once and exits.
+    const delta = scope ? await this.deltaOpenSet(base, queries) : undefined;
+    if (delta) return delta;
     for (const q of queries) {
       for (const t of await this.listAll<Ticket>(this.models.issues, 'open tickets', encodeFilters([...base, ...q]))) seen.set(t.id, t);
     }
+    if (scope && !this.truncated.has('open tickets')) {
+      openSetCache.set(this.openSetKey(base, queries), { rows: new Map(seen), watermark: new Date(Date.now() - OPEN_SET_OVERLAP_MS).toISOString(), fullAt: Date.now() });
+    }
     return [...seen.values()];
+  }
+
+  private openSetKey(base: Filter[], queries: Filter[][]): string {
+    return `${this.route.baseUrl}|${this.models.issues}|${encodeFilters(base)}|${JSON.stringify(queries)}`;
+  }
+
+  /**
+   * CREW-4016: the open set from the cache plus what changed since the last
+   * read, or `undefined` when a full read is due (nothing cached, or the cache
+   * is older than `Tracker.openSetReconcileMs`, which also repairs anything a
+   * delta could miss: a clock skew past the overlap, a deleted row) or the
+   * delta read failed.
+   *
+   * Two reads of rows with `updated_at` at or after the watermark: every row of
+   * the area (to drop the ones that stopped matching), and the ones that match
+   * each query. A row in the first and not the second left the open set.
+   */
+  private async deltaOpenSet(base: Filter[], queries: Filter[][]): Promise<Ticket[] | undefined> {
+    const key = this.openSetKey(base, queries);
+    const entry = openSetCache.get(key);
+    if (!entry || Date.now() - entry.fullAt >= Tracker.openSetReconcileMs) return undefined;
+    const since: Filter = { columnName: 'updated_at', operator: 'GTE', value: entry.watermark };
+    try {
+      const changed = await this.listAll<Ticket>(this.models.issues, 'changed tickets', encodeFilters([...base, since]));
+      if (this.truncated.has('changed tickets')) { this.truncated.delete('changed tickets'); return undefined; }
+      const matching = new Map<string, Ticket>();
+      for (const q of queries) {
+        for (const t of await this.listAll<Ticket>(this.models.issues, 'open tickets', encodeFilters([...base, ...q, since]))) matching.set(t.id, t);
+      }
+      for (const t of changed) entry.rows.delete(t.id);
+      for (const [id, t] of matching) entry.rows.set(id, t);
+      let newest = Date.parse(entry.watermark);
+      for (const t of changed) newest = Math.max(newest, Date.parse(t.updated_at) || 0);
+      entry.watermark = new Date(newest).toISOString();
+      return [...entry.rows.values()].map((t) => ({ ...t }));
+    } catch {
+      openSetCache.delete(key);
+      return undefined;
+    }
   }
 
   /**
@@ -502,6 +555,9 @@ export class Tracker {
 
   /** The page backstop `listAll` stops at; a variable only so a test can reach it without a hundred thousand rows. */
   static maxPages = LIST_MAX_PAGES;
+
+  /** How long a poll trusts its cached open set before reading all of it again (CREW-4016). */
+  static openSetReconcileMs = 60_000;
 
   /** Records that the list `what` hit `limit` rows and may be missing more. */
   noteTruncated(what: string, limit: number): void {
