@@ -31,6 +31,22 @@ export function ticketMentions(text: string): string[] {
 }
 
 /**
+ * The key to show for a ticket the transcript named. The record's `issue_id`
+ * (`ISSUE-4009`) is what the brief's filing block and the tracker's column say,
+ * so a transcript names that form even for a ticket whose tag is `TABL-4009`
+ * (CREW-4021). When `key` is an `ISSUE-<n>` and the run's hint is the same
+ * number under a project tag, the hint's tag is the display form; any other
+ * key (a different number, or already a tag) is returned unchanged.
+ */
+export function canonicalTicketKey(key: string, hint?: string | null): string {
+  if (!hint || hint === key) return key;
+  const issue = /^ISSUE-(\d+)$/.exec(key);
+  if (!issue) return key;
+  const tagged = /^[A-Z][A-Z0-9]{1,9}-(\d+)$/.exec(hint);
+  return tagged && tagged[1] === issue[1] && !hint.startsWith('ISSUE-') ? hint : key;
+}
+
+/**
  * Accumulates token spend per ticket key across a run's assistant turns.
  * Feed it turn by turn, in order, as the stream is parsed — it needs no
  * buffering of its own.

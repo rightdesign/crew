@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ticketMentions, TicketAttributionTracker } from '../src/ticket-attribution.ts';
+import { ticketMentions, TicketAttributionTracker, canonicalTicketKey } from '../src/ticket-attribution.ts';
 
 test('ticketMentions finds every ticket-key-shaped token, in order', () => {
   assert.deepEqual(ticketMentions('picking up ISSUE-621 instead of CREW-12'), ['ISSUE-621', 'CREW-12']);
@@ -111,4 +111,12 @@ test('CREW-2598: without a hint the plain winner rule still applies', () => {
   const t = new TicketAttributionTracker();
   t.add('on TABL-5', 10);
   assert.deepEqual(t.decide(), { ticket: 'TABL-5', by: 'mentions' });
+});
+
+test('canonicalTicketKey maps an ISSUE- key to the hint tag when the numbers match', () => {
+  assert.equal(canonicalTicketKey('ISSUE-4009', 'TABL-4009'), 'TABL-4009');
+  assert.equal(canonicalTicketKey('ISSUE-4009', 'TABL-4010'), 'ISSUE-4009');
+  assert.equal(canonicalTicketKey('ISSUE-4009', null), 'ISSUE-4009');
+  assert.equal(canonicalTicketKey('TABL-4009', 'TABL-4009'), 'TABL-4009');
+  assert.equal(canonicalTicketKey('CREW-4009', 'TABL-4009'), 'CREW-4009');
 });

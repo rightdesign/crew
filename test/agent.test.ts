@@ -18,6 +18,7 @@ import { API_KEY_VAR } from '../src/environment.ts';
 
 const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream.mjs');
 const FAKE_CLAUDE_MULTITICKET = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-multiticket.mjs');
+const FAKE_CLAUDE_ISSUE_KEY = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-issue-key.mjs');
 const FAKE_CLAUDE_CLAIM = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-claim.mjs');
 const FAKE_CLAUDE_PLAIN = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-stream-plain.mjs');
 const FAKE_CLAUDE_STREAMING = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-claude-streaming-input.mjs');
@@ -764,6 +765,27 @@ test('spawnAgent relabels stream events with the ticket the run claims, marks th
   assert.equal(meta.ticket, 'TABL-1763');
   assert.equal(meta.exitCode, 0);
   assert.equal(meta.sessionId, 'sess-claim');
+});
+
+test('a claim naming only the ISSUE- form of a tagged ticket writes the tag to the sidecar and events (CREW-4021)', async () => {
+  const { state, route } = rig();
+  const plan = planAgentRun({
+    role: 'dev', route, ship: { agent: { bin: 'node', model: 'claude-sonnet-5' } } as any,
+    stateDir: state, roster: 'R', environment: 'ENV', cycle: 'c1', ticket: 'TABL-4009',
+  });
+  plan.bin = process.execPath;
+  plan.args = [FAKE_CLAUDE_ISSUE_KEY];
+  plan.cwd = state;
+  const emit = new Emitter({ route: 'proj', cycleId: 'c1', console: () => {} });
+  emit.enter('agent', 'dev');
+  await spawnAgent(plan, emit);
+  const meta = JSON.parse(readFileSync(`${plan.streamPath}.meta.json`, 'utf8'));
+  assert.equal(meta.hint, 'TABL-4009');
+  assert.equal(meta.ticket, 'TABL-4009');
+  assert.equal(meta.attributedTicket, 'TABL-4009');
+  const events = readFileSync(plan.eventsPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(events.filter((e) => e.data.kind === 'ticket').length, 0);
+  for (const e of events.filter((x) => x.ticket)) assert.equal(e.ticket, 'TABL-4009');
 });
 
 /** A fetch whose Agent Log row post answers `status` (or each queued status in turn) and otherwise succeeds. */

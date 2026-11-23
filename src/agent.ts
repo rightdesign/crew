@@ -48,7 +48,7 @@ import { runnerFor, runnerOfSidecar, type Runner, type StartedRun, type RunnerKi
 import { deadlineFor, msUntilDeadline, resolveMaxRunMinutes, WALL_CLOCK_REASON } from './run-limit.ts';
 import { appendAdditions } from './prompt-additions.ts';
 import { readPersonaFile } from './persona-file.ts';
-import { TicketAttributionTracker, isClaimWrite } from './ticket-attribution.ts';
+import { TicketAttributionTracker, isClaimWrite, canonicalTicketKey } from './ticket-attribution.ts';
 import { selfLaunch } from './runtime-info.ts';
 
 /**
@@ -1053,7 +1053,8 @@ class RunObserver {
       // A replayed (muted) stream has lost the real timing, so it counts without a time.
       if (ev.kind === 'tool') this.beforeFirstEdit.note(ev.tool, ev.target, this.muted ? undefined : Date.now() - this.startMs);
       if (ev.kind === 'tool' && isClaimWrite(ev.tool, ev.input)) {
-        const claimed = this.attribution.current;
+        const named = this.attribution.current;
+        const claimed = named ? canonicalTicketKey(named, plan.ticket) : undefined;
         if (claimed && claimed !== this.liveTicket) {
           if (!this.muted) {
             this.eventsSink?.write(`${JSON.stringify({
@@ -1177,7 +1178,9 @@ async function finishRun(
   // simply "no signal" (CREW-2598).
   let moved = false;
   if (hintMoved) { try { moved = await hintMoved(); } catch { /* no signal */ } }
-  const { ticket: attributedTicket, by: attributedBy } = obs.attribution.decide(obs.liveTicket, { hintMoved: moved });
+  const decided = obs.attribution.decide(obs.liveTicket, { hintMoved: moved });
+  const attributedBy = decided.by;
+  const attributedTicket = decided.ticket ? canonicalTicketKey(decided.ticket, id.ticket) : undefined;
   // Which toolchain, harness and provider produced this run (CREW-1516),
   // beside `model`. `toolchain` is the crew.yaml entry name, so it lives in
   // the sidecar and the event only — the Agent Log carries harness+provider.
