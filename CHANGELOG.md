@@ -17,6 +17,10 @@ squash-merges every verified ticket, then in one following commit adds one
 largest `Bump:` in the batch. It pushes `main` and the annotated `v<x.y.z>`
 tag; the tag triggers `.github/workflows/publish.yml`, which publishes to npm.
 
+## [0.174.2] — 2026-11-24
+
+- CREW-4072 A hung git call in a periscope's MCP server now fails after 60 seconds instead of freezing the server.
+
 ## [0.174.1] — 2026-11-24
 
 - CREW-4071 The Install and Getting started pages link the Crew disk image download instead of the removed zip.
