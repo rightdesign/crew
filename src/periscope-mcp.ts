@@ -36,7 +36,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { git, GitError } from './git.ts';
+import { git as gitUnbounded, GitError } from './git.ts';
 import { secretsMatch } from './secret-compare.ts';
 import { readPeriscopeSecret } from './periscope-endpoints.ts';
 import { parseEnvLines, type HookResult } from './periscope-cmd.ts';
@@ -46,6 +46,10 @@ import { pointedAtEnv } from './periscope-pointed.ts';
 /** The hooks a caller may name. `setup` and `release` are the ship's, not a session's. */
 export const PERISCOPE_HOOKS = ['test', 'build', 'ports', 'handoff', 'preview', 'isolate'] as const;
 export type PeriscopeHook = (typeof PERISCOPE_HOOKS)[number];
+
+/** A git that has not answered by now is hung (a lock, a signing prompt, a stuck hook); fail the one tool call instead of the server (CREW-4072). */
+const GIT_TIMEOUT_MS = 60_000;
+const git = (cwd: string, args: string[]): string => gitUnbounded(cwd, args, GIT_TIMEOUT_MS);
 
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_WRITE_BYTES = 4 * 1024 * 1024;

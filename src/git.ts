@@ -24,11 +24,11 @@ export class GitError extends Error {}
  * `remote-dir.ts`) runs the same argv there; anything else is a host `git`.
  * `input` is piped to stdin.
  */
-function execGit(cwd: string, args: string[], input?: string): string {
+function execGit(cwd: string, args: string[], input?: string, timeout?: number): string {
   const hit = remoteOf(cwd);
   if (hit) return execRemoteSync(hit, ['git', ...args], { input });
   return execFileSync('git', args, {
-    cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024,
+    cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...(timeout ? { timeout, killSignal: 'SIGKILL' as const } : {}),
     ...(input === undefined ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : { input }),
   });
 }
@@ -62,9 +62,14 @@ export function gitRaw(cwd: string, args: string[]): string {
   }
 }
 
-export function git(cwd: string, args: string[]): string {
+/**
+ * `timeoutMs` kills a git that has stopped answering (CREW-4072). The call is
+ * synchronous, so a hung child freezes the whole process, and for the periscope
+ * MCP server that is every in-flight request, not just the one that asked.
+ */
+export function git(cwd: string, args: string[], timeoutMs?: number): string {
   try {
-    return execGit(cwd, args).trim();
+    return execGit(cwd, args, undefined, timeoutMs).trim();
   } catch (e) {
     // stdout matters as much as stderr here: git reports several failures
     // there, "nothing to commit, working tree clean" among them. Reading only
