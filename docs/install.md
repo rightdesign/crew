@@ -6,8 +6,8 @@ including getting into a Tablation workspace first.
 ## On a Mac: the Crew app
 
 1. Download **Crew for macOS** from the [Developers page](https://tablation.com/developers)
-   (<https://tablation.com/downloads/crew/Crew-latest.zip>). macOS 14 or later.
-2. Unzip, move `Crew.app` to `/Applications` and open it.
+   (<https://tablation.com/downloads/crew/Crew-latest.dmg>). macOS 14 or later.
+2. Open the disk image, drag `Crew.app` to `/Applications` and open it.
 3. Follow the setup wizard: requirements, sign in, workspace, this machine,
    repositories, verify, start. No terminal needed.
 

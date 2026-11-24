@@ -92,9 +92,9 @@ switches to pause the crew or the timer. It needs macOS 14 or later.
 
 Get it from the [Developers page](https://tablation.com/developers) (the
 **Download Crew for macOS** button), which serves
-<https://tablation.com/downloads/crew/Crew-latest.zip>. The build is signed
-and notarized, so it opens without a Gatekeeper warning. Unzip it, drag
-`Crew.app` to `/Applications` and open it.
+<https://tablation.com/downloads/crew/Crew-latest.dmg>, a disk image. The build is signed
+and notarized, so it opens without a Gatekeeper warning. Open the disk image,
+drag `Crew.app` to `/Applications` and open it.
 
 The app carries its own compiled `crew`, so you do not install Node or npm.
 It installs that copy under `~/Library/Application Support` on first launch,
