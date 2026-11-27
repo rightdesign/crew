@@ -61,7 +61,7 @@ import { markCrewAssistedAtLaunch } from './crew-assisted.ts';
 import { refreshUnknownRepos, persistRepoRows } from './repo-refresh.ts';
 import { applySweep, blockerInfoMap, computeBlockedIds, missingBlockerIds } from './blocked.ts';
 import { applyEpicSync, describeEpicStep } from './epics.ts';
-import { planConflictBounce, applyConflictBounce } from './conflict.ts';
+import { settleConflicts } from './conflict.ts';
 import { planBuildFailureBounce, applyBuildFailureBounce, priorBuildFailures, priorFailureNote } from './build-failure.ts';
 import { planStrandedVerified, applyStrandedVerified } from './stranded-verified.ts';
 import { gateRedTickets, gateRedComment, alreadyReported } from './gate-red.ts';
@@ -3003,23 +3003,14 @@ async function releasePhase(
       const flagged = await tracker.events('stranded_flagged');
       const seat = releaseSeat(c);
 
-      for (const f of outcome.conflicts ?? []) {
-        try {
-          const bounce = planConflictBounce(
-            target.dir, f.candidate.ticket, f.candidate.branch!, repo.branch.base, f.paths, handedBack,
-            outcome.merged.filter((m) => m.branch).map((m) => ({ key: m.ticket.issue_id, branch: m.branch! })),
-          );
-          const r = await applyConflictBounce(tracker, bounce, tracker.contract, seat, remit, dryRun);
-          if (r.kind === 'failed') {
-            remit.warn(`could not hand back ${displayKey(f.candidate.ticket)}: ${r.why}`, { step: 'merge' });
-          }
-        } catch (e) {
-          remit.warn(
-            `could not hand back ${displayKey(f.candidate.ticket)}: ${(e as Error).message}`,
-            { step: 'merge' },
-          );
-        }
-      }
+      // One hand-back per set of conflicting paths per cycle; the rest queue behind it (`settleConflicts`).
+      await settleConflicts({
+        cwd: target.dir, base: repo.branch.base,
+        conflicts: (outcome.conflicts ?? []).map((f) => ({ ticket: f.candidate.ticket, branch: f.candidate.branch!, paths: f.paths })),
+        merged: outcome.merged.filter((m) => m.branch).map((m) => ({ key: m.ticket.issue_id, branch: m.branch! })),
+        events: handedBack, writer: tracker, contract: tracker.contract, memberId: seat, log: remit, dryRun,
+        queueMinutes: repo.release.rightOfWayMinutes ?? DEFAULT_RIGHT_OF_WAY_MINUTES,
+      });
 
       for (const cand of outcome.unbuildable ?? []) {
         try {

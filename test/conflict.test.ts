@@ -8,8 +8,10 @@ import { StaleWriteError } from '@tablation/client';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   planConflictBounce, applyConflictBounce, refreshBranch, worktreeForBranch,
-  priorBounces, baseShaOf, BOUNCE_MARKER, type ConflictWriter, type ConflictLog,
+  priorBounces, baseShaOf, BOUNCE_MARKER, conflictCrowd, absorbedLimit, settleConflicts,
+  MAX_ABSORBED_HANDBACKS, MAX_CROWD_ABSORBED_HANDBACKS, type ConflictWriter, type ConflictLog,
 } from '../src/conflict.ts';
+import { DEFERRED_EVENT } from '../src/right-of-way.ts';
 import type { Ticket, RunnerEvent } from '../src/tracker.ts';
 
 const silent: ConflictLog = { emit: () => {}, warn: () => {} };
@@ -331,4 +333,147 @@ test('the third consecutive overtaken conflict escalates', async () => {
   assert.equal(out.kind, 'escalated');
   assert.match(notes[0]!, /2 times/);
   assert.match(notes[0]!, /moved underneath/);
+});
+
+/** Another ticket handed back for a conflict in `paths`. */
+const otherHandBack = (n: number, at: string, paths: string[]): RunnerEvent => ({
+  record_id: `row-${n}`, event_type: 'conflict_handed_back', occurred_at: at, metadata: { paths },
+});
+
+test('a ticket in a conflict queue is handed back again past the usual limit, once per other ticket in it', async () => {
+  const { dir, sha } = overtakenRepo();
+  const { w, patches } = writer();
+  // Two answered hand-backs already: alone, the third conflict escalates (the test above).
+  const events = [...answered(sha, 2), otherHandBack(2, '2026-01-01T00:00:05Z', ['f.txt'])];
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], events);
+  assert.equal(b.priorBounces, 2);
+  assert.equal(b.crowd, 1);
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+  assert.equal(out.kind, 'handed-back');
+  assert.equal(patches[0]!.patch.status, DEFAULT_CONTRACT.statuses.building);
+});
+
+test('the queue only absorbs as many extra hand-backs as it has other tickets', async () => {
+  const { dir, sha } = overtakenRepo();
+  const { w, notes } = writer();
+  const events = [...answered(sha, 3), otherHandBack(2, '2026-01-01T00:00:05Z', ['f.txt'])];
+  const b = planConflictBounce(dir, ticket(), 'issue-9', 'main', ['f.txt'], events);
+  assert.equal(b.priorBounces, 3);
+  const out = await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', silent, false);
+  assert.equal(out.kind, 'escalated');
+  assert.match(notes[0]!, /moved underneath/);
+});
+
+test('conflictCrowd counts other tickets handed back over a shared path around this ticket\'s own hand-backs', () => {
+  const mine = answered('a'.repeat(40), 2);   // handed back 2026-01-01 and 2026-01-03
+  const count = (others: RunnerEvent[], paths = ['f.txt']) => conflictCrowd(ticket(), paths, [...mine, ...others]);
+  assert.equal(count([]), 0);
+  // Same cycle (seconds earlier), and later: both are in the queue. Two events of one ticket count once.
+  assert.equal(count([
+    otherHandBack(2, '2025-12-31T23:59:58Z', ['f.txt']),
+    otherHandBack(3, '2026-01-02T00:00:00Z', ['g.txt', 'f.txt']),
+    otherHandBack(3, '2026-01-04T00:00:00Z', ['f.txt']),
+  ]), 2);
+  // Another file, or long before this ticket was first handed back: not this queue.
+  assert.equal(count([otherHandBack(2, '2026-01-02T00:00:00Z', ['g.txt'])]), 0);
+  assert.equal(count([otherHandBack(2, '2025-12-31T22:00:00Z', ['f.txt'])]), 0);
+  // A hand-back that recorded no paths, a conflict that names none, a ticket never handed back.
+  assert.equal(count([{ record_id: 'row-2', event_type: 'conflict_handed_back', occurred_at: '2026-01-02T00:00:00Z' }]), 0);
+  assert.equal(count([otherHandBack(2, '2026-01-02T00:00:00Z', ['f.txt'])], []), 0);
+  assert.equal(conflictCrowd(ticket(), ['f.txt'], [otherHandBack(2, '2026-01-02T00:00:00Z', ['f.txt'])]), 0);
+});
+
+test('the absorbed limit grows with the crowd up to a ceiling', () => {
+  assert.equal(absorbedLimit({}), MAX_ABSORBED_HANDBACKS);
+  assert.equal(absorbedLimit({ crowd: 3 }), MAX_ABSORBED_HANDBACKS + 3);
+  assert.equal(absorbedLimit({ crowd: 500 }), MAX_CROWD_ABSORBED_HANDBACKS);
+});
+
+/** A writer that also records which event type each note was posted as, and its metadata. */
+function queueWriter() {
+  const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const events: Array<{ id: string; type?: string; body: string; extra?: Record<string, unknown> }> = [];
+  const w: ConflictWriter = {
+    updateTicket: async (id, patch) => { patches.push({ id, patch }); return {}; },
+    postEvent: async (id, body, _m, type, extra) => { events.push({ id, type, body, extra }); },
+  };
+  return { w, patches, events };
+}
+
+const queueTicket = (n: number): Ticket => ticket({ id: `row-${n}`, issue_id: `ISSUE-${n}` });
+
+/** Three conflicts in one cycle, on branches with no worktree here: 1 and 2 share a file, 3 is elsewhere. */
+const threeConflicts = () => [
+  { ticket: queueTicket(1), branch: 'issue-1', paths: ['app.js', 'test.js'] },
+  { ticket: queueTicket(2), branch: 'issue-2', paths: ['test.js', 'page.html'] },
+  { ticket: queueTicket(3), branch: 'issue-3', paths: ['other.js'] },
+];
+
+const settle = (w: ConflictWriter, over: Partial<Parameters<typeof settleConflicts>[0]> = {}) => settleConflicts({
+  cwd: tmpdir(), base: 'main', conflicts: threeConflicts(), merged: [], events: [], writer: w,
+  contract: DEFAULT_CONTRACT, memberId: 'seat', log: silent, dryRun: false, queueMinutes: 60, ...over,
+});
+
+test('conflicts in one cycle over the same file: the first is handed back, the rest queue behind it', async () => {
+  const { w, patches, events } = queueWriter();
+  const out = await settle(w);
+
+  assert.deepEqual(out.map((s) => s.outcome.kind), ['handed-back', 'queued', 'handed-back']);
+  // Only the heads moved on the board; the queued ticket stays verified.
+  assert.deepEqual(patches.map((p) => p.id), ['row-1', 'row-3']);
+  assert.ok(patches.every((p) => p.patch.status === DEFAULT_CONTRACT.statuses.building));
+  // The queued ticket gets a waiting note naming the head and the shared file, not a hand-back.
+  const mine = events.filter((e) => e.id === 'row-2');
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0]!.type, DEFERRED_EVENT);
+  assert.deepEqual(mine[0]!.extra, { waiting_for: 'row-1', paths: ['test.js'], queued: true });
+  assert.match(mine[0]!.body, /ISSUE-1 conflicted in the same file in the same release and was handed back first/);
+  assert.doesNotMatch(mine[0]!.body, new RegExp(BOUNCE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.deepEqual(events.filter((e) => e.type === 'conflict_handed_back').map((e) => e.id), ['row-1', 'row-3']);
+});
+
+test('a queued conflict is not counted as a hand-back, so it cannot push the ticket toward escalation', async () => {
+  const { w, events } = queueWriter();
+  await settle(w);
+  const log: RunnerEvent[] = events.map((e) => ({ record_id: e.id, event_type: e.type ?? '', occurred_at: '2026-01-01T00:00:00Z' }));
+  log.push({ record_id: 'row-2', event_type: 'pushed', occurred_at: '2026-01-02T00:00:00Z' });
+  assert.equal(priorBounces(queueTicket(2), log), 0);
+});
+
+test('with the right of way turned off every conflict is handed back as before', async () => {
+  const { w, patches } = queueWriter();
+  const out = await settle(w, { queueMinutes: 0 });
+  assert.deepEqual(out.map((s) => s.outcome.kind), ['handed-back', 'handed-back', 'handed-back']);
+  assert.equal(patches.length, 3);
+});
+
+test('an escalated conflict heads no queue: the next branch on that file is handed back', async () => {
+  const { w, patches } = queueWriter();
+  // Ticket 1 was handed back before and answered, with no recorded base: it escalates.
+  const events: RunnerEvent[] = [
+    { record_id: 'row-1', event_type: 'conflict_handed_back', occurred_at: '2026-01-01T00:00:00Z' },
+    { record_id: 'row-1', event_type: 'pushed', occurred_at: '2026-01-02T00:00:00Z' },
+  ];
+  const out = await settle(w, { events });
+  assert.deepEqual(out.map((s) => s.outcome.kind), ['escalated', 'handed-back', 'handed-back']);
+  assert.equal(patches[0]!.patch.status, DEFAULT_CONTRACT.statuses.needsHuman);
+});
+
+test('a dry run reports the queue and writes nothing', async () => {
+  const { w, patches, events } = queueWriter();
+  const lines: string[] = [];
+  const out = await settle(w, { dryRun: true, log: { emit: (m) => { lines.push(m); }, warn: () => {} } });
+  assert.deepEqual(out.map((s) => s.outcome.kind), ['handed-back', 'queued', 'handed-back']);
+  assert.deepEqual([patches, events], [[], []]);
+  assert.ok(lines.some((l) => /would leave ISSUE-2 at verified, not handed back/.test(l)));
+});
+
+test('one ticket failing to settle does not stop the rest', async () => {
+  const { w, patches } = queueWriter();
+  let first = true;
+  const update = w.updateTicket;
+  w.updateTicket = async (id, patch, stamp) => { if (first) { first = false; throw new Error('tracker down'); } return update(id, patch, stamp); };
+  const out = await settle(w);
+  assert.deepEqual(out.map((s) => s.outcome.kind), ['failed', 'handed-back', 'handed-back']);
+  assert.deepEqual(patches.map((p) => p.id), ['row-2', 'row-3']);
 });

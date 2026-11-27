@@ -463,6 +463,29 @@ none of those paths release as before.
 When two open hand-backs overlap in paths, the older goes first and the newer
 waits like any other branch.
 
+**One hand-back per file per cycle.** When one release finds several verified
+branches conflicting in the same files, only the first is handed back. Handing
+them all back at once sends every dev lane off to merge the same base: each
+branch comes back clean against the base and still conflicting with the others,
+and the first to land sends the rest round again. So a later conflict in the
+same cycle that shares a path with a ticket just handed back is **queued**: the
+ticket stays `verified`, nothing is touched in its branch or worktree, no
+hand-back is counted against it, and it gets the same single
+`right_of_way_deferred` event (with `queued: true`). From the next cycle the
+head's right of way holds it back; once the head has landed it is merged
+again, and is handed back in its turn only if it still conflicts. A queue of N
+branches on one file is therefore repaired one at a time, each merged into a
+base that is not about to move. `release.rightOfWayMinutes: 0` turns the queue
+off along with the right of way.
+
+**Escalation counts the queue.** A ticket that conflicts again after its lane
+merged the handed-back base in is handed back again rather than escalated, up
+to two times. Each other ticket handed back for one of the same paths, from an
+hour before this ticket's first hand-back onward, raises that by one (to at
+most 10): a ticket in a queue of N is legitimately overtaken by each of the
+others once. A ticket alone on a busy file still escalates at the third
+conflict.
+
 **It expires.** If the handed-back ticket has not come back `verified` within
 `release.rightOfWayMinutes` of the hand-back (default 60), the deferral lapses
 and the release logs that it did, so an abandoned ticket cannot hold the repo.

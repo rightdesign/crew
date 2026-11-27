@@ -103,8 +103,12 @@ rewinds it, merges the base into the branch in its own worktree, and returns
 the ticket to the dev lane with the conflict left in place to look at — so the
 seat that resolves it is one with the ticket's context, and QA checks the
 resolution like any other change. A branch that was merely stale merges
-cleanly at that point and nobody is woken at all. Conflicting a second time
-stops at `needs_info` rather than looping.
+cleanly at that point and nobody is woken at all. When several branches
+conflict in the same files in one release, only the first is handed back and
+the rest wait their turn at `verified`, so they are repaired one at a time
+instead of against each other. Conflicting a second time stops at
+`needs_info` rather than looping, unless the base demonstrably moved under a
+branch whose lane had merged it in.
 
 ## Prompt sets
 

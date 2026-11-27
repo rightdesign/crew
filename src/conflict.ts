@@ -43,6 +43,7 @@ import { StaleWriteError } from '@tablation/client';
 import type { Contract } from './contract.ts';
 import { displayKey, type Ticket, type RunnerEvent } from './tracker.ts';
 import { calloutHeader } from './callout.ts';
+import { DEFERRED_EVENT, pathsOf, queuedComment, queuesBehind, type CycleHandBack } from './right-of-way.ts';
 
 /** A marker in the hand-back note, so a repeat is recognisable. */
 export const BOUNCE_MARKER = calloutHeader('WARNING', 'Merge Conflict');
@@ -66,6 +67,13 @@ export interface ConflictBounce {
   priorBaseSha: string | null;
   /** Branches already squash-merged earlier in this same release that changed one of `paths`. */
   siblings?: { key: string; branch: string }[];
+  /**
+   * How many OTHER tickets were handed back for a conflict in one of `paths`
+   * around this ticket's own hand-backs (see `conflictCrowd`). Each of them may
+   * land ahead of this one once, so each raises the number of hand-backs
+   * absorbed before the conflict is escalated.
+   */
+  crowd?: number;
 }
 
 export type ConflictOutcome =
@@ -134,6 +142,47 @@ const lastActedHandBack = (ticket: Ticket, events: RunnerEvent[]): RunnerEvent |
 /** A third conflict in a row escalates however the base moved: a hot file must not loop forever. */
 export const MAX_ABSORBED_HANDBACKS = 2;
 
+/**
+ * The ceiling on absorbed hand-backs however large the crowd is, so the loop
+ * guard above still ends a queue that never drains.
+ */
+export const MAX_CROWD_ABSORBED_HANDBACKS = 10;
+
+/** A hand-back older than this when the ticket's own first one was written no longer counts toward its crowd. */
+const CROWD_LOOKBACK_MS = 60 * 60_000;
+
+/**
+ * How many other tickets are in the same conflict queue as this one.
+ *
+ * When N verified branches edit the same files, they can only land one at a
+ * time, and every landing moves the base under the rest: the last of them is
+ * legitimately overtaken N-1 times. Counting that as a lane failing to fix its
+ * branch escalated eight correctly repaired tickets in one afternoon. So the
+ * number of absorbed hand-backs grows with the crowd: the distinct OTHER
+ * tickets handed back for a conflict in one of these paths, from shortly before
+ * this ticket's first hand-back onward. A ticket alone on a hot file has no
+ * crowd and escalates exactly as before; so does one whose conflicts name no
+ * paths (events from before paths were recorded).
+ */
+export function conflictCrowd(ticket: Ticket, paths: string[], events: RunnerEvent[]): number {
+  if (!paths.length) return 0;
+  const handBacks = events.filter((e) => e.event_type === 'conflict_handed_back');
+  const mine = handBacks.filter((e) => e.record_id === ticket.id).map((e) => Date.parse(stampOf(e)) || 0);
+  if (!mine.length) return 0;
+  const since = Math.min(...mine) - CROWD_LOOKBACK_MS;
+  const wanted = new Set(paths);
+  const others = new Set<string>();
+  for (const e of handBacks) {
+    if (e.record_id === ticket.id || (Date.parse(stampOf(e)) || 0) < since) continue;
+    if (pathsOf(e).some((p) => wanted.has(p))) others.add(e.record_id);
+  }
+  return others.size;
+}
+
+/** How many answered hand-backs this conflict may follow before it is escalated. */
+export const absorbedLimit = (b: Pick<ConflictBounce, 'crowd'>): number =>
+  Math.min(MAX_ABSORBED_HANDBACKS + (b.crowd ?? 0), MAX_CROWD_ABSORBED_HANDBACKS);
+
 export function planConflictBounce(
   cwd: string,
   ticket: Ticket,
@@ -155,6 +204,7 @@ export function planConflictBounce(
     baseSha: gitOk(cwd, ['rev-parse', '--verify', '-q', base]) || null,
     priorBaseSha: baseShaOf(lastActedHandBack(ticket, events) ?? { record_id: '', event_type: '' }),
     siblings,
+    crowd: conflictCrowd(ticket, paths, events),
   };
 }
 
@@ -263,7 +313,7 @@ ${b.baseSha ? `Base tip: \`${b.baseSha}\`\n\n` : ''}Nothing was written to \`${b
 
 export function escalateComment(b: ConflictBounce): string {
   const where = b.paths.length ? ` (${b.paths.map((p) => `\`${p}\``).join(', ')})` : '';
-  const absorbed = b.priorBounces >= MAX_ABSORBED_HANDBACKS;
+  const absorbed = b.priorBounces >= absorbedLimit(b);
   return `${BOUNCE_MARKER}
 
 **Conflicting again after a hand-back — stopping rather than looping.**
@@ -360,9 +410,10 @@ export async function applyConflictBounce(
 
   // A hand-back that was answered by merging the base it named is not a failed
   // resolution when the base has moved again since (CREW-2379): treat it as a
-  // fresh conflict, up to MAX_ABSORBED_HANDBACKS. Anything we cannot prove
-  // (no recorded sha, branch ref unreadable) keeps the old escalation.
-  const absorbed = b.priorBounces > 0 && b.priorBounces < MAX_ABSORBED_HANDBACKS && !!b.priorBaseSha
+  // fresh conflict, up to MAX_ABSORBED_HANDBACKS plus one for every other
+  // ticket in the same conflict queue (`conflictCrowd`). Anything we cannot
+  // prove (no recorded sha, branch ref unreadable) keeps the old escalation.
+  const absorbed = b.priorBounces > 0 && b.priorBounces < absorbedLimit(b) && !!b.priorBaseSha
     && isAncestor(b.worktree ?? b.cwd, b.priorBaseSha, b.branch);
   if (absorbed) {
     log.emit(`${displayKey(b.ticket)} conflicts again, but ${b.base} moved since the hand-back was answered — handing back again`, t);
@@ -459,4 +510,83 @@ export async function applyConflictBounce(
     }
     return { kind: 'failed', why: (e as Error).message };
   }
+}
+
+/** One verified branch the release could not squash-merge. */
+export interface ConflictToSettle {
+  ticket: Ticket;
+  branch: string;
+  paths: string[];
+}
+
+export type SettledConflict =
+  | { ticket: Ticket; outcome: ConflictOutcome }
+  /** Left at `verified` behind `waitingFor`, handed back earlier in the same cycle for a shared path. */
+  | { ticket: Ticket; outcome: { kind: 'queued'; waitingFor: Ticket; paths: string[] } };
+
+/**
+ * Settle every conflict one release cycle found, in merge order.
+ *
+ * One hand-back per set of conflicting paths per cycle: the first conflict over
+ * a file is handed back (or refreshed, or escalated) as `applyConflictBounce`
+ * decides, and a later one sharing a path with a ticket handed back here queues
+ * behind it instead (`queuesBehind`). The queue is held from the next cycle on
+ * by the head's right of way, so `queueMinutes` 0, which turns that off, hands
+ * every conflict back as before.
+ *
+ * Non-fatal per ticket, for the reasons `applyConflictBounce` gives.
+ */
+export async function settleConflicts(o: {
+  cwd: string;
+  base: string;
+  conflicts: ConflictToSettle[];
+  /** Branches squash-merged in this release, for the sibling note. */
+  merged: { key: string; branch: string }[];
+  /** `conflict_handed_back` and `pushed` events, every ticket's. */
+  events: RunnerEvent[];
+  writer: ConflictWriter;
+  contract: Contract;
+  memberId: string;
+  log: ConflictLog;
+  dryRun: boolean;
+  queueMinutes: number;
+}): Promise<SettledConflict[]> {
+  const settled: SettledConflict[] = [];
+  const handedBackNow: CycleHandBack[] = [];
+  for (const f of o.conflicts) {
+    const t = { ticket: f.ticket.issue_id, step: 'merge' };
+    try {
+      const queued = o.queueMinutes > 0 ? queuesBehind(f.paths, handedBackNow) : null;
+      if (queued) {
+        const waitingFor = queued.head.ticket;
+        o.log.emit(
+          `${o.dryRun ? 'would leave' : 'left'} ${displayKey(f.ticket)} at ${o.contract.statuses.verified}, not handed back: ` +
+            `it conflicts in ${queued.paths.join(', ')}, which ${displayKey(waitingFor)} was just handed back for — it waits its turn`,
+          t,
+        );
+        if (!o.dryRun) {
+          await o.writer.postEvent(
+            f.ticket.id, queuedComment(f.ticket, waitingFor, queued.paths, o.base, o.queueMinutes), o.memberId,
+            DEFERRED_EVENT, { waiting_for: waitingFor.id, paths: queued.paths, queued: true },
+          ).catch((e: unknown) => {
+            o.log.warn(`could not note the queued conflict on the board: ${(e as Error).message}`, t);
+          });
+        }
+        settled.push({ ticket: f.ticket, outcome: { kind: 'queued', waitingFor, paths: queued.paths } });
+        continue;
+      }
+      const bounce = planConflictBounce(o.cwd, f.ticket, f.branch, o.base, f.paths, o.events, o.merged);
+      const r = await applyConflictBounce(o.writer, bounce, o.contract, o.memberId, o.log, o.dryRun);
+      if (r.kind === 'failed') o.log.warn(`could not hand back ${displayKey(f.ticket)}: ${r.why}`, t);
+      // Only a real hand-back heads a queue: a branch that was merely stale, escalated or left
+      // alone is not being repaired, so nothing should wait for it.
+      if (r.kind === 'handed-back' && bounce.paths.length) handedBackNow.push({ ticket: f.ticket, paths: bounce.paths });
+      settled.push({ ticket: f.ticket, outcome: r });
+    } catch (e) {
+      const why = (e as Error).message;
+      o.log.warn(`could not hand back ${displayKey(f.ticket)}: ${why}`, t);
+      settled.push({ ticket: f.ticket, outcome: { kind: 'failed', why } });
+    }
+  }
+  return settled;
 }

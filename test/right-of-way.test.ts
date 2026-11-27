@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { DEFAULT_CONTRACT } from '../src/contract.ts';
 import {
   handBacks, planRightOfWay, branchPaths, deferralReported, deferralComment, deferredFromLog, DEFERRED_EVENT,
+  queuesBehind, queuedComment,
   type RightOfWayCandidate,
 } from '../src/right-of-way.ts';
 import { applyConflictBounce, planConflictBounce, type ConflictWriter, type ConflictLog } from '../src/conflict.ts';
@@ -169,4 +170,30 @@ test('the conflict hand-back records the conflicting paths on the event', async 
   b.worktree = null;
   await applyConflictBounce(w, b, DEFAULT_CONTRACT, 'seat', log, false);
   assert.deepEqual(extras, [{ base_sha: 'abc1234', paths: ['src/a.ts'] }]);
+});
+
+test('a conflict queues behind the first hand-back of the cycle that shares a path with it', () => {
+  const first = { ticket: t(1, S.verified), paths: ['src/a.ts', 'test/a.test.ts'] };
+  const second = { ticket: t(2, S.verified), paths: ['src/b.ts'] };
+  assert.equal(queuesBehind(['src/a.ts'], []), null);
+  assert.equal(queuesBehind(['src/c.ts'], [first, second]), null);
+  assert.deepEqual(queuesBehind(['docs/x.md', 'test/a.test.ts'], [first, second]), { head: first, paths: ['test/a.test.ts'] });
+  // Sharing a path with both: the earlier hand-back is the one it waits for.
+  assert.deepEqual(queuesBehind(['src/b.ts', 'src/a.ts'], [first, second]), { head: first, paths: ['src/a.ts'] });
+});
+
+test('a queued conflict is held by the head\'s right of way on the next cycle and reported once', () => {
+  // Cycle 1 handed ISSUE-1 back and queued ISSUE-2 behind it, writing these two events.
+  const head = t(1, S.building);
+  const queued = t(2, S.verified);
+  const events: RunnerEvent[] = [
+    handBack(1, min(0), ['src/a.ts']),
+    { record_id: 'row-2', event_type: DEFERRED_EVENT, occurred_at: iso(min(0) + 500), metadata: { waiting_for: 'row-1', queued: true } },
+  ];
+  // Cycle 2: the queued branch changes the head's file, so it is left out before any merge is tried.
+  const [d] = plan([cand(queued, ['src/a.ts', 'src/z.ts'])], [head, queued], events, min(5)).deferrals;
+  assert.equal(d?.waitingFor.id, 'row-1');
+  assert.equal(deferralReported(d!, events), true);
+  assert.deepEqual(deferredFromLog([head, queued], events, DEFAULT_CONTRACT, min(5), 60).map((x) => x.ticket.id), ['row-2']);
+  assert.match(queuedComment(queued, head, ['src/a.ts'], 'main', 60), /ISSUE-2 stays at `verified` and nothing in its branch or worktree was touched/);
 });

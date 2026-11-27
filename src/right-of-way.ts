@@ -69,7 +69,8 @@ export interface RightOfWayPlan {
 
 const stampMs = (e: RunnerEvent): number => Date.parse(e.occurred_at ?? e.created_at ?? '') || 0;
 
-const pathsOf = (e: RunnerEvent): string[] => {
+/** The conflicting paths a hand-back event recorded; none for events written before paths were. */
+export const pathsOf = (e: RunnerEvent): string[] => {
   const p = e.metadata?.paths;
   return Array.isArray(p) ? p.filter((x): x is string => typeof x === 'string' && x !== '') : [];
 };
@@ -134,6 +135,44 @@ export function planRightOfWay(
   }
   const lapsedUsed = lapsed.filter((h) => candidates.some((c) => c.ticket.id !== h.ticket.id && overlap(c.paths, h.paths).length > 0));
   return { deferrals, lapsed: lapsedUsed };
+}
+
+/** A ticket handed back for a conflict earlier in the release cycle now being settled. */
+export interface CycleHandBack {
+  ticket: Ticket;
+  paths: string[];
+}
+
+/**
+ * Which hand-back of THIS cycle a conflicting branch queues behind, if any.
+ *
+ * A release that finds several verified branches conflicting in the same files
+ * used to hand every one of them back at once. Each dev lane then merged the
+ * same base in, each branch came back clean against the base and still
+ * conflicting with its siblings, and the first to land sent the rest round
+ * again. So only the first conflict over a set of paths is handed back; a later
+ * one in the same cycle whose conflict shares a path with it is left at
+ * `verified`, untouched in git and with no hand-back counted against it. From
+ * the next cycle the head's right of way holds it back like any other branch
+ * touching those paths, and once the head has landed it is merged again: clean,
+ * or first in line for a hand-back of its own.
+ */
+export function queuesBehind(paths: string[], handedBack: CycleHandBack[]): { head: CycleHandBack; paths: string[] } | null {
+  for (const head of handedBack) {
+    const shared = overlap(paths, head.paths);
+    if (shared.length) return { head, paths: shared };
+  }
+  return null;
+}
+
+/** The note on a branch that conflicted but was queued behind another hand-back instead of being handed back itself. */
+export function queuedComment(ticket: Ticket, waitingFor: Ticket, paths: string[], base: string, ttlMinutes: number): string {
+  const list = paths.map((p) => `\`${p}\``).join(', ');
+  return `${RIGHT_OF_WAY_MARKER}
+
+**Verified, and waiting its turn — not handed back.**
+
+This branch no longer squash-merges into \`${base}\`: it conflicts in ${list}. ${displayKey(waitingFor)} conflicted in the same file${paths.length === 1 ? '' : 's'} in the same release and was handed back first. Fixing both at once would only make them conflict with each other, so ${displayKey(ticket)} stays at \`verified\` and nothing in its branch or worktree was touched. The release retries it each cycle once ${displayKey(waitingFor)} is verified and released, or once its right of way lapses (${ttlMinutes} minutes after the hand-back); if it still conflicts then, it is handed back in its turn. Nothing is needed from anyone.`;
 }
 
 /** The paths a branch changes against the base (three-dot, so only the branch's own work). */
